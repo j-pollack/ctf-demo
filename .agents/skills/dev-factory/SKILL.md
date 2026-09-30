@@ -1,6 +1,6 @@
 ---
 name: dev-factory
-description: Deliver software features and changes through a high-capability planner/lead, independent high-capability verification and review, and a scoped medium-capability developer. Use for implementation requests; exclude explanation-only, planning-only, and review-only requests unless explicitly invoked.
+description: Deliver software features and changes through a high-capability planner/lead, independent high-capability verification and review, and a scoped medium-capability developer. Use for feature implementation and feature behavior changes; exclude explanation-only, planning-only, and review-only requests unless explicitly invoked.
 ---
 
 # Dev Factory
@@ -28,6 +28,10 @@ If the current agent is not high-capability, hand leadership to an explicitly se
 ## 1. Understand and contract
 
 Read applicable repository instructions and testing policy, inspect relevant code and every caller of the affected shared logic, and record initial Git HEAD, working-tree status, and staged diff. Record pre-existing changes and owned paths so later review and commits can distinguish this feature from concurrent work.
+
+Before feature plan, test, or source edits, require a dedicated feature branch and Git worktree at `<primary-checkout>/.worktrees/<feature-slug>`. Resolve the primary checkout from `git worktree list --porcelain`, not the current CWD when inside a linked worktree. Never use sibling directories, directory copies, or nested `.worktrees/`. Inspect registrations, branch ownership, destination, and existing changes; reuse only the correct registered path/branch for this feature when safe, and refuse collisions or uncertain ownership rather than overwriting or switching others' work.
+
+Prefer the repository's existing worktree helper (here, `npm run worktree -- add <absolute-path> <feature-branch>`); use `git worktree add -b <feature-branch> <absolute-path>` only if no helper exists. Record the absolute feature checkout and branch in the contract and every brief. Lead, developer, verifier, and reviewer use this checkout/CWD for all edits, checks, reviews, and commits; keep the primary unchanged. Worktrees isolate source, not databases, credentials, or services; existing testing and permission policy still applies. No automatic merge, worktree removal, push, or deployment.
 
 The lead saves a durable Markdown behavior contract in the repository's established plan location, otherwise `docs/plans/<feature-slug>.md`. Preserve this artifact through completion; no rendered page or hosting is needed. Include:
 
@@ -68,6 +72,6 @@ If any P0–P2 remains **or newly appears** on re-review, stop edits, diagnose w
 
 Only the lead commits, when authorized and verification permits. Before each commit inspect Git status, owned hunks, and staged diff. Stage only intended owned changes, never sweep up pre-existing staged work. If the index contains unrelated changes or attribution is unsafe, stop for a safe user-approved resolution; do not reset, stash, or rewrite others' work. Do not bypass hooks, rewrite history, push, or deploy without authorization. Report commit/hook failures; do not treat them as success or repair unrelated code to force a commit.
 
-After review, make a final commit only if verified review changes remain. No empty commits. Record final criterion/evidence status and commit IDs in the durable contract, ensuring its final state is included among intended committed changes.
+Before the final commit, record final criterion/evidence status and already completed checkpoint IDs in the durable contract. Commit only if verified intended changes (including this bookkeeping) remain; no empty commits. Report the final commit ID afterward, never embed the contract’s own commit hash or create an endless bookkeeping commit loop.
 
 Done requires evidence for every criterion, all required checks passed, no outstanding P0–P2 findings, and intended changes committed. If permissions or an explicit no-commit instruction prevent that state, report the precise limitation rather than claiming the full factory completed. Finish with commit IDs, verification actually run, and remaining limitations.

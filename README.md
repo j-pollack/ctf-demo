@@ -11,18 +11,20 @@ Public AI capture-the-flag MVP using Next.js, Pi SDK, one Fly Sprite per game, O
 
 ## Parallel worktrees
 
-Commit this tooling before cutting a new worktree: Git checks out committed files, not the current working-tree edits.
+Every feature uses a dedicated branch/worktree at `<primary-checkout>/.worktrees/<feature-slug>`; see [AGENTS.md](AGENTS.md) for agent workflow rules.
+
+Run the example from the primary checkout. Git checks out committed files, not current working-tree edits:
 
 ```sh
-npm run worktree -- add ../ctf-feature feature/my-change
-cd ../ctf-feature
+npm run worktree -- add "$PWD/.worktrees/my-change" feature/my-change
+cd .worktrees/my-change
 npm install
 npm run dev
 ```
 
 The command creates a new branch/worktree, assigns a port, and copies `.env.local` from another checkout if missing. Existing credentials are never overwritten; copies are private (0600), not symlinks. For worktrees created with plain `git worktree add`, run `npm run worktree -- init` after installing dependencies; `npm run dev` also initializes automatically.
 
-The shared manifest is `tripwire-worktrees.json` inside `git rev-parse --path-format=absolute --git-common-dir` (usually `.git`). It contains only checkout paths and ports, never credentials, and is not committed. Allocation is locked across processes, reuses a checkout's port when free, skips bound ports, and removes deleted worktrees from the manifest on the next allocation. Ports remain reserved while their worktrees exist, even with servers stopped. Use normal `git worktree remove` when done.
+The shared manifest is `tripwire-worktrees.json` inside `git rev-parse --path-format=absolute --git-common-dir` (usually `.git`). It contains only checkout paths and ports, never credentials, and is not committed. Allocation is locked across processes, reuses a checkout's port when free, skips bound ports, and removes deleted worktrees from the manifest on the next allocation. Ports remain reserved while their worktrees exist, even with servers stopped. Merge or remove a worktree only with user authorization.
 
 Each checkout has separate dependencies/build output and browser auth cookies. Credentials and database remain shared: this does **not** isolate game records, schema changes, Sprite limits, or inference spending. Do not run conflicting database migrations simultaneously. Production `npm run start` remains standard Next.js and accepts `PORT` from the environment. No production auth settings or credential files are rewritten.
 

@@ -8,6 +8,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
+# Feature worktrees
+
+All new features and feature changes require a dedicated branch and Git worktree at `<primary-checkout>/.worktrees/<feature-slug>` before any feature plan, test, or source edits. Resolve the primary checkout from `git worktree list --porcelain`, even when starting in a linked worktree; never create nested `.worktrees/`, sibling checkouts, or directory copies. Use the existing `npm run worktree -- add <absolute-path> <feature-branch>` helper. Reuse only a registered worktree matching the intended path, branch, and feature; refuse path/branch collisions or unsafe existing changes.
+
+Record the absolute feature worktree path and branch in the plan and every agent brief. The lead, developer, plan verifier, and reviewer use that checkout/CWD for all edits, checks, reviews, and commits; keep the primary checkout unchanged. Do not merge, remove worktrees, push, or deploy without user authorization. Worktrees isolate source, not databases, credentials, or services: the testing policy below still applies.
+
 # Testing and mocking policy
 
 All coding agents must follow [the verification strategy](docs/verification.md).
