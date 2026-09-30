@@ -1,4 +1,4 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": [".claude/**", "next-env.d.ts", "skills-lock.json"]
+  "ignorePatterns": [".claude/**", ".agents/skills/neon*/**", "next-env.d.ts", "skills-lock.json"]
 }

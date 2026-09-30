@@ -14,6 +14,15 @@ All new features and feature changes require a dedicated branch and Git worktree
 
 Record the absolute feature worktree path and branch in the plan and every agent brief. The lead, developer, plan verifier, and reviewer use that checkout/CWD for all edits, checks, reviews, and commits; keep the primary checkout unchanged. Do not merge, remove worktrees, push, or deploy without user authorization. Worktrees isolate source, not databases, credentials, or services: the testing policy below still applies.
 
+# Repository skills
+
+`.agents/skills/` is the single source of truth for repository skills. `.claude/skills` is a relative symlink to `../.agents/skills`, not a second skill store.
+
+- Create or update skills at `.agents/skills/<skill-name>/SKILL.md`, with `name` and `description` in YAML frontmatter.
+- Keep supporting files inside the same skill directory and use relative paths to reference them.
+- Install imported skills into `.agents/skills/` too; check for existing names before adding or replacing a skill.
+- Preserve the `.claude/skills` symlink. Do not replace it with a directory, duplicate skills there, or introduce a sync script.
+
 # Testing and mocking policy
 
 All coding agents must follow [the verification strategy](docs/verification.md).

@@ -4,5 +4,5 @@
   "categories": {
     "correctness": "error"
   },
-  "ignorePatterns": [".next/**", ".claude/**", "next-env.d.ts"]
+  "ignorePatterns": [".next/**", ".claude/**", ".agents/skills/neon*/**", "next-env.d.ts"]
 }
