@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AGENT_PROMPT, hasSecret, makeSecret, parseDecision, inputCeiling } from "../lib/policy";
 import { repairMessages } from "../lib/runner";
-import { providerTranscript } from "../lib/inference";
+import { infer, providerTranscript } from "../lib/inference";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 test("flags are unique, exact matches win, malformed monitor responses fail closed",()=>{
@@ -26,4 +26,7 @@ test("reasoning and tools survive provider replay; interrupted tool calls are re
   assert.equal(replay.messages[2].role,"tool");
   const legacy=repairMessages([{role:"system",content:"",timestamp:1},assistant]);
   assert.equal(legacy[0].role==='system' && legacy[0].sections?.preamble,AGENT_PROMPT);
+});
+test("cancelled inference stops before configuration or token reservation",async()=>{
+  await assert.rejects(()=>infer({} as Parameters<typeof infer>[0],"agent",{} as Parameters<typeof infer>[2],[],AbortSignal.abort()),{name:"AbortError"});
 });

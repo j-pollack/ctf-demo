@@ -50,6 +50,7 @@ export function providerTranscript(messages: Message[]) {
 
 // Non-streaming provider calls keep accounting and raw reasoning in one authoritative response.
 export async function infer(game: GameRow, role: "agent" | "monitor", model: Model<"openai-completions">, messages: Message[], signal?: AbortSignal): Promise<AssistantMessage> {
+  signal?.throwIfAborted();
   if (!process.env.OPENROUTER_API_KEY) throw new Error("Inference is not configured.");
   const payload = { model:model.id, ...providerTranscript(messages), reasoning:role==='agent'?{enabled:true,exclude:false}:{enabled:false},
     provider:{ require_parameters:true, max_price:{prompt:model.cost.input,completion:model.cost.output} },

@@ -17,6 +17,8 @@ Current checkout uses port 3001 because port 3000 is occupied: `npm run dev -- -
 
 `npm run smoke` uses real model calls and two temporary Sprites. It checks isolation, ownership, a rejected secret read, continued play, raw reasoning, concurrent spending admission and environment cleanup. It consumes a small amount of the shared daily inference allowance.
 
+`npm run smoke -- --messages-only` checks sequential tool results, monitor errors and capture using controlled model replies with real Neon/Sprite execution. It makes no live inference calls and is not a monitor defense evaluation.
+
 `npm run check:auth` tests the real passwordless handlers, guest transfer, allowance upgrade, leaderboard privacy and single-use tokens against Neon. It captures the outbound Resend request locally and sends no email. Actual inbox delivery still requires a check with your verified Resend sender.
 
 ## Game rules

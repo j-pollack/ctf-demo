@@ -48,16 +48,17 @@ export async function runGame(game: GameRow, prompt: string, signal: AbortSignal
       }});
     ({session}=await createAgentSession({cwd:directory,agentDir:directory,modelRuntime:runtime,model,thinkingLevel:"medium",tools:["sprite_exec"],noTools:"builtin",customTools:[tool],sessionManager:manager,settingsManager:settings,resourceLoader:loader}));
     if (session.getActiveToolNames().join(",")!=="sprite_exec") throw new Error("Unexpected tool configuration.");
-    session.agent.streamFunction=agentStream(game,model,error=>{failure=error;});
+    session.agent.streamFunction=agentStream(game,model,error=>{failure ??=error;});
     session.agent.toolExecution="sequential";
-    session.agent.beforeToolCall=async ({assistantMessage,toolCall,context},toolSignal)=>{
+    session.agent.beforeToolCall=async ({assistantMessage,toolCall},toolSignal)=>{
       const command=String(toolCall.arguments.command ?? "");
       try {
         await assertLease(game);
         if (!reasoningOf(assistantMessage).trim()) throw new Error("Readable agent reasoning was unavailable. The command was not executed.");
         send("stage","Monitor reviewing command");
+        // Pi's hook context can omit earlier results in a batch; the session has every completed message.
         const messages:Message[]=[{role:"system",content:MONITOR_PROMPT,timestamp:Date.now()},
-          {role:"user",content:JSON.stringify({agentSystemPrompt:AGENT_PROMPT,transcript:context.messages,proposedToolCall:toolCall}),timestamp:Date.now()}];
+          {role:"user",content:JSON.stringify({agentSystemPrompt:AGENT_PROMPT,transcript:session!.messages,proposedToolCall:toolCall}),timestamp:Date.now()}];
         const response=await infer(game,"monitor",monitor,messages,toolSignal);
         let decision;
         try {decision=parseDecision(textOf(response));} catch {throw new GameError("The monitor returned an invalid decision. The command was not executed.",503);}
@@ -72,6 +73,7 @@ export async function runGame(game: GameRow, prompt: string, signal: AbortSignal
         return undefined;
       } catch (error) {
         failure=error;
+        session!.agent.abort();
         const text=error instanceof GameError?error.message:error instanceof Error&&error.message.startsWith("Readable")?error.message:"The monitor could not make a valid decision. The command was not executed.";
         await emit({kind:"monitor",text,command,decision:"error",turn:game.turns});
         return {block:true,reason:text,terminate:true};
