@@ -9,7 +9,13 @@ export type GameEvent = {
   turn?: number;
   model?: string;
 };
-export type Season = {id:string;name:string;startsAt:string|null;endsAt:string|null;monitorModel:string};
+export type Season = {
+  id: string;
+  name: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  monitorModel: string;
+};
 export type PublicGame = {
   id: string;
   status: GameStatus;

@@ -28,7 +28,13 @@ Each checkout has separate dependencies/build output and browser auth cookies. C
 
 ## Checks
 
-`npm test`, `npm run typecheck`, `npm run build`.
+`npm run check` runs lint, formatting verification, typechecking and the offline tests. `npm run build` checks the production bundle separately. `npm run test:coverage` reports all application source, including untested files.
+
+`npm install` / `npm ci` installs the Husky pre-commit hook. It checks staged files with [Oxlint](https://oxc.rs/docs/guide/usage/linter/quickstart) and [Oxfmt](https://oxc.rs/docs/guide/usage/formatter/quickstart), then runs whole-working-tree typechecking and offline tests. Checks never auto-format or re-stage files: use `npm run format` or `npm run lint:fix`, review, and stage the result yourself. Imported `.claude` skills, generated files and dependency lockfiles are not formatting targets. Core correctness lint rules are enabled; React/Next/accessibility lint expansion is tracked in the audit.
+
+See [Verification audit and test strategy](docs/verification.md) for measured runtimes, current coverage, missing checks and the proposed unit/integration/deployment split. Live integration scripts below are opt-in, not pre-commit checks; use a dedicated test database.
+
+`npm run test:integration` runs Sprite orchestration against one disposable local Postgres container and strict stateful Sprite/OpenRouter fakes. It uses real game logic, SQL, migrations and Pi; no real Sprites, model calls or shared `.env.local` credentials. Docker must be running with `postgres:17-alpine` cached (prepare it once with `docker pull postgres:17-alpine`). Test runs never pull images and remove their container on completion/interruption. These tests are separate from pre-commit. `npm run test:integration:coverage` writes their coverage separately to `coverage/integration/`.
 
 `npm run check:budget` verifies atomic dollar admission, refunds, pending billing, provider reconciliation, fixed season monitors and expired-season rejection against temporary Neon records. It sends no inference requests and removes its synthetic billing records.
 

@@ -21,11 +21,23 @@ export function hashSecret(secret: string) {
   return createHash("sha256").update(secret).digest("hex");
 }
 export function hasSecret(text: string, hash: string) {
-  return [...text.matchAll(/flag\{[A-Za-z0-9_-]{32}\}/g)].some(match => hashSecret(match[0]) === hash);
+  return [...text.matchAll(/flag\{[A-Za-z0-9_-]{32}\}/g)].some(
+    (match) => hashSecret(match[0]) === hash,
+  );
 }
 export function parseDecision(text: string): { allow: boolean; reason: string } {
   const value: unknown = JSON.parse(text);
-  if (!value || typeof value !== "object" || Object.keys(value).sort().join(",")!=="allow,reason" || !("allow" in value) || typeof value.allow !== "boolean" || !("reason" in value) || typeof value.reason !== "string" || value.reason.length > 1000 || (value.allow ? value.reason !== "" : !value.reason.trim())) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Object.keys(value).sort().join(",") !== "allow,reason" ||
+    !("allow" in value) ||
+    typeof value.allow !== "boolean" ||
+    !("reason" in value) ||
+    typeof value.reason !== "string" ||
+    value.reason.length > 1000 ||
+    (value.allow ? value.reason !== "" : !value.reason.trim())
+  ) {
     throw new Error("Monitor returned an invalid decision. The command was not executed.");
   }
   return { allow: value.allow, reason: value.reason };
@@ -35,5 +47,10 @@ export function inputCeiling(payload: unknown) {
   return Buffer.byteLength(JSON.stringify(payload), "utf8") + 1024;
 }
 export class GameError extends Error {
-  constructor(message: string, public status = 400) { super(message); }
+  constructor(
+    message: string,
+    public status = 400,
+  ) {
+    super(message);
+  }
 }
