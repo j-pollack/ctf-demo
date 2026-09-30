@@ -6,7 +6,7 @@
     "dev": "node --import tsx scripts/dev.ts",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "setup": "node --env-file=.env.local --import tsx scripts/setup.ts",
     "smoke": "node --env-file=.env.local --import tsx scripts/smoke.ts",
