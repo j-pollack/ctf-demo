@@ -31,7 +31,7 @@ Read applicable repository instructions and testing policy, inspect relevant cod
 
 Before feature plan, test, or source edits, require a dedicated feature branch and Git worktree at `<primary-checkout>/.worktrees/<feature-slug>`. Resolve the primary checkout from `git worktree list --porcelain`, not the current CWD when inside a linked worktree. Never use sibling directories, directory copies, or nested `.worktrees/`. Inspect registrations, branch ownership, destination, and existing changes; reuse only the correct registered path/branch for this feature when safe, and refuse collisions or uncertain ownership rather than overwriting or switching others' work.
 
-Prefer the repository's existing worktree helper (here, `npm run worktree -- add <absolute-path> <feature-branch>`); use `git worktree add -b <feature-branch> <absolute-path>` only if no helper exists. Record the absolute feature checkout and branch in the contract and every brief. Lead, developer, verifier, and reviewer use this checkout/CWD for all edits, checks, reviews, and commits; keep the primary unchanged. Worktrees isolate source, not databases, credentials, or services; existing testing and permission policy still applies. No automatic merge, worktree removal, push, or deployment.
+Prefer the repository's existing worktree helper (here, `npm run worktree -- add <absolute-path> <feature-branch>`); use `git worktree add -b <feature-branch> <absolute-path>` only if no helper exists. Record the absolute feature checkout and branch in the contract and every brief. Lead, developer, verifier, and reviewer use this checkout/CWD for all edits, checks, reviews, and commits; keep the primary unchanged. Worktrees isolate source, not databases, credentials, or services; existing testing and permission policy still applies. No automatic merge, push, or deployment. After a user-authorized merge, clean up the completed feature worktree as described below; do not remove unmerged or dirty worktrees.
 
 The lead saves a durable Markdown behavior contract in the repository's established plan location, otherwise `docs/plans/<feature-slug>.md`. Preserve this artifact through completion; no rendered page or hosting is needed. Include:
 
@@ -75,3 +75,12 @@ Only the lead commits, when authorized and verification permits. Before each com
 Before the final commit, record final criterion/evidence status and already completed checkpoint IDs in the durable contract. Commit only if verified intended changes (including this bookkeeping) remain; no empty commits. Report the final commit ID afterward, never embed the contract’s own commit hash or create an endless bookkeeping commit loop.
 
 Done requires evidence for every criterion, all required checks passed, no outstanding P0–P2 findings, and intended changes committed. If permissions or an explicit no-commit instruction prevent that state, report the precise limitation rather than claiming the full factory completed. Finish with commit IDs, verification actually run, and remaining limitations.
+
+## Clean up completed worktrees
+
+After a user-authorized merge, remove the completed feature worktree so it does not remain dangling. If the work is not merged, retain it and report its path and branch; a verified commit alone is not permission to discard a checkout.
+
+- Confirm the exact feature path/branch from `git worktree list --porcelain`, a clean index/worktree (including untracked files), and that `git merge-base --is-ancestor <feature-branch> <target-branch>` succeeds. If any check fails, stop and report the blocker; never use `--force` or discard changes.
+- Stop any development server and ensure no agent is still using that checkout. Change CWD to the primary checkout before running `git worktree remove <absolute-feature-path>`.
+- Refresh the repository's worktree registry with `npm run worktree -- init` from the primary checkout so the removed checkout's port reservation is pruned. Confirm the path is gone from both Git's worktree list and the registry.
+- Keep the feature branch unless the user also authorized branch deletion. Report merge and cleanup results; a cleanup failure remains an explicit unfinished step, not a successful cleanup.
