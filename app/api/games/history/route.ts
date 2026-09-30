@@ -36,23 +36,14 @@ export async function GET(request: Request) {
           Buffer.from(token, "base64url").toString("base64url") !== token ||
           typeof parsed.createdAt !== "string" ||
           !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/.test(parsed.createdAt) ||
-          !Number.isFinite(Date.parse(parsed.createdAt)) ||
           typeof parsed.id !== "string" ||
           !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsed.id)
         )
           throw new Error();
-        const [date] = parsed.createdAt.split("T"),
-          [year, month, day] = date.split("-").map(Number);
-        const valid = new Date(Date.UTC(year, month - 1, day));
-        const [, time] = parsed.createdAt.split("T"),
-          [hour, minute, second] = time.split(":").map(Number);
+        const date = new Date(parsed.createdAt);
         if (
-          valid.getUTCFullYear() !== year ||
-          valid.getUTCMonth() !== month - 1 ||
-          valid.getUTCDate() !== day ||
-          hour > 23 ||
-          minute > 59 ||
-          second > 59
+          parsed.createdAt.startsWith("0000-") ||
+          date.toISOString().slice(0, 23) !== parsed.createdAt.slice(0, 23)
         )
           throw new Error();
         cursor = parsed;

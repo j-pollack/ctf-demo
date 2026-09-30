@@ -132,6 +132,23 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       ).status,
       400,
     );
+    for (const createdAt of [
+      "2026-01-01T25:00:00.000001Z",
+      "2026-01-01T00:00:60.000001Z",
+      "2026-02-30T00:00:00.000001Z",
+    ]) {
+      assert.equal(
+        (
+          await GET(
+            request(
+              `?cursor=${Buffer.from(JSON.stringify({ createdAt, id: ids[0] })).toString("base64url")}`,
+            ),
+          )
+        ).status,
+        400,
+        `reject invalid cursor timestamp ${createdAt}`,
+      );
+    }
     assert.equal(
       (
         await GET(
@@ -154,6 +171,18 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     assert.equal(
       (await detail(request(), { params: Promise.resolve({ id: randomUUID() }) })).status,
       404,
+    );
+    assert.equal(
+      (await detail(request(), { params: Promise.resolve({ id: "not-a-run-id" }) })).status,
+      404,
+    );
+    assert.equal(
+      (
+        await detail(new Request("http://localhost/api/games/history"), {
+          params: Promise.resolve({ id: ids[0] }),
+        })
+      ).status,
+      401,
     );
     assert.equal(
       (await detail(request(), { params: Promise.resolve({ id: foreignId }) })).status,
