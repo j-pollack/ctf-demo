@@ -4,19 +4,11 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { authClient } from "@/lib/auth-client";
 import type { GameEvent, PublicGame, Season } from "@/lib/types";
+import { seasonEnd } from "@/lib/season-end";
 
 const label = (model: string) => model.split("/")[1];
 const number = (value: number) => value.toLocaleString("en-US");
 const money = (value: number) => `$${(value / 1_000_000).toFixed(4)}`;
-const seasonEnd = (value: string) =>
-  new Date(value).toLocaleString("en-US", {
-    timeZone: "UTC",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }) + " UTC";
 type Score = { name: string; turns: number; tokens: number; spend: number; blocks: number };
 async function api(url: string, options?: RequestInit) {
   const response = await fetch(url, options),
