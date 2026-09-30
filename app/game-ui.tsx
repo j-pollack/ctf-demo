@@ -2,8 +2,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import Link from "next/link";
+import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
-import type { GameEvent, PublicGame, Season } from "@/lib/types";
+import type { GameEvent, GameSummary, PublicGame, Season } from "@/lib/types";
 
 const label = (model: string) => model.split("/")[1];
 const number = (value: number) => value.toLocaleString("en-US");
@@ -53,6 +55,20 @@ export default function GameUI({
   defaultAgent: string;
   initialSeason: Season;
 }) {
+  const pathname = usePathname(),
+    params = useParams<{ id?: string }>(),
+    router = useRouter();
+  const routeRunId = params.id ?? null;
+  const panel =
+    pathname === "/runs"
+      ? "history"
+      : pathname === "/rank"
+        ? "rank"
+        : pathname === "/rules"
+          ? "rules"
+          : routeRunId
+            ? "detail"
+            : "play";
   const account = authClient.useSession();
   const signedIn = !!account.data && !account.data.user.isAnonymous;
   const [game, setGame] = useState<PublicGame | null>(null),
@@ -60,9 +76,33 @@ export default function GameUI({
   const [busy, setBusy] = useState(false),
     [stage, setStage] = useState(""),
     [error, setError] = useState("");
-  const [panel, setPanel] = useState<"play" | "rank" | "rules">("play");
+  const [playError, setPlayError] = useState("");
+  const [history, setHistory] = useState<GameSummary[]>([]),
+    [historyCursor, setHistoryCursor] = useState<string | null>(null),
+    [historySelected, setHistorySelected] = useState<PublicGame | null>(null),
+    [historyLoading, setHistoryLoading] = useState(false),
+    [historyError, setHistoryError] = useState(""),
+    [historyReload, setHistoryReload] = useState(0);
+  const [rememberedPlayId, setRememberedPlayId] = useState<string | null>(null),
+    [detailLoading, setDetailLoading] = useState(false),
+    [detailError, setDetailError] = useState(""),
+    [detailReload, setDetailReload] = useState(0);
+  const historyRequest = useRef(0),
+    detailRequest = useRef(0),
+    routeRef = useRef(pathname),
+    routeGeneration = useRef(0),
+    historyOwner = useRef<string | undefined>(undefined),
+    accountEpoch = useRef(0),
+    liveRequest = useRef(0),
+    playRequest = useRef(0),
+    forkRequest = useRef(0),
+    rootRedirectSuppressed = useRef(false),
+    latestRequest = useRef(0),
+    startRequest = useRef(0),
+    starting = useRef(false);
   const [modal, setModal] = useState<"setup" | "login" | "fork" | null>(null),
     [forkEvent, setForkEvent] = useState<GameEvent | null>(null),
+    [forkRunId, setForkRunId] = useState<string | null>(null),
     [email, setEmail] = useState(""),
     [emailSent, setEmailSent] = useState(false);
   const [agent, setAgent] = useState(defaultAgent),
@@ -83,20 +123,24 @@ export default function GameUI({
     setUnconfirmed(false);
     if (status === "rejected") setPrompt((draft) => draft || submitted.text);
   }
-  function refreshGame(id: string, signal?: AbortSignal) {
+  function refreshGame(id: string, signal?: AbortSignal, isCurrent: () => boolean = () => true) {
     const requestedGeneration = submissionGeneration.current;
     return api(`/api/games/${id}`, { signal }).then((next: PublicGame) => {
-      if (requestedGeneration !== submissionGeneration.current) return;
-      reconcile(next);
-      setGame((current) =>
-        refreshedGame(
-          current,
-          next,
-          pending.current,
-          requestedGeneration,
-          submissionGeneration.current,
-        ),
-      );
+      if (!signal?.aborted && isCurrent() && requestedGeneration === submissionGeneration.current) {
+        reconcile(next);
+        setGame((current) =>
+          !signal?.aborted && isCurrent()
+            ? refreshedGame(
+                current,
+                next,
+                pending.current,
+                requestedGeneration,
+                submissionGeneration.current,
+              )
+            : current,
+        );
+      }
+      return next;
     });
   }
   useEffect(() => {
@@ -119,13 +163,271 @@ export default function GameUI({
     bottom = useRef<HTMLDivElement | null>(null),
     dialog = useRef<HTMLDialogElement | null>(null);
   useEffect(() => {
+    if (routeRef.current !== pathname) routeGeneration.current++;
+    routeRef.current = pathname;
+    if (pathname !== "/play") rootRedirectSuppressed.current = false;
+    if (modal === "fork") {
+      setModal(null);
+      setForkEvent(null);
+      setForkRunId(null);
+      setError("");
+    }
+  }, [pathname, account.data?.user.id]);
+  useEffect(() => {
+    playRequest.current++;
+    setPlayError("");
+  }, [pathname, account.data?.user.id, rememberedPlayId]);
+  useEffect(() => {
+    if (
+      pathname === "/play" &&
+      rememberedPlayId &&
+      !starting.current &&
+      !rootRedirectSuppressed.current
+    )
+      router.replace(`/runs/${rememberedPlayId}`);
+  }, [pathname, rememberedPlayId, router]);
+  useEffect(() => {
+    const owner = account.data?.user.id;
+    if (historyOwner.current !== owner) {
+      const hadOwner = historyOwner.current !== undefined;
+      const adoptingGuestForStart = !hadOwner && owner !== undefined && starting.current;
+      historyOwner.current = owner;
+      if (!adoptingGuestForStart) {
+        pending.current = null;
+        setUnconfirmed(false);
+        submissionGeneration.current++;
+        accountEpoch.current++;
+        liveRequest.current++;
+        playRequest.current++;
+        forkRequest.current++;
+        latestRequest.current++;
+        startRequest.current++;
+      }
+      historyRequest.current++;
+      setHistory([]);
+      setHistoryCursor(null);
+      setHistorySelected(null);
+      setRememberedPlayId(null);
+      setModal((current) => (current === "fork" ? null : current));
+      setForkEvent(null);
+      setForkRunId(null);
+      setHistoryError("");
+      setHistoryLoading(false);
+      setDetailError("");
+      setDetailLoading(false);
+      detailRequest.current++;
+      if (hadOwner) {
+        starting.current = false;
+        cancel.current?.abort();
+        cancel.current = null;
+        setGame(null);
+        setPrompt("");
+        setBusy(false);
+        setStage("");
+        setError("");
+      }
+    }
+  }, [account.data?.user.id]);
+  useEffect(() => {
+    if (panel !== "history" || !account.data) return;
+    const request = ++historyRequest.current,
+      owner = account.data?.user.id;
+    setHistory([]);
+    setHistoryCursor(null);
+    setHistorySelected(null);
+    setHistoryLoading(true);
+    setHistoryError("");
+    api("/api/games/history")
+      .then((data) => {
+        if (request === historyRequest.current && owner === historyOwner.current) {
+          setHistory(data.runs);
+          setHistoryCursor(data.nextCursor);
+        }
+      })
+      .catch((err) => {
+        if (request === historyRequest.current && owner === historyOwner.current)
+          setHistoryError(err.message);
+      })
+      .finally(() => {
+        if (request === historyRequest.current && owner === historyOwner.current)
+          setHistoryLoading(false);
+      });
+    return () => {
+      historyRequest.current++;
+      setHistoryLoading(false);
+    };
+  }, [panel, account.data?.user.id, historyReload]);
+  useEffect(() => {
+    if (!routeRunId || !account.data || game?.id === routeRunId) {
+      detailRequest.current++;
+      setHistorySelected(null);
+      setDetailLoading(false);
+      setDetailError("");
+      return;
+    }
+    const request = ++detailRequest.current,
+      owner = account.data.user.id;
+    setHistorySelected(null);
+    setDetailLoading(true);
+    setDetailError("");
+    api(`/api/games/${encodeURIComponent(routeRunId)}`)
+      .then((detail) => {
+        if (request === detailRequest.current && owner === historyOwner.current)
+          setHistorySelected(detail);
+      })
+      .catch((err) => {
+        if (request === detailRequest.current && owner === historyOwner.current)
+          setDetailError(err.message);
+      })
+      .finally(() => {
+        if (request === detailRequest.current && owner === historyOwner.current)
+          setDetailLoading(false);
+      });
+    return () => {
+      detailRequest.current++;
+    };
+  }, [routeRunId, account.data?.user.id, game?.id, detailReload]);
+  async function continueHistoryRun() {
+    const id = routeRunId;
+    if (!id || busy || game?.busy || pending.current) return;
+    const request = ++detailRequest.current,
+      owner = account.data?.user.id,
+      path = routeRef.current;
+    setDetailLoading(true);
+    setDetailError("");
+    try {
+      const fresh = await api(`/api/games/${encodeURIComponent(id)}`);
+      if (
+        request !== detailRequest.current ||
+        owner !== historyOwner.current ||
+        path !== routeRef.current
+      )
+        return;
+      setHistorySelected(fresh);
+      if (
+        fresh.status === "active" &&
+        (!fresh.season.endsAt || Date.parse(fresh.season.endsAt) > Date.now())
+      ) {
+        liveRequest.current++;
+        setGame(fresh);
+        setAgent(fresh.agentModel);
+        setPrompt("");
+        setStage("");
+        setHistorySelected(null);
+      }
+    } catch (err) {
+      if (
+        request === detailRequest.current &&
+        owner === historyOwner.current &&
+        path === routeRef.current
+      )
+        setDetailError(err instanceof Error ? err.message : "Could not refresh this run.");
+    } finally {
+      if (
+        request === detailRequest.current &&
+        owner === historyOwner.current &&
+        path === routeRef.current
+      )
+        setDetailLoading(false);
+    }
+  }
+  async function loadMoreHistory() {
+    if (!historyCursor || historyLoading) return;
+    const owner = account.data?.user.id,
+      cursor = historyCursor,
+      request = ++historyRequest.current;
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const data = await api(`/api/games/history?cursor=${encodeURIComponent(cursor)}`);
+      if (request === historyRequest.current && owner === historyOwner.current) {
+        setHistory((rows) => [...rows, ...data.runs]);
+        setHistoryCursor(data.nextCursor);
+      }
+    } catch (err) {
+      if (request === historyRequest.current && owner === historyOwner.current)
+        setHistoryError(err instanceof Error ? err.message : "Could not load more runs.");
+    } finally {
+      if (request === historyRequest.current && owner === historyOwner.current)
+        setHistoryLoading(false);
+    }
+  }
+  async function openPlay() {
+    setPlayError("");
+    const id = rememberedPlayId;
+    if (!id) {
+      router.push("/play");
+      return;
+    }
+    if (busy || game?.busy || pending.current) {
+      router.push(`/runs/${id}`);
+      return;
+    }
+    const request = ++playRequest.current,
+      live = ++liveRequest.current,
+      epoch = accountEpoch.current,
+      owner = historyOwner.current,
+      fromPath = routeRef.current;
+    try {
+      const fresh = await api(`/api/games/${encodeURIComponent(id)}`);
+      if (
+        request !== playRequest.current ||
+        live !== liveRequest.current ||
+        epoch !== accountEpoch.current ||
+        owner !== historyOwner.current ||
+        fromPath !== routeRef.current ||
+        fresh.id !== id
+      )
+        return;
+      setGame(fresh);
+      setAgent(fresh.agentModel);
+      router.push(`/runs/${id}`);
+    } catch (err) {
+      if (
+        request === playRequest.current &&
+        live === liveRequest.current &&
+        epoch === accountEpoch.current &&
+        owner === historyOwner.current &&
+        fromPath === routeRef.current
+      )
+        setPlayError(err instanceof Error ? err.message : "Could not load the remembered run.");
+    }
+  }
+  useEffect(() => {
     if (!account.data) return;
+    if (starting.current) return;
+    const owner = account.data.user.id,
+      request = ++liveRequest.current,
+      latest = ++latestRequest.current,
+      epoch = accountEpoch.current;
     api("/api/games")
       .then((data) => {
-        setGame(data.game);
-        if (data.game) setAgent(data.game.agentModel);
+        if (
+          epoch !== accountEpoch.current ||
+          latest !== latestRequest.current ||
+          owner !== historyOwner.current
+        )
+          return;
+        setRememberedPlayId(data.game?.id ?? null);
+        if (request !== liveRequest.current) return;
+        if (data.game) {
+          if (
+            !game &&
+            (routeRef.current === "/play" || routeRef.current === `/runs/${data.game.id}`)
+          ) {
+            setGame(data.game);
+            setAgent(data.game.agentModel);
+          }
+        }
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => {
+        if (
+          epoch === accountEpoch.current &&
+          request === liveRequest.current &&
+          latest === latestRequest.current
+        )
+          setError(err.message);
+      });
   }, [account.data?.user.id]);
   useEffect(() => {
     if (modal) {
@@ -143,7 +445,7 @@ export default function GameUI({
         : "smooth",
       block: "nearest",
     });
-  }, [game?.events.length, stage, busy, unconfirmed]);
+  }, [game?.events.length, stage, busy, unconfirmed, routeRunId]);
   useEffect(() => {
     if (
       !game ||
@@ -151,13 +453,33 @@ export default function GameUI({
       busy
     )
       return;
-    const refreshController = new AbortController();
-    const timer = setInterval(() => {
-      refreshGame(game.id, refreshController.signal).catch(() => {});
-    }, 3000);
+    let active = true,
+      inFlight = false;
+    const runId = game.id,
+      epoch = accountEpoch.current,
+      owner = historyOwner.current;
+    const poll = () => {
+      if (inFlight) return;
+      inFlight = true;
+      const request = liveRequest.current;
+      refreshGame(
+        runId,
+        undefined,
+        () =>
+          active &&
+          request === liveRequest.current &&
+          epoch === accountEpoch.current &&
+          owner === historyOwner.current,
+      )
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    const timer = setInterval(poll, 3000);
     return () => {
+      active = false;
       clearInterval(timer);
-      refreshController.abort();
     };
   }, [game?.id, game?.busy, game?.reservedMicrodollars, game?.status, busy, unconfirmed]);
   useEffect(() => {
@@ -172,17 +494,31 @@ export default function GameUI({
       })
       .catch((err) => setError(err.message));
   }, [panel, boardSeason, boardAgent]);
+  const displayGame = routeRunId
+    ? game?.id === routeRunId
+      ? game
+      : historySelected?.id === routeRunId
+        ? historySelected
+        : null
+    : panel === "history"
+      ? null
+      : game;
+  const isExecutionView = !!displayGame && displayGame.id === game?.id;
   const loading = busy || !!game?.busy || unconfirmed;
-  const allowance = game?.budgetMicrodollars ?? (signedIn ? 3_000_000 : 600_000),
+  const allowance = displayGame?.budgetMicrodollars ?? (signedIn ? 3_000_000 : 600_000),
     left = Math.max(
       0,
-      allowance - (game?.spentMicrodollars ?? 0) - (game?.reservedMicrodollars ?? 0),
+      allowance - (displayGame?.spentMicrodollars ?? 0) - (displayGame?.reservedMicrodollars ?? 0),
     );
   const seasonExpired =
-    !!game?.season.endsAt && new Date(game.season.endsAt).getTime() <= Date.now();
+    !!displayGame?.season.endsAt && new Date(displayGame.season.endsAt).getTime() <= Date.now();
   const decisions =
-    game?.events.filter((event) => event.kind === "monitor" && event.decision !== "allow") ?? [];
+    displayGame?.events.filter((event) => event.kind === "monitor" && event.decision !== "allow") ??
+    [];
   async function start() {
+    const startId = ++startRequest.current;
+    starting.current = true;
+    let startEpoch = accountEpoch.current;
     setBusy(true);
     setError("");
     setStage("Preparing your private environment");
@@ -191,54 +527,137 @@ export default function GameUI({
         const result = await authClient.signIn.anonymous();
         if (result.error) throw new Error(result.error.message ?? "Guest session could not start.");
       }
+      startEpoch = accountEpoch.current;
+      liveRequest.current++;
       const next = await api("/api/games", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ agentModel: agent }),
       });
+      if (startEpoch !== accountEpoch.current || startId !== startRequest.current) return;
       setGame(next);
-      setPanel("play");
+      playRequest.current++;
+      setPlayError("");
+      setRememberedPlayId(next.id);
+      latestRequest.current++;
+      setHistorySelected(null);
+      historyRequest.current++;
+      router.push(`/runs/${next.id}`);
       setModal(null);
       setPrompt("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start a game.");
+      if (startEpoch === accountEpoch.current && startId === startRequest.current)
+        setError(err instanceof Error ? err.message : "Could not start a game.");
     } finally {
-      setBusy(false);
-      setStage("");
+      if (startId === startRequest.current) {
+        starting.current = false;
+      }
+      if (startEpoch === accountEpoch.current && startId === startRequest.current) {
+        setBusy(false);
+        setStage("");
+      }
     }
   }
+  function closeFork() {
+    if (busy) return;
+    forkRequest.current++;
+    setModal(null);
+    setForkEvent(null);
+    setForkRunId(null);
+  }
   async function fork() {
-    if (!game || !forkEvent || loading) return;
+    const sourceId = forkRunId,
+      event = forkEvent;
+    if (!sourceId || !event || loading) return;
+    const request = ++forkRequest.current,
+      owner = historyOwner.current,
+      epoch = accountEpoch.current,
+      originPath = routeRef.current,
+      originNavigation = routeGeneration.current,
+      liveId = game?.id;
+    liveRequest.current++;
+    const liveRequestId = liveRequest.current;
     setBusy(true);
     setError("");
     setStage("Preparing your private environment");
+    const ownerIsCurrent = () => owner === historyOwner.current && epoch === accountEpoch.current;
+    const viewIsCurrent = () =>
+      originPath === routeRef.current && originNavigation === routeGeneration.current;
     try {
-      const next = await api(`/api/games/${game.id}/fork`, {
+      const next = await api(`/api/games/${encodeURIComponent(sourceId)}/fork`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ eventId: forkEvent.id }),
+        body: JSON.stringify({ eventId: event.id }),
       });
+      if (
+        !ownerIsCurrent() ||
+        request !== forkRequest.current ||
+        liveRequestId !== liveRequest.current
+      )
+        return;
+      liveRequest.current++;
+      latestRequest.current++;
       setGame(next);
       setAgent(next.agentModel);
-      setModal(null);
+      setRememberedPlayId(next.id);
       setPrompt("");
-      setPanel("play");
+      setError("");
+      if (viewIsCurrent()) {
+        if (routeRunId === sourceId) setHistorySelected(null);
+        setModal(null);
+        setForkEvent(null);
+        setForkRunId(null);
+        router.push(`/runs/${next.id}`);
+      } else if (routeRef.current === "/play") {
+        rootRedirectSuppressed.current = true;
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not fork this run.");
-      try {
-        await refreshGame(game.id);
-      } catch {}
+      if (ownerIsCurrent() && request === forkRequest.current && viewIsCurrent())
+        setError(err instanceof Error ? err.message : "Could not fork this run.");
+      if (ownerIsCurrent() && liveId === sourceId) {
+        try {
+          const fresh = await api(`/api/games/${encodeURIComponent(sourceId)}`);
+          if (ownerIsCurrent()) setGame((current) => refreshedGame(current, fresh));
+        } catch {}
+      } else if (ownerIsCurrent() && viewIsCurrent() && routeRunId === sourceId) {
+        try {
+          const fresh = await api(`/api/games/${encodeURIComponent(sourceId)}`);
+          if (ownerIsCurrent() && viewIsCurrent() && routeRunId === sourceId)
+            setHistorySelected((current) => (current?.id === sourceId ? fresh : current));
+        } catch {}
+      }
+      if (ownerIsCurrent() && liveId && liveId !== sourceId) {
+        await refreshGame(liveId, undefined, ownerIsCurrent).catch(() => {});
+      }
     } finally {
-      setBusy(false);
-      setStage("");
+      if (ownerIsCurrent() && request === forkRequest.current) {
+        setBusy(false);
+        setStage("");
+      }
     }
   }
-  function receive(id: string, type: string, data: unknown) {
+  function receive(
+    type: string,
+    data: unknown,
+    request: number,
+    epoch: number,
+    owner: string | undefined,
+    runId: string,
+    generation: number,
+  ) {
+    if (
+      generation !== submissionGeneration.current ||
+      request !== liveRequest.current ||
+      epoch !== accountEpoch.current ||
+      owner !== historyOwner.current ||
+      game?.id !== runId
+    )
+      return;
     if (type === "stage") setStage(String(data));
     if (type === "event") {
       const event = data as GameEvent;
       if (
-        pending.current?.gameId === id &&
+        pending.current?.gameId === runId &&
         event.kind === "user" &&
         event.id > pending.current.afterId &&
         event.text === pending.current.text
@@ -247,7 +666,10 @@ export default function GameUI({
         setUnconfirmed(false);
       }
       setGame((current) =>
-        current?.id === id
+        generation === submissionGeneration.current &&
+        epoch === accountEpoch.current &&
+        owner === historyOwner.current &&
+        current?.id === runId
           ? {
               ...current,
               events: [
@@ -267,48 +689,64 @@ export default function GameUI({
     if (type === "done") {
       const next = data as PublicGame;
       reconcile(next);
-      setGame((current) => refreshedGame(current, next, pending.current));
+      setGame((current) =>
+        epoch === accountEpoch.current && owner === historyOwner.current
+          ? refreshedGame(current, next, pending.current, generation, submissionGeneration.current)
+          : current,
+      );
     }
     if (type === "error") setError(String(data));
   }
   async function send() {
     if (!game || !prompt.trim() || loading || cancel.current || pending.current) return;
+    const runId = game.id,
+      owner = historyOwner.current,
+      epoch = accountEpoch.current,
+      request = ++liveRequest.current;
+    const current = () =>
+      generation === submissionGeneration.current &&
+      request === liveRequest.current &&
+      epoch === accountEpoch.current &&
+      owner === historyOwner.current &&
+      game?.id === runId;
     const submitted = {
-      gameId: game.id,
+      gameId: runId,
       text: prompt,
       afterId: Math.max(0, ...game.events.map((event) => event.id)),
     };
-    submissionGeneration.current += 1;
+    const generation = ++submissionGeneration.current;
     pending.current = submitted;
     setUnconfirmed(true);
     setPrompt("");
-    setGame((current) =>
-      current?.id === game.id
+    setGame((previous) =>
+      previous?.id === runId
         ? {
-            ...current,
-            events: [...current.events, { id: -1, kind: "user", text: submitted.text }],
+            ...previous,
+            events: [...previous.events, { id: -1, kind: "user", text: submitted.text }],
           }
-        : current,
+        : previous,
     );
+    const controller = new AbortController();
     setBusy(true);
     setError("");
     setStage("Agent thinking");
-    cancel.current = new AbortController();
+    cancel.current = controller;
     try {
       const response = await fetch(`/api/games/${game.id}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: submitted.text, agentModel: agent }),
-        signal: cancel.current.signal,
+        signal: controller.signal,
       });
+      if (!current()) return;
       if (!response.ok) {
         pending.current = null;
         setUnconfirmed(false);
         setPrompt(submitted.text);
-        setGame((current) =>
-          current?.id === submitted.gameId
-            ? { ...current, events: current.events.filter((event) => event.id !== -1) }
-            : current,
+        setGame((previous) =>
+          previous?.id === runId
+            ? { ...previous, events: previous.events.filter((event) => event.id !== -1) }
+            : previous,
         );
         throw new Error((await response.json()).error);
       }
@@ -325,51 +763,73 @@ export default function GameUI({
           buffer = buffer.slice(end + 2);
           const type = frame.match(/^event: (.*)$/m)?.[1],
             data = frame.match(/^data: (.*)$/m)?.[1];
-          if (type && data) receive(submitted.gameId, type, JSON.parse(data));
+          if (type && data)
+            receive(type, JSON.parse(data), request, epoch, owner, runId, generation);
         }
       }
     } catch (err) {
-      if (!(err instanceof Error && err.name === "AbortError"))
+      if (current() && !(err instanceof Error && err.name === "AbortError"))
         setError(err instanceof Error ? err.message : "Response interrupted.");
     } finally {
-      setBusy(false);
-      setStage("");
-      cancel.current = null;
-      refreshGame(game.id).catch(() => {});
+      if (current()) {
+        setBusy(false);
+        setStage("");
+        if (cancel.current === controller) cancel.current = null;
+        const refresh = ++liveRequest.current;
+        refreshGame(
+          runId,
+          undefined,
+          () =>
+            refresh === liveRequest.current &&
+            epoch === accountEpoch.current &&
+            owner === historyOwner.current,
+        ).catch(() => {});
+      }
     }
   }
   async function login(event: React.FormEvent) {
     event.preventDefault();
+    const epoch = accountEpoch.current;
     setBusy(true);
     setError("");
     try {
       const result = await authClient.signIn.magicLink({ email, callbackURL: "/play" });
       if (result.error) throw new Error(result.error.message ?? "Could not send your link.");
-      setEmailSent(true);
+      if (epoch === accountEpoch.current) setEmailSent(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed.");
+      if (epoch === accountEpoch.current)
+        setError(err instanceof Error ? err.message : "Sign-in failed.");
     } finally {
-      setBusy(false);
+      if (epoch === accountEpoch.current) setBusy(false);
     }
   }
   return (
     <div className="app">
       <nav className="rail" aria-label="Main navigation">
-        <a href="/" className="mark" aria-label="Plant the flag home">
+        <Link href="/" className="mark" aria-label="Plant the flag home">
           PTF
-        </a>
+        </Link>
         {(
           [
             ["play", "↗", "Play"],
+            ["history", "◷", "My runs"],
             ["rank", "▤", "Rank"],
             ["rules", "≡", "Rules"],
           ] as const
         ).map(([key, icon, name]) => (
           <button
             key={key}
-            className={panel === key ? "selected" : ""}
-            onClick={() => setPanel(key)}
-            aria-current={panel === key ? "page" : undefined}
+            className={panel === key || (key === "history" && panel === "detail") ? "selected" : ""}
+            onClick={() =>
+              key === "play"
+                ? void openPlay()
+                : router.push(key === "history" ? "/runs" : `/${key}`)
+            }
+            aria-current={
+              (key === "history" ? panel === "history" || panel === "detail" : panel === key)
+                ? "page"
+                : undefined
+            }
           >
             <span aria-hidden="true">{icon}</span>
             {name}
@@ -378,17 +838,22 @@ export default function GameUI({
       </nav>
       <div className="workspace">
         <header className="top">
-          <a href="/" className="wordmark">
+          <Link href="/" className="wordmark">
             Plant the flag<span>_</span>
-          </a>
-          <button
-            onClick={() => {
-              setModal("login");
-              setEmailSent(false);
-            }}
-          >
-            {signedIn ? "Account" : "Sign in"}
-          </button>
+          </Link>
+          <div className="top-actions">
+            <button onClick={() => setModal("setup")} disabled={loading}>
+              New run ↗
+            </button>
+            <button
+              onClick={() => {
+                setModal("login");
+                setEmailSent(false);
+              }}
+            >
+              {signedIn ? "Account" : "Sign in"}
+            </button>
+          </div>
         </header>
         {error && (
           <div role="alert" className="error">
@@ -398,20 +863,114 @@ export default function GameUI({
             </button>
           </div>
         )}
-        {panel === "play" ? (
+        {playError && (
+          <div role="alert" className="error">
+            {playError}
+            <button className="link" onClick={() => void openPlay()}>
+              Retry Play
+            </button>
+          </div>
+        )}
+        {panel === "history" ? (
+          <main className="info run-history">
+            <p className="eyebrow">PRIVATE TO YOUR ACCOUNT</p>
+            <h2>My runs.</h2>
+            {!account.data ? (
+              <p className="empty">
+                Sign in or start a guest session to see your runs. Guest runs are available only
+                while this browser keeps its session.
+              </p>
+            ) : (
+              <p className="empty">
+                {signedIn
+                  ? "Your runs follow your account across sessions."
+                  : "Guest runs are available only while this browser keeps its guest session."}
+              </p>
+            )}
+            {historyError && (
+              <div role="alert" className="error">
+                {historyError}
+                <button
+                  className="link"
+                  onClick={() => {
+                    setHistoryError("");
+                    setHistoryReload((value) => value + 1);
+                  }}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {historyLoading && <p role="status">Loading runs…</p>}
+            {!historyLoading &&
+              !historyError &&
+              account.data &&
+              (history.length ? (
+                <div className="run-list">
+                  {history.map((run) => (
+                    <button
+                      key={run.id}
+                      className="run-row"
+                      onClick={() => router.push(`/runs/${run.id}`)}
+                    >
+                      <strong>{run.season.name}</strong>
+                      <span>
+                        {run.status === "captured" ? "won" : run.status} ·{" "}
+                        {new Date(run.createdAt).toLocaleString()}
+                      </span>
+                      <small>
+                        Attack {label(run.agentModel)} · monitor {label(run.monitorModel)} ·{" "}
+                        {run.turns} turns · {run.blocks} blocked · {money(run.spentMicrodollars)}{" "}
+                        spent
+                        {run.reservedMicrodollars
+                          ? ` · ${money(run.reservedMicrodollars)} pending`
+                          : ""}
+                      </small>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="empty">No runs yet. Your runs will appear here.</p>
+              ))}
+            {historyCursor && (
+              <button onClick={() => void loadMoreHistory()} disabled={historyLoading}>
+                Load more
+              </button>
+            )}
+          </main>
+        ) : panel === "detail" && !displayGame ? (
+          <main className="info run-detail">
+            <button className="link" onClick={() => router.push("/runs")}>
+              ← All runs
+            </button>
+            {!account.data ? (
+              <p className="empty">Sign in or start a guest session to access this private run.</p>
+            ) : detailLoading ? (
+              <p role="status">Loading run…</p>
+            ) : detailError ? (
+              <div role="alert" className="error">
+                {detailError}
+                <button className="link" onClick={() => setDetailReload((value) => value + 1)}>
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <p className="empty">Run not found.</p>
+            )}
+          </main>
+        ) : panel === "play" || panel === "detail" ? (
           <div className="console">
             <main className="transcript">
               <div className="column-head transcript-head">
-                <button className="link" onClick={() => setModal("setup")} disabled={loading}>
-                  New run ↗
-                </button>
-                <span>LIVE TRANSCRIPT / {game?.id.slice(0, 8).toUpperCase() ?? "NO RUN"}</span>
+                <span>
+                  RUN TRANSCRIPT / {displayGame?.id.slice(0, 8).toUpperCase() ?? "NO RUN"}
+                </span>
                 <div
                   className="turn-total"
                   title="Each agent response counts as one turn"
-                  aria-label={`${game?.turns ?? 0} agent turns elapsed`}
+                  aria-label={`${displayGame?.turns ?? 0} agent turns elapsed`}
                 >
-                  <strong>{game?.turns ?? 0}</strong>
+                  <strong>{displayGame?.turns ?? 0}</strong>
                   <span>
                     AGENT TURNS
                     <br />
@@ -420,7 +979,16 @@ export default function GameUI({
                 </div>
               </div>
               <div className="thread" role="region" aria-label="Run transcript" tabIndex={0}>
-                {!game ? (
+                {detailError && (
+                  <div role="alert" className="error">
+                    {detailError}
+                    <button className="link" onClick={() => setDetailReload((value) => value + 1)}>
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {detailLoading && panel === "detail" && <p role="status">Checking run…</p>}
+                {!displayGame ? (
                   <div className="welcome">
                     <p>
                       Your agent can use a shell. The monitor sees its reasoning and reviews every
@@ -438,19 +1006,20 @@ export default function GameUI({
                   </div>
                 ) : (
                   <>
-                    {game.events.length === 0 && (
+                    {displayGame.events.length === 0 && (
                       <p className="empty">
                         Environment ready. Give the agent its first instruction.
                       </p>
                     )}
-                    {game.events.map((event, index) => (
+                    {displayGame.events.map((event, index) => (
                       <Entry
                         key={event.id}
                         event={event}
-                        previous={game.events[index - 1]}
-                        disabled={loading}
+                        previous={displayGame.events[index - 1]}
+                        disabled={loading || displayGame.busy}
                         onFork={() => {
                           setError("");
+                          setForkRunId(displayGame.id);
                           setForkEvent(event);
                           setModal("fork");
                         }}
@@ -465,23 +1034,23 @@ export default function GameUI({
                         }}
                       />
                     ))}
-                    {(game.status !== "active" || seasonExpired) && (
+                    {(displayGame.status !== "active" || seasonExpired) && (
                       <div className="terminal">
                         <h2>
-                          {game.status === "captured"
+                          {displayGame.status === "captured"
                             ? "Flag revealed. You win."
-                            : game.status === "exhausted"
+                            : displayGame.status === "exhausted"
                               ? "Budget exhausted."
                               : seasonExpired
                                 ? "This season has ended."
                                 : "This run has ended."}
                         </h2>
                         <p>
-                          {game.status === "captured"
-                            ? `${money(game.spentMicrodollars)} spent · ${game.turns} agent turns · ${game.blocks} blocked commands`
+                          {displayGame.status === "captured"
+                            ? `${money(displayGame.spentMicrodollars)} spent · ${displayGame.turns} agent turns · ${displayGame.blocks} blocked commands`
                             : "Start a fresh run with a new secret."}
                         </p>
-                        {game.status === "captured" && !signedIn && (
+                        {displayGame.status === "captured" && !signedIn && (
                           <button className="link" onClick={() => setModal("login")}>
                             Sign in to put your win on the board ↗
                           </button>
@@ -490,20 +1059,29 @@ export default function GameUI({
                     )}
                   </>
                 )}
-                {!busy && unconfirmed && (
+                {!busy && unconfirmed && isExecutionView && (
                   <p role="status" className="stage">
                     Checking whether your instruction was accepted. Please wait before retrying.
                   </p>
                 )}
-                {stage && (
+                {stage && isExecutionView && (
                   <div role="status" className="stage">
                     <i />
                     {stage}…
                   </div>
                 )}
+                {displayGame?.status === "active" && !seasonExpired && !isExecutionView && (
+                  <button
+                    className="primary"
+                    disabled={detailLoading || loading}
+                    onClick={() => void continueHistoryRun()}
+                  >
+                    Continue run ↗
+                  </button>
+                )}
                 <div ref={bottom} />
               </div>
-              {game?.status === "active" && !seasonExpired && (
+              {displayGame?.status === "active" && !seasonExpired && isExecutionView && (
                 <form
                   className="composer"
                   onSubmit={(event) => {
@@ -562,23 +1140,23 @@ export default function GameUI({
                 </small>
                 <div className="spend-breakdown">
                   <p>
-                    Spent <strong>{money(game?.spentMicrodollars ?? 0)}</strong>
+                    Spent <strong>{money(displayGame?.spentMicrodollars ?? 0)}</strong>
                   </p>
                   <p>
-                    Attack <strong>{money(game?.agentSpendMicrodollars ?? 0)}</strong>
+                    Attack <strong>{money(displayGame?.agentSpendMicrodollars ?? 0)}</strong>
                   </p>
                   <p>
-                    Monitor <strong>{money(game?.monitorSpendMicrodollars ?? 0)}</strong>
+                    Monitor <strong>{money(displayGame?.monitorSpendMicrodollars ?? 0)}</strong>
                   </p>
-                  {!!game?.reservedMicrodollars && (
+                  {!!displayGame?.reservedMicrodollars && (
                     <p role="status">
-                      Pending billing <strong>{money(game.reservedMicrodollars)}</strong>
+                      Pending billing <strong>{money(displayGame.reservedMicrodollars)}</strong>
                     </p>
                   )}
                 </div>
               </div>
               <div className="block-count">
-                <span>{String(game?.blocks ?? 0).padStart(2, "0")}</span>
+                <span>{String(displayGame?.blocks ?? 0).padStart(2, "0")}</span>
                 <div>
                   BLOCKED CALLS
                   <br />
@@ -735,10 +1313,14 @@ export default function GameUI({
         aria-label={modal === "fork" ? "Fork this run" : undefined}
         onCancel={(event) => {
           if (busy) event.preventDefault();
+          else if (modal === "fork") closeFork();
           else setModal(null);
         }}
         onClick={(event) => {
-          if (event.target === dialog.current && !busy) setModal(null);
+          if (event.target === dialog.current && !busy) {
+            if (modal === "fork") closeFork();
+            else setModal(null);
+          }
         }}
       >
         <div className={`dialog-content${modal === "fork" ? " fork-dialog-content" : ""}`}>
@@ -746,7 +1328,7 @@ export default function GameUI({
             className="close"
             aria-label="Close dialog"
             disabled={busy}
-            onClick={() => setModal(null)}
+            onClick={() => (modal === "fork" ? closeFork() : setModal(null))}
           >
             ×
           </button>
@@ -755,7 +1337,10 @@ export default function GameUI({
               <p className="eyebrow">FORK THROUGH TURN {forkEvent.turn}</p>
               <h2>Start from this response.</h2>
               <p className="eyebrow">VISIBLE HISTORY THROUGH THIS RESPONSE</p>
-              <ForkPreview events={game?.events ?? []} selectedId={forkEvent.id} />
+              <ForkPreview
+                events={displayGame?.id === forkRunId ? displayGame.events : []}
+                selectedId={forkEvent.id}
+              />
               <aside className="fork-warning">
                 <p>
                   Only the transcript is copied. Filesystem and VM state are not preserved; the fork
@@ -764,7 +1349,7 @@ export default function GameUI({
                 </p>
               </aside>
               <div className="fork-actions">
-                <button disabled={busy} onClick={() => setModal(null)}>
+                <button disabled={busy} onClick={closeFork}>
                   Cancel
                 </button>
                 <button className="primary" disabled={loading} onClick={() => void fork()}>
@@ -801,8 +1386,6 @@ export default function GameUI({
                   <button
                     onClick={async () => {
                       await authClient.signOut();
-                      pending.current = null;
-                      setUnconfirmed(false);
                       setGame(null);
                       setModal(null);
                     }}
@@ -817,8 +1400,8 @@ export default function GameUI({
               ) : (
                 <form onSubmit={login}>
                   <p>
-                    Get $3 per run and put your wins on the board. Your current guest run carries
-                    over.
+                    Your guest runs and wins transfer to your account. Then access your history from
+                    any device.
                   </p>
                   <label htmlFor="email">EMAIL ADDRESS</label>
                   <input

@@ -34,3 +34,18 @@ export type PublicGame = {
   busy: boolean;
   events: GameEvent[];
 };
+export type GameSummary = Pick<
+  PublicGame,
+  | "id"
+  | "status"
+  | "agentModel"
+  | "monitorModel"
+  | "turns"
+  | "blocks"
+  | "budgetMicrodollars"
+  | "spentMicrodollars"
+  | "reservedMicrodollars"
+> & {
+  createdAt: string;
+  season: Pick<Season, "id" | "name" | "startsAt" | "endsAt">;
+};

@@ -10,7 +10,11 @@ import type { Message } from "@earendil-works/pi-ai";
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(connection.hostname, "127.0.0.1", "Use npm run test:integration");
 assert.match(connection.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
-const pool = new Pool({ connectionString: connection.toString(), max: 5 });
+const pool = new Pool({
+  connectionString: connection.toString(),
+  max: 5,
+  options: "-c search_path=ctf,public",
+});
 // Use the existing pool seam with a real pg Pool, not mocked SQL or relaxed production TLS.
 (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = pool;
 
@@ -285,6 +289,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     await runGame(leased, "Controlled integration fixture", signal, () => {});
     return getGame(id, owner);
   };
+
+  await (await import("./history")).runHistoryTests(t, pool);
 
   await t.test(
     "fork continuation repairs prior tool calls without replay and supports fork-of-fork",
