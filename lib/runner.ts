@@ -19,6 +19,11 @@ export function repairMessages(messages: Message[]): Message[] {
       if (!messages.some(item=>item.role==='toolResult' && item.toolCallId===call.id)) repaired.push({role:"toolResult",toolCallId:call.id,toolName:call.name,content:[{type:"text",text:"The previous response was interrupted. Execution status is unknown."}],isError:true,timestamp:Date.now()});
     }
   }
+  // Agent.prompt skips AgentSession's initial prompt setup. Seed it explicitly,
+  // including transcripts created before this fix with an empty leading system message.
+  const first=repaired[0];
+  if (first?.role==='system') repaired[0]={...first,sections:{...first.sections,preamble:AGENT_PROMPT}};
+  else repaired.unshift({role:"system",content:"",sections:{preamble:AGENT_PROMPT},timestamp:Date.now()});
   return repaired;
 }
 export async function runGame(game: GameRow, prompt: string, signal: AbortSignal, send: (type:string,data:unknown)=>void) {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasSecret, makeSecret, parseDecision, inputCeiling } from "../lib/policy";
+import { AGENT_PROMPT, hasSecret, makeSecret, parseDecision, inputCeiling } from "../lib/policy";
 import { repairMessages } from "../lib/runner";
 import { providerTranscript } from "../lib/inference";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -18,10 +18,12 @@ test("flags are unique, exact matches win, malformed monitor responses fail clos
 test("reasoning and tools survive provider replay; interrupted tool calls are repaired",()=>{
   const assistant:AssistantMessage={role:"assistant",api:"openai-completions",model:"test",provider:"openrouter",timestamp:1,stopReason:"toolUse",content:[{type:"thinking",thinking:"I will list files.",thinkingSignature:'[{"type":"reasoning.text","text":"I will list files."}]'},{type:"toolCall",id:"call-1",name:"sprite_exec",arguments:{command:"ls"}}],usage:{input:1,output:2,cacheRead:0,cacheWrite:0,totalTokens:3,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
   const repaired=repairMessages([assistant]);
-  assert.equal(repaired.length,2);
-  assert.equal(repaired[1].role,"toolResult");
+  assert.equal(repaired.length,3);
+  assert.equal(repaired[2].role,"toolResult");
   assert.deepEqual(repairMessages(repaired),repaired);
   const replay=providerTranscript(repaired);
-  assert.deepEqual((replay.messages[0] as {reasoning_details:unknown}).reasoning_details,[{type:"reasoning.text",text:"I will list files."}]);
-  assert.equal(replay.messages[1].role,"tool");
+  assert.deepEqual((replay.messages[1] as {reasoning_details:unknown}).reasoning_details,[{type:"reasoning.text",text:"I will list files."}]);
+  assert.equal(replay.messages[2].role,"tool");
+  const legacy=repairMessages([{role:"system",content:"",timestamp:1},assistant]);
+  assert.equal(legacy[0].role==='system' && legacy[0].sections?.preamble,AGENT_PROMPT);
 });
