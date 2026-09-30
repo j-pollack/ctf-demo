@@ -1,4 +1,19 @@
 {
+  "name": "tripwire-ctf",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx scripts/dev.ts",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "setup": "node --env-file=.env.local --import tsx scripts/setup.ts",
+    "smoke": "node --env-file=.env.local --import tsx scripts/smoke.ts",
+    "check:auth": "node --env-file=.env.local --import tsx scripts/auth-check.ts",
+    "check:budget": "node --env-file=.env.local --import tsx scripts/budget-check.ts",
+    "worktree": "node --import tsx scripts/worktree.ts"
+  },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.99.1",
     "@earendil-works/pi-coding-agent": "^0.99.1",
@@ -23,21 +38,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
-  "name": "tripwire-ctf",
-  "private": true,
-  "type": "module",
   "engines": {
     "node": "24.x"
-  },
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
-    "setup": "node --env-file=.env.local --import tsx scripts/setup.ts",
-    "smoke": "node --env-file=.env.local --import tsx scripts/smoke.ts",
-    "check:auth": "node --env-file=.env.local --import tsx scripts/auth-check.ts",
-    "check:budget": "node --env-file=.env.local --import tsx scripts/budget-check.ts"
   }
 }

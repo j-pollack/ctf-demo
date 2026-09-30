@@ -7,9 +7,24 @@ Public AI capture-the-flag MVP using Next.js, Pi SDK, one Fly Sprite per game, O
 1. Install Node 24 and run `npm install`.
 2. Copy `.env.example` to `.env.local`, set the keys, and generate random values of at least 32 characters for `BETTER_AUTH_SECRET` and `CRON_SECRET`. Use Neon's direct URL for `DATABASE_URL_UNPOOLED`. Set `RESEND_FROM` to an address on your verified sending domain.
 3. Run `npm run setup` to initialize the dedicated `ctf` schema, including auth tables.
-4. Run `npm run dev`. `BETTER_AUTH_URL` must match the local app's origin and port.
+4. Run `npm run dev`. It assigns a free port starting at 3001 and sets the local auth origin automatically. Override with `PORT=3010 npm run dev` or `npm run dev -- --port 3010`; occupied/reserved overrides fail rather than silently changing ports.
 
-Current checkout uses port 3001 because port 3000 is occupied: `npm run dev -- --port 3001`.
+## Parallel worktrees
+
+Commit this tooling before cutting a new worktree: Git checks out committed files, not the current working-tree edits.
+
+```sh
+npm run worktree -- add ../ctf-feature feature/my-change
+cd ../ctf-feature
+npm install
+npm run dev
+```
+
+The command creates a new branch/worktree, assigns a port, and copies `.env.local` from another checkout if missing. Existing credentials are never overwritten; copies are private (0600), not symlinks. For worktrees created with plain `git worktree add`, run `npm run worktree -- init` after installing dependencies; `npm run dev` also initializes automatically.
+
+The shared manifest is `tripwire-worktrees.json` inside `git rev-parse --path-format=absolute --git-common-dir` (usually `.git`). It contains only checkout paths and ports, never credentials, and is not committed. Allocation is locked across processes, reuses a checkout's port when free, skips bound ports, and removes deleted worktrees from the manifest on the next allocation. Ports remain reserved while their worktrees exist, even with servers stopped. Use normal `git worktree remove` when done.
+
+Each checkout has separate dependencies/build output and browser auth cookies. Credentials and database remain shared: this does **not** isolate game records, schema changes, Sprite limits, or inference spending. Do not run conflicting database migrations simultaneously. Production `npm run start` remains standard Next.js and accepts `PORT` from the environment. No production auth settings or credential files are rewritten.
 
 ## Checks
 
