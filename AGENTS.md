@@ -12,7 +12,16 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 All new features and feature changes require a dedicated branch and Git worktree at `<primary-checkout>/.worktrees/<feature-slug>` before any feature plan, test, or source edits. Resolve the primary checkout from `git worktree list --porcelain`, even when starting in a linked worktree; never create nested `.worktrees/`, sibling checkouts, or directory copies. Use the existing `npm run worktree -- add <absolute-path> <feature-branch>` helper. Reuse only a registered worktree matching the intended path, branch, and feature; refuse path/branch collisions or unsafe existing changes.
 
-Record the absolute feature worktree path and branch in the plan and every agent brief. The lead, developer, plan verifier, and reviewer use that checkout/CWD for all edits, checks, reviews, and commits; keep the primary checkout unchanged. Do not merge, remove worktrees, push, or deploy without user authorization. Worktrees isolate source, not databases, credentials, or services: the testing policy below still applies.
+Record the absolute feature worktree path and branch in the plan and every agent brief. The lead, developer, plan verifier, and reviewer use that checkout/CWD for all edits, checks, reviews, and commits; keep the primary checkout unchanged. Do not merge, push, or deploy without user authorization. After an authorized merge, clean up the completed feature worktree: confirm it is clean (including untracked files), its branch is fully merged into the target, and no agent or development server is using it; switch to the primary checkout, run `git worktree remove <absolute-feature-path>`, then `npm run worktree -- init` to prune its port reservation. Never force removal or discard unmerged/dirty work; report blockers instead. Keep the branch unless deletion is also authorized. Worktrees isolate source, not databases, credentials, or services: the testing policy below still applies.
+
+# Repository skills
+
+`.agents/skills/` is the single source of truth for repository skills. `.claude/skills` is a relative symlink to `../.agents/skills`, not a second skill store.
+
+- Create or update skills at `.agents/skills/<skill-name>/SKILL.md`, with `name` and `description` in YAML frontmatter.
+- Keep supporting files inside the same skill directory and use relative paths to reference them.
+- Install imported skills into `.agents/skills/` too; check for existing names before adding or replacing a skill.
+- Preserve the `.claude/skills` symlink. Do not replace it with a directory, duplicate skills there, or introduce a sync script.
 
 # Testing and mocking policy
 

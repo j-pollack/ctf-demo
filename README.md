@@ -24,15 +24,21 @@ npm run dev
 
 The command creates a new branch/worktree, assigns a port, and copies `.env.local` from another checkout if missing. Existing credentials are never overwritten; copies are private (0600), not symlinks. For worktrees created with plain `git worktree add`, run `npm run worktree -- init` after installing dependencies; `npm run dev` also initializes automatically.
 
-The shared manifest is `tripwire-worktrees.json` inside `git rev-parse --path-format=absolute --git-common-dir` (usually `.git`). It contains only checkout paths and ports, never credentials, and is not committed. Allocation is locked across processes, reuses a checkout's port when free, skips bound ports, and removes deleted worktrees from the manifest on the next allocation. Ports remain reserved while their worktrees exist, even with servers stopped. Merge or remove a worktree only with user authorization.
+The shared manifest is `tripwire-worktrees.json` inside `git rev-parse --path-format=absolute --git-common-dir` (usually `.git`). It contains only checkout paths and ports, never credentials, and is not committed. Allocation is locked across processes, reuses a checkout's port when free, skips bound ports, and removes deleted worktrees from the manifest on the next allocation. Ports remain reserved while their worktrees exist, even with servers stopped. Merge only with user authorization. After an authorized merge, remove the completed worktree from the primary checkout with `git worktree remove <absolute-feature-path>`, then run `npm run worktree -- init` to prune its port reservation. First confirm the checkout is clean (including untracked files), its branch is fully merged, and no agent or development server is using it. Never force removal; retain unmerged or dirty worktrees and report the blocker. Branch deletion requires separate authorization.
 
 Each checkout has separate dependencies/build output and browser auth cookies. Credentials and database remain shared: this does **not** isolate game records, schema changes, Sprite limits, or inference spending. Do not run conflicting database migrations simultaneously. Production `npm run start` remains standard Next.js and accepts `PORT` from the environment. No production auth settings or credential files are rewritten.
+
+## Repository skills
+
+All repository skills live in [`.agents/skills/`](.agents/skills/). `.claude/skills` is a relative symlink to `../.agents/skills`, so both paths use the same files.
+
+Create new skills at `.agents/skills/<skill-name>/SKILL.md` with YAML frontmatter containing `name` and `description`. Keep references and other supporting files inside that skill directory, linked with relative paths. Install imported skills into the same canonical folder; do not duplicate skills or replace the `.claude/skills` symlink. See [AGENTS.md](AGENTS.md#repository-skills) for agent instructions.
 
 ## Checks
 
 `npm run check` runs lint, formatting verification, typechecking and the offline tests. `npm run build` checks the production bundle separately. `npm run test:coverage` reports all application source, including untested files.
 
-`npm install` / `npm ci` installs the Husky pre-commit hook. It checks staged files with [Oxlint](https://oxc.rs/docs/guide/usage/linter/quickstart) and [Oxfmt](https://oxc.rs/docs/guide/usage/formatter/quickstart), then runs whole-working-tree typechecking and offline tests. Checks never auto-format or re-stage files: use `npm run format` or `npm run lint:fix`, review, and stage the result yourself. Imported `.claude` skills, generated files and dependency lockfiles are not formatting targets. Core correctness lint rules are enabled; React/Next/accessibility lint expansion is tracked in the audit.
+`npm install` / `npm ci` installs the Husky pre-commit hook. It checks staged files with [Oxlint](https://oxc.rs/docs/guide/usage/linter/quickstart) and [Oxfmt](https://oxc.rs/docs/guide/usage/formatter/quickstart), then runs whole-working-tree typechecking and offline tests. Checks never auto-format or re-stage files: use `npm run format` or `npm run lint:fix`, review, and stage the result yourself. Imported Neon skills in `.agents/skills/neon*/`, generated files and dependency lockfiles are not formatting targets. Core correctness lint rules are enabled; React/Next/accessibility lint expansion is tracked in the audit.
 
 See [Verification audit and test strategy](docs/verification.md) for measured runtimes, current coverage, missing checks and the proposed unit/integration/deployment split. Live integration scripts below are opt-in, not pre-commit checks; use a dedicated test database.
 

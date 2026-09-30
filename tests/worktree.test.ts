@@ -24,9 +24,18 @@ test("worktrees reserve distinct ports, copy private credentials once, and prune
   const second = join(root, "second");
   const third = join(root, "third");
   mkdirSync(main);
-  // Git hooks export repository-local variables; never leak them into fixture repositories.
+  // Exercise hook isolation even outside a hook; this Git directory must never be consulted.
+  const gitEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.startsWith("GIT_")),
+  );
+  process.env.GIT_DIR = join(root, "hook.git");
   const env = { ...process.env };
-  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("GIT_")) {
+      delete env[key];
+      delete process.env[key]; // Direct registerWorktree calls also spawn Git.
+    }
+  }
   const git = (...args: string[]) => execFileSync("git", args, { cwd: main, stdio: "pipe", env });
   try {
     git("init");
@@ -87,6 +96,7 @@ test("worktrees reserve distinct ports, copy private credentials once, and prune
     assert.ok(!manifest.includes("FAKE_KEY"));
     assert.equal(readFileSync(join(main, ".env.local"), "utf8"), "FAKE_KEY=test-only\n");
   } finally {
+    Object.assign(process.env, gitEnv);
     rmSync(root, { recursive: true, force: true });
   }
 });
