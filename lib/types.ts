@@ -7,7 +7,9 @@ export type GameEvent = {
   command?: string;
   decision?: "allow" | "block" | "error";
   turn?: number;
+  model?: string;
 };
+export type Season = {id:string;name:string;startsAt:string|null;endsAt:string|null;monitorModel:string};
 export type PublicGame = {
   id: string;
   status: GameStatus;
@@ -15,6 +17,12 @@ export type PublicGame = {
   monitorModel: string;
   tokenBudget: number;
   tokensUsed: number;
+  budgetMicrodollars: number;
+  spentMicrodollars: number;
+  reservedMicrodollars: number;
+  agentSpendMicrodollars: number;
+  monitorSpendMicrodollars: number;
+  season: Season;
   turns: number;
   blocks: number;
   busy: boolean;

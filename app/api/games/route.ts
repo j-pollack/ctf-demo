@@ -14,6 +14,6 @@ export async function POST(request:Request) {
   try {
     checkOrigin(request);
     const user=await player(request),data=await body(request);
-    return Response.json(await startGame(user.id,user.signedIn,typeof data.agentModel==='string'?data.agentModel:undefined,typeof data.monitorModel==='string'?data.monitorModel:undefined));
+    return Response.json(await startGame(user.id,user.signedIn,typeof data.agentModel==='string'?data.agentModel:undefined));
   } catch (error) {return errorResponse(error);}
 }

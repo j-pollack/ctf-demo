@@ -5,7 +5,7 @@ import { InMemoryCredentialStore, Type, type Message } from "@earendil-works/pi-
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, defineTool } from "@earendil-works/pi-coding-agent";
 import { db } from "./db";
 import { assertLease, cleanup, publicGame, record, type GameRow } from "./games";
-import { agentStream, getModel, infer, reasoningOf, textOf } from "./inference";
+import { agentStream, diagnosticText, getModel, infer, reasoningOf, textOf } from "./inference";
 import { AGENT_PROMPT, GameError, hasSecret, MONITOR_PROMPT, parseDecision } from "./policy";
 import { executeCommand } from "./sprites";
 import type { GameEvent } from "./types";
@@ -32,7 +32,8 @@ export async function runGame(game: GameRow, prompt: string, signal: AbortSignal
   let failure:unknown;
   const emit=async (event:Omit<GameEvent,"id">) => send("event",await record(game.id,event,game.lease));
   try {
-    const [model,monitor]=await Promise.all([getModel(game.agent_model),getModel(game.monitor_model)]);
+    const [model,monitor]=await Promise.all([getModel(game.agent_model,"agent"),getModel(game.monitor_model,"monitor")]);
+    const season=(await db.query("SELECT monitor_prompt FROM ctf.seasons WHERE id=$1",[game.season_id])).rows[0];
     const settings=SettingsManager.inMemory({compaction:{enabled:false},retry:{enabled:false},cacheWarming:"off"});
     const loader=new DefaultResourceLoader({cwd:directory,agentDir:directory,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,systemPromptOverride:()=>AGENT_PROMPT});
     await loader.reload();
@@ -57,7 +58,7 @@ export async function runGame(game: GameRow, prompt: string, signal: AbortSignal
         if (!reasoningOf(assistantMessage).trim()) throw new Error("Readable agent reasoning was unavailable. The command was not executed.");
         send("stage","Monitor reviewing command");
         // Pi's hook context can omit earlier results in a batch; the session has every completed message.
-        const messages:Message[]=[{role:"system",content:MONITOR_PROMPT,timestamp:Date.now()},
+        const messages:Message[]=[{role:"system",content:season.monitor_prompt??MONITOR_PROMPT,timestamp:Date.now()},
           {role:"user",content:JSON.stringify({agentSystemPrompt:AGENT_PROMPT,transcript:session!.messages,proposedToolCall:toolCall}),timestamp:Date.now()}];
         const response=await infer(game,"monitor",monitor,messages,toolSignal);
         let decision;
@@ -67,12 +68,14 @@ export async function runGame(game: GameRow, prompt: string, signal: AbortSignal
         if (!decision.allow) {
           game.blocks++;
           await db.query("UPDATE ctf.games SET blocks=blocks+1 WHERE id=$1 AND lease=$2",[game.id,game.lease]);
-          return {block:true,reason:`Monitor blocked this command: ${decision.reason}`};
+          // The explanation lives only in the UI event, never in Pi's replayed transcript.
+          return {block:true,reason:"Blocked"};
         }
-        send("stage","Executing approved command");
+        send("stage","Running command");
         return undefined;
       } catch (error) {
         failure=error;
+        console.error(JSON.stringify({event:"monitor.failed",timestamp:new Date().toISOString(),gameId:game.id,model:game.monitor_model,turn:game.turns,error:diagnosticText(error instanceof Error?error.message:error)}));
         session!.agent.abort();
         const text=error instanceof GameError?error.message:error instanceof Error&&error.message.startsWith("Readable")?error.message:"The monitor could not make a valid decision. The command was not executed.";
         await emit({kind:"monitor",text,command,decision:"error",turn:game.turns});
@@ -87,14 +90,15 @@ export async function runGame(game: GameRow, prompt: string, signal: AbortSignal
       if (message.role==='assistant' && message.stopReason!=='error' && message.stopReason!=='aborted') {
         game.turns++;
         await db.query("UPDATE ctf.games SET turns=turns+1 WHERE id=$1 AND lease=$2",[game.id,game.lease]);
-        const calls=message.content.filter(part=>part.type==='toolCall').map(part=>`${part.name}: ${JSON.stringify(part.arguments)}`).join("\n");
-        await emit({kind:"agent",text:textOf(message),reasoning:reasoningOf(message),command:calls || undefined,turn:game.turns});
+        const calls=message.content.filter(part=>part.type==='toolCall').map(part=>String(part.arguments.command ?? "")).join("\n");
+        await emit({kind:"agent",text:textOf(message),reasoning:reasoningOf(message),command:calls || undefined,turn:game.turns,model:message.model});
       }
       if (message.role==='toolResult') await emit({kind:"tool",text:textOf(message),turn:game.turns});
       const messages=session!.messages as Message[];
       await db.query("UPDATE ctf.games SET messages=$3,updated_at=now() WHERE id=$1 AND lease=$2",[game.id,game.lease,JSON.stringify(messages)]);
       if ((message.role==='assistant' || message.role==='toolResult') && hasSecret(textOf(message)+(message.role==='assistant'?reasoningOf(message):""),game.secret_hash)) {
-        await db.query("UPDATE ctf.games SET status='captured' WHERE id=$1 AND lease=$2",[game.id,game.lease]);
+        const captured=await db.query("UPDATE ctf.games g SET status='captured' FROM ctf.seasons s WHERE g.season_id=s.id AND g.id=$1 AND lease=$2 AND (s.ends_at IS NULL OR s.ends_at>now())",[game.id,game.lease]);
+        if (!captured.rowCount) {failure=new GameError("This season has ended. Start a new run.",410);session!.agent.abort();return;}
         game.status='captured';
         session!.agent.abort();
       }
@@ -110,7 +114,9 @@ export async function runGame(game: GameRow, prompt: string, signal: AbortSignal
     if (signal.aborted) await emit({kind:"error",text:"Response stopped. Your game is still available."});
   } catch (error) {
     if (game.status==='captured') return;
+    console.error(JSON.stringify({event:"game.response.failed",timestamp:new Date().toISOString(),gameId:game.id,error:diagnosticText(error instanceof Error?error.message:error)}));
     if (error instanceof GameError && error.status===402) await db.query("UPDATE ctf.games SET status='exhausted' WHERE id=$1 AND lease=$2 AND status='active'",[game.id,game.lease]);
+    if (error instanceof GameError && error.status===410) await db.query("UPDATE ctf.games SET status='ended' WHERE id=$1 AND lease=$2 AND status='active'",[game.id,game.lease]);
     const text=error instanceof GameError?error.message:signal.aborted?"Response stopped. Your game is still available.":"This response could not finish. Please try again.";
     await emit({kind:"error",text});
   } finally {

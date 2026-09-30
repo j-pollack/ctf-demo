@@ -2,6 +2,7 @@ import { claimGame } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
 import { GameError } from "@/lib/policy";
 import { runGame } from "@/lib/runner";
+import { getModel } from "@/lib/inference";
 export const runtime="nodejs";
 export const maxDuration=300;
 export async function POST(request:Request,{params}:{params:Promise<{id:string}>}) {
@@ -9,7 +10,9 @@ export async function POST(request:Request,{params}:{params:Promise<{id:string}>
     checkOrigin(request);
     const user=await player(request),data=await body(request);
     if (typeof data.prompt!=='string' || !data.prompt.trim() || data.prompt.length>8192) throw new GameError("Enter an instruction of up to 8,192 characters.");
-    const game=await claimGame((await params).id,user.id);
+    if (data.agentModel!==undefined && typeof data.agentModel!=='string') throw new GameError("Choose an attack model.");
+    if (typeof data.agentModel==='string') await getModel(data.agentModel,"agent");
+    const game=await claimGame((await params).id,user.id,data.agentModel as string|undefined);
     const cancel=new AbortController();
     const signal=AbortSignal.any([cancel.signal,request.signal,AbortSignal.timeout(230000)]);
     const encoder=new TextEncoder();

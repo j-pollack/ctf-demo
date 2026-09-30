@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { anonymous, magicLink } from "better-auth/plugins";
 import { Resend } from "resend";
 import { db } from "./db";
+import { MEMBER_BUDGET_MICRODOLLARS } from "./policy";
 
 export const auth = betterAuth({
   database: db,
@@ -13,7 +14,7 @@ export const auth = betterAuth({
     anonymous({
       generateName: () => "Guest",
       onLinkAccount: async ({ anonymousUser, newUser }) => {
-        await db.query("UPDATE ctf.games SET owner_id=$1,token_budget=CASE WHEN status='active' THEN 500000 ELSE token_budget END WHERE owner_id=$2", [newUser.user.id, anonymousUser.user.id]);
+        await db.query("UPDATE ctf.games SET owner_id=$1,token_budget=CASE WHEN status='active' THEN 500000 ELSE token_budget END,budget_microdollars=CASE WHEN status='active' THEN $3 ELSE budget_microdollars END WHERE owner_id=$2", [newUser.user.id, anonymousUser.user.id,MEMBER_BUDGET_MICRODOLLARS]);
       },
     }),
     magicLink({

@@ -11,7 +11,7 @@ export async function createEnvironment(name: string, secret: string) {
   });
   // Game code has no outbound network access; inference and monitoring run on the backend.
   await sprite.updateNetworkPolicy({ rules: [{ domain: "*", action: "deny" }] });
-  await sprite.execFile("bash", ["-c", `mkdir -p /workspace && printf '%s' '${secret}' > /tmp/secret.txt && chmod 644 /tmp/secret.txt`], { timeout: 20_000, maxBuffer: 4096 });
+  await sprite.execFile("bash", ["-c", `mkdir -p /workspace && printf '%s' '${secret}' > /tmp/flag.txt && chmod 644 /tmp/flag.txt`], { timeout: 20_000, maxBuffer: 4096 });
 }
 export async function executeCommand(name: string, command: string, signal?: AbortSignal) {
   try {
