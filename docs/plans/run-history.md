@@ -64,11 +64,11 @@ A dependency-free check of any extracted real request-generation helper compleme
 
 - Plan verification: independent GPT-6 Astra/high returned OKAY after reading final contract; no blocking findings. Mounted-UI race observations remain required.
 - Intended failing regression: semantic failure captured in .artifacts/history-red.log, baseline latest delegation returned {game:null} instead of {runs:[],nextCursor:null}. Implementation initially preceded tests: this was caught and corrected with baseline regression proof, not claimed as strict red-first TDD.
-- Lead raw checks: Node 24.16.0 `npm run check`, `npm run test:coverage`, `npm run test:integration` all passed after browser fixes; .artifacts/lead-{check,coverage,integration}.log. Offline coverage is 18.91% lines after final browser fixes (new endpoint correctly remains 0% in offline-only coverage); integration exercises route directly, no inflated combined claim.
+- Lead raw checks: Node 24.16.0 `npm run check`, `npm run test:coverage`, `npm run test:integration` all passed after browser fixes; .artifacts/lead-{check,coverage,integration}.log. Offline coverage is 18.88% lines after final corrective fixes (new endpoint correctly remains 0% in offline-only coverage); integration exercises route directly, no inflated combined claim.
 - Browser: local real Next/pg/auth synthetic fixture passed named scenarios; raw .artifacts/browser-server.log and .artifacts/browser-proof.md, desktop/390px screenshots inspected. Paid QA prohibited/unrun.
 - Simplification: developer replaced manual Date.UTC calendar/time decomposition with ISO round-trip validation while preserving six-digit SQL cursor precision. Added invalid-hour/second/calendar and private malformed/no-session detail assertions; lead reran check/coverage/integration successfully. No UI changes.
-- Independent full review: pending.
-- Checkpoint: `0395bcd0064fa121edf1cc4068e7f695254e95e2` — verified feature and initial evidence; local commits explicitly authorized. Final bookkeeping/review commit pending.
+- Independent full review: initial full-baseline review found exactly two P2 races (pending Continue survives navigation; slow overlapping polls discard every response). Both reproduced in mounted UI, fixed in the single permitted corrective cycle, and identical mounted green schedules passed. Final full re-review pending.
+- Checkpoint: `0395bcd0064fa121edf1cc4068e7f695254e95e2` — verified feature and initial evidence; local commits explicitly authorized. Simplification checkpoint: `7b81855`; final correction/review bookkeeping pending.
 
 ## Mounted browser evidence (local only)
 
@@ -85,3 +85,12 @@ All traffic used http://localhost:3003 with a disposable loopback Postgres conta
 - Desktop 20-row list/Load more 25-total, full transcript, distinct historical monitor, pending billing; actual app inside 390px iframe inspected via native accessibility and screenshot, labels wrapped without horizontal overflow.
 
 Next's temporary development runtime logged a Better Auth schema-validation warning despite successful migrations and real SQL/session flows; all actual auth/private route operations above succeeded. No production schema change was made.
+
+## Single independent-review corrective cycle
+
+Reviewer found two additional P2 schedules beyond initial proof. No requirement was weakened.
+
+1. **Late Continue after leaving history.** Red: hold Continue response 5 seconds, switch Play and send a real 12-second SSE prompt. Late Continue changed live run from 43251E15 to F150D816 and after POST completed left New run/composer disabled. Fix: history effect cleanup unconditionally invalidates all historical operations, not merely its original list fetch. Green: identical schedule leaves 43251E15 selected and both controls enabled after SSE completion.
+2. **Polling slower than the timer interval.** Red: persisted lease clears, but successive real poll responses take 8 seconds against a 3-second timer; successful responses are discarded and UI remains busy. Fix: one in-flight poll per effect, captured live generation plus account/run/activity guard. Green: two sequential real 8-second polls (first busy, then cleared lease) update the same 43251E15 and enable controls. Final repeat included explicit initial/final run ID and URL assertions; an earlier run interrupted by shared-browser interaction was discarded, not counted.
+
+Lead repeated `npm run check` (13 passing), `npm run test:coverage`, and `npm run test:integration:coverage` (17 passing; history route 100% lines/branches/functions in separate integration coverage). Raw `.artifacts/lead-*-correction.log`, `.artifacts/browser-proof.md` and actual server logs inspected. Coverage suites remain separate, no combined percentage claim. No UI markup/layout changes in correction; no useful further simplification.
