@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Entry } from "../app/game-ui";
-import type { GameEvent } from "../lib/types";
+import { Entry, ForkPreview, refreshedGame } from "../app/game-ui";
+import type { GameEvent, PublicGame } from "../lib/types";
 
 test("transcript distinguishes speakers, renders commands and shows only blocked decisions", () => {
   const render = (event: GameEvent, previous?: GameEvent) =>
@@ -19,6 +19,11 @@ test("transcript distinguishes speakers, renders commands and shows only blocked
     command: 'sprite_exec: {"command":"pwd"}\nsprite_exec: {"command":"echo hello"}',
   });
   assert.match(agent, />AGENT</);
+  assert.match(agent, />Copy<\/span>/);
+  assert.match(agent, />Fork<\/span>/);
+  assert.match(agent, /aria-label="Copy response"/);
+  assert.match(agent, /aria-label="Fork from response"/);
+  assert.match(agent, /<\/article><div class="entry-actions">/);
   assert.match(agent, /TURN 3/);
   assert.match(agent, /model-used-on-turn-3/);
   assert.ok(agent.indexOf("Agent reasoning") < agent.indexOf("<p>Checking</p>"));
@@ -71,4 +76,48 @@ test("user and agent Markdown renders safely; tool output remains literal", () =
     }),
   );
   assert.match(tool, /\*\*literal\*\* &lt;script&gt;/);
+  assert.doesNotMatch(tool, /Fork/);
+  assert.doesNotMatch(
+    renderToStaticMarkup(createElement(Entry, { event: { id: 3, kind: "user", text: "hi" } })),
+    /Fork/,
+  );
+});
+
+test("run refreshes cannot replace a newly selected child with a stale parent", () => {
+  const child = { id: "child" } as PublicGame;
+  const staleParent = { id: "parent" } as PublicGame;
+  const updatedChild = {
+    id: "child",
+    status: "ended",
+    events: [{ id: 1, kind: "agent", text: "refreshed" }],
+  } as PublicGame;
+  assert.equal(refreshedGame(child, staleParent), child);
+  assert.equal(refreshedGame(child, updatedChild), updatedChild);
+  assert.equal(refreshedGame(null, staleParent), null);
+});
+
+test("fork preview shows the full visible prefix through selection only", () => {
+  const selectedText = `${"long text ".repeat(60)}\n\n<script>safe</script>`;
+  const events: GameEvent[] = [
+    { id: 1, kind: "user", text: "Earlier instruction" },
+    { id: 2, kind: "agent", text: "Earlier answer", turn: 1, model: "m" },
+    { id: 3, kind: "monitor", text: "hidden allow", decision: "allow" },
+    { id: 4, kind: "tool", text: "Earlier tool output" },
+    { id: 5, kind: "user", text: "Selected instruction" },
+    { id: 6, kind: "agent", text: selectedText, turn: 2, model: "m" },
+    { id: 7, kind: "tool", text: "Later tool output" },
+    { id: 8, kind: "agent", text: "Later answer", turn: 3, model: "m" },
+  ];
+  const html = renderToStaticMarkup(createElement(ForkPreview, { events, selectedId: 6 }));
+  assert.match(html, /Earlier instruction/);
+  assert.match(html, /Earlier answer/);
+  assert.match(html, /Earlier tool output/);
+  assert.ok(html.includes(selectedText.slice(500, 560)));
+  assert.match(
+    html,
+    /role="region" aria-label="Visible transcript history through selected response" tabindex="0"/,
+  );
+  assert.doesNotMatch(html, /Later tool output|Later answer|hidden allow|Copy|Fork/);
+  assert.match(html, /&lt;script&gt;safe&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
 });

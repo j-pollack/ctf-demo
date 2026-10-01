@@ -9,6 +9,9 @@ import { seasonEnd } from "@/lib/season-end";
 const label = (model: string) => model.split("/")[1];
 const number = (value: number) => value.toLocaleString("en-US");
 const money = (value: number) => `$${(value / 1_000_000).toFixed(4)}`;
+export function refreshedGame(current: PublicGame | null, next: PublicGame) {
+  return current?.id === next.id ? next : current;
+}
 type Score = { name: string; turns: number; tokens: number; spend: number; blocks: number };
 async function api(url: string, options?: RequestInit) {
   const response = await fetch(url, options),
@@ -33,7 +36,8 @@ export default function GameUI({
     [stage, setStage] = useState(""),
     [error, setError] = useState("");
   const [panel, setPanel] = useState<"play" | "rank" | "rules">("play");
-  const [modal, setModal] = useState<"setup" | "login" | null>(null),
+  const [modal, setModal] = useState<"setup" | "login" | "fork" | null>(null),
+    [forkEvent, setForkEvent] = useState<GameEvent | null>(null),
     [email, setEmail] = useState(""),
     [emailSent, setEmailSent] = useState(false);
   const [agent, setAgent] = useState(defaultAgent),
@@ -42,6 +46,11 @@ export default function GameUI({
     [seasons, setSeasons] = useState<Season[]>([initialSeason]),
     [boardSeason, setBoardSeason] = useState(initialSeason.id),
     [boardAgent, setBoardAgent] = useState("");
+  function refreshGame(id: string, signal?: AbortSignal) {
+    return api(`/api/games/${id}`, { signal }).then((next: PublicGame) =>
+      setGame((current) => refreshedGame(current, next)),
+    );
+  }
   useEffect(() => {
     const refresh = () => {
       api("/api/seasons")
@@ -68,8 +77,13 @@ export default function GameUI({
       .catch((err) => setError(err.message));
   }, [account.data?.user.id]);
   useEffect(() => {
-    if (modal) dialog.current?.showModal();
-    else dialog.current?.close();
+    if (modal) {
+      dialog.current?.showModal();
+      if (modal === "fork") {
+        const preview = dialog.current?.querySelector<HTMLElement>(".fork-preview");
+        if (preview) preview.scrollTop = preview.scrollHeight;
+      }
+    } else dialog.current?.close();
   }, [modal]);
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -77,12 +91,14 @@ export default function GameUI({
   useEffect(() => {
     if (!game || (!game.busy && (!game.reservedMicrodollars || game.status === "ended")) || busy)
       return;
+    const refreshController = new AbortController();
     const timer = setInterval(() => {
-      api(`/api/games/${game.id}`)
-        .then(setGame)
-        .catch(() => {});
+      refreshGame(game.id, refreshController.signal).catch(() => {});
     }, 3000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      refreshController.abort();
+    };
   }, [game?.id, game?.busy, game?.reservedMicrodollars, game?.status, busy]);
   useEffect(() => {
     if (panel !== "rank") return;
@@ -126,6 +142,32 @@ export default function GameUI({
       setPrompt("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start a game.");
+    } finally {
+      setBusy(false);
+      setStage("");
+    }
+  }
+  async function fork() {
+    if (!game || !forkEvent || loading) return;
+    setBusy(true);
+    setError("");
+    setStage("Preparing your private environment");
+    try {
+      const next = await api(`/api/games/${game.id}/fork`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId: forkEvent.id }),
+      });
+      setGame(next);
+      setAgent(next.agentModel);
+      setModal(null);
+      setPrompt("");
+      setPanel("play");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not fork this run.");
+      try {
+        await refreshGame(game.id);
+      } catch {}
     } finally {
       setBusy(false);
       setStage("");
@@ -189,9 +231,7 @@ export default function GameUI({
       setBusy(false);
       setStage("");
       cancel.current = null;
-      api(`/api/games/${game.id}`)
-        .then(setGame)
-        .catch(() => {});
+      refreshGame(game.id).catch(() => {});
     }
   }
   async function login(event: React.FormEvent) {
@@ -347,7 +387,26 @@ export default function GameUI({
                     </p>
                   )}
                   {game.events.map((event, index) => (
-                    <Entry key={event.id} event={event} previous={game.events[index - 1]} />
+                    <Entry
+                      key={event.id}
+                      event={event}
+                      previous={game.events[index - 1]}
+                      disabled={loading}
+                      onFork={() => {
+                        setError("");
+                        setForkEvent(event);
+                        setModal("fork");
+                      }}
+                      onCopy={async () => {
+                        try {
+                          await navigator.clipboard.writeText(
+                            [event.text, event.command].filter(Boolean).join("\n"),
+                          );
+                        } catch {
+                          setError("Clipboard access failed.");
+                        }
+                      }}
+                    />
                   ))}
                   {(game.status !== "active" || seasonExpired) && (
                     <div className="terminal">
@@ -610,12 +669,16 @@ export default function GameUI({
       </div>
       <dialog
         ref={dialog}
-        onCancel={() => setModal(null)}
+        aria-label={modal === "fork" ? "Fork this run" : undefined}
+        onCancel={(event) => {
+          if (busy) event.preventDefault();
+          else setModal(null);
+        }}
         onClick={(event) => {
           if (event.target === dialog.current && !busy) setModal(null);
         }}
       >
-        <div className="dialog-content">
+        <div className={`dialog-content${modal === "fork" ? " fork-dialog-content" : ""}`}>
           <button
             className="close"
             aria-label="Close dialog"
@@ -624,7 +687,29 @@ export default function GameUI({
           >
             ×
           </button>
-          {modal === "setup" ? (
+          {modal === "fork" && forkEvent ? (
+            <>
+              <p className="eyebrow">FORK THROUGH TURN {forkEvent.turn}</p>
+              <h2>Start from this response.</h2>
+              <p className="eyebrow">VISIBLE HISTORY THROUGH THIS RESPONSE</p>
+              <ForkPreview events={game?.events ?? []} selectedId={forkEvent.id} />
+              <aside className="fork-warning">
+                <p>
+                  Only the transcript is copied. Filesystem and VM state are not preserved; the fork
+                  starts in a fresh environment. A new secret is created, and commands are not
+                  replayed. You’ll switch to the new run. Your previous transcript is kept.
+                </p>
+              </aside>
+              <div className="fork-actions">
+                <button disabled={busy} onClick={() => setModal(null)}>
+                  Cancel
+                </button>
+                <button className="primary" disabled={loading} onClick={() => void fork()}>
+                  {busy ? "Preparing…" : "Create fork ↗"}
+                </button>
+              </div>
+            </>
+          ) : modal === "setup" ? (
             <>
               <p className="eyebrow">FRESH ENVIRONMENT / FRESH SECRET</p>
               <h2>Start a new run.</h2>
@@ -723,7 +808,21 @@ function ModelSelect({
     </label>
   );
 }
-export function Entry({ event, previous }: { event: GameEvent; previous?: GameEvent }) {
+export function Entry({
+  event,
+  previous,
+  disabled = false,
+  showActions = true,
+  onFork,
+  onCopy,
+}: {
+  event: GameEvent;
+  previous?: GameEvent;
+  disabled?: boolean;
+  showActions?: boolean;
+  onFork?: () => void;
+  onCopy?: () => void;
+}) {
   if (event.kind === "monitor" && event.decision === "allow") return null;
   if (event.kind === "tool" && previous?.kind === "monitor" && previous.decision === "block")
     return null;
@@ -747,53 +846,99 @@ export function Entry({ event, previous }: { event: GameEvent; previous?: GameEv
     })
     .join("\n");
   return (
-    <article className={`entry ${event.kind}`}>
-      <header>
-        <strong className="speaker">
-          {event.kind === "user"
-            ? "USER"
-            : event.kind === "agent"
-              ? "AGENT"
-              : event.kind === "tool"
-                ? "TOOL OUTPUT"
-                : event.kind === "monitor"
-                  ? "MONITOR ERROR"
-                  : "SYSTEM"}
-        </strong>
-        {event.kind === "agent" && (
-          <span className="turn-label">
-            TURN {event.turn}
-            {event.model && <span className="turn-model"> · {event.model}</span>}
-          </span>
+    <>
+      <article className={`entry ${event.kind}`}>
+        <header>
+          <strong className="speaker">
+            {event.kind === "user"
+              ? "USER"
+              : event.kind === "agent"
+                ? "AGENT"
+                : event.kind === "tool"
+                  ? "TOOL OUTPUT"
+                  : event.kind === "monitor"
+                    ? "MONITOR ERROR"
+                    : "SYSTEM"}
+          </strong>
+          {event.kind === "agent" && (
+            <span className="turn-label">
+              TURN {event.turn}
+              {event.model && <span className="turn-model"> · {event.model}</span>}
+            </span>
+          )}
+        </header>
+        {event.reasoning && (
+          <details>
+            <summary>Agent reasoning</summary>
+            <p>{event.reasoning}</p>
+          </details>
         )}
-      </header>
-      {event.reasoning && (
-        <details>
-          <summary>Agent reasoning</summary>
-          <p>{event.reasoning}</p>
-        </details>
+        {event.text &&
+          (event.kind === "user" || event.kind === "agent" ? (
+            <div className="markdown">
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                disallowedElements={["img"]}
+                components={{
+                  a: ({ href, children }) => (
+                    <a href={href} target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  ),
+                }}
+              >
+                {event.text}
+              </Markdown>
+            </div>
+          ) : (
+            <p>{event.text}</p>
+          ))}
+        {command && <pre>{command}</pre>}
+      </article>
+      {event.kind === "agent" && showActions && (
+        <div className="entry-actions">
+          <button type="button" aria-label="Copy response" disabled={disabled} onClick={onCopy}>
+            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+              <rect x="8" y="8" width="12" height="12" rx="1" />
+              <path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" />
+            </svg>
+            <span className="entry-action-label">Copy</span>
+          </button>
+          <button
+            type="button"
+            aria-label="Fork from response"
+            disabled={disabled}
+            onClick={onFork}
+          >
+            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+              <circle cx="6" cy="5" r="2" />
+              <circle cx="18" cy="19" r="2" />
+              <circle cx="18" cy="5" r="2" />
+              <path d="M6 7v7a5 5 0 0 0 5 5h5M6 7v0a5 5 0 0 0 5-2h5" />
+            </svg>
+            <span className="entry-action-label">Fork</span>
+          </button>
+        </div>
       )}
-      {event.text &&
-        (event.kind === "user" || event.kind === "agent" ? (
-          <div className="markdown">
-            <Markdown
-              remarkPlugins={[remarkGfm]}
-              disallowedElements={["img"]}
-              components={{
-                a: ({ href, children }) => (
-                  <a href={href} target="_blank" rel="noopener noreferrer">
-                    {children}
-                  </a>
-                ),
-              }}
-            >
-              {event.text}
-            </Markdown>
-          </div>
-        ) : (
-          <p>{event.text}</p>
-        ))}
-      {command && <pre>{command}</pre>}
-    </article>
+    </>
+  );
+}
+
+export function ForkPreview({ events, selectedId }: { events: GameEvent[]; selectedId: number }) {
+  const selectedIndex = events.findIndex(
+    (event) => event.id === selectedId && event.kind === "agent",
+  );
+  if (selectedIndex < 0) return null;
+  return (
+    <div
+      className="fork-preview"
+      role="region"
+      aria-label="Visible transcript history through selected response"
+      tabIndex={0}
+    >
+      {events.slice(0, selectedIndex + 1).map((event, index) => (
+        <Entry key={event.id} event={event} previous={events[index - 1]} showActions={false} />
+      ))}
+    </div>
   );
 }
