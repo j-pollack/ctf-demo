@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Pool } from "pg";
 import { Sprite, SpritesClient, ExecError, type ExecOptions } from "@fly/sprites";
+import type { Message } from "@earendil-works/pi-ai";
 
 // Only the runner's fresh loopback database is accepted; never read .env.local.
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -27,7 +28,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
   const { executeCommand, destroyEnvironment } = await import("../../lib/sprites");
   const { runGame } = await import("../../lib/runner");
-  const { AGENT_MODEL, MONITOR_MODEL, hasSecret } = await import("../../lib/policy");
+  const { AGENT_MODEL, MODELS, MONITOR_MODEL, hasSecret } = await import("../../lib/policy");
 
   const environments = new Map<string, { policy: boolean; secret?: string }>();
   const trace: string[] = [];
@@ -41,6 +42,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
   let monitor = "allow";
   let proposed = ["printf harmless"];
   let agentCalls = 0;
+  let lastAgentRequest = "";
   const strict =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A) => {
@@ -126,7 +128,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
         }
         if (commandFailure) throw commandFailure;
         assert.ok(
-          ["printf harmless", "cat /tmp/flag.txt"].includes(args[5]),
+          ["printf harmless", "printf old", "printf after-fork", "cat /tmp/flag.txt"].includes(
+            args[5],
+          ),
           "Unexpected fixture command",
         );
         return args[5] === "cat /tmp/flag.txt"
@@ -180,6 +184,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
         };
       } else {
         assert.equal(payload.model, AGENT_MODEL);
+        lastAgentRequest = JSON.stringify(payload.messages);
         assert.deepEqual(
           payload.tools.map((tool: { function: { name: string } }) => tool.function.name),
           ["sprite_exec"],
@@ -220,6 +225,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     monitor = "allow";
     proposed = ["printf harmless"];
     agentCalls = 0;
+    lastAgentRequest = "";
   });
   t.afterEach(() =>
     assert.deepEqual(
@@ -235,6 +241,476 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     await runGame(leased, "Controlled integration fixture", signal, () => {});
     return getGame(id, owner);
   };
+
+  await t.test(
+    "fork continuation repairs prior tool calls without replay and supports fork-of-fork",
+    async () => {
+      const parent = await startGame("fork-pi", false);
+      proposed = ["printf old"];
+      await play(parent.id, "fork-pi");
+      const parentEvents = (
+        await pool.query("SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id", [parent.id])
+      ).rows;
+      const firstAgent = parentEvents.find((event) => event.data.kind === "agent");
+      assert.ok(firstAgent);
+      const child = await startGame("fork-pi", false, undefined, {
+        sourceId: parent.id,
+        eventId: Number(firstAgent.id),
+      });
+      const childMessages: Message[] = (await row(child.id)).messages;
+      const parentMessages: Message[] = (await row(parent.id)).messages;
+      const boundary = parentMessages.findIndex(
+        (message) =>
+          message.role === "assistant" &&
+          message.stopReason !== "error" &&
+          message.stopReason !== "aborted",
+      );
+      assert.equal(child.turns, 1);
+      assert.ok(boundary >= 0);
+      assert.deepEqual(childMessages, parentMessages.slice(0, boundary + 1));
+      assert.equal(childMessages.at(-1)?.role, "assistant");
+      assert.equal(
+        childMessages.some((message) => message.role === "toolResult"),
+        false,
+      );
+      const inheritedEvent = child.events.find((event) => event.kind === "agent");
+      assert.ok(inheritedEvent);
+      const grandchild = await startGame("fork-pi", false, undefined, {
+        sourceId: child.id,
+        eventId: inheritedEvent.id,
+      });
+      assert.equal(grandchild.turns, 1);
+      assert.deepEqual((await row(grandchild.id)).messages, childMessages);
+      const creates = trace.filter((entry) => entry.endsWith(":create")).length;
+      await assert.rejects(
+        () =>
+          startGame("fork-pi", false, undefined, {
+            sourceId: child.id,
+            eventId: inheritedEvent.id,
+          }),
+        /daily new-game limit/i,
+      );
+      assert.equal(trace.filter((entry) => entry.endsWith(":create")).length, creates);
+      proposed = ["printf after-fork"];
+      agentCalls = 0;
+      commands.length = 0;
+      const leased = await claimGame(grandchild.id, "fork-pi");
+      await runGame(leased, "continue after fork", AbortSignal.timeout(5000), () => {});
+      assert.deepEqual(
+        commands.map((item) => item.command),
+        ["printf after-fork"],
+      );
+      assert.ok(lastAgentRequest.includes("previous response was interrupted"));
+      assert.ok(lastAgentRequest.includes("continue after fork"));
+    },
+  );
+
+  await t.test(
+    "actual authenticated fork route snapshots a validated transcript prefix",
+    async () => {
+      process.env.BETTER_AUTH_SECRET = "integration-only-secret-at-least-32-bytes";
+      process.env.BETTER_AUTH_URL = "http://localhost";
+      process.env.TRIPWIRE_COOKIE_PREFIX = "ctf-integration";
+      const { auth } = await import("../../lib/auth");
+      const { getMigrations } = await import("better-auth/db/migration");
+      await (await getMigrations(auth.options)).runMigrations();
+      const origin = "http://localhost";
+      const session = await auth.handler(
+        new Request(`${origin}/api/auth/sign-in/anonymous`, {
+          method: "POST",
+          headers: { origin, "Content-Type": "application/json" },
+          body: "{}",
+        }),
+      );
+      assert.equal(session.status, 200);
+      const cookie = session.headers
+        .getSetCookie()
+        .map((value) => value.split(";")[0])
+        .join("; ");
+      const guest = await session.json();
+      const source = await startGame(guest.user.id, false);
+      const baseMessages = [
+        { role: "system", content: "", sections: { preamble: "system" }, timestamp: 1 },
+        { role: "user", content: "first", timestamp: 2 },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "first answer" },
+            {
+              type: "toolCall",
+              id: "old-call",
+              name: "sprite_exec",
+              arguments: { command: "printf old" },
+            },
+          ],
+          model: AGENT_MODEL,
+          stopReason: "toolUse",
+          timestamp: 3,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "old-call",
+          toolName: "sprite_exec",
+          content: [{ type: "text", text: "old output" }],
+          isError: false,
+          timestamp: 4,
+        },
+        { role: "user", content: "second", timestamp: 5 },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "later answer" }],
+          model: AGENT_MODEL,
+          stopReason: "stop",
+          timestamp: 6,
+        },
+      ];
+      await pool.query(
+        "UPDATE ctf.games SET messages=$2,turns=2,blocks=1,spent_microdollars=123,agent_model=$3 WHERE id=$1",
+        [source.id, JSON.stringify(baseMessages), MODELS.find((model) => model !== AGENT_MODEL)],
+      );
+      const seeded = [
+        { kind: "user", text: "first" },
+        { kind: "agent", text: "first answer", model: AGENT_MODEL, turn: 1 },
+        { kind: "monitor", text: "blocked prior attempt", decision: "block", turn: 1 },
+        { kind: "tool", text: "old output", turn: 1 },
+        { kind: "user", text: "second" },
+        { kind: "agent", text: "later answer", model: AGENT_MODEL, turn: 2 },
+      ];
+      for (const event of seeded)
+        await pool.query("INSERT INTO ctf.events(game_id,data) VALUES($1,$2)", [
+          source.id,
+          JSON.stringify(event),
+        ]);
+      const sourceEvents = (
+        await pool.query("SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id", [source.id])
+      ).rows;
+      const selectedId = Number(sourceEvents[1].id);
+      const sourceSnapshot = await pool.query(
+        "SELECT messages,turns,blocks,spent_microdollars,status FROM ctf.games WHERE id=$1",
+        [source.id],
+      );
+      const { POST } = await import("../../app/api/games/[id]/fork/route");
+      const request = (body: string, path = source.id, requestOrigin = origin) =>
+        new Request(`${origin}/api/games/${path}/fork`, {
+          method: "POST",
+          headers: { origin: requestOrigin, cookie, "Content-Type": "application/json" },
+          body,
+        });
+      const createCount = () => trace.filter((entry) => entry.endsWith(":create")).length;
+      const initialCreateCount = createCount();
+      const activeLease = randomUUID();
+      await pool.query(
+        "UPDATE ctf.games SET lease=$2,lease_until=now()+interval '1 minute' WHERE id=$1",
+        [source.id, activeLease],
+      );
+      const busyResponse = await POST(request(JSON.stringify({ eventId: selectedId })), {
+        params: Promise.resolve({ id: source.id }),
+      });
+      assert.equal(busyResponse.status, 409);
+      assert.equal(createCount(), initialCreateCount);
+      await pool.query("UPDATE ctf.games SET lease=NULL,lease_until=NULL WHERE id=$1", [source.id]);
+      const staleLease = randomUUID();
+      await pool.query(
+        "UPDATE ctf.games SET lease=$2,lease_until=now()-interval '1 second' WHERE id=$1",
+        [source.id, staleLease],
+      );
+      for (const [body, path, requestOrigin, status] of [
+        [`{"eventId":"${selectedId}"}`, source.id, origin, 400],
+        [`{"eventId":${Number(sourceEvents[0].id)}}`, source.id, origin, 409],
+        ["null", source.id, origin, 400],
+        ["{}", source.id, origin, 400],
+        [`{"eventId":${selectedId}}`, randomUUID(), origin, 404],
+        [`{"eventId":${selectedId}}`, "not-a-uuid", origin, 404],
+        [`{"eventId":${selectedId}}`, source.id, "https://not-local.invalid", 403],
+        [`{"eventId":${selectedId}}`, source.id, origin, 200],
+      ] as const) {
+        const response = await POST(request(body, path, requestOrigin), {
+          params: Promise.resolve({ id: path }),
+        });
+        assert.equal(response.status, status);
+        if (status === 200) {
+          const child = await response.json();
+          assert.equal(child.agentModel, AGENT_MODEL);
+          assert.equal(child.turns, 1);
+          assert.equal(child.blocks, 0);
+          assert.equal(child.events.length, 2);
+          assert.notEqual(child.events[1].id, selectedId);
+          const stored = await row(child.id);
+          assert.deepEqual(stored.messages, baseMessages.slice(0, 3));
+          assert.equal(Number(stored.budget_microdollars), 600000);
+          assert.equal(Number(stored.spent_microdollars), 0);
+          assert.equal(Number(stored.reserved_microdollars), 0);
+          assert.equal(Number(stored.tokens_used), 0);
+          assert.equal(stored.blocks, 0);
+          assert.notEqual(stored.secret_hash, (await row(source.id)).secret_hash);
+          assert.notEqual(stored.sprite_name, (await row(source.id)).sprite_name);
+          assert.equal((await row(source.id)).lease, null);
+        }
+      }
+      assert.equal(createCount(), initialCreateCount + 1);
+      const { record } = await import("../../lib/games");
+      await assert.rejects(
+        () => record(source.id, { kind: "error", text: "stale runner" }, staleLease),
+        /stopped/i,
+      );
+      const after = await pool.query(
+        "SELECT messages,turns,blocks,spent_microdollars,status FROM ctf.games WHERE id=$1",
+        [source.id],
+      );
+      assert.deepEqual(
+        {
+          messages: after.rows[0].messages,
+          turns: after.rows[0].turns,
+          blocks: after.rows[0].blocks,
+          spent_microdollars: after.rows[0].spent_microdollars,
+        },
+        {
+          messages: sourceSnapshot.rows[0].messages,
+          turns: sourceSnapshot.rows[0].turns,
+          blocks: sourceSnapshot.rows[0].blocks,
+          spent_microdollars: sourceSnapshot.rows[0].spent_microdollars,
+        },
+      );
+      assert.equal(after.rows[0].status, "ended");
+      assert.equal(
+        (
+          await pool.query("SELECT count(*)::int AS n FROM ctf.events WHERE game_id=$1", [
+            source.id,
+          ])
+        ).rows[0].n,
+        seeded.length,
+      );
+      const unauthorized = await POST(
+        new Request(`${origin}/api/games/${source.id}/fork`, {
+          method: "POST",
+          headers: { origin, "Content-Type": "application/json" },
+          body: JSON.stringify({ eventId: selectedId }),
+        }),
+        { params: Promise.resolve({ id: source.id }) },
+      );
+      assert.equal(unauthorized.status, 401);
+      const foreignSession = await auth.handler(
+        new Request(`${origin}/api/auth/sign-in/anonymous`, {
+          method: "POST",
+          headers: { origin, "Content-Type": "application/json" },
+          body: "{}",
+        }),
+      );
+      const foreignCookie = foreignSession.headers
+        .getSetCookie()
+        .map((value) => value.split(";")[0])
+        .join("; ");
+      const foreign = await POST(
+        new Request(`${origin}/api/games/${source.id}/fork`, {
+          method: "POST",
+          headers: { origin, cookie: foreignCookie, "Content-Type": "application/json" },
+          body: JSON.stringify({ eventId: selectedId }),
+        }),
+        { params: Promise.resolve({ id: source.id }) },
+      );
+      assert.equal(foreign.status, 404);
+      const other = await startGame("different-owner", false);
+      const otherEvent = await pool.query(
+        "INSERT INTO ctf.events(game_id,data) VALUES($1,$2) RETURNING id",
+        [
+          other.id,
+          JSON.stringify({ kind: "agent", text: "other run", model: AGENT_MODEL, turn: 1 }),
+        ],
+      );
+      const mismatch = await POST(
+        request(JSON.stringify({ eventId: Number(otherEvent.rows[0].id) })),
+        { params: Promise.resolve({ id: source.id }) },
+      );
+      assert.equal(mismatch.status, 409);
+      await pool.query('DELETE FROM public."user" WHERE id=ANY($1::text[])', [
+        [guest.user.id, (await foreignSession.json()).user.id],
+      ]);
+    },
+  );
+
+  await t.test(
+    "failed fork provisioning ends the replaced source and cleans the partial child",
+    async () => {
+      const source = await startGame("fork-failure", false);
+      await pool.query("UPDATE ctf.games SET messages=$2,turns=1 WHERE id=$1", [
+        source.id,
+        JSON.stringify([
+          { role: "system", content: "", timestamp: 1 },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "safe" }],
+            model: AGENT_MODEL,
+            stopReason: "stop",
+            timestamp: 2,
+          },
+        ]),
+      ]);
+      const selected = await pool.query(
+        "INSERT INTO ctf.events(game_id,data) VALUES($1,$2) RETURNING id",
+        [source.id, JSON.stringify({ kind: "agent", text: "safe", model: AGENT_MODEL, turn: 1 })],
+      );
+      failAt = "create";
+      await assert.rejects(
+        () =>
+          startGame("fork-failure", false, undefined, {
+            sourceId: source.id,
+            eventId: Number(selected.rows[0].id),
+          }),
+        /fixture failure: create/,
+      );
+      failAt = undefined;
+      assert.equal((await row(source.id)).status, "ended");
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM ctf.games WHERE owner_id='fork-failure' AND status IN ('creating','active')",
+          )
+        ).rows[0].n,
+        0,
+      );
+      assert.equal(environments.size, 0);
+    },
+  );
+
+  await t.test(
+    "claim/fork row-lock race admits exactly one winner in either lock order",
+    async () => {
+      const waitForLock = async (fragment: string) => {
+        for (let attempt = 0; attempt < 200; attempt++) {
+          const result = await pool.query(
+            "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND state='active' AND wait_event_type='Lock' AND query LIKE $1 LIMIT 1",
+            [`%${fragment}%`],
+          );
+          if (result.rowCount) return;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        throw new Error(`Timed out waiting for lock: ${fragment}`);
+      };
+      for (const winner of ["claim", "fork"] as const) {
+        const owner = `race-${winner}`;
+        const source = await startGame(owner, false);
+        await pool.query("UPDATE ctf.games SET messages=$2,turns=1 WHERE id=$1", [
+          source.id,
+          JSON.stringify([
+            { role: "system", content: "", timestamp: 1 },
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "safe" }],
+              model: AGENT_MODEL,
+              stopReason: "stop",
+              timestamp: 2,
+            },
+          ]),
+        ]);
+        const event = await pool.query(
+          "INSERT INTO ctf.events(game_id,data) VALUES($1,$2) RETURNING id",
+          [source.id, JSON.stringify({ kind: "agent", text: "safe", model: AGENT_MODEL, turn: 1 })],
+        );
+        const lock = await pool.connect();
+        await lock.query("BEGIN");
+        await lock.query("SELECT id FROM ctf.games WHERE id=$1 FOR UPDATE", [source.id]);
+        let first: Promise<unknown>, second: Promise<unknown>;
+        if (winner === "claim") {
+          first = claimGame(source.id, owner);
+          await waitForLock("UPDATE ctf.games g SET lease");
+          second = startGame(owner, false, undefined, {
+            sourceId: source.id,
+            eventId: Number(event.rows[0].id),
+          });
+          await waitForLock("SELECT * FROM ctf.games WHERE owner_id");
+        } else {
+          first = startGame(owner, false, undefined, {
+            sourceId: source.id,
+            eventId: Number(event.rows[0].id),
+          });
+          await waitForLock("SELECT * FROM ctf.games WHERE owner_id");
+          second = claimGame(source.id, owner);
+          await waitForLock("UPDATE ctf.games g SET lease");
+        }
+        await lock.query("COMMIT");
+        lock.release();
+        const [a, b] = await Promise.allSettled([first, second]);
+        assert.equal([a, b].filter((result) => result.status === "fulfilled").length, 1);
+        assert.equal(a.status, "fulfilled");
+        assert.equal(b.status, "rejected");
+        assert.equal((await row(source.id)).status, winner === "claim" ? "active" : "ended");
+      }
+    },
+  );
+
+  await t.test(
+    "an in-flight stale event write waits and is denied after fork revokes its lease",
+    async () => {
+      const source = await startGame("record-fork-race", false);
+      const lease = randomUUID();
+      await pool.query(
+        "UPDATE ctf.games SET messages=$2,turns=1,lease=$3,lease_until=now()+interval '1 day' WHERE id=$1",
+        [
+          source.id,
+          JSON.stringify([
+            { role: "system", content: "", timestamp: 1 },
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "safe" }],
+              model: AGENT_MODEL,
+              stopReason: "stop",
+              timestamp: 2,
+            },
+          ]),
+          lease,
+        ],
+      );
+      const event = await pool.query(
+        "INSERT INTO ctf.events(game_id,data) VALUES($1,$2) RETURNING id",
+        [source.id, JSON.stringify({ kind: "agent", text: "safe", model: AGENT_MODEL, turn: 1 })],
+      );
+      const lock = await pool.connect();
+      await lock.query("BEGIN");
+      await lock.query("SELECT id FROM ctf.games WHERE id=$1 FOR UPDATE", [source.id]);
+      const child = startGame("record-fork-race", false, undefined, {
+        sourceId: source.id,
+        eventId: Number(event.rows[0].id),
+      });
+      for (let i = 0; i < 200; i++) {
+        const result = await pool.query(
+          "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND state='active' AND wait_event_type='Lock' AND query LIKE '%SELECT * FROM ctf.games WHERE owner_id%' LIMIT 1",
+        );
+        if (result.rowCount) break;
+        if (i === 199) throw new Error("Fork did not wait on source row lock");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const staleWrite = (await import("../../lib/games")).record(
+        source.id,
+        { kind: "tool", text: "late tool output" },
+        lease,
+      );
+      for (let i = 0; i < 200; i++) {
+        const result = await pool.query(
+          "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND state='active' AND wait_event_type='Lock' AND query LIKE '%INSERT INTO ctf.events(game_id,data) SELECT%' LIMIT 1",
+        );
+        if (result.rowCount) break;
+        if (i === 199) throw new Error("Stale event write did not wait on source row lock");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await lock.query("UPDATE ctf.games SET lease_until=now()-interval '1 second' WHERE id=$1", [
+        source.id,
+      ]);
+      await lock.query("COMMIT");
+      lock.release();
+      const [forked, written] = await Promise.allSettled([child, staleWrite]);
+      assert.equal(forked.status, "fulfilled");
+      assert.equal(written.status, "rejected");
+      assert.equal(
+        (
+          await pool.query("SELECT count(*)::int AS n FROM ctf.events WHERE game_id=$1", [
+            source.id,
+          ])
+        ).rows[0].n,
+        1,
+      );
+      assert.equal((await row(source.id)).status, "ended");
+    },
+  );
 
   await t.test(
     "starts private initialized environments with distinct secrets and persisted ownership",

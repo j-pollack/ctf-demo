@@ -9,6 +9,9 @@ import { seasonEnd } from "@/lib/season-end";
 const label = (model: string) => model.split("/")[1];
 const number = (value: number) => value.toLocaleString("en-US");
 const money = (value: number) => `$${(value / 1_000_000).toFixed(4)}`;
+export function refreshedGame(current: PublicGame | null, next: PublicGame) {
+  return current?.id === next.id ? next : current;
+}
 type Score = { name: string; turns: number; tokens: number; spend: number; blocks: number };
 async function api(url: string, options?: RequestInit) {
   const response = await fetch(url, options),
@@ -33,7 +36,8 @@ export default function GameUI({
     [stage, setStage] = useState(""),
     [error, setError] = useState("");
   const [panel, setPanel] = useState<"play" | "rank" | "rules">("play");
-  const [modal, setModal] = useState<"setup" | "login" | null>(null),
+  const [modal, setModal] = useState<"setup" | "login" | "fork" | null>(null),
+    [forkEvent, setForkEvent] = useState<GameEvent | null>(null),
     [email, setEmail] = useState(""),
     [emailSent, setEmailSent] = useState(false);
   const [agent, setAgent] = useState(defaultAgent),
@@ -42,6 +46,11 @@ export default function GameUI({
     [seasons, setSeasons] = useState<Season[]>([initialSeason]),
     [boardSeason, setBoardSeason] = useState(initialSeason.id),
     [boardAgent, setBoardAgent] = useState("");
+  function refreshGame(id: string, signal?: AbortSignal) {
+    return api(`/api/games/${id}`, { signal }).then((next: PublicGame) =>
+      setGame((current) => refreshedGame(current, next)),
+    );
+  }
   useEffect(() => {
     const refresh = () => {
       api("/api/seasons")
@@ -77,12 +86,14 @@ export default function GameUI({
   useEffect(() => {
     if (!game || (!game.busy && (!game.reservedMicrodollars || game.status === "ended")) || busy)
       return;
+    const refreshController = new AbortController();
     const timer = setInterval(() => {
-      api(`/api/games/${game.id}`)
-        .then(setGame)
-        .catch(() => {});
+      refreshGame(game.id, refreshController.signal).catch(() => {});
     }, 3000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      refreshController.abort();
+    };
   }, [game?.id, game?.busy, game?.reservedMicrodollars, game?.status, busy]);
   useEffect(() => {
     if (panel !== "rank") return;
@@ -126,6 +137,32 @@ export default function GameUI({
       setPrompt("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start a game.");
+    } finally {
+      setBusy(false);
+      setStage("");
+    }
+  }
+  async function fork() {
+    if (!game || !forkEvent || loading) return;
+    setBusy(true);
+    setError("");
+    setStage("Preparing your private environment");
+    try {
+      const next = await api(`/api/games/${game.id}/fork`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId: forkEvent.id }),
+      });
+      setGame(next);
+      setAgent(next.agentModel);
+      setModal(null);
+      setPrompt("");
+      setPanel("play");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not fork this run.");
+      try {
+        await refreshGame(game.id);
+      } catch {}
     } finally {
       setBusy(false);
       setStage("");
@@ -189,9 +226,7 @@ export default function GameUI({
       setBusy(false);
       setStage("");
       cancel.current = null;
-      api(`/api/games/${game.id}`)
-        .then(setGame)
-        .catch(() => {});
+      refreshGame(game.id).catch(() => {});
     }
   }
   async function login(event: React.FormEvent) {
@@ -347,7 +382,26 @@ export default function GameUI({
                     </p>
                   )}
                   {game.events.map((event, index) => (
-                    <Entry key={event.id} event={event} previous={game.events[index - 1]} />
+                    <Entry
+                      key={event.id}
+                      event={event}
+                      previous={game.events[index - 1]}
+                      disabled={loading}
+                      onFork={() => {
+                        setError("");
+                        setForkEvent(event);
+                        setModal("fork");
+                      }}
+                      onCopy={async () => {
+                        try {
+                          await navigator.clipboard.writeText(
+                            [event.text, event.command].filter(Boolean).join("\n"),
+                          );
+                        } catch {
+                          setError("Clipboard access failed.");
+                        }
+                      }}
+                    />
                   ))}
                   {(game.status !== "active" || seasonExpired) && (
                     <div className="terminal">
@@ -610,7 +664,11 @@ export default function GameUI({
       </div>
       <dialog
         ref={dialog}
-        onCancel={() => setModal(null)}
+        aria-label={modal === "fork" ? "Fork this run" : undefined}
+        onCancel={(event) => {
+          if (busy) event.preventDefault();
+          else setModal(null);
+        }}
         onClick={(event) => {
           if (event.target === dialog.current && !busy) setModal(null);
         }}
@@ -624,7 +682,31 @@ export default function GameUI({
           >
             ×
           </button>
-          {modal === "setup" ? (
+          {modal === "fork" && forkEvent ? (
+            <>
+              <p className="eyebrow">FORK THROUGH TURN {forkEvent.turn}</p>
+              <h2>Start from this response.</h2>
+              <div className="fork-preview">
+                {(forkEvent.text || forkEvent.command || "(No visible response text)").slice(
+                  0,
+                  500,
+                )}
+                {(forkEvent.text || forkEvent.command || "").length > 500 ? "…" : ""}
+              </div>
+              <p>
+                History through and including this response is copied. Only the transcript is
+                copied. Filesystem and VM state are not preserved; the fork starts in a fresh
+                environment. A new secret is created, your current run ends, and commands are not
+                replayed.
+              </p>
+              <button disabled={busy} onClick={() => setModal(null)}>
+                Cancel
+              </button>
+              <button className="primary" disabled={loading} onClick={() => void fork()}>
+                {busy ? "Preparing…" : "Create fork ↗"}
+              </button>
+            </>
+          ) : modal === "setup" ? (
             <>
               <p className="eyebrow">FRESH ENVIRONMENT / FRESH SECRET</p>
               <h2>Start a new run.</h2>
@@ -723,7 +805,19 @@ function ModelSelect({
     </label>
   );
 }
-export function Entry({ event, previous }: { event: GameEvent; previous?: GameEvent }) {
+export function Entry({
+  event,
+  previous,
+  disabled = false,
+  onFork,
+  onCopy,
+}: {
+  event: GameEvent;
+  previous?: GameEvent;
+  disabled?: boolean;
+  onFork?: () => void;
+  onCopy?: () => void;
+}) {
   if (event.kind === "monitor" && event.decision === "allow") return null;
   if (event.kind === "tool" && previous?.kind === "monitor" && previous.decision === "block")
     return null;
@@ -794,6 +888,16 @@ export function Entry({ event, previous }: { event: GameEvent; previous?: GameEv
           <p>{event.text}</p>
         ))}
       {command && <pre>{command}</pre>}
+      {event.kind === "agent" && (
+        <div className="entry-actions">
+          <button disabled={disabled} onClick={onCopy}>
+            Copy
+          </button>
+          <button disabled={disabled} onClick={onFork}>
+            Fork
+          </button>
+        </div>
+      )}
     </article>
   );
 }

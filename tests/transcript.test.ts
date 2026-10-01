@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Entry } from "../app/game-ui";
-import type { GameEvent } from "../lib/types";
+import { Entry, refreshedGame } from "../app/game-ui";
+import type { GameEvent, PublicGame } from "../lib/types";
 
 test("transcript distinguishes speakers, renders commands and shows only blocked decisions", () => {
   const render = (event: GameEvent, previous?: GameEvent) =>
@@ -19,6 +19,8 @@ test("transcript distinguishes speakers, renders commands and shows only blocked
     command: 'sprite_exec: {"command":"pwd"}\nsprite_exec: {"command":"echo hello"}',
   });
   assert.match(agent, />AGENT</);
+  assert.match(agent, />Copy</);
+  assert.match(agent, />Fork</);
   assert.match(agent, /TURN 3/);
   assert.match(agent, /model-used-on-turn-3/);
   assert.ok(agent.indexOf("Agent reasoning") < agent.indexOf("<p>Checking</p>"));
@@ -71,4 +73,22 @@ test("user and agent Markdown renders safely; tool output remains literal", () =
     }),
   );
   assert.match(tool, /\*\*literal\*\* &lt;script&gt;/);
+  assert.doesNotMatch(tool, /Fork/);
+  assert.doesNotMatch(
+    renderToStaticMarkup(createElement(Entry, { event: { id: 3, kind: "user", text: "hi" } })),
+    /Fork/,
+  );
+});
+
+test("run refreshes cannot replace a newly selected child with a stale parent", () => {
+  const child = { id: "child" } as PublicGame;
+  const staleParent = { id: "parent" } as PublicGame;
+  const updatedChild = {
+    id: "child",
+    status: "ended",
+    events: [{ id: 1, kind: "agent", text: "refreshed" }],
+  } as PublicGame;
+  assert.equal(refreshedGame(child, staleParent), child);
+  assert.equal(refreshedGame(child, updatedChild), updatedChild);
+  assert.equal(refreshedGame(null, staleParent), null);
 });

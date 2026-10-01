@@ -14,6 +14,7 @@ import {
 import { currentSeason } from "./seasons";
 import type { GameEvent, GameStatus, PublicGame } from "./types";
 import { createEnvironment, destroyEnvironment } from "./sprites";
+import { forkTranscript } from "./fork-transcript";
 
 export type GameRow = {
   id: string;
@@ -108,7 +109,7 @@ export async function assertLease(game: GameRow) {
 export async function record(gameId: string, event: Omit<GameEvent, "id">, lease?: string | null) {
   const { rows } = await db.query(
     `INSERT INTO ctf.events(game_id,data) SELECT id,$2 FROM ctf.games
-    WHERE id=$1 AND ($3::uuid IS NULL OR (lease=$3 AND lease_until>now())) RETURNING id`,
+    WHERE id=$1 AND ($3::uuid IS NULL OR (lease=$3 AND lease_until>now())) FOR UPDATE RETURNING id`,
     [gameId, JSON.stringify(event), lease ?? null],
   );
   if (!rows[0]) throw new GameError("This response has stopped.", 409);
@@ -143,7 +144,13 @@ export async function startGame(
   ownerId: string,
   signedIn: boolean,
   agentModel: string = AGENT_MODEL,
+  fork?: { sourceId: string; eventId: number },
 ) {
+  if (
+    fork &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fork.sourceId)
+  )
+    throw new GameError("Game not found.", 404);
   if (!MODELS.some((model) => model === agentModel))
     throw new GameError("Unsupported attack model.");
   const season = await currentSeason();
@@ -159,7 +166,7 @@ export async function startGame(
     if (Number(spend.rows[0]?.total ?? 0) >= DAILY_CAP_MICRODOLLARS)
       throw new GameError("Today’s inference allowance is used up. Please return tomorrow.", 429);
     const existing = await client.query<GameRow>(
-      "SELECT * FROM ctf.games WHERE owner_id=$1 AND status IN ('creating','active')",
+      "SELECT * FROM ctf.games WHERE owner_id=$1 AND status IN ('creating','active') FOR UPDATE",
       [ownerId],
     );
     if (
@@ -187,8 +194,38 @@ export async function startGame(
     );
     if (totalStarts.rows[0].total >= 100)
       throw new GameError("Today’s new-game allowance is used up. Please return tomorrow.", 429);
+    let forkData: ReturnType<typeof forkTranscript> | undefined;
+    if (fork) {
+      const source = (
+        await client.query<GameRow>(
+          "SELECT * FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
+          [fork.sourceId, ownerId],
+        )
+      ).rows[0];
+      if (!source) throw new GameError("Game not found.", 404);
+      if (source.lease_until && new Date(source.lease_until).getTime() > Date.now())
+        throw new GameError("Wait for the current response to finish before forking.", 409);
+      const sourceEvents = (
+        await client.query<{ id: string; data: GameEvent }>(
+          "SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id",
+          [source.id],
+        )
+      ).rows.map((row) => ({ ...row.data, id: Number(row.id) }));
+      try {
+        forkData = forkTranscript(source.messages, sourceEvents, source.turns, fork.eventId);
+      } catch {
+        throw new GameError("The selected response cannot be safely forked.", 409);
+      }
+      const selected = forkData.events.at(-1)!;
+      if (selected.kind !== "agent" || !MODELS.includes(selected.model ?? ""))
+        throw new GameError("The selected response cannot be safely forked.", 409);
+      agentModel = selected.model!;
+      await client.query("UPDATE ctf.games SET lease=NULL,lease_until=NULL WHERE id=$1", [
+        source.id,
+      ]);
+    }
     await client.query(
-      "UPDATE ctf.games SET status='ended' WHERE owner_id=$1 AND status IN ('creating','active')",
+      "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE owner_id=$1 AND status IN ('creating','active')",
       [ownerId],
     );
     const { rows } = await client.query<GameRow>(
@@ -206,6 +243,24 @@ export async function startGame(
       ],
     );
     if (!rows[0]) throw new GameError("The season just ended. Start a new run.", 409);
+    if (forkData) {
+      await client.query("UPDATE ctf.games SET messages=$2,turns=$3,blocks=$4 WHERE id=$1", [
+        id,
+        JSON.stringify(forkData.messages),
+        forkData.turns,
+        forkData.blocks,
+      ]);
+      for (const event of forkData.events) {
+        const { id: _id, ...data } = event;
+        await client.query("INSERT INTO ctf.events(game_id,data) VALUES($1,$2)", [
+          id,
+          JSON.stringify(data),
+        ]);
+      }
+      rows[0].messages = forkData.messages;
+      rows[0].turns = forkData.turns;
+      rows[0].blocks = forkData.blocks;
+    }
     return rows[0];
   });
   try {
