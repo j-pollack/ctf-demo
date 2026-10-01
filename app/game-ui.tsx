@@ -77,8 +77,13 @@ export default function GameUI({
       .catch((err) => setError(err.message));
   }, [account.data?.user.id]);
   useEffect(() => {
-    if (modal) dialog.current?.showModal();
-    else dialog.current?.close();
+    if (modal) {
+      dialog.current?.showModal();
+      if (modal === "fork") {
+        const preview = dialog.current?.querySelector<HTMLElement>(".fork-preview");
+        if (preview) preview.scrollTop = preview.scrollHeight;
+      }
+    } else dialog.current?.close();
   }, [modal]);
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -673,7 +678,7 @@ export default function GameUI({
           if (event.target === dialog.current && !busy) setModal(null);
         }}
       >
-        <div className="dialog-content">
+        <div className={`dialog-content${modal === "fork" ? " fork-dialog-content" : ""}`}>
           <button
             className="close"
             aria-label="Close dialog"
@@ -686,25 +691,23 @@ export default function GameUI({
             <>
               <p className="eyebrow">FORK THROUGH TURN {forkEvent.turn}</p>
               <h2>Start from this response.</h2>
-              <div className="fork-preview">
-                {(forkEvent.text || forkEvent.command || "(No visible response text)").slice(
-                  0,
-                  500,
-                )}
-                {(forkEvent.text || forkEvent.command || "").length > 500 ? "…" : ""}
+              <p className="eyebrow">VISIBLE HISTORY THROUGH THIS RESPONSE</p>
+              <ForkPreview events={game?.events ?? []} selectedId={forkEvent.id} />
+              <aside className="fork-warning">
+                <p>
+                  Only the transcript is copied. Filesystem and VM state are not preserved; the fork
+                  starts in a fresh environment. A new secret is created, and commands are not
+                  replayed. You’ll switch to the new run. Your previous transcript is kept.
+                </p>
+              </aside>
+              <div className="fork-actions">
+                <button disabled={busy} onClick={() => setModal(null)}>
+                  Cancel
+                </button>
+                <button className="primary" disabled={loading} onClick={() => void fork()}>
+                  {busy ? "Preparing…" : "Create fork ↗"}
+                </button>
               </div>
-              <p>
-                History through and including this response is copied. Only the transcript is
-                copied. Filesystem and VM state are not preserved; the fork starts in a fresh
-                environment. A new secret is created, your current run ends, and commands are not
-                replayed.
-              </p>
-              <button disabled={busy} onClick={() => setModal(null)}>
-                Cancel
-              </button>
-              <button className="primary" disabled={loading} onClick={() => void fork()}>
-                {busy ? "Preparing…" : "Create fork ↗"}
-              </button>
             </>
           ) : modal === "setup" ? (
             <>
@@ -809,12 +812,14 @@ export function Entry({
   event,
   previous,
   disabled = false,
+  showActions = true,
   onFork,
   onCopy,
 }: {
   event: GameEvent;
   previous?: GameEvent;
   disabled?: boolean;
+  showActions?: boolean;
   onFork?: () => void;
   onCopy?: () => void;
 }) {
@@ -841,63 +846,99 @@ export function Entry({
     })
     .join("\n");
   return (
-    <article className={`entry ${event.kind}`}>
-      <header>
-        <strong className="speaker">
-          {event.kind === "user"
-            ? "USER"
-            : event.kind === "agent"
-              ? "AGENT"
-              : event.kind === "tool"
-                ? "TOOL OUTPUT"
-                : event.kind === "monitor"
-                  ? "MONITOR ERROR"
-                  : "SYSTEM"}
-        </strong>
-        {event.kind === "agent" && (
-          <span className="turn-label">
-            TURN {event.turn}
-            {event.model && <span className="turn-model"> · {event.model}</span>}
-          </span>
+    <>
+      <article className={`entry ${event.kind}`}>
+        <header>
+          <strong className="speaker">
+            {event.kind === "user"
+              ? "USER"
+              : event.kind === "agent"
+                ? "AGENT"
+                : event.kind === "tool"
+                  ? "TOOL OUTPUT"
+                  : event.kind === "monitor"
+                    ? "MONITOR ERROR"
+                    : "SYSTEM"}
+          </strong>
+          {event.kind === "agent" && (
+            <span className="turn-label">
+              TURN {event.turn}
+              {event.model && <span className="turn-model"> · {event.model}</span>}
+            </span>
+          )}
+        </header>
+        {event.reasoning && (
+          <details>
+            <summary>Agent reasoning</summary>
+            <p>{event.reasoning}</p>
+          </details>
         )}
-      </header>
-      {event.reasoning && (
-        <details>
-          <summary>Agent reasoning</summary>
-          <p>{event.reasoning}</p>
-        </details>
-      )}
-      {event.text &&
-        (event.kind === "user" || event.kind === "agent" ? (
-          <div className="markdown">
-            <Markdown
-              remarkPlugins={[remarkGfm]}
-              disallowedElements={["img"]}
-              components={{
-                a: ({ href, children }) => (
-                  <a href={href} target="_blank" rel="noopener noreferrer">
-                    {children}
-                  </a>
-                ),
-              }}
-            >
-              {event.text}
-            </Markdown>
-          </div>
-        ) : (
-          <p>{event.text}</p>
-        ))}
-      {command && <pre>{command}</pre>}
-      {event.kind === "agent" && (
+        {event.text &&
+          (event.kind === "user" || event.kind === "agent" ? (
+            <div className="markdown">
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                disallowedElements={["img"]}
+                components={{
+                  a: ({ href, children }) => (
+                    <a href={href} target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  ),
+                }}
+              >
+                {event.text}
+              </Markdown>
+            </div>
+          ) : (
+            <p>{event.text}</p>
+          ))}
+        {command && <pre>{command}</pre>}
+      </article>
+      {event.kind === "agent" && showActions && (
         <div className="entry-actions">
-          <button disabled={disabled} onClick={onCopy}>
-            Copy
+          <button type="button" aria-label="Copy response" disabled={disabled} onClick={onCopy}>
+            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+              <rect x="8" y="8" width="12" height="12" rx="1" />
+              <path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" />
+            </svg>
+            <span className="entry-action-label">Copy</span>
           </button>
-          <button disabled={disabled} onClick={onFork}>
-            Fork
+          <button
+            type="button"
+            aria-label="Fork from response"
+            disabled={disabled}
+            onClick={onFork}
+          >
+            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+              <circle cx="6" cy="5" r="2" />
+              <circle cx="18" cy="19" r="2" />
+              <circle cx="18" cy="5" r="2" />
+              <path d="M6 7v7a5 5 0 0 0 5 5h5M6 7v0a5 5 0 0 0 5-2h5" />
+            </svg>
+            <span className="entry-action-label">Fork</span>
           </button>
         </div>
       )}
-    </article>
+    </>
+  );
+}
+
+export function ForkPreview({ events, selectedId }: { events: GameEvent[]; selectedId: number }) {
+  const selectedIndex = events.findIndex(
+    (event) => event.id === selectedId && event.kind === "agent",
+  );
+  if (selectedIndex < 0) return null;
+  return (
+    <div
+      className="fork-preview"
+      role="region"
+      aria-label="Visible transcript history through selected response"
+      tabIndex={0}
+    >
+      {events.slice(0, selectedIndex + 1).map((event, index) => (
+        <Entry key={event.id} event={event} previous={events[index - 1]} showActions={false} />
+      ))}
+    </div>
   );
 }

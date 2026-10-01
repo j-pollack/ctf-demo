@@ -816,6 +816,90 @@ dialog::backdrop {
     padding: 12px 20px;
   }
 }
+.entry-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: -12px 0 14px;
+}
+.entry-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px;
+}
+.entry-actions svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.entry-action-label {
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  white-space: nowrap;
+  transition:
+    max-width 120ms ease,
+    opacity 120ms ease;
+}
+.entry-actions button:hover .entry-action-label,
+.entry-actions button:focus-visible .entry-action-label {
+  max-width: 4em;
+  opacity: 1;
+}
+.fork-preview {
+  max-height: min(40dvh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  padding: 0 12px;
+}
+.fork-dialog-content {
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+.fork-warning {
+  margin: 14px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+}
+.fork-warning p {
+  margin: 0;
+}
+.fork-actions {
+  display: flex;
+  gap: 12px;
+}
+.fork-actions button {
+  flex: 1;
+  min-width: 0;
+}
+@media (hover: none), (pointer: coarse) {
+  .entry-action-label {
+    max-width: 4em;
+    opacity: 1;
+  }
+}
+@media (max-width: 480px) {
+  .fork-preview {
+    max-height: min(28dvh, 224px);
+  }
+  .fork-actions {
+    flex-direction: column;
+  }
+  .fork-actions button {
+    width: 100%;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   * {
     scroll-behavior: auto !important;
