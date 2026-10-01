@@ -7,7 +7,8 @@ import {
   type Model,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { reserveInference, settleInference, type GameRow } from "./games";
+import { setTimeout as sleep } from "node:timers/promises";
+import { assertLease, reserveInference, settleInference, type GameRow } from "./games";
 import { db } from "./db";
 import { GameError, inputCeiling, MODELS } from "./policy";
 
@@ -135,6 +136,15 @@ export function reasoningOf(message: AssistantMessage) {
     .map((part) => part.thinking)
     .join("\n");
 }
+function retryAfter(value: string | undefined) {
+  if (!value) return 0;
+  if (/^\d+(?:\.\d+)?$/.test(value.trim())) {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) ? seconds * 1000 : 0;
+  }
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
+}
 export function providerTranscript(messages: Message[], targetModel?: string) {
   const tools = new Map();
   const transcript = messages.map((message) => {
@@ -189,6 +199,7 @@ export async function infer(
   model: Model<"openai-completions">,
   messages: Message[],
   signal?: AbortSignal,
+  onRetry?: (message: string) => void,
 ): Promise<AssistantMessage> {
   signal?.throwIfAborted();
   if (!process.env.OPENROUTER_API_KEY) throw new Error("Inference is not configured.");
@@ -227,25 +238,51 @@ export async function infer(
   let knownUnbilled = false;
   let response: Response | undefined,
     providerError: ReturnType<typeof providerErrorDetails> | undefined;
+  const deadline = AbortSignal.timeout(90000);
+  const requestSignal = AbortSignal.any([signal ?? new AbortController().signal, deadline]);
   try {
-    response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ ...payload, max_tokens: reservation.maxTokens }),
-      signal: AbortSignal.any([signal ?? new AbortController().signal, AbortSignal.timeout(90000)]),
-    });
-    if (!response.ok) {
-      knownUnbilled = [400, 401, 402, 403, 404, 422, 429].includes(response.status);
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      requestSignal.throwIfAborted();
+      if (attempt > 1) await assertLease(game);
+      requestSignal.throwIfAborted();
+      knownUnbilled = false;
+      response = undefined;
+      providerError = undefined;
+      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ...payload, max_tokens: reservation.maxTokens }),
+        signal: requestSignal,
+      });
+      knownUnbilled = !response.ok && [400, 401, 402, 403, 404, 422, 429].includes(response.status);
+      requestSignal.throwIfAborted();
+      if (response.ok) break;
       providerError = providerErrorDetails(response, await response.json().catch(() => null));
-      throw new GameError(
-        `Inference service returned ${response.status}. The command was not executed.`,
-        503,
+      requestSignal.throwIfAborted();
+      if (response.status !== 429 || attempt === 5)
+        throw new GameError(
+          `Inference service returned ${response.status}. The command was not executed.`,
+          503,
+        );
+      const delay = Math.max(
+        1000 * 2 ** (attempt - 1),
+        retryAfter(providerError.headers["retry-after"]),
       );
+      onRetry?.(
+        `${role === "agent" ? "Agent" : "Monitor"} rate limited; retrying attempt ${attempt + 1}/5 in ${Math.ceil(delay / 1000)}s`,
+      );
+      await sleep(Math.min(delay, 2_147_483_647), undefined, {
+        signal: requestSignal,
+      });
+      requestSignal.throwIfAborted();
+      onRetry?.(role === "agent" ? "Agent thinking" : "Monitor reviewing command");
     }
+    if (!response) throw new Error("Inference service did not respond.");
     const data = await response.json();
+    requestSignal.throwIfAborted();
     if (typeof data.id === "string")
       await db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [
         reservation.id,
@@ -307,7 +344,12 @@ export async function infer(
       } catch {
         throw new Error("The agent proposed an invalid tool call.");
       }
-      content.push({ type: "toolCall", id: call.id, name: call.function.name, arguments: args });
+      content.push({
+        type: "toolCall",
+        id: call.id,
+        name: call.function.name === "game:sprite_exec" ? "sprite_exec" : call.function.name,
+        arguments: args,
+      });
     }
     console.info(
       JSON.stringify({
@@ -368,10 +410,11 @@ export function agentStream(
   game: GameRow,
   model: Model<"openai-completions">,
   onFailure: (error: unknown) => void,
+  onRetry?: (message: string) => void,
 ) {
   return (_model: Model<Api>, context: TranscriptContext, options?: { signal?: AbortSignal }) => {
     const stream = createAssistantMessageEventStream();
-    void infer(game, "agent", model, context.messages, options?.signal)
+    void infer(game, "agent", model, context.messages, options?.signal, onRetry)
       .then((message) =>
         stream.push({
           type: "done",

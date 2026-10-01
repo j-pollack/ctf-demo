@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryCredentialStore, Type, type Message } from "@earendil-works/pi-ai";
+import { Value } from "typebox/value";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -133,12 +134,20 @@ export async function runGame(
     }));
     if (session.getActiveToolNames().join(",") !== "sprite_exec")
       throw new Error("Unexpected tool configuration.");
-    session.agent.streamFunction = agentStream(game, model, (error) => {
-      failure ??= error;
-    });
+    session.agent.streamFunction = agentStream(
+      game,
+      model,
+      (error) => {
+        failure ??= error;
+      },
+      (stage) => send("stage", stage),
+    );
     session.agent.toolExecution = "sequential";
     session.agent.beforeToolCall = async ({ assistantMessage, toolCall }, toolSignal) => {
-      const command = String(toolCall.arguments.command ?? "");
+      const args = toolCall.arguments;
+      if (!Value.Check(tool.parameters, args))
+        return { block: true, reason: "Invalid command arguments" };
+      const command = args.command as string;
       try {
         await assertLease(game);
         if (!reasoningOf(assistantMessage).trim())
@@ -163,7 +172,9 @@ export async function runGame(
             timestamp: Date.now(),
           },
         ];
-        const response = await infer(game, "monitor", monitor, messages, toolSignal);
+        const response = await infer(game, "monitor", monitor, messages, toolSignal, (stage) =>
+          send("stage", stage),
+        );
         let decision;
         try {
           decision = parseDecision(textOf(response));

@@ -40,7 +40,18 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
   let commandGate: ((signal: AbortSignal) => Promise<void>) | undefined;
   let monitor = "allow";
   let proposed = ["printf harmless"];
+  let proposedTool = "sprite_exec";
+  let proposedArguments = (command: string) => JSON.stringify({ command });
   let agentCalls = 0;
+  const requests: { role: "agent" | "monitor"; payload: unknown; at: number }[] = [];
+  let responses: Partial<
+    Record<
+      "agent" | "monitor",
+      { status: number; retryAfter?: string; metadataRetryAfter?: string }[]
+    >
+  > = {};
+  let fetchGate: ((signal: AbortSignal) => Promise<Response>) | undefined;
+  let abortOn429: (() => void) | undefined;
   const strict =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A) => {
@@ -166,6 +177,31 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
       assert.equal(String(input), "https://openrouter.ai/api/v1/chat/completions");
       assert.equal(options?.method, "POST");
       const payload = JSON.parse(String(options.body));
+      const role = payload.response_format ? "monitor" : "agent";
+      requests.push({ role, payload, at: performance.now() });
+      const planned = responses[role]?.shift();
+      if (fetchGate && requests.length === 2) return fetchGate(options!.signal!);
+      if (planned?.status === -1) throw new Error("fixture network failure");
+      if (planned && ![200, 299].includes(planned.status)) {
+        if (planned.status === 429) abortOn429?.();
+        return Response.json(
+          {
+            error: {
+              code: planned.status,
+              message: "Fixture provider error",
+              metadata: {
+                headers: planned.metadataRetryAfter
+                  ? { "Retry-After": planned.metadataRetryAfter }
+                  : {},
+              },
+            },
+          },
+          {
+            status: planned.status,
+            headers: planned.retryAfter ? { "retry-after": planned.retryAfter } : {},
+          },
+        );
+      }
       let message;
       if (payload.response_format) {
         assert.equal(payload.model, MONITOR_MODEL);
@@ -192,7 +228,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
                 tool_calls: proposed.map((command) => ({
                   id: randomUUID(),
                   type: "function",
-                  function: { name: "sprite_exec", arguments: JSON.stringify({ command }) },
+                  function: { name: proposedTool, arguments: proposedArguments(command) },
                 })),
               }
             : { content: "Done." };
@@ -200,7 +236,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
       return Response.json({
         id: `test-${randomUUID()}`,
         choices: [{ message, finish_reason: "stop" }],
-        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },
+        ...(planned?.status === 299
+          ? {}
+          : { usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 } }),
       });
     }),
   );
@@ -219,7 +257,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     commandResult = { stdout: "fixture-output", stderr: "", exitCode: 0 };
     monitor = "allow";
     proposed = ["printf harmless"];
+    proposedTool = "sprite_exec";
+    proposedArguments = (command) => JSON.stringify({ command });
     agentCalls = 0;
+    requests.length = 0;
+    responses = {};
+    fetchGate = undefined;
+    abortOn429 = undefined;
   });
   t.afterEach(() =>
     assert.deepEqual(
@@ -398,6 +442,289 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
       assert.equal(environments.size, 0);
     },
   );
+  await t.test("exact game:sprite_exec alias executes and replays canonically", async () => {
+    const game = await startGame("alias", false);
+    proposedTool = "game:sprite_exec";
+    const finished = await play(game.id, "alias");
+    assert.deepEqual(
+      commands.map(({ command }) => command),
+      ["printf harmless"],
+    );
+    assert.ok(JSON.stringify(finished.messages).includes("fixture-output"));
+    assert.ok(JSON.stringify(finished.messages).includes('"name":"sprite_exec"'));
+    assert.ok(!JSON.stringify(finished.messages).includes("game:sprite_exec"));
+    proposedTool = "sprite_exec";
+    agentCalls = 0;
+    await play(game.id, "alias");
+    assert.equal(commands.length, 2);
+  });
+  await t.test(
+    "qualified alias remains subject to monitor block and argument validation",
+    async () => {
+      const blocked = await startGame("alias-block", false);
+      proposedTool = "game:sprite_exec";
+      monitor = "block";
+      await play(blocked.id, "alias-block");
+      assert.equal(commands.length, 0);
+      assert.equal((await row(blocked.id)).blocks, 1);
+      const invalid = await startGame("alias-invalid", false);
+      monitor = "allow";
+      proposedArguments = () => JSON.stringify({ command: 1 });
+      agentCalls = 0;
+      const invalidResult = await play(invalid.id, "alias-invalid");
+      assert.equal(commands.length, 0);
+      assert.ok(
+        invalidResult.messages.some(
+          (message: { role: string; isError?: boolean }) =>
+            message.role === "toolResult" && message.isError,
+        ),
+      );
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM ctf.events WHERE game_id=$1 AND data->>'kind'='monitor'",
+            [invalid.id],
+          )
+        ).rows[0].n,
+        0,
+      );
+    },
+  );
+  await t.test("similar but unknown tool names do not execute", async () => {
+    const game = await startGame("unknown-alias", false);
+    proposedTool = "other:sprite_exec";
+    await play(game.id, "unknown-alias");
+    assert.equal(commands.length, 0);
+  });
+  await t.test(
+    "agent and monitor recover from 429 without duplicate execution or reservations",
+    async () => {
+      const game = await startGame("retry", false);
+      responses = { agent: [{ status: 429 }], monitor: [{ status: 429 }] };
+      const stages: string[] = [];
+      const leased = await claimGame(game.id, "retry");
+      await runGame(
+        leased,
+        "Controlled integration fixture",
+        AbortSignal.timeout(5000),
+        (type, data) => {
+          if (type === "stage") stages.push(String(data));
+        },
+      );
+      assert.deepEqual(
+        commands.map(({ command }) => command),
+        ["printf harmless"],
+      );
+      assert.equal(requests.filter(({ role }) => role === "agent").length, 3);
+      assert.equal(requests.filter(({ role }) => role === "monitor").length, 2);
+      assert.deepEqual(requests[0].payload, requests[1].payload);
+      assert.deepEqual(requests[2].payload, requests[3].payload);
+      assert.ok(
+        stages.some((stage) => /Agent rate limited; retrying attempt 2\/5 in 1s/.test(stage)),
+      );
+      assert.ok(
+        stages.some((stage) => /Monitor rate limited; retrying attempt 2\/5 in 1s/.test(stage)),
+      );
+      assert.equal(
+        (
+          await pool.query("SELECT count(*)::int AS n FROM ctf.inference WHERE game_id=$1", [
+            game.id,
+          ])
+        ).rows[0].n,
+        3,
+      );
+      assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+    },
+  );
+  await t.test(
+    "five 429 attempts settle one unbilled reservation and execute nothing",
+    async () => {
+      const game = await startGame("exhaust-429", false);
+      responses = { agent: Array.from({ length: 5 }, () => ({ status: 429 })) };
+      const stages: string[] = [];
+      const leased = await claimGame(game.id, "exhaust-429");
+      await runGame(
+        leased,
+        "Controlled integration fixture",
+        AbortSignal.timeout(20000),
+        (type, data) => {
+          if (type === "stage") stages.push(String(data));
+        },
+      );
+      assert.equal(requests.length, 5);
+      for (const [index, minimum] of [950, 1950, 3950, 7950].entries())
+        assert.ok(requests[index + 1].at - requests[index].at >= minimum);
+      assert.equal(commands.length, 0);
+      assert.deepEqual(
+        requests.map(({ payload }) => payload),
+        Array(5).fill(requests[0].payload),
+      );
+      for (const [attempt, delay] of [
+        [2, 1],
+        [3, 2],
+        [4, 4],
+        [5, 8],
+      ])
+        assert.ok(stages.some((stage) => stage.includes(`attempt ${attempt}/5 in ${delay}s`)));
+      const rows = (
+        await pool.query("SELECT tokens,cost,settled_at FROM ctf.inference WHERE game_id=$1", [
+          game.id,
+        ])
+      ).rows;
+      assert.equal(rows.length, 1);
+      assert.equal(Number(rows[0].tokens), 0);
+      assert.equal(Number(rows[0].cost), 0);
+      assert.ok(rows[0].settled_at);
+      assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+    },
+  );
+  await t.test(
+    "non-429 failure does not retry; ambiguous failure after 429 retains hold",
+    async () => {
+      const direct = await startGame("direct-500", false);
+      responses = { agent: [{ status: 500 }] };
+      await play(direct.id, "direct-500");
+      assert.equal(requests.length, 1);
+      assert.ok(Number((await row(direct.id)).reserved_microdollars) > 0);
+      const later = await startGame("later-500", false);
+      requests.length = 0;
+      responses = { agent: [{ status: 429 }, { status: 500 }] };
+      await play(later.id, "later-500");
+      assert.equal(requests.length, 2);
+      assert.equal(commands.length, 0);
+      assert.ok(Number((await row(later.id)).reserved_microdollars) > 0);
+      assert.equal(
+        (await pool.query("SELECT settled_at FROM ctf.inference WHERE game_id=$1", [later.id]))
+          .rows[0].settled_at,
+        null,
+      );
+    },
+  );
+  await t.test(
+    "abort racing a received 429 settles known-unbilled usage without another request",
+    async () => {
+      const game = await startGame("race-429", false);
+      const controller = new AbortController();
+      responses = { agent: [{ status: 429 }] };
+      abortOn429 = () => controller.abort();
+      const finished = await play(game.id, "race-429", controller.signal);
+      assert.equal(finished.status, "active");
+      assert.equal((await row(game.id)).lease, null);
+      assert.equal(requests.length, 1);
+      assert.equal(commands.length, 0);
+      const inference = (
+        await pool.query(
+          "SELECT tokens,cost,generation_id,settled_at FROM ctf.inference WHERE game_id=$1",
+          [game.id],
+        )
+      ).rows;
+      assert.equal(inference.length, 1);
+      assert.equal(Number(inference[0].tokens), 0);
+      assert.equal(Number(inference[0].cost), 0);
+      assert.equal(inference[0].generation_id, null);
+      assert.ok(inference[0].settled_at);
+      assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+    },
+  );
+  await t.test(
+    "Retry-After seconds, HTTP date, metadata and malformed headers choose safe waits",
+    async () => {
+      for (const [name, header, metadata, expected] of [
+        ["seconds", "3", undefined, 3],
+        ["date", new Date(Date.now() + 30_000).toUTCString(), undefined, 29],
+        ["metadata", undefined, "4", 4],
+        ["malformed", "nonsense", undefined, 1],
+        ["huge", "9999999999999999999999999999999999999", undefined, 90],
+      ] as const) {
+        const game = await startGame(`header-${name}`, false);
+        requests.length = 0;
+        responses = { agent: [{ status: 429, retryAfter: header, metadataRetryAfter: metadata }] };
+        const controller = new AbortController();
+        const stages: string[] = [];
+        const leased = await claimGame(game.id, `header-${name}`);
+        await runGame(leased, "Controlled integration fixture", controller.signal, (type, data) => {
+          if (type !== "stage") return;
+          stages.push(String(data));
+          if (String(data).includes("rate limited")) setTimeout(() => controller.abort(), 10);
+        });
+        assert.equal(requests.length, 1);
+        assert.equal(commands.length, 0);
+        const retry = stages.find((stage) => stage.includes("rate limited"));
+        assert.ok(retry, name);
+        assert.ok(Number(retry.match(/in ([\de+.]+)s/)?.[1]) >= expected, `${name}: ${retry}`);
+        assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+      }
+    },
+  );
+  await t.test(
+    "abort during retry fetch retains ambiguous hold and never dispatches a third attempt",
+    async () => {
+      const game = await startGame("abort-fetch", false);
+      responses = { agent: [{ status: 429 }] };
+      const controller = new AbortController();
+      let entered!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      fetchGate = (signal) =>
+        new Promise<Response>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          entered();
+        });
+      const pending = play(game.id, "abort-fetch", controller.signal);
+      await ready;
+      controller.abort();
+      const stopped = await pending;
+      assert.equal(stopped.status, "active");
+      assert.equal(requests.length, 2);
+      assert.equal(commands.length, 0);
+      assert.ok(Number((await row(game.id)).reserved_microdollars) > 0);
+    },
+  );
+  await t.test("lease expiration during backoff blocks retry dispatch", async () => {
+    const game = await startGame("expired-retry", false);
+    responses = { agent: [{ status: 429 }] };
+    let waiting!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      waiting = resolve;
+    });
+    const leased = await claimGame(game.id, "expired-retry");
+    const pending = runGame(
+      leased,
+      "Controlled integration fixture",
+      AbortSignal.timeout(5000),
+      (type, data) => {
+        if (type === "stage" && String(data).includes("rate limited")) waiting();
+      },
+    );
+    await ready;
+    await pool.query("UPDATE ctf.games SET lease_until=now()-interval '1 second' WHERE id=$1", [
+      game.id,
+    ]);
+    await assert.rejects(pending, /This response has stopped/);
+    assert.equal(requests.length, 1);
+    assert.equal(commands.length, 0);
+    assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+  });
+  await t.test("network and missing-usage failures after 429 retain pending billing", async () => {
+    for (const [owner, status] of [
+      ["network", -1],
+      ["missing-usage", 299],
+    ] as const) {
+      const game = await startGame(owner, false);
+      requests.length = 0;
+      responses = { agent: [{ status: 429 }, { status }] };
+      await play(game.id, owner);
+      assert.equal(requests.length, 2);
+      assert.equal(commands.length, 0);
+      assert.ok(Number((await row(game.id)).reserved_microdollars) > 0);
+      assert.equal(
+        (await pool.query("SELECT settled_at FROM ctf.inference WHERE game_id=$1", [game.id]))
+          .rows[0].settled_at,
+        null,
+      );
+    }
+  });
   await t.test(
     "command adapter preserves stderr/exit, bounds output, and handles exec failure and abort",
     async () => {
