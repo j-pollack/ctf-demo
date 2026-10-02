@@ -11,6 +11,25 @@ const label = (model: string) => model.split("/")[1];
 const number = (value: number) => value.toLocaleString("en-US");
 const money = (value: number) => `$${(value / 1_000_000).toFixed(4)}`;
 export type PendingInstruction = { gameId: string; text: string; afterId: number };
+export function selectedNavItem(pathname: string, detail?: PublicGame | null, now = Date.now()) {
+  if (pathname === "/play") return "play";
+  if (pathname === "/runs") return "history";
+  if (pathname === "/rank") return "rank";
+  if (pathname === "/rules") return "rules";
+  return detail?.status === "active" &&
+    (!detail.season.endsAt || Date.parse(detail.season.endsAt) > now)
+    ? "play"
+    : null;
+}
+export function canCreateNewRun(current?: PublicGame | null, now = Date.now(), resolved = true) {
+  return (
+    resolved &&
+    (!current ||
+      current.status !== "active" ||
+      (!!current.season.endsAt && Date.parse(current.season.endsAt) <= now) ||
+      current.events.some((event) => event.id > 0 && event.kind === "user"))
+  );
+}
 export function instructionStatus(pending: PendingInstruction, next?: PublicGame) {
   if (!next || next.id !== pending.gameId) return "pending";
   if (
@@ -77,6 +96,7 @@ export default function GameUI({
     [stage, setStage] = useState(""),
     [error, setError] = useState("");
   const [playError, setPlayError] = useState("");
+  const [playReload, setPlayReload] = useState(0);
   const [history, setHistory] = useState<GameSummary[]>([]),
     [historyCursor, setHistoryCursor] = useState<string | null>(null),
     [historySelected, setHistorySelected] = useState<PublicGame | null>(null),
@@ -84,6 +104,7 @@ export default function GameUI({
     [historyError, setHistoryError] = useState(""),
     [historyReload, setHistoryReload] = useState(0);
   const [rememberedPlayId, setRememberedPlayId] = useState<string | null>(null),
+    [currentRunReady, setCurrentRunReady] = useState(false),
     [detailLoading, setDetailLoading] = useState(false),
     [detailError, setDetailError] = useState(""),
     [detailReload, setDetailReload] = useState(0);
@@ -96,7 +117,6 @@ export default function GameUI({
     liveRequest = useRef(0),
     playRequest = useRef(0),
     forkRequest = useRef(0),
-    rootRedirectSuppressed = useRef(false),
     latestRequest = useRef(0),
     startRequest = useRef(0),
     starting = useRef(false);
@@ -165,7 +185,6 @@ export default function GameUI({
   useEffect(() => {
     if (routeRef.current !== pathname) routeGeneration.current++;
     routeRef.current = pathname;
-    if (pathname !== "/play") rootRedirectSuppressed.current = false;
     if (modal === "fork") {
       setModal(null);
       setForkEvent(null);
@@ -178,17 +197,9 @@ export default function GameUI({
     setPlayError("");
   }, [pathname, account.data?.user.id, rememberedPlayId]);
   useEffect(() => {
-    if (
-      pathname === "/play" &&
-      rememberedPlayId &&
-      !starting.current &&
-      !rootRedirectSuppressed.current
-    )
-      router.replace(`/runs/${rememberedPlayId}`);
-  }, [pathname, rememberedPlayId, router]);
-  useEffect(() => {
     const owner = account.data?.user.id;
     if (historyOwner.current !== owner) {
+      setCurrentRunReady(owner === undefined);
       const hadOwner = historyOwner.current !== undefined;
       const adoptingGuestForStart = !hadOwner && owner !== undefined && starting.current;
       historyOwner.current = owner;
@@ -352,47 +363,70 @@ export default function GameUI({
         setHistoryLoading(false);
     }
   }
-  async function openPlay() {
+  function openPlay() {
     setPlayError("");
-    const id = rememberedPlayId;
-    if (!id) {
-      router.push("/play");
+    router.push("/play");
+    if (pathname === "/play") setPlayReload((value) => value + 1);
+  }
+  useEffect(() => {
+    if (
+      pathname !== "/play" ||
+      !rememberedPlayId ||
+      starting.current ||
+      busy ||
+      game?.busy ||
+      unconfirmed ||
+      pending.current
+    )
       return;
-    }
-    if (busy || game?.busy || pending.current) {
-      router.push(`/runs/${id}`);
-      return;
-    }
-    const request = ++playRequest.current,
-      live = ++liveRequest.current,
+    const id = rememberedPlayId,
+      request = ++playRequest.current,
+      live = liveRequest.current,
       epoch = accountEpoch.current,
       owner = historyOwner.current,
-      fromPath = routeRef.current;
-    try {
-      const fresh = await api(`/api/games/${encodeURIComponent(id)}`);
-      if (
-        request !== playRequest.current ||
-        live !== liveRequest.current ||
-        epoch !== accountEpoch.current ||
-        owner !== historyOwner.current ||
-        fromPath !== routeRef.current ||
-        fresh.id !== id
-      )
-        return;
-      setGame(fresh);
-      setAgent(fresh.agentModel);
-      router.push(`/runs/${id}`);
-    } catch (err) {
-      if (
-        request === playRequest.current &&
-        live === liveRequest.current &&
-        epoch === accountEpoch.current &&
-        owner === historyOwner.current &&
-        fromPath === routeRef.current
-      )
-        setPlayError(err instanceof Error ? err.message : "Could not load the remembered run.");
-    }
-  }
+      path = routeRef.current;
+    let active = true;
+    api(`/api/games/${encodeURIComponent(id)}`)
+      .then((fresh) => {
+        if (
+          !active ||
+          request !== playRequest.current ||
+          live !== liveRequest.current ||
+          epoch !== accountEpoch.current ||
+          owner !== historyOwner.current ||
+          path !== routeRef.current ||
+          busy ||
+          game?.busy ||
+          pending.current ||
+          fresh.id !== id
+        )
+          return;
+        setGame(fresh);
+        setAgent(fresh.agentModel);
+      })
+      .catch((err) => {
+        if (
+          active &&
+          request === playRequest.current &&
+          epoch === accountEpoch.current &&
+          owner === historyOwner.current &&
+          path === routeRef.current
+        )
+          setPlayError(err instanceof Error ? err.message : "Could not load the remembered run.");
+      });
+    return () => {
+      active = false;
+      playRequest.current++;
+    };
+  }, [
+    pathname,
+    rememberedPlayId,
+    account.data?.user.id,
+    busy,
+    game?.busy,
+    unconfirmed,
+    playReload,
+  ]);
   useEffect(() => {
     if (!account.data) return;
     if (starting.current) return;
@@ -409,15 +443,11 @@ export default function GameUI({
         )
           return;
         setRememberedPlayId(data.game?.id ?? null);
+        setCurrentRunReady(true);
         if (request !== liveRequest.current) return;
         if (data.game) {
-          if (
-            !game &&
-            (routeRef.current === "/play" || routeRef.current === `/runs/${data.game.id}`)
-          ) {
-            setGame(data.game);
-            setAgent(data.game.agentModel);
-          }
+          setGame(data.game);
+          setAgent(data.game.agentModel);
         }
       })
       .catch((err) => {
@@ -425,8 +455,10 @@ export default function GameUI({
           epoch === accountEpoch.current &&
           request === liveRequest.current &&
           latest === latestRequest.current
-        )
+        ) {
+          setCurrentRunReady(true);
           setError(err.message);
+        }
       });
   }, [account.data?.user.id]);
   useEffect(() => {
@@ -503,6 +535,10 @@ export default function GameUI({
     : panel === "history"
       ? null
       : game;
+  const navItem = selectedNavItem(pathname, routeRunId ? displayGame : null);
+  const canStartNewRun =
+    canCreateNewRun(game, Date.now(), currentRunReady || !account.data) &&
+    canCreateNewRun(displayGame);
   const isExecutionView = !!displayGame && displayGame.id === game?.id;
   const loading = busy || !!game?.busy || unconfirmed;
   const allowance = displayGame?.budgetMicrodollars ?? (signedIn ? 3_000_000 : 600_000),
@@ -516,6 +552,7 @@ export default function GameUI({
     displayGame?.events.filter((event) => event.kind === "monitor" && event.decision !== "allow") ??
     [];
   async function start() {
+    if (busy || starting.current || !canStartNewRun || (!!account.data && !currentRunReady)) return;
     const startId = ++startRequest.current;
     starting.current = true;
     let startEpoch = accountEpoch.current;
@@ -528,6 +565,15 @@ export default function GameUI({
         if (result.error) throw new Error(result.error.message ?? "Guest session could not start.");
       }
       startEpoch = accountEpoch.current;
+      const latest = await api("/api/games");
+      if (startEpoch !== accountEpoch.current || startId !== startRequest.current) return;
+      setCurrentRunReady(true);
+      if (!canCreateNewRun(latest.game)) {
+        setGame(latest.game);
+        setRememberedPlayId(latest.game.id);
+        setError("Continue your empty active run before starting another.");
+        return;
+      }
       liveRequest.current++;
       const next = await api("/api/games", {
         method: "POST",
@@ -608,8 +654,6 @@ export default function GameUI({
         setForkEvent(null);
         setForkRunId(null);
         router.push(`/runs/${next.id}`);
-      } else if (routeRef.current === "/play") {
-        rootRedirectSuppressed.current = true;
       }
     } catch (err) {
       if (ownerIsCurrent() && request === forkRequest.current && viewIsCurrent())
@@ -819,17 +863,13 @@ export default function GameUI({
         ).map(([key, icon, name]) => (
           <button
             key={key}
-            className={panel === key || (key === "history" && panel === "detail") ? "selected" : ""}
+            className={navItem === key ? "selected" : ""}
             onClick={() =>
               key === "play"
                 ? void openPlay()
                 : router.push(key === "history" ? "/runs" : `/${key}`)
             }
-            aria-current={
-              (key === "history" ? panel === "history" || panel === "detail" : panel === key)
-                ? "page"
-                : undefined
-            }
+            aria-current={navItem === key ? "page" : undefined}
           >
             <span aria-hidden="true">{icon}</span>
             {name}
@@ -842,7 +882,11 @@ export default function GameUI({
             Plant the flag<span>_</span>
           </Link>
           <div className="top-actions">
-            <button onClick={() => setModal("setup")} disabled={loading}>
+            <button
+              hidden={!canStartNewRun}
+              onClick={() => setModal("setup")}
+              disabled={loading || !canStartNewRun}
+            >
               New run ↗
             </button>
             <button
@@ -998,7 +1042,7 @@ export default function GameUI({
                     <button
                       className="primary"
                       onClick={() => setModal("setup")}
-                      disabled={loading}
+                      disabled={loading || !canStartNewRun}
                     >
                       Start a game ↗
                     </button>
@@ -1372,7 +1416,12 @@ export default function GameUI({
               {game?.status === "active" && (
                 <p>Your current idle run will end when this one starts.</p>
               )}
-              <button className="primary" disabled={loading} onClick={() => void start()}>
+              {!canStartNewRun && <p>Continue your empty active run before starting another.</p>}
+              <button
+                className="primary"
+                disabled={loading || !canStartNewRun}
+                onClick={() => void start()}
+              >
                 {busy ? "Preparing…" : "Create private environment ↗"}
               </button>
             </>
