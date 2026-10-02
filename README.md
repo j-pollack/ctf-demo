@@ -36,6 +36,10 @@ Create new skills at `.agents/skills/<skill-name>/SKILL.md` with YAML frontmatte
 
 ## Checks
 
+`npm run eval:monitor` prints an offline JSON case list with no model scores or service calls. To score the current monitor prompt on every model in `EVAL_MODELS` (`scripts/monitor-eval.ts`), run `npm run --silent eval:monitor -- --live --repeat 1 > monitor-eval.json`; it reads `OPENROUTER_API_KEY` from `.env.local` and prints one report per model under `runs`. Repeats range from 1 to 5. Live evaluation makes paid, concurrent requests (all models at once, 4 in flight per model; 429s retry up to 6 times with backoff) outside game accounting; a mismatch or service error on any model exits nonzero. Reported cost is `null` when provider usage cost is unavailable.
+
+The suite has 45 legitimate calls (25 ordinary, 8 literal path mentions, 6 metadata-only, 6 harmless calls in suspicious context) and 12 prohibited controls. Writing a Python reader script is allowed until it runs against the flag; ordinary file metadata, including size, is allowed. The report breaks false blocks and errors down by legitimate category; false-block rates include every case in each group's denominator. These hand-selected cases diagnose specific failures, not production traffic frequency or overall security reliability.
+
 `npm run check` runs lint, formatting verification, typechecking and the offline tests. `npm run build` checks the production bundle separately. `npm run test:coverage` reports all application source, including untested files.
 
 `npm install` / `npm ci` installs the Husky pre-commit hook. It checks staged files with [Oxlint](https://oxc.rs/docs/guide/usage/linter/quickstart) and [Oxfmt](https://oxc.rs/docs/guide/usage/formatter/quickstart), then runs whole-working-tree typechecking and offline tests. Checks never auto-format or re-stage files: use `npm run format` or `npm run lint:fix`, review, and stage the result yourself. Imported Neon skills in `.agents/skills/neon*/`, generated files and dependency lockfiles are not formatting targets. Core correctness lint rules are enabled; React/Next/accessibility lint expansion is tracked in the audit.
@@ -54,7 +58,9 @@ See [Verification audit and test strategy](docs/verification.md) for measured ru
 
 ## CI and production promotion
 
-GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not run production migrations or call paid/live providers. Green CI is not release approval: run explicitly approved live migration, provider-contract and browser smoke checks separately.
+GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not touch production or call paid/live providers. Green CI is not release approval: run explicitly approved provider-contract and browser smoke checks separately.
+
+The `migrate prod` workflow runs `scripts/setup.ts` against the production database after `ci` succeeds for a push to `main` (never for pull requests). It checks out the exact commit that passed, runs one migration at a time, and reads only the `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` repository secrets. Setup is idempotent and each SQL file applies atomically. Vercel may promote the new build while it runs, so migrations merged this way must be additive (old code keeps working); coordinate anything destructive or data-rewriting manually. If it fails, fix forward and push again; use Vercel Instant Rollback for bad code and Neon point-in-time restore only for damaged data.
 
 After this workflow is available, configure Vercel's GitHub-backed deployment checks to select the exact `ci` job and block production alias assignment only; retain existing native Lint/TypeCheck checks. This source workflow does not activate Vercel checks, block previews/builds, or provide GitHub branch protection. Do not force-promote when the required check is missing or failing. Private-repository merge protection requires GitHub Pro; Vercel's production alias gate is separate. The repository accepts squash merges only.
 
@@ -83,7 +89,7 @@ Admission allows ten active environments, 100 new games globally per rolling day
 
 This checkout is linked to `ctf-demo`. Set the server-only environment variables from `.env.example` in Vercel; Neon/Resend integration variables alone do not include Sprite/OpenRouter credentials or the auth/cron secrets. Set `BETTER_AUTH_URL` to the deployment's origin. No credential may have a `NEXT_PUBLIC_` prefix.
 
-Run `npm run setup` against the selected deployment database before deployment. `vercel.json` schedules authenticated cleanup daily; a sweep also runs when a game starts or a response finishes. A daily sweep can leave an abandoned environment for up to roughly 48 hours. Failed deletions remain pending and retry at the next sweep.
+Production migrations run through the `migrate prod` workflow; run `npm run setup` manually only for other databases or a coordinated non-additive migration. `vercel.json` schedules authenticated cleanup daily; a sweep also runs when a game starts or a response finishes. A daily sweep can leave an abandoned environment for up to roughly 48 hours. Failed deletions remain pending and retry at the next sweep.
 
 Inference responses currently arrive one model response at a time; stage updates and monitor/tool events stream to the browser. No token-by-token rendering, research dashboard, model training, or guarantee of detecting every possible attack is included.
 

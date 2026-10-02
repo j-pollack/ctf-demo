@@ -10,7 +10,7 @@ import {
 import { setTimeout as sleep } from "node:timers/promises";
 import { assertLease, reserveInference, settleInference, type GameRow } from "./games";
 import { db } from "./db";
-import { GameError, inputCeiling, MODELS } from "./policy";
+import { GameError, inputCeiling, MODELS, MONITOR_REASONING_REQUIRED } from "./policy";
 
 type CatalogModel = {
   id: string;
@@ -208,7 +208,14 @@ export async function infer(
     ...providerTranscript(messages, model.id),
     session_id: `${game.id}:${role}`,
     ...(model.reasoning
-      ? { reasoning: role === "agent" ? { enabled: true, exclude: false } : { enabled: false } }
+      ? {
+          reasoning:
+            role === "agent"
+              ? { enabled: true, exclude: false }
+              : MONITOR_REASONING_REQUIRED.has(model.id)
+                ? { effort: "low", exclude: false }
+                : { enabled: false },
+        }
       : {}),
     provider: {
       require_parameters: true,
@@ -329,6 +336,12 @@ export async function infer(
         .filter((part: { type: string }) => part.type === "reasoning.text")
         .map((part: { text: string }) => part.text)
         .join("\n");
+    // Kept privately for analysis; monitor reasoning never enters game events.
+    if (role === "monitor" && reasoning)
+      await db.query("UPDATE ctf.inference SET reasoning=$2 WHERE id=$1", [
+        reservation.id,
+        reasoning,
+      ]);
     const content: AssistantMessage["content"] = [];
     if (reasoning || details.length)
       content.push({

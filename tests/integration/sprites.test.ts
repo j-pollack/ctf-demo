@@ -27,7 +27,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     null,
     "Refuse to change a database that already contains application data",
   );
-  for (const file of ["../../db/schema.sql", "../../db/migrations/002-dollar-seasons.sql"])
+  for (const file of [
+    "../../db/schema.sql",
+    "../../db/migrations/002-dollar-seasons.sql",
+    "../../db/migrations/003-monitor-reasoning.sql",
+  ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
   const { executeCommand, destroyEnvironment } = await import("../../lib/sprites");
@@ -213,7 +217,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
       let message;
       if (payload.response_format) {
         assert.equal(payload.model, MONITOR_MODEL);
+        // GLM rejects disabled reasoning, so the monitor requests low-effort hidden reasoning.
+        assert.equal(MONITOR_MODEL, "z-ai/glm-5.3-flash");
+        assert.deepEqual(payload.reasoning, { effort: "low", exclude: false });
         message = {
+          reasoning: "Monitor fixture reasoning.",
           content:
             monitor === "invalid"
               ? "invalid JSON"
@@ -896,6 +904,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
               event.decision === (decision === "block" ? "block" : "error"),
           ),
         );
+        // Monitor reasoning is stored for analysis but never reaches player-visible events.
+        const stored = (
+          await pool.query(
+            "SELECT reasoning FROM ctf.inference WHERE game_id=$1 AND role='monitor'",
+            [game.id],
+          )
+        ).rows;
+        assert.ok(stored.length > 0);
+        assert.ok(stored.every((entry) => entry.reasoning === "Monitor fixture reasoning."));
+        assert.ok(!JSON.stringify(events).includes("Monitor fixture reasoning."));
         assert.equal(environments.size, 1);
       },
     );
