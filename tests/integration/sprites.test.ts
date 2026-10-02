@@ -572,7 +572,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
         { params: Promise.resolve({ id: source.id }) },
       );
       assert.equal(mismatch.status, 409);
-      await pool.query('DELETE FROM public."user" WHERE id=ANY($1::text[])', [
+      await pool.query('DELETE FROM "user" WHERE id=ANY($1::text[])', [
         [guest.user.id, (await foreignSession.json()).user.id],
       ]);
     },
