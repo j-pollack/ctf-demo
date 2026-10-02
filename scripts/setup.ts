@@ -11,6 +11,13 @@ try {
     );
   const migrations = await getMigrations(auth.options);
   await migrations.runMigrations();
+  // Adjusts a Better Auth table, so it must run after Better Auth's migrations.
+  await db.query(
+    await readFile(
+      new URL("../db/migrations/004-rate-limit-timestamp.sql", import.meta.url),
+      "utf8",
+    ),
+  );
   console.log("Tripwire game and authentication tables are ready.");
 } finally {
   await db.end();

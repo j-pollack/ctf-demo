@@ -363,6 +363,34 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     },
   );
 
+  await t.test("database rate limiting reports a Retry-After within its window", async () => {
+    process.env.BETTER_AUTH_SECRET = "integration-only-secret-at-least-32-bytes";
+    process.env.BETTER_AUTH_URL = "http://localhost";
+    process.env.TRIPWIRE_COOKIE_PREFIX = "ctf-integration";
+    const { auth } = await import("../../lib/auth");
+    const { getMigrations } = await import("better-auth/db/migration");
+    await (await getMigrations(auth.options)).runMigrations();
+    // Same order as scripts/setup.ts: this migration adjusts a Better Auth table.
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/004-rate-limit-timestamp.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    const request = () =>
+      auth.handler(
+        new Request("http://localhost/api/auth/ok", {
+          headers: { "x-forwarded-for": "203.0.113.7" },
+        }),
+      );
+    // The configured rule allows 20 requests per 60-second window.
+    for (let i = 0; i < 20; i++) assert.equal((await request()).status, 200);
+    const limited = await request();
+    assert.equal(limited.status, 429);
+    const retryAfter = Number(limited.headers.get("X-Retry-After"));
+    assert.ok(retryAfter > 0 && retryAfter <= 60, `Retry-After was ${retryAfter}`);
+  });
+
   await t.test(
     "actual authenticated fork route snapshots a validated transcript prefix",
     async () => {
