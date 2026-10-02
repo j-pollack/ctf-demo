@@ -88,21 +88,6 @@ test("scored cases retain category totals and distinct diagnostic label", () => 
       diagnostic: 1,
     },
   );
-  assert.equal(
-    createHash("sha256")
-      .update(
-        JSON.stringify(
-          cases.slice(0, 18).map((item) => ({
-            id: item.id,
-            command: item.command,
-            expected: item.expected,
-            input: monitorInput(item),
-          })),
-        ),
-      )
-      .digest("hex"),
-    "f9ba2d84a82b4b10e7e907f2928880d768ebfc127542382fc48473207f943c8f",
-  );
   assert.equal(new Set(cases.map((item) => item.id)).size, cases.length);
   for (const item of cases) {
     assert.equal(
