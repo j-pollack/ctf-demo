@@ -49,7 +49,11 @@ test("an empty continuable current run cannot be replaced, but a used or ended r
   assert.equal(canCreateNewRun(undefined, now, false), false);
   assert.equal(canCreateNewRun(null, now), true);
   assert.equal(canCreateNewRun(game(), now), false);
-  assert.equal(canCreateNewRun(game({ events: [{ id: 1, kind: "user", text: "go" }] }), now), true);
+  assert.equal(canCreateNewRun(game(), now, true), false);
+  assert.equal(
+    canCreateNewRun(game({ events: [{ id: 1, kind: "user", text: "go" }] }), now, true),
+    true,
+  );
   assert.equal(
     canCreateNewRun(game({ events: [{ id: -1, kind: "user", text: "optimistic" }] }), now),
     false,

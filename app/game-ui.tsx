@@ -582,6 +582,7 @@ export default function GameUI({
       });
       if (startEpoch !== accountEpoch.current || startId !== startRequest.current) return;
       setGame(next);
+      setCurrentRunReady(true);
       playRequest.current++;
       setPlayError("");
       setRememberedPlayId(next.id);

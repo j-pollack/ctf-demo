@@ -56,3 +56,21 @@ Mapping: C1/C2/C3 table-driven tests of actual owned UI decisions plus SSR where
 ## Final status
 
 C1–C4 app behavior verified; independent full-diff reviewer approved with no P0–P2 findings. Coldtea host address-bar synchronization remains outside this repository. Live SSE/provider/Sprite smoke and paid remote QA were not run; no deployment promotion is claimed. No earlier checkpoint commits; this feature is retained on codex/run-navigation, not merged or pushed.
+
+## Follow-up: guest-start readiness race
+
+Baseline for this correction: 72b938f. Same worktree /Users/jonathan/Code/ctf/.worktrees/run-navigation and branch codex/run-navigation; clean initial state. No merge/push authorized.
+
+R1: starting from a fresh guest session, complete run creation, persist an instruction and finish/fail its response: New run becomes visible/enabled without reloading. R2: the newly-created empty run and optimistic-only instruction remain protected. R3: unknown run/auth state, account switching, preflight checks, ongoing-response disablement and existing navigation remain safe.
+
+Investigate exact guest adoption/readiness timing with temporary client logging and real browser reproduction. Prefer eliminating a redundant readiness requirement when an authoritative game is already loaded, or restoring readiness on creation success; choose the smallest complete mechanism after evidence. Developer owns app/game-ui.tsx and focused regression tests only; lead owns this plan and ignored disposable browser harness. Independent verifier/reviewer remains read-only. No fake auth/SQL/routes: real local Postgres and Better Auth, strict external Sprite/OpenRouter boundary fakes only. Retain running user preview on 3005, use separate Next distDir and QA port for reproduction if possible. Prove red/green from real browser, run focused regression plus npm run check and test:coverage, then remove temporary app logging and independently review.
+
+### Follow-up evidence
+
+- RED: real fresh anonymous guest on QA port 3006; delayed real session request 1.5s and strict fake remote Sprite provisioning 4s. Readiness log: preflight true → guest-owner adoption false → successful POST remains false → actual persisted user event and real Pi response completion still false. Browser confirmed New run hidden/disabled. Raw .artifacts/guest-red.log and guest-snapshots.json.
+- Fix: restore readiness immediately after successful setGame(next), protected by existing epoch/startId guards. No eligibility relaxation, new abstraction or service/backend change.
+- GREEN: identical timing with another fresh anonymous session; creation success restored readiness true. Empty run stayed hidden/disabled; accepted instruction made New run visible but disabled during response; completion made it visible/enabled WITHOUT reload. Clicking it opened an enabled setup dialog. SQL confirmed one persisted user event for the green run. Raw .artifacts/guest-green.log and snapshots; screenshot inspected in Coldtea.
+- Browser used real Next/Better Auth/Postgres/routes/SSE/Pi with strict Sprite and OpenRouter external-boundary fakes only; no shared-data modifications or paid calls. First attempted separate Next dev instance was rejected by Next's directory-level lock; preview 3005 was temporarily stopped for QA and must be restarted afterward. No .env.local modifications. One earlier green attempt was invalidated by developer HMR, discarded and repeated after source freeze.
+- Existing predicate regression explicitly covers readiness true with empty vs accepted user event; actual race red/green is browser evidence, not claimed covered by pure predicate test. Temporary client logging removed after diagnosis.
+- Final offline gates: npm run check and npm run test:coverage both passed 28/28; all-source coverage 20.88% lines, 79.63% branches. Diff check passed. No useful simplification beyond the single readiness setter. Disposable QA server/database stopped; original preview environment preserved.
+- Independent correction review approved with no P0–P2 findings. Normal worktree dev preview restarted and inspected at http://localhost:3005/play; pane Rooibos. Main unchanged (pre-existing .env.example modification belongs to other work); no merge or push.
