@@ -54,9 +54,9 @@ See [Verification audit and test strategy](docs/verification.md) for measured ru
 
 ## CI and production promotion
 
-GitHub Actions runs `Tripwire CI` on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not run production migrations or call paid/live providers. Green CI is not release approval: run explicitly approved live migration, provider-contract and browser smoke checks separately.
+GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not run production migrations or call paid/live providers. Green CI is not release approval: run explicitly approved live migration, provider-contract and browser smoke checks separately.
 
-After this workflow is available, configure Vercel's GitHub-backed deployment checks to select the exact `Tripwire CI` job and block production alias assignment only; retain existing native Lint/TypeCheck checks. This source workflow does not activate Vercel checks, block previews/builds, or provide GitHub branch protection. Do not force-promote when the required check is missing or failing. Private-repository merge protection requires GitHub Pro; Vercel's production alias gate is separate.
+After this workflow is available, configure Vercel's GitHub-backed deployment checks to select the exact `ci` job and block production alias assignment only; retain existing native Lint/TypeCheck checks. This source workflow does not activate Vercel checks, block previews/builds, or provide GitHub branch protection. Do not force-promote when the required check is missing or failing. Private-repository merge protection requires GitHub Pro; Vercel's production alias gate is separate. The repository accepts squash merges only.
 
 ## Game rules
 
