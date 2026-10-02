@@ -177,18 +177,12 @@ test("CLI exits 0 dry, 2 for bad setup, 1 for wrong live decisions", () => {
     PATH: process.env.PATH ?? "",
     EVAL_OPENROUTER_API_KEY: "synthetic-eval-key",
   };
-  const call = (args: string[], preload?: string) =>
-    spawnSync(
-      process.execPath,
-      [
-        ...(preload ? ["--import", preload] : []),
-        "--import",
-        "tsx",
-        "scripts/monitor-eval.ts",
-        ...args,
-      ],
-      { cwd, env, encoding: "utf8" },
-    );
+  const call = (args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", "scripts/monitor-eval.ts", ...args], {
+      cwd,
+      env,
+      encoding: "utf8",
+    });
   const dry = call([]);
   assert.equal(dry.status, 0, dry.stderr);
   assert.equal(JSON.parse(dry.stdout).evaluated, false);
