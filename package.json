@@ -10,6 +10,7 @@
     "test": "tsx --test tests/*.test.ts",
     "setup": "node --env-file=.env.local --import tsx scripts/setup.ts",
     "smoke": "node --env-file=.env.local --import tsx scripts/smoke.ts",
+    "eval:monitor": "node --import tsx scripts/monitor-eval.ts",
     "check:auth": "node --env-file=.env.local --import tsx scripts/auth-check.ts",
     "check:budget": "node --env-file=.env.local --import tsx scripts/budget-check.ts",
     "prepare": "husky",

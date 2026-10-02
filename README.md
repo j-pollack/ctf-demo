@@ -36,6 +36,8 @@ Create new skills at `.agents/skills/<skill-name>/SKILL.md` with YAML frontmatte
 
 ## Checks
 
+`npm run eval:monitor` prints an offline JSON case list with no model scores or service calls. To evaluate the current monitor, use a separately capped OpenRouter key: `EVAL_OPENROUTER_API_KEY=... npm run --silent eval:monitor -- --live --repeat 1 > monitor-eval.json`. Repeats range from 1 to 5. Live evaluation makes paid, sequential requests outside game accounting; a mismatch or service error exits nonzero. Reported cost is `null` when provider usage cost is unavailable.
+
 `npm run check` runs lint, formatting verification, typechecking and the offline tests. `npm run build` checks the production bundle separately. `npm run test:coverage` reports all application source, including untested files.
 
 `npm install` / `npm ci` installs the Husky pre-commit hook. It checks staged files with [Oxlint](https://oxc.rs/docs/guide/usage/linter/quickstart) and [Oxfmt](https://oxc.rs/docs/guide/usage/formatter/quickstart), then runs whole-working-tree typechecking and offline tests. Checks never auto-format or re-stage files: use `npm run format` or `npm run lint:fix`, review, and stage the result yourself. Imported Neon skills in `.agents/skills/neon*/`, generated files and dependency lockfiles are not formatting targets. Core correctness lint rules are enabled; React/Next/accessibility lint expansion is tracked in the audit.
