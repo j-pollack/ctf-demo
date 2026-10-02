@@ -13,3 +13,6 @@ node_modules/
 
 coverage/
 /.worktrees/
+
+# PR Lens writes its previews here. They are rebuilt on demand.
+.pr-lens/
