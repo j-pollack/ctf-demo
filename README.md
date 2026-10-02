@@ -1,6 +1,6 @@
-# Tripwire
+# Plant the flag
 
-Public AI capture-the-flag MVP using Next.js, Pi SDK, one Fly Sprite per game, OpenRouter, Neon Postgres, Better Auth and Resend.
+Public AI red-teaming game using Next.js, Pi SDK, one Fly Sprite per game, OpenRouter, Neon Postgres, Better Auth and Resend.
 
 ## Run locally
 

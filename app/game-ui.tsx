@@ -4,13 +4,38 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { authClient } from "@/lib/auth-client";
 import type { GameEvent, PublicGame, Season } from "@/lib/types";
-import { seasonEnd } from "@/lib/season-end";
 
 const label = (model: string) => model.split("/")[1];
 const number = (value: number) => value.toLocaleString("en-US");
 const money = (value: number) => `$${(value / 1_000_000).toFixed(4)}`;
-export function refreshedGame(current: PublicGame | null, next: PublicGame) {
-  return current?.id === next.id ? next : current;
+export type PendingInstruction = { gameId: string; text: string; afterId: number };
+export function instructionStatus(pending: PendingInstruction, next?: PublicGame) {
+  if (!next || next.id !== pending.gameId) return "pending";
+  if (
+    next.events.some(
+      (event) => event.id > pending.afterId && event.kind === "user" && event.text === pending.text,
+    )
+  )
+    return "accepted";
+  return next.busy ? "pending" : "rejected";
+}
+export function refreshedGame(
+  current: PublicGame | null,
+  next: PublicGame,
+  pending?: PendingInstruction | null,
+  requestedGeneration = 0,
+  currentGeneration = requestedGeneration,
+) {
+  if (requestedGeneration !== currentGeneration || current?.id !== next.id) return current;
+  return pending?.gameId === next.id && instructionStatus(pending, next) === "pending"
+    ? {
+        ...next,
+        events: [
+          ...next.events.filter((event) => event.id !== -1),
+          { id: -1, kind: "user" as const, text: pending.text },
+        ],
+      }
+    : next;
 }
 type Score = { name: string; turns: number; tokens: number; spend: number; blocks: number };
 async function api(url: string, options?: RequestInit) {
@@ -46,11 +71,37 @@ export default function GameUI({
     [seasons, setSeasons] = useState<Season[]>([initialSeason]),
     [boardSeason, setBoardSeason] = useState(initialSeason.id),
     [boardAgent, setBoardAgent] = useState("");
-  function refreshGame(id: string, signal?: AbortSignal) {
-    return api(`/api/games/${id}`, { signal }).then((next: PublicGame) =>
-      setGame((current) => refreshedGame(current, next)),
-    );
+  const pending = useRef<PendingInstruction | null>(null);
+  const submissionGeneration = useRef(0);
+  const [unconfirmed, setUnconfirmed] = useState(false);
+  function reconcile(next: PublicGame) {
+    const submitted = pending.current;
+    if (!submitted || next.id !== submitted.gameId) return;
+    const status = instructionStatus(submitted, next);
+    if (status === "pending") return;
+    pending.current = null;
+    setUnconfirmed(false);
+    if (status === "rejected") setPrompt((draft) => draft || submitted.text);
   }
+  function refreshGame(id: string, signal?: AbortSignal) {
+    const requestedGeneration = submissionGeneration.current;
+    return api(`/api/games/${id}`, { signal }).then((next: PublicGame) => {
+      if (requestedGeneration !== submissionGeneration.current) return;
+      reconcile(next);
+      setGame((current) =>
+        refreshedGame(
+          current,
+          next,
+          pending.current,
+          requestedGeneration,
+          submissionGeneration.current,
+        ),
+      );
+    });
+  }
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("signin") === "1") setModal("login");
+  }, []);
   useEffect(() => {
     const refresh = () => {
       api("/api/seasons")
@@ -86,10 +137,19 @@ export default function GameUI({
     } else dialog.current?.close();
   }, [modal]);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [game?.events.length, stage]);
+    bottom.current?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "instant"
+        : "smooth",
+      block: "nearest",
+    });
+  }, [game?.events.length, stage, busy, unconfirmed]);
   useEffect(() => {
-    if (!game || (!game.busy && (!game.reservedMicrodollars || game.status === "ended")) || busy)
+    if (
+      !game ||
+      (!unconfirmed && !game.busy && (!game.reservedMicrodollars || game.status === "ended")) ||
+      busy
+    )
       return;
     const refreshController = new AbortController();
     const timer = setInterval(() => {
@@ -99,7 +159,7 @@ export default function GameUI({
       clearInterval(timer);
       refreshController.abort();
     };
-  }, [game?.id, game?.busy, game?.reservedMicrodollars, game?.status, busy]);
+  }, [game?.id, game?.busy, game?.reservedMicrodollars, game?.status, busy, unconfirmed]);
   useEffect(() => {
     if (panel !== "rank") return;
     setScores([]);
@@ -112,7 +172,7 @@ export default function GameUI({
       })
       .catch((err) => setError(err.message));
   }, [panel, boardSeason, boardAgent]);
-  const loading = busy || !!game?.busy;
+  const loading = busy || !!game?.busy || unconfirmed;
   const allowance = game?.budgetMicrodollars ?? (signedIn ? 3_000_000 : 600_000),
     left = Math.max(
       0,
@@ -173,15 +233,29 @@ export default function GameUI({
       setStage("");
     }
   }
-  function receive(type: string, data: unknown) {
+  function receive(id: string, type: string, data: unknown) {
     if (type === "stage") setStage(String(data));
     if (type === "event") {
       const event = data as GameEvent;
+      if (
+        pending.current?.gameId === id &&
+        event.kind === "user" &&
+        event.id > pending.current.afterId &&
+        event.text === pending.current.text
+      ) {
+        pending.current = null;
+        setUnconfirmed(false);
+      }
       setGame((current) =>
-        current
+        current?.id === id
           ? {
               ...current,
-              events: [...current.events.filter((item) => item.id !== event.id), event],
+              events: [
+                ...current.events.filter(
+                  (item) => item.id !== event.id && (item.id !== -1 || pending.current),
+                ),
+                event,
+              ],
               turns:
                 event.kind === "agent" ? Math.max(current.turns, event.turn ?? 0) : current.turns,
               blocks:
@@ -190,11 +264,32 @@ export default function GameUI({
           : current,
       );
     }
-    if (type === "done") setGame(data as PublicGame);
+    if (type === "done") {
+      const next = data as PublicGame;
+      reconcile(next);
+      setGame((current) => refreshedGame(current, next, pending.current));
+    }
     if (type === "error") setError(String(data));
   }
   async function send() {
-    if (!game || !prompt.trim() || loading) return;
+    if (!game || !prompt.trim() || loading || cancel.current || pending.current) return;
+    const submitted = {
+      gameId: game.id,
+      text: prompt,
+      afterId: Math.max(0, ...game.events.map((event) => event.id)),
+    };
+    submissionGeneration.current += 1;
+    pending.current = submitted;
+    setUnconfirmed(true);
+    setPrompt("");
+    setGame((current) =>
+      current?.id === game.id
+        ? {
+            ...current,
+            events: [...current.events, { id: -1, kind: "user", text: submitted.text }],
+          }
+        : current,
+    );
     setBusy(true);
     setError("");
     setStage("Agent thinking");
@@ -203,11 +298,20 @@ export default function GameUI({
       const response = await fetch(`/api/games/${game.id}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, agentModel: agent }),
+        body: JSON.stringify({ prompt: submitted.text, agentModel: agent }),
         signal: cancel.current.signal,
       });
-      if (!response.ok) throw new Error((await response.json()).error);
-      setPrompt("");
+      if (!response.ok) {
+        pending.current = null;
+        setUnconfirmed(false);
+        setPrompt(submitted.text);
+        setGame((current) =>
+          current?.id === submitted.gameId
+            ? { ...current, events: current.events.filter((event) => event.id !== -1) }
+            : current,
+        );
+        throw new Error((await response.json()).error);
+      }
       const reader = response.body!.getReader(),
         decoder = new TextDecoder();
       let buffer = "";
@@ -221,7 +325,7 @@ export default function GameUI({
           buffer = buffer.slice(end + 2);
           const type = frame.match(/^event: (.*)$/m)?.[1],
             data = frame.match(/^data: (.*)$/m)?.[1];
-          if (type && data) receive(type, JSON.parse(data));
+          if (type && data) receive(submitted.gameId, type, JSON.parse(data));
         }
       }
     } catch (err) {
@@ -239,7 +343,7 @@ export default function GameUI({
     setBusy(true);
     setError("");
     try {
-      const result = await authClient.signIn.magicLink({ email, callbackURL: "/" });
+      const result = await authClient.signIn.magicLink({ email, callbackURL: "/play" });
       if (result.error) throw new Error(result.error.message ?? "Could not send your link.");
       setEmailSent(true);
     } catch (err) {
@@ -251,8 +355,8 @@ export default function GameUI({
   return (
     <div className="app">
       <nav className="rail" aria-label="Main navigation">
-        <a href="/" className="mark" aria-label="Tripwire home">
-          T<span>W</span>
+        <a href="/" className="mark" aria-label="Plant the flag home">
+          PTF
         </a>
         {(
           [
@@ -271,76 +375,21 @@ export default function GameUI({
             {name}
           </button>
         ))}
-        <button
-          className="account"
-          onClick={() => {
-            setModal("login");
-            setEmailSent(false);
-          }}
-        >
-          <span aria-hidden="true">◎</span>
-          {signedIn ? "Member" : "Sign in"}
-        </button>
       </nav>
       <div className="workspace">
         <header className="top">
           <a href="/" className="wordmark">
-            tripwire<span>_</span>
+            Plant the flag<span>_</span>
           </a>
-          <span className="eyebrow top-note">PUBLIC CTF / PRIVATE ENVIRONMENT</span>
-          <button onClick={() => setModal("setup")} disabled={loading}>
-            New run ↗
+          <button
+            onClick={() => {
+              setModal("login");
+              setEmailSent(false);
+            }}
+          >
+            {signedIn ? "Account" : "Sign in"}
           </button>
         </header>
-        <section className="mission">
-          <div>
-            <h1>
-              CAPTURE
-              <br />
-              THE FLAG
-            </h1>
-            <code>/tmp/flag.txt</code>
-          </div>
-          <div className="status">
-            <strong>
-              <i />{" "}
-              {game
-                ? game.status === "captured"
-                  ? "SECRET CAPTURED"
-                  : game.status === "active"
-                    ? "RUN ACTIVE"
-                    : game.status === "exhausted"
-                      ? "ALLOWANCE USED"
-                      : "RUN ENDED"
-                : "AWAITING OPERATOR"}
-            </strong>
-            <p>
-              {game?.status === "captured"
-                ? "You got past the monitor."
-                : "A block is a clue. Keep trying."}
-            </p>
-          </div>
-        </section>
-        <div className="pair">
-          <span>
-            AGENT <strong>{label(game?.agentModel ?? agent)}</strong>
-          </span>
-          <span>
-            MONITOR <strong>{label(game?.monitorModel ?? season.monitorModel)}</strong>
-          </span>
-          <button className="link" onClick={() => setModal("setup")} disabled={loading}>
-            New run settings ↗
-          </button>
-        </div>
-        <div className="season-banner">
-          <strong>{game?.season.name ?? season.name}</strong>
-          <span>
-            Shared monitor ·{" "}
-            {(game ? game.season.endsAt : season.endsAt)
-              ? `Ends ${seasonEnd((game ? game.season.endsAt : season.endsAt)!)}`
-              : "Pre-season run"}
-          </span>
-        </div>
         {error && (
           <div role="alert" className="error">
             {error}
@@ -353,6 +402,9 @@ export default function GameUI({
           <div className="console">
             <main className="transcript">
               <div className="column-head transcript-head">
+                <button className="link" onClick={() => setModal("setup")} disabled={loading}>
+                  New run ↗
+                </button>
                 <span>LIVE TRANSCRIPT / {game?.id.slice(0, 8).toUpperCase() ?? "NO RUN"}</span>
                 <div
                   className="turn-total"
@@ -367,79 +419,90 @@ export default function GameUI({
                   </span>
                 </div>
               </div>
-              {!game ? (
-                <div className="welcome">
-                  <p>
-                    Your agent can use a shell. The monitor sees its reasoning and reviews every
-                    command.
-                  </p>
-                  <p>Get the secret into this conversation before your dollar budget runs out.</p>
-                  <button className="primary" onClick={() => setModal("setup")} disabled={loading}>
-                    Start a game ↗
-                  </button>
-                  <small>Guest: $0.60 per run · Signed in: $3 per run</small>
-                </div>
-              ) : (
-                <>
-                  {game.events.length === 0 && (
-                    <p className="empty">
-                      Environment ready. Give the agent its first instruction.
+              <div className="thread" role="region" aria-label="Run transcript" tabIndex={0}>
+                {!game ? (
+                  <div className="welcome">
+                    <p>
+                      Your agent can use a shell. The monitor sees its reasoning and reviews every
+                      command.
                     </p>
-                  )}
-                  {game.events.map((event, index) => (
-                    <Entry
-                      key={event.id}
-                      event={event}
-                      previous={game.events[index - 1]}
+                    <p>Get the secret into this conversation before your dollar budget runs out.</p>
+                    <button
+                      className="primary"
+                      onClick={() => setModal("setup")}
                       disabled={loading}
-                      onFork={() => {
-                        setError("");
-                        setForkEvent(event);
-                        setModal("fork");
-                      }}
-                      onCopy={async () => {
-                        try {
-                          await navigator.clipboard.writeText(
-                            [event.text, event.command].filter(Boolean).join("\n"),
-                          );
-                        } catch {
-                          setError("Clipboard access failed.");
-                        }
-                      }}
-                    />
-                  ))}
-                  {(game.status !== "active" || seasonExpired) && (
-                    <div className="terminal">
-                      <h2>
-                        {game.status === "captured"
-                          ? "Secret captured."
-                          : game.status === "exhausted"
-                            ? "Budget exhausted."
-                            : seasonExpired
-                              ? "This season has ended."
-                              : "This run has ended."}
-                      </h2>
-                      <p>
-                        {game.status === "captured"
-                          ? `${money(game.spentMicrodollars)} spent · ${game.turns} agent turns · ${game.blocks} blocked commands`
-                          : "Start a fresh run with a new secret."}
+                    >
+                      Start a game ↗
+                    </button>
+                    <small>Guest: $0.60 per run · Signed in: $3 per run</small>
+                  </div>
+                ) : (
+                  <>
+                    {game.events.length === 0 && (
+                      <p className="empty">
+                        Environment ready. Give the agent its first instruction.
                       </p>
-                      {game.status === "captured" && !signedIn && (
-                        <button className="link" onClick={() => setModal("login")}>
-                          Sign in to put your win on the board ↗
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
-              <div ref={bottom} />
-              {stage && (
-                <div role="status" className="stage">
-                  <i />
-                  {stage}…
-                </div>
-              )}
+                    )}
+                    {game.events.map((event, index) => (
+                      <Entry
+                        key={event.id}
+                        event={event}
+                        previous={game.events[index - 1]}
+                        disabled={loading}
+                        onFork={() => {
+                          setError("");
+                          setForkEvent(event);
+                          setModal("fork");
+                        }}
+                        onCopy={async () => {
+                          try {
+                            await navigator.clipboard.writeText(
+                              [event.text, event.command].filter(Boolean).join("\n"),
+                            );
+                          } catch {
+                            setError("Clipboard access failed.");
+                          }
+                        }}
+                      />
+                    ))}
+                    {(game.status !== "active" || seasonExpired) && (
+                      <div className="terminal">
+                        <h2>
+                          {game.status === "captured"
+                            ? "Flag revealed. You win."
+                            : game.status === "exhausted"
+                              ? "Budget exhausted."
+                              : seasonExpired
+                                ? "This season has ended."
+                                : "This run has ended."}
+                        </h2>
+                        <p>
+                          {game.status === "captured"
+                            ? `${money(game.spentMicrodollars)} spent · ${game.turns} agent turns · ${game.blocks} blocked commands`
+                            : "Start a fresh run with a new secret."}
+                        </p>
+                        {game.status === "captured" && !signedIn && (
+                          <button className="link" onClick={() => setModal("login")}>
+                            Sign in to put your win on the board ↗
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+                {!busy && unconfirmed && (
+                  <p role="status" className="stage">
+                    Checking whether your instruction was accepted. Please wait before retrying.
+                  </p>
+                )}
+                {stage && (
+                  <div role="status" className="stage">
+                    <i />
+                    {stage}…
+                  </div>
+                )}
+                <div ref={bottom} />
+              </div>
               {game?.status === "active" && !seasonExpired && (
                 <form
                   className="composer"
@@ -461,7 +524,7 @@ export default function GameUI({
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
                     maxLength={8192}
-                    rows={3}
+                    rows={2}
                     placeholder="Tell the agent what to try next…"
                     disabled={loading}
                     onKeyDown={(event) => {
@@ -479,14 +542,14 @@ export default function GameUI({
                       </button>
                     ) : (
                       <button className="primary" disabled={loading || !prompt.trim()}>
-                        Send instruction ↗
+                        Send instructions ↗
                       </button>
                     )}
                   </div>
                 </form>
               )}
             </main>
-            <aside className="monitor">
+            <aside className="monitor" tabIndex={0} aria-label="Monitor and budget">
               <div className="column-head">MONITOR / WATCHING</div>
               <div className="budget">
                 <p className="eyebrow">AVAILABLE BUDGET</p>
@@ -548,7 +611,7 @@ export default function GameUI({
         ) : panel === "rules" ? (
           <main className="info">
             <p className="eyebrow">MISSION BRIEF</p>
-            <h2>Capture the flag. Beat the monitor.</h2>
+            <h2>Plant the flag. Beat the monitor.</h2>
             <ol>
               <li>
                 Direct your agent through prompts. Its shell commands run in your private
@@ -577,9 +640,9 @@ export default function GameUI({
                 UTC. Runs close when their season ends.
               </li>
               <li>
-                The leaderboard shows each member’s cheapest capture in a season, then agent turns
-                to break ties. An agent turn is one model response. Pending bills must settle before
-                a win is ranked.
+                The leaderboard shows each member’s cheapest win in a season, then agent turns to
+                break ties. An agent turn is one model response. Pending bills must settle before a
+                win is ranked.
               </li>
             </ol>
             <p>
@@ -653,12 +716,12 @@ export default function GameUI({
                 </table>
               </div>
             ) : (
-              <p className="empty">No verified member captures for this season and strategy yet.</p>
+              <p className="empty">No verified member wins for this season and strategy yet.</p>
             )}
             <small>
-              Cheapest verified capture per member and season. Agent turns break ties. Select a
-              single model to compare runs that used only that attack model. Public names are
-              anonymous operator IDs.
+              Cheapest verified win per member and season. Agent turns break ties. Select a single
+              model to compare runs that used only that attack model. Public names are anonymous
+              operator IDs.
             </small>
           </main>
         )}
@@ -731,13 +794,15 @@ export default function GameUI({
           ) : (
             <>
               <p className="eyebrow">PASSWORDLESS ACCESS</p>
-              <h2>{signedIn ? "You’re signed in." : "Sign in to Tripwire."}</h2>
+              <h2>{signedIn ? "You’re signed in." : "Sign in to Plant the flag."}</h2>
               {signedIn ? (
                 <>
                   <p>$3 per run. Your wins appear under an anonymous operator ID.</p>
                   <button
                     onClick={async () => {
                       await authClient.signOut();
+                      pending.current = null;
+                      setUnconfirmed(false);
                       setGame(null);
                       setModal(null);
                     }}

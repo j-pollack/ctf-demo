@@ -29,8 +29,8 @@ export const auth = betterAuth({
         const result = await new Resend(process.env.RESEND_API_KEY).emails.send({
           from: process.env.RESEND_FROM,
           to: email,
-          subject: "Your Tripwire sign-in link",
-          text: `Sign in to Tripwire:\n\n${url}\n\nThis link expires in five minutes. If you didn't request it, ignore this email.`,
+          subject: "Your Plant the flag sign-in link",
+          text: `Sign in to Plant the flag:\n\n${url}\n\nThis link expires in five minutes. If you didn't request it, ignore this email.`,
         });
         if (result.error) throw new Error("Could not send your sign-in link. Please try again.");
       },

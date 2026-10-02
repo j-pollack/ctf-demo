@@ -91,7 +91,8 @@ strong {
 .app {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
-  min-height: 100dvh;
+  height: 100dvh;
+  overflow: hidden;
   max-width: 1600px;
   margin: auto;
 }
@@ -107,9 +108,9 @@ strong {
 }
 .mark {
   text-align: center;
-  font-size: 26px;
+  font-size: 20px;
   font-weight: 900;
-  letter-spacing: -3px;
+  letter-spacing: -1px;
   line-height: 0.9;
   margin: 8px 0 32px;
 }
@@ -133,10 +134,10 @@ strong {
 .rail .selected {
   background: var(--accent);
 }
-.rail .account {
-  margin-top: auto;
-}
 .workspace {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   min-width: 0;
 }
 .top {
@@ -163,57 +164,12 @@ strong {
   letter-spacing: 1.4px;
   color: var(--muted);
 }
-.mission {
-  padding: 32px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
-}
-.mission h1 {
-  font:
-    900 clamp(48px, 6vw, 88px)/0.93 Impact,
-    "Arial Narrow",
-    Arial,
-    sans-serif;
-  letter-spacing: -1.5px;
-  margin: 14px 0 22px;
-}
-.mission code {
-  border: 1px dashed #a4af98;
-  padding: 7px 12px;
-  font-size: 12px;
-}
-.status {
-  width: 210px;
-  flex-shrink: 0;
-  padding-bottom: 4px;
-  font-size: 11px;
-}
-.status p {
-  color: var(--muted);
-  margin-top: 10px;
-}
 i {
   display: inline-block;
   width: 7px;
   height: 7px;
   background: #567b21;
   margin-right: 6px;
-}
-.pair {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  padding: 12px 32px;
-  border-block: 1px solid var(--line);
-  font-size: 10px;
-  flex-wrap: wrap;
-}
-.pair strong {
-  font-size: 12px;
-  display: inline-block;
-  margin-left: 8px;
 }
 .link {
   border: 0;
@@ -222,17 +178,19 @@ i {
   padding: 6px 0;
   font-size: 11px;
 }
-.pair .link {
-  margin-left: auto;
-}
 .console {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 290px;
-  min-height: 500px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 .transcript {
-  padding: 0 32px 32px;
+  display: flex;
+  flex-direction: column;
+  padding: 0 32px 16px;
   min-width: 0;
+  min-height: 0;
 }
 .column-head {
   padding: 18px 0;
@@ -322,8 +280,16 @@ i {
   max-height: 350px;
   overflow: auto;
 }
+.thread {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .composer {
-  margin-top: 26px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
 }
 .composer label,
 form label {
@@ -335,11 +301,13 @@ form label {
   width: 100%;
   border: 1px solid var(--line);
   background: var(--paper);
-  padding: 14px;
-  margin: 10px 0;
+  padding: 8px;
+  margin: 6px 0;
   font-size: 14px;
-  resize: vertical;
-  min-height: 110px;
+  resize: none;
+  height: 64px;
+  min-height: 0;
+  max-height: 15dvh;
 }
 .compose-foot {
   display: flex;
@@ -368,6 +336,9 @@ form label {
   border-left: 1px solid var(--line);
   background: var(--panel);
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .budget {
   padding: 22px 0;
@@ -433,11 +404,12 @@ form label {
   color: var(--muted);
 }
 footer {
+  flex-shrink: 0;
   border-top: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 32px;
+  padding: 8px 32px;
   font-size: 10px;
   color: var(--muted);
 }
@@ -453,7 +425,9 @@ footer {
 .info {
   padding: 32px;
   max-width: 1100px;
-  min-height: 500px;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
 }
 .info h2 {
   font-size: 30px;
@@ -512,6 +486,9 @@ th {
   font-weight: 500;
 }
 .error[role="alert"] {
+  flex-shrink: 0;
+  max-height: 72px;
+  overflow: auto;
   padding: 12px 32px;
   display: flex;
   justify-content: space-between;
@@ -656,23 +633,15 @@ dialog::backdrop {
   font-weight: 600;
 }
 @media (min-width: 1400px) {
-  .mission h1 {
-    font-size: 100px;
-  }
   .console {
     grid-template-columns: minmax(0, 1fr) 330px;
   }
 }
 @media (max-width: 1000px) {
-  .top-note {
-    display: none;
-  }
   .console {
     grid-template-columns: minmax(0, 1fr) 235px;
   }
-  .mission,
   .top,
-  .pair,
   .info {
     padding-inline: 24px;
   }
@@ -685,13 +654,11 @@ dialog::backdrop {
   .budget > strong {
     font-size: 32px;
   }
-  .pair {
-    gap: 12px;
-  }
 }
 @media (max-width: 720px) {
   .app {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .rail {
     height: auto;
@@ -700,7 +667,7 @@ dialog::backdrop {
     align-items: center;
     border-right: 0;
     border-bottom: 1px solid var(--line);
-    padding: 8px 14px;
+    padding: 4px 14px;
     gap: 10px;
   }
   .mark {
@@ -714,48 +681,26 @@ dialog::backdrop {
   .rail button > span {
     font-size: 18px;
   }
-  .rail .account {
-    margin: 0;
-  }
   .top {
-    padding: 12px 20px;
+    padding: 8px 20px;
   }
   .wordmark {
     font-size: 23px;
-  }
-  .mission {
-    padding: 26px 20px;
-    gap: 18px;
-  }
-  .mission h1 {
-    font-size: clamp(40px, 9vw, 64px);
-  }
-  .status {
-    width: 125px;
-    font-size: 9px;
-  }
-  .pair {
-    padding: 10px 20px;
-    gap: 5px 15px;
-  }
-  .pair span {
-    display: block;
-    width: 100%;
-  }
-  .pair .link {
-    margin-left: 0;
   }
   .console {
     display: flex;
     flex-direction: column;
   }
   .transcript {
-    padding: 0 20px 24px;
+    flex: 1;
+    padding: 0 20px 8px;
   }
   .monitor {
     border-left: 0;
     border-top: 1px solid var(--line);
-    padding: 0 20px 24px;
+    flex: none;
+    height: 84px;
+    padding: 0 20px 12px;
   }
   .budget {
     padding: 14px 0;
@@ -765,9 +710,6 @@ dialog::backdrop {
   }
   .block-count {
     padding: 14px 0;
-  }
-  .receipt {
-    display: none;
   }
   .monitor-note {
     margin-top: 0;
@@ -795,7 +737,7 @@ dialog::backdrop {
   }
   .info {
     padding: 24px 20px;
-    min-height: 400px;
+    min-height: 0;
   }
   .info h2 {
     font-size: 26px;
@@ -804,10 +746,11 @@ dialog::backdrop {
     display: block;
   }
   footer {
-    padding: 12px 20px;
+    padding: 4px 20px;
     font-size: 9px;
-    flex-direction: column;
-    gap: 3px;
+  }
+  footer > :last-child {
+    display: none;
   }
   .dialog-content {
     padding: 28px 20px;
@@ -917,16 +860,6 @@ dialog::backdrop {
 .entry header {
   flex-wrap: wrap;
 }
-.season-banner {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 10px 32px;
-  border-bottom: 1px solid var(--line);
-  font-size: 11px;
-  color: var(--muted);
-}
 .spend-breakdown {
   margin-top: 16px;
   font-size: 11px;
@@ -944,6 +877,10 @@ dialog::backdrop {
 }
 .composer .model-select {
   max-width: 420px;
+}
+.composer .model-select select {
+  padding: 6px 10px;
+  margin: 4px 0 6px;
 }
 .markdown p {
   white-space: normal;
@@ -1024,5 +961,109 @@ dialog::backdrop {
   }
   .turn-total > span {
     font-size: 9px;
+  }
+}
+
+.top,
+.transcript-head {
+  flex-shrink: 0;
+}
+.transcript-head {
+  flex-wrap: wrap;
+  padding-block: 10px;
+}
+.thread:focus-visible,
+.monitor:focus-visible {
+  outline: 2px solid #557b1d;
+  outline-offset: -2px;
+}
+.landing {
+  max-width: 1200px;
+  margin: auto;
+}
+.landing-main {
+  max-width: 850px;
+  padding: 80px 32px;
+}
+.landing h1 {
+  font:
+    900 clamp(40px, 6vw, 76px)/1.05 Impact,
+    "Arial Narrow",
+    Arial,
+    sans-serif;
+  margin: 20px 0 32px;
+}
+.landing-main > p:not(.eyebrow) {
+  font-size: 16px;
+  max-width: 700px;
+}
+.landing-play {
+  display: inline-block;
+  padding: 12px 24px;
+  margin: 32px 0 12px;
+}
+.landing-main > small {
+  display: block;
+}
+.landing-signin {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+}
+.landing-rules {
+  border-top: 1px solid var(--line);
+  margin-top: 64px;
+  padding-top: 24px;
+}
+.landing-rules h2 {
+  font-size: 20px;
+}
+.landing-rules li {
+  margin-block: 12px;
+}
+@media (max-width: 720px) {
+  .landing-main {
+    padding: 48px 20px;
+  }
+  .transcript-head {
+    gap: 6px;
+  }
+  .transcript-head > span {
+    max-width: 110px;
+  }
+  .transcript-head .turn-total {
+    gap: 6px;
+    padding-left: 6px;
+  }
+  .turn-total > strong {
+    font-size: 24px;
+  }
+  .compose-foot small {
+    font-size: 9px;
+  }
+  .wordmark {
+    font-size: 21px;
+  }
+}
+@media (max-width: 720px) {
+  .monitor .column-head {
+    display: none;
+  }
+  .monitor .budget {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    padding-block: 8px;
+  }
+  .monitor .budget > strong {
+    font-size: 24px;
+    letter-spacing: -1px;
+  }
+  .monitor .meter,
+  .monitor .budget > small,
+  .monitor .spend-breakdown {
+    grid-column: 1 / -1;
+  }
+  .monitor .meter {
+    margin-block: 4px;
   }
 }
