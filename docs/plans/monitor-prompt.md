@@ -1,7 +1,9 @@
 # Monitor prompt update
 
-Checkout: `/Users/jonathan/Code/ctf/.worktrees/monitor-prompt`  
-Branch: `codex/monitor-prompt`  
+Checkout: `/Users/jonathan/Code/ctf/.worktrees/monitor-prompt`
+
+Branch: `codex/monitor-prompt`
+
 Baseline: `a38bc3cfa72a3443157ed63f0072b5abd7d5e813`; initial tracked tree and index clean.
 
 ## Contract
@@ -28,10 +30,10 @@ Never include a flag or invent file contents.
 
 | ID  | Given / when / then                                                                                       | Check                                                                                                         | Evidence                                                                                                                            |
 | --- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| C1  | Given the approved wording, importing policy yields exactly the text above and version `secret-v5`.       | Offline Node assertion against this fenced text, before and after the edit.                                   | Pending.                                                                                                                            |
+| C1  | Given the approved wording, importing policy yields exactly the text above and version `secret-v5`.       | Offline Node assertion against this fenced text, before and after the edit.                                   | Expected pre-edit assertion failed; developer and lead post-edit assertions passed.                                                 |
 | C2  | Given valid allow/block or malformed decisions, existing parser behavior remains unchanged.               | Existing regression in `tests/game.test.ts`, included in `npm run check`; review only prompt/version changed. | Node 24 check passed: lint, formatting, typecheck and all 26 tests, including valid/malformed monitor decisions. Parser diff empty. |
 | C3  | Given a saved season, the runner continues using its saved prompt; new seasons store the updated default. | Inspect unchanged `lib/seasons.ts` insertion and `lib/runner.ts` prompt selection; full diff review.          | Lead confirmed unchanged saved-prompt selection/insertion and no changes to either caller.                                          |
-| C4  | Given the final change, offline gates pass and the primary checkout stays untouched.                      | Node 24 `npm run check`, `git diff --check`, worktree/status review.                                          | Pending.                                                                                                                            |
+| C4  | Given the final change, offline gates pass and the primary checkout stays untouched.                      | Node 24 `npm run check`, `git diff --check`, worktree/status review.                                          | All gates passed (26 tests); whitespace check passed and primary status clean.                                                      |
 
 This is a prompt data edit, not a deterministic change to model decision logic. The exact-text check proves the approved prompt is installed; it does not prove LLM permissiveness or resistance to attacks. No new wording-only unit test or mock monitor will be added. Live behavioral evaluation is unrun and requires separately authorized paid/service checks before deployment promotion.
 
@@ -46,7 +48,7 @@ All roles use the absolute checkout and branch above. Runtime prerequisites: loc
 
 ## Evidence and runnable structural check
 
-Independent plan review: approved without blocking findings. Developer found no further in-scope simplification. Lead independently verified exact text/version, all offline gates (26 tests), clean diff whitespace and unchanged primary checkout. No test coverage changes; coverage, database integration and live model checks were not run for this prompt-only edit. Full feature review pending.
+Independent plan review: approved without blocking findings. Developer found no further in-scope simplification. Lead independently verified exact text/version, all offline gates (26 tests), clean diff whitespace and unchanged primary checkout. No test coverage changes; coverage, database integration and live model checks were not run for this prompt-only edit. Checkpoint: `80add17` (prompt/version and plan). Post-checkpoint developer review found no further in-scope simplification. Independent full-feature review confirmed source scope and exact wording; its Markdown whitespace finding was corrected. Independent final re-review approved with no remaining P0–P2 findings; baseline-to-final whitespace check passed.
 
 Run from the feature checkout with Node 24:
 
