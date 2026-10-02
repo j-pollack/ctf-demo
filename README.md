@@ -52,6 +52,12 @@ See [Verification audit and test strategy](docs/verification.md) for measured ru
 
 `npm run check:auth` tests the real passwordless handlers, guest transfer, $3 budget upgrade, leaderboard privacy and single-use tokens against Neon. It captures the outbound Resend request locally and sends no email. Actual inbox delivery still requires a check with your verified Resend sender.
 
+## CI and production promotion
+
+GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not run production migrations or call paid/live providers. Green CI is not release approval: run explicitly approved live migration, provider-contract and browser smoke checks separately.
+
+After this workflow is available, configure Vercel's GitHub-backed deployment checks to select the exact `ci` job and block production alias assignment only; retain existing native Lint/TypeCheck checks. This source workflow does not activate Vercel checks, block previews/builds, or provide GitHub branch protection. Do not force-promote when the required check is missing or failing. Private-repository merge protection requires GitHub Pro; Vercel's production alias gate is separate. The repository accepts squash merges only.
+
 ## Game rules
 
 - `AGENT_MODEL` sets the default attack model. Players can select a different attack model for their next instruction while idle; every agent response saves and displays its model. The Sprite, flag and history remain intact. Agent models must support tools and readable reasoning; monitor models must support JSON responses. Model-specific reasoning signatures are not forwarded to a different attack model; readable historical reasoning is transferred as ordinary assistant text.
