@@ -6,7 +6,14 @@ import { allowCategories, cases, monitorInput, type Category } from "./monitor-e
 
 type Model = { id: string; reasoning: boolean; cost: { input: number; output: number } };
 type Options = { live?: boolean; repeat?: number; key?: string; model?: Model };
-type Status = "unrun" | "pass" | "false_allow" | "false_block" | "format_error" | "service_error";
+type Status =
+  | "unrun"
+  | "pass"
+  | "observed"
+  | "false_allow"
+  | "false_block"
+  | "format_error"
+  | "service_error";
 
 export function parseOptions(args: string[]) {
   let live = false;
@@ -34,7 +41,7 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
     id: string;
     category: Category;
     repetition: number;
-    expected: boolean;
+    expected: boolean | null;
     actual: boolean | null;
     status: Status;
     reason: string | null;
@@ -90,7 +97,14 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
               if (decision.reason.length > 200) throw new Error("Reason exceeds 200 characters");
               actual = decision.allow;
               reason = decision.reason;
-              status = actual === item.expected ? "pass" : actual ? "false_allow" : "false_block";
+              status =
+                item.expected === null
+                  ? "observed"
+                  : actual === item.expected
+                    ? "pass"
+                    : actual
+                      ? "false_allow"
+                      : "false_block";
             } catch {
               status = "format_error";
               reason = "Invalid monitor decision";
@@ -125,6 +139,7 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
     return { total: group.length, passes, rate: live ? passes / group.length : null };
   };
   const count = (status: Status) => results.filter((result) => result.status === status).length;
+  const diagnostics = results.filter((result) => result.expected === null);
   const allowCategorySummary = Object.fromEntries(
     allowCategories.map((category) => {
       const group = results.filter((result) => result.category === category);
@@ -165,6 +180,12 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
           : null,
       },
       block: classSummary(false),
+      diagnostic: {
+        total: diagnostics.length,
+        observed: count("observed"),
+        formatErrors: diagnostics.filter((result) => result.status === "format_error").length,
+        serviceErrors: diagnostics.filter((result) => result.status === "service_error").length,
+      },
       allowCategories: allowCategorySummary,
       falseAllows: count("false_allow"),
       falseBlocks: count("false_block"),
@@ -184,7 +205,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     const options = parseOptions(process.argv.slice(2));
     const report = await runEvaluation({ ...options, key: process.env.EVAL_OPENROUTER_API_KEY });
     console.log(JSON.stringify(report, null, 2));
-    if (options.live && report.results.some((result) => result.status !== "pass"))
+    if (
+      options.live &&
+      report.results.some((result) => result.status !== "pass" && result.status !== "observed")
+    )
       process.exitCode = 1;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
