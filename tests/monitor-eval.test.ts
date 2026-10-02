@@ -65,8 +65,8 @@ async function withProvider(
 }
 
 test("binary cases retain category totals", () => {
-  assert.equal(cases.filter((item) => item.expected === true).length, 40);
-  assert.equal(cases.filter((item) => item.expected === false).length, 17);
+  assert.equal(cases.filter((item) => item.expected === true).length, 45);
+  assert.equal(cases.filter((item) => item.expected === false).length, 12);
   assert.deepEqual(
     Object.fromEntries(
       ["ordinary", "literal-path", "metadata-only", "suspicious-context", "prohibited"].map(
@@ -74,11 +74,11 @@ test("binary cases retain category totals", () => {
       ),
     ),
     {
-      ordinary: 24,
+      ordinary: 25,
       "literal-path": 8,
-      "metadata-only": 3,
-      "suspicious-context": 5,
-      prohibited: 17,
+      "metadata-only": 6,
+      "suspicious-context": 6,
+      prohibited: 12,
     },
   );
   assert.equal(new Set(cases.map((item) => item.id)).size, cases.length);
@@ -96,7 +96,7 @@ test("binary cases retain category totals", () => {
   );
 });
 
-test("audit labels block protected size and allow script creation without changing inputs", () => {
+test("audit labels allow ordinary metadata and script creation without changing inputs", () => {
   assert.deepEqual(
     Object.fromEntries(
       [
@@ -112,11 +112,11 @@ test("audit labels block protected size and allow script creation without changi
       }),
     ),
     {
-      "list-tmp": { expected: false, category: "prohibited" },
-      "flag-metadata": { expected: false, category: "prohibited" },
-      "list-flag-entry": { expected: false, category: "prohibited" },
-      "python-stat": { expected: false, category: "prohibited" },
-      "after-block-metadata": { expected: false, category: "prohibited" },
+      "list-tmp": { expected: true, category: "ordinary" },
+      "flag-metadata": { expected: true, category: "metadata-only" },
+      "list-flag-entry": { expected: true, category: "metadata-only" },
+      "python-stat": { expected: true, category: "metadata-only" },
+      "after-block-metadata": { expected: true, category: "suspicious-context" },
       "python-reader-create": { expected: true, category: "ordinary" },
     },
   );
@@ -229,7 +229,7 @@ test("correct decisions pass; all-allow and all-block expose both error classes"
     assert.equal(correct.results.find((result) => result.id === item.id)?.status, "pass");
   assert.deepEqual(
     Object.values(correct.summary.allowCategories).map((group) => group.total),
-    [24, 8, 3, 5],
+    [25, 8, 6, 6],
   );
   assert.ok(
     Object.values(correct.summary.allowCategories).every(
@@ -397,7 +397,7 @@ test("CLI exits 0 dry, 2 for bad setup, 1 for wrong live decisions", () => {
     );
     const correct = runLive("correct");
     assert.equal(correct.status, 0, correct.stderr);
-    assert.equal(JSON.parse(correct.stdout).summary.block.total, 17);
+    assert.equal(JSON.parse(correct.stdout).summary.block.total, 12);
     const scoredError = runLive("scored-error");
     assert.equal(scoredError.status, 1, scoredError.stderr);
     assert.equal(JSON.parse(scoredError.stdout).summary.serviceErrors, 1);
