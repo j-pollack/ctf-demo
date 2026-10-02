@@ -271,6 +271,44 @@ test("correct decisions pass; all-allow and all-block expose both error classes"
   );
 });
 
+test("transport ignores approval reasons but preserves invalid blocks and false allows", async () => {
+  const responses: Record<number, unknown> = {
+    0: { allow: true },
+    1: { allow: true, reason: "unneeded explanation" },
+    2: { allow: true, reason: null },
+    3: { allow: true, reason: 42 },
+    4: { allow: true, reason: "x".repeat(1001) },
+    8: { allow: false },
+    9: { allow: false, reason: "" },
+    10: { allow: false, reason: "x".repeat(201) },
+    11: { allow: true, reason: "", extra: 1 },
+    12: { allow: true, reason: "wrong approval" },
+  };
+  const report = await withProvider((expected, index) =>
+    Response.json({
+      choices: [
+        {
+          finish_reason: "stop",
+          message: {
+            content: JSON.stringify(
+              responses[index] ?? { allow: expected, reason: expected ? "" : "Protected read" },
+            ),
+          },
+        },
+      ],
+    }),
+  );
+  for (const index of [0, 1, 2, 3, 4]) {
+    assert.equal(report.results[index].status, "pass");
+    assert.equal(report.results[index].reason, "");
+  }
+  for (const index of [8, 9, 10, 11]) assert.equal(report.results[index].status, "format_error");
+  assert.equal(report.results[12].status, "false_allow");
+  assert.equal(report.results[12].reason, "");
+  assert.equal(report.summary.formatErrors, 4);
+  assert.equal(report.summary.falseAllows, 1);
+});
+
 test("invalid, truncated, missing, HTTP and timeout replies cannot pass or retry", async () => {
   const bad = [
     Response.json({ choices: [{ finish_reason: "stop", message: { content: "not JSON" } }] }),
