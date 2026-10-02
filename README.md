@@ -58,7 +58,9 @@ See [Verification audit and test strategy](docs/verification.md) for measured ru
 
 ## CI and production promotion
 
-GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not run production migrations or call paid/live providers. Green CI is not release approval: run explicitly approved live migration, provider-contract and browser smoke checks separately.
+GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not touch production or call paid/live providers. Green CI is not release approval: run explicitly approved provider-contract and browser smoke checks separately.
+
+The `migrate prod` workflow runs `scripts/setup.ts` against the production database after `ci` succeeds for a push to `main` (never for pull requests). It checks out the exact commit that passed, runs one migration at a time, and reads only the `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` repository secrets. Setup is idempotent and each SQL file applies atomically. Vercel may promote the new build while it runs, so migrations merged this way must be additive (old code keeps working); coordinate anything destructive or data-rewriting manually. If it fails, fix forward and push again; use Vercel Instant Rollback for bad code and Neon point-in-time restore only for damaged data.
 
 After this workflow is available, configure Vercel's GitHub-backed deployment checks to select the exact `ci` job and block production alias assignment only; retain existing native Lint/TypeCheck checks. This source workflow does not activate Vercel checks, block previews/builds, or provide GitHub branch protection. Do not force-promote when the required check is missing or failing. Private-repository merge protection requires GitHub Pro; Vercel's production alias gate is separate. The repository accepts squash merges only.
 
@@ -87,7 +89,7 @@ Admission allows ten active environments, 100 new games globally per rolling day
 
 This checkout is linked to `ctf-demo`. Set the server-only environment variables from `.env.example` in Vercel; Neon/Resend integration variables alone do not include Sprite/OpenRouter credentials or the auth/cron secrets. Set `BETTER_AUTH_URL` to the deployment's origin. No credential may have a `NEXT_PUBLIC_` prefix.
 
-Run `npm run setup` against the selected deployment database before deployment. `vercel.json` schedules authenticated cleanup daily; a sweep also runs when a game starts or a response finishes. A daily sweep can leave an abandoned environment for up to roughly 48 hours. Failed deletions remain pending and retry at the next sweep.
+Production migrations run through the `migrate prod` workflow; run `npm run setup` manually only for other databases or a coordinated non-additive migration. `vercel.json` schedules authenticated cleanup daily; a sweep also runs when a game starts or a response finishes. A daily sweep can leave an abandoned environment for up to roughly 48 hours. Failed deletions remain pending and retry at the next sweep.
 
 Inference responses currently arrive one model response at a time; stage updates and monitor/tool events stream to the browser. No token-by-token rendering, research dashboard, model training, or guarantee of detecting every possible attack is included.
 
