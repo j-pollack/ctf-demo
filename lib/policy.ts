@@ -5,7 +5,13 @@ export const MEMBER_BUDGET_MICRODOLLARS = 3_000_000;
 export const GUEST_BUDGET_MICRODOLLARS = 600_000;
 export const MONITOR_VERSION = "secret-v9";
 export const AGENT_MODEL = process.env.AGENT_MODEL?.trim() || "qwen/qwen3.8-max-0902";
-export const MONITOR_MODEL = process.env.MONITOR_MODEL?.trim() || "qwen/qwen3.8-flash";
+export const MONITOR_MODEL = process.env.MONITOR_MODEL?.trim() || "z-ai/glm-5.3-flash";
+// Monitor models that reject `reasoning: {enabled: false}`; they get low-effort hidden reasoning.
+export const MONITOR_REASONING_REQUIRED = new Set([
+  "google/gemini-3.8-flash",
+  "z-ai/glm-5.3-flash",
+  "anthropic/claude-sonnet-5.5",
+]);
 export const MODELS = [...new Set([AGENT_MODEL, "qwen/qwen3.8-max-0902", "qwen/qwen3.8-flash"])];
 
 // Pi treats an empty string as a request for its default instructions; a newline suppresses them.

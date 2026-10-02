@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MONITOR_PROMPT } from "../lib/policy";
-import { parseOptions, runEvaluation } from "../scripts/monitor-eval";
+import { EVAL_MODELS, parseOptions, runEvaluation } from "../scripts/monitor-eval";
 import { cases, monitorInput } from "../scripts/monitor-eval-cases";
 
 const model = { id: "test-monitor", reasoning: true, cost: { input: 2, output: 3 } };
@@ -38,10 +38,7 @@ async function withProvider(
     ]);
     assert.equal(body.model, model.id);
     assert.deepEqual(body.reasoning, selectedModel.reasoning ? { enabled: false } : undefined);
-    assert.deepEqual(body.provider, {
-      require_parameters: true,
-      max_price: { prompt: 2, completion: 3 },
-    });
+    assert.deepEqual(body.provider, { require_parameters: true });
     assert.deepEqual(body.response_format, { type: "json_object" });
     assert.equal(body.max_tokens, 2048);
     assert.equal(
@@ -178,7 +175,7 @@ test("generic Python reader is allowed until aimed at the flag", () => {
   }
 });
 
-test("dry run has no network, no scores; live requires a dedicated key", async () => {
+test("dry run has no network, no scores; live requires a key", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new Error("unexpected network");
@@ -211,7 +208,7 @@ test("dry run has no network, no scores; live requires a dedicated key", async (
       assert.equal(group.passes, 0);
     }
     assert.equal(report.reportedCost, null);
-    await assert.rejects(runEvaluation({ live: true }), /EVAL_OPENROUTER_API_KEY/);
+    await assert.rejects(runEvaluation({ live: true }), /OPENROUTER_API_KEY/);
     assert.deepEqual(parseOptions(["--live", "--repeat", "5"]), { live: true, repeat: 5 });
     for (const args of [["--repeat", "0"], ["--repeat", "6"], ["--repeat", "1.5"], ["--unknown"]])
       assert.throws(() => parseOptions(args));
@@ -381,7 +378,7 @@ test("CLI exits 0 dry, 2 for bad setup, 1 for wrong live decisions", () => {
   const env = {
     NODE_ENV: "test" as const,
     PATH: process.env.PATH ?? "",
-    EVAL_OPENROUTER_API_KEY: "synthetic-eval-key",
+    OPENROUTER_API_KEY: "synthetic-eval-key",
   };
   const call = (args: string[]) =>
     spawnSync(process.execPath, ["--import", "tsx", "scripts/monitor-eval.ts", ...args], {
@@ -391,7 +388,12 @@ test("CLI exits 0 dry, 2 for bad setup, 1 for wrong live decisions", () => {
     });
   const dry = call([]);
   assert.equal(dry.status, 0, dry.stderr);
-  assert.equal(JSON.parse(dry.stdout).evaluated, false);
+  const dryRuns = JSON.parse(dry.stdout).runs;
+  assert.deepEqual(
+    dryRuns.map((run: { model: string }) => run.model),
+    EVAL_MODELS,
+  );
+  assert.ok(dryRuns.every((run: { evaluated: boolean }) => run.evaluated === false));
   assert.equal(call(["--repeat", "0"]).status, 2);
   const missing = spawnSync(
     process.execPath,
@@ -404,14 +406,15 @@ test("CLI exits 0 dry, 2 for bad setup, 1 for wrong live decisions", () => {
     const preload = join(dir, "fake-provider.mjs");
     writeFileSync(
       preload,
-      `const labels = ${JSON.stringify(cases.map((item) => item.expected))};
-    let index = 0;
-    globalThis.fetch = async (url) => {
-      if (url === "https://openrouter.ai/api/v1/models") return Response.json({data:[{id:"test-monitor",context_length:100000,pricing:{prompt:"0.000001",completion:"0.000002",request:"0"},supported_parameters:["response_format"]}]});
+      `const labels = new Map(${JSON.stringify(cases.map((item) => [JSON.stringify(monitorInput(item)), item.expected]))});
+    let failed = false;
+    globalThis.fetch = async (url, init) => {
+      if (url === "https://openrouter.ai/api/v1/models") return Response.json({data:${JSON.stringify(EVAL_MODELS)}.map((id) => ({id,context_length:100000,pricing:{prompt:"0.000001",completion:"0.000002",request:"0"},supported_parameters:["response_format"]}))});
       if (url === "https://openrouter.ai/api/v1/chat/completions") {
-        if (process.env.EVAL_FAKE_MODE === "scored-error" && index === 50) { index++; return new Response("rate limited", {status:429}); }
-        const allow = process.env.EVAL_FAKE_MODE === "all-allow" ? true : labels[index];
-        index++;
+        const body = JSON.parse(init.body);
+        if (process.env.EVAL_FAKE_MODE === "scored-error" && !failed && body.model === ${JSON.stringify(EVAL_MODELS[0])}) { failed = true; return new Response("upstream failed", {status:500}); }
+        if (!labels.has(body.messages[1].content)) throw new Error("unexpected case");
+        const allow = process.env.EVAL_FAKE_MODE === "all-allow" ? true : labels.get(body.messages[1].content);
         return Response.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify({allow,reason:allow?"":"Protected read"})}}]});
       }
       throw new Error("unexpected URL");
@@ -423,23 +426,79 @@ test("CLI exits 0 dry, 2 for bad setup, 1 for wrong live decisions", () => {
         ["--import", preload, "--import", "tsx", "scripts/monitor-eval.ts", "--live"],
         {
           cwd,
-          env: { ...env, MONITOR_MODEL: "test-monitor", EVAL_FAKE_MODE: mode },
+          env: { ...env, EVAL_FAKE_MODE: mode },
           encoding: "utf8",
         },
       );
     const live = runLive("all-allow");
     assert.equal(live.status, 1, live.stderr);
-    assert.equal(
-      JSON.parse(live.stdout).summary.falseAllows,
-      cases.filter((item) => item.expected === false).length,
-    );
+    const summaries = (out: string) =>
+      JSON.parse(out).runs.map((run: { summary: Record<string, never> }) => run.summary);
+    for (const summary of summaries(live.stdout))
+      assert.equal(summary.falseAllows, cases.filter((item) => item.expected === false).length);
     const correct = runLive("correct");
     assert.equal(correct.status, 0, correct.stderr);
-    assert.equal(JSON.parse(correct.stdout).summary.block.total, 12);
+    assert.deepEqual(
+      summaries(correct.stdout).map((summary: { block: { total: number } }) => summary.block.total),
+      EVAL_MODELS.map(() => 12),
+    );
     const scoredError = runLive("scored-error");
     assert.equal(scoredError.status, 1, scoredError.stderr);
-    assert.equal(JSON.parse(scoredError.stdout).summary.serviceErrors, 1);
+    assert.deepEqual(
+      summaries(scoredError.stdout).map(
+        (summary: { serviceErrors: number }) => summary.serviceErrors,
+      ),
+      EVAL_MODELS.map((_, index) => (index === 0 ? 1 : 0)),
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("429s retry with backoff up to the limit; other failures never retry", async () => {
+  const original = globalThis.fetch;
+  const bodies: Record<string, unknown>[] = [];
+  const seen = new Map<string, number>();
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    const id = body.messages[1].content;
+    const count = (seen.get(id) ?? 0) + 1;
+    seen.set(id, count);
+    const item = cases.find((candidate) => JSON.stringify(monitorInput(candidate)) === id)!;
+    if (item.id === "pwd" && count === 1) return new Response("busy", { status: 429 });
+    if (item.id === "list-tmp") return new Response("busy", { status: 429 });
+    if (item.id === "flag-metadata") return new Response("down", { status: 500 });
+    return Response.json(reply(item.expected));
+  };
+  try {
+    const report = await runEvaluation({
+      live: true,
+      key: "synthetic-eval-key",
+      model,
+      reasoningRequired: true,
+      retries: 2,
+      retryDelayMs: 1,
+    });
+    const byId = (id: string) => report.results.find((result) => result.id === id)!;
+    assert.deepEqual([byId("pwd").status, byId("pwd").retries], ["pass", 1]);
+    assert.deepEqual(
+      [byId("list-tmp").status, byId("list-tmp").reason, byId("list-tmp").retries],
+      ["service_error", "HTTP 429", 2],
+    );
+    assert.deepEqual(
+      [byId("flag-metadata").status, byId("flag-metadata").retries],
+      ["service_error", 0],
+    );
+    assert.equal(bodies.length, cases.length + 1 + 2);
+    assert.ok(
+      bodies.every(
+        (body) =>
+          JSON.stringify(body.reasoning) === JSON.stringify({ effort: "low", exclude: false }) &&
+          body.max_tokens === 8192,
+      ),
+    );
+  } finally {
+    globalThis.fetch = original;
   }
 });

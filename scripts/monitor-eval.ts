@@ -1,11 +1,42 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MONITOR_MODEL, MONITOR_PROMPT, MONITOR_VERSION, parseDecision } from "../lib/policy";
+import {
+  MONITOR_MODEL,
+  MONITOR_PROMPT,
+  MONITOR_REASONING_REQUIRED,
+  MONITOR_VERSION,
+  parseDecision,
+} from "../lib/policy";
 import { allowCategories, cases, monitorInput, type Category } from "./monitor-eval-cases";
 
 type Model = { id: string; reasoning: boolean; cost: { input: number; output: number } };
-type Options = { live?: boolean; repeat?: number; key?: string; model?: Model };
+type Options = {
+  live?: boolean;
+  repeat?: number;
+  key?: string;
+  modelId?: string;
+  model?: Model;
+  reasoningRequired?: boolean;
+  retries?: number;
+  retryDelayMs?: number;
+};
+type Usage = { input: number; output: number } | null;
+
+// Requests in flight per model; models also run concurrently. The key has no request cap,
+// but shared upstream provider pools 429 (no retry-after), so the CLI retries 429s with
+// jittered exponential backoff.
+const CONCURRENCY = 4;
+// Every model the eval scores; MONITOR_MODEL is the production setting, not the eval set.
+export const EVAL_MODELS = [
+  "qwen/qwen3.8-flash",
+  "openai/gpt-6-luna",
+  "google/gemini-3.8-flash",
+  "deepseek/deepseek-v4.1-flash",
+  "z-ai/glm-5.3-flash",
+  "mistralai/mistral-small-2603",
+  "anthropic/claude-sonnet-5.5",
+];
 type Status = "unrun" | "pass" | "false_allow" | "false_block" | "format_error" | "service_error";
 
 export function parseOptions(args: string[]) {
@@ -22,13 +53,22 @@ export function parseOptions(args: string[]) {
 
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-export async function runEvaluation({ live = false, repeat = 1, key, model }: Options = {}) {
+export async function runEvaluation({
+  live = false,
+  repeat = 1,
+  key,
+  modelId = MONITOR_MODEL,
+  model,
+  reasoningRequired = false,
+  retries = 0,
+  retryDelayMs = 1000,
+}: Options = {}) {
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 5)
     throw new Error("repeat must be an integer from 1 to 5");
-  if (live && !key?.trim()) throw new Error("--live requires EVAL_OPENROUTER_API_KEY");
+  if (live && !key?.trim()) throw new Error("--live requires OPENROUTER_API_KEY");
   if (live && !model) {
     const { getModel } = await import("../lib/inference");
-    model = await getModel(MONITOR_MODEL, "monitor");
+    model = await getModel(modelId, "monitor");
   }
   const results: {
     id: string;
@@ -39,48 +79,83 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
     status: Status;
     reason: string | null;
     cost: number | null;
+    servedModel: string | null;
+    usage: Usage;
+    reasoning: string | null;
+    retries: number;
   }[] = [];
-  for (let run = 0; run < repeat; run++)
-    for (const item of cases) {
+  const jobs = Array.from({ length: repeat * cases.length }, (_, index) => ({
+    index,
+    run: Math.floor(index / cases.length),
+    item: cases[index % cases.length],
+  }));
+  let next = 0;
+  const worker = async () => {
+    while (next < jobs.length) {
+      const { index, run, item } = jobs[next++];
       let actual: boolean | null = null;
       let reason: string | null = null;
       let cost: number | null = null;
+      let servedModel: string | null = null;
+      let usage: Usage = null;
+      let reasoning: string | null = null;
+      let attempts = 0;
       let status: Status = "unrun";
       if (live) {
         try {
-          const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: model!.id,
-              messages: [
-                { role: "system", content: MONITOR_PROMPT },
-                { role: "user", content: JSON.stringify(monitorInput(item)) },
-              ],
-              ...(model!.reasoning ? { reasoning: { enabled: false } } : {}),
-              provider: {
-                require_parameters: true,
-                max_price: { prompt: model!.cost.input, completion: model!.cost.output },
-              },
-              response_format: { type: "json_object" },
-              max_tokens: 2048,
-            }),
-            signal: AbortSignal.timeout(30000),
-          });
+          let response: Response;
+          // Unlike the app, no max_price: the cheapest catalog endpoint often lacks response_format.
+          while (true) {
+            response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: model!.id,
+                messages: [
+                  { role: "system", content: MONITOR_PROMPT },
+                  { role: "user", content: JSON.stringify(monitorInput(item)) },
+                ],
+                ...(model!.reasoning
+                  ? {
+                      reasoning: reasoningRequired
+                        ? { effort: "low", exclude: false }
+                        : { enabled: false },
+                    }
+                  : {}),
+                provider: { require_parameters: true },
+                response_format: { type: "json_object" },
+                max_tokens: reasoningRequired ? 8192 : 2048,
+              }),
+              signal: AbortSignal.timeout(reasoningRequired ? 60000 : 30000),
+            });
+            if (response.status !== 429 || attempts >= retries) break;
+            await new Promise((done) =>
+              setTimeout(done, retryDelayMs * 2 ** attempts++ * (1 + Math.random())),
+            );
+          }
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const body: unknown = await response.json();
           const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
           if (obj.error) throw new Error("Provider response contained error");
-          const usage =
+          const raw =
             obj.usage && typeof obj.usage === "object"
               ? (obj.usage as Record<string, unknown>)
               : {};
           cost =
-            typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0
-              ? usage.cost
+            typeof raw.cost === "number" && Number.isFinite(raw.cost) && raw.cost >= 0
+              ? raw.cost
+              : null;
+          servedModel = typeof obj.model === "string" ? obj.model : null;
+          usage =
+            typeof raw.prompt_tokens === "number" && typeof raw.completion_tokens === "number"
+              ? { input: raw.prompt_tokens, output: raw.completion_tokens }
               : null;
           const choice = Array.isArray(obj.choices) ? obj.choices[0] : null;
           const text = choice?.message?.content;
+          reasoning =
+            typeof choice?.message?.reasoning === "string" && choice.message.reasoning
+              ? choice.message.reasoning
+              : null;
           if (choice?.finish_reason !== "stop" || typeof text !== "string") {
             status = "format_error";
             reason = "Missing or truncated completion";
@@ -108,7 +183,7 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
                   : "Provider request failed";
         }
       }
-      results.push({
+      results[index] = {
         id: item.id,
         category: item.category,
         repetition: run + 1,
@@ -117,8 +192,14 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
         status,
         reason,
         cost,
-      });
+        servedModel,
+        usage,
+        reasoning,
+        retries: attempts,
+      };
     }
+  };
+  await Promise.all(Array.from({ length: live ? CONCURRENCY : 1 }, worker));
   const classSummary = (expected: boolean) => {
     const group = results.filter((result) => result.expected === expected);
     const passes = group.filter((result) => result.status === "pass").length;
@@ -146,7 +227,9 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
     timestamp: new Date().toISOString(),
     mode: live ? "live" : "dry-run",
     evaluated: live,
-    model: model?.id ?? MONITOR_MODEL,
+    model: model?.id ?? modelId,
+    // Where this request differs from the app's monitor request (lib/inference.ts).
+    divergence: ["no max_price cap"],
     monitorVersion: MONITOR_VERSION,
     promptHash: hash(MONITOR_PROMPT),
     suiteHash: hash(
@@ -182,9 +265,20 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   try {
     const options = parseOptions(process.argv.slice(2));
-    const report = await runEvaluation({ ...options, key: process.env.EVAL_OPENROUTER_API_KEY });
-    console.log(JSON.stringify(report, null, 2));
-    if (options.live && report.results.some((result) => result.status !== "pass"))
+    const key = process.env.OPENROUTER_API_KEY;
+    const runs = await Promise.all(
+      EVAL_MODELS.map((modelId) =>
+        runEvaluation({
+          ...options,
+          key,
+          modelId,
+          reasoningRequired: MONITOR_REASONING_REQUIRED.has(modelId),
+          retries: 6,
+        }),
+      ),
+    );
+    console.log(JSON.stringify({ runs }, null, 2));
+    if (options.live && runs.some((run) => run.results.some((result) => result.status !== "pass")))
       process.exitCode = 1;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
