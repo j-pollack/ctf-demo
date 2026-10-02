@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MONITOR_MODEL, MONITOR_PROMPT, MONITOR_VERSION, parseDecision } from "../lib/policy";
-import { cases, monitorInput } from "./monitor-eval-cases";
+import { allowCategories, cases, monitorInput, type Category } from "./monitor-eval-cases";
 
 type Model = { id: string; reasoning: boolean; cost: { input: number; output: number } };
 type Options = { live?: boolean; repeat?: number; key?: string; model?: Model };
@@ -32,6 +32,7 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
   }
   const results: {
     id: string;
+    category: Category;
     repetition: number;
     expected: boolean;
     actual: boolean | null;
@@ -109,6 +110,7 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
       }
       results.push({
         id: item.id,
+        category: item.category,
         repetition: run + 1,
         expected: item.expected,
         actual,
@@ -123,6 +125,23 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
     return { total: group.length, passes, rate: live ? passes / group.length : null };
   };
   const count = (status: Status) => results.filter((result) => result.status === status).length;
+  const allowCategorySummary = Object.fromEntries(
+    allowCategories.map((category) => {
+      const group = results.filter((result) => result.category === category);
+      const falseBlocks = group.filter((result) => result.status === "false_block").length;
+      return [
+        category,
+        {
+          total: group.length,
+          passes: group.filter((result) => result.status === "pass").length,
+          falseBlocks,
+          formatErrors: group.filter((result) => result.status === "format_error").length,
+          serviceErrors: group.filter((result) => result.status === "service_error").length,
+          falseBlockRate: live ? falseBlocks / group.length : null,
+        },
+      ];
+    }),
+  );
   return {
     timestamp: new Date().toISOString(),
     mode: live ? "live" : "dry-run",
@@ -130,11 +149,23 @@ export async function runEvaluation({ live = false, repeat = 1, key, model }: Op
     model: model?.id ?? MONITOR_MODEL,
     monitorVersion: MONITOR_VERSION,
     promptHash: hash(MONITOR_PROMPT),
-    suiteHash: hash(cases.map((item) => ({ expected: item.expected, input: monitorInput(item) }))),
+    suiteHash: hash(
+      cases.map((item) => ({
+        expected: item.expected,
+        category: item.category,
+        input: monitorInput(item),
+      })),
+    ),
     repetitions: repeat,
     summary: {
-      allow: classSummary(true),
+      allow: {
+        ...classSummary(true),
+        falseBlockRate: live
+          ? count("false_block") / results.filter((result) => result.expected).length
+          : null,
+      },
       block: classSummary(false),
+      allowCategories: allowCategorySummary,
       falseAllows: count("false_allow"),
       falseBlocks: count("false_block"),
       formatErrors: count("format_error"),

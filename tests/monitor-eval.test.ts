@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,15 +64,46 @@ async function withProvider(
   }
 }
 
-test("balanced cases cover legitimate and protected reads", () => {
-  assert.ok(cases.filter((item) => item.expected).length >= 8);
-  assert.ok(cases.filter((item) => !item.expected).length >= 8);
+test("40 legitimate cases have fixed diagnostic groups and preserve original controls", () => {
+  assert.equal(cases.filter((item) => item.expected).length, 40);
+  assert.equal(cases.filter((item) => !item.expected).length, 10);
+  assert.deepEqual(
+    Object.fromEntries(
+      ["ordinary", "literal-path", "metadata-only", "suspicious-context", "prohibited"].map(
+        (category) => [category, cases.filter((item) => item.category === category).length],
+      ),
+    ),
+    {
+      ordinary: 20,
+      "literal-path": 8,
+      "metadata-only": 6,
+      "suspicious-context": 6,
+      prohibited: 10,
+    },
+  );
+  assert.equal(
+    createHash("sha256")
+      .update(
+        JSON.stringify(
+          cases.slice(0, 18).map((item) => ({
+            id: item.id,
+            command: item.command,
+            expected: item.expected,
+            input: monitorInput(item),
+          })),
+        ),
+      )
+      .digest("hex"),
+    "f9ba2d84a82b4b10e7e907f2928880d768ebfc127542382fc48473207f943c8f",
+  );
   assert.equal(new Set(cases.map((item) => item.id)).size, cases.length);
   for (const item of cases) {
+    assert.equal(item.expected, item.category !== "prohibited");
     const input = monitorInput(item);
     assert.equal(input.proposedToolCall.arguments.command, item.command);
     assert.equal(input.transcript.at(-1)?.role, "assistant");
     assert.equal(JSON.stringify(input).includes('"expected"'), false);
+    assert.equal(JSON.stringify(input).includes('"category"'), false);
   }
   assert.equal(
     monitorInput(cases.find((item) => item.id === "after-block")!).transcript[3].role,
@@ -92,6 +124,25 @@ test("dry run has no network, no scores; live requires a dedicated key", async (
       report.results.every((result) => result.status === "unrun" && result.actual === null),
     );
     assert.equal(report.summary.allow.rate, null);
+    assert.equal(report.summary.allow.falseBlockRate, null);
+    assert.equal(
+      report.suiteHash,
+      createHash("sha256")
+        .update(
+          JSON.stringify(
+            cases.map((item) => ({
+              expected: item.expected,
+              category: item.category,
+              input: monitorInput(item),
+            })),
+          ),
+        )
+        .digest("hex"),
+    );
+    for (const group of Object.values(report.summary.allowCategories)) {
+      assert.equal(group.falseBlockRate, null);
+      assert.equal(group.passes, 0);
+    }
     assert.equal(report.reportedCost, null);
     await assert.rejects(runEvaluation({ live: true }), /EVAL_OPENROUTER_API_KEY/);
     assert.deepEqual(parseOptions(["--live", "--repeat", "5"]), { live: true, repeat: 5 });
@@ -105,7 +156,17 @@ test("dry run has no network, no scores; live requires a dedicated key", async (
 test("correct decisions pass; all-allow and all-block expose both error classes", async () => {
   const correct = await withProvider((expected) => Response.json(reply(expected)));
   assert.equal(correct.summary.allow.rate, 1);
+  assert.equal(correct.summary.allow.falseBlockRate, 0);
   assert.equal(correct.summary.block.rate, 1);
+  assert.deepEqual(
+    Object.values(correct.summary.allowCategories).map((group) => group.total),
+    [20, 8, 6, 6],
+  );
+  assert.ok(
+    Object.values(correct.summary.allowCategories).every(
+      (group) => group.falseBlockRate === 0 && group.passes === group.total,
+    ),
+  );
   assert.ok(Math.abs(correct.reportedCost! - cases.length * 0.001) < 1e-10);
   const noReasoning = await withProvider((expected) => Response.json(reply(expected)), 1, {
     ...model,
@@ -118,6 +179,12 @@ test("correct decisions pass; all-allow and all-block expose both error classes"
   const allBlock = await withProvider(() => Response.json(reply(false)));
   assert.equal(allBlock.summary.falseBlocks, cases.filter((item) => item.expected).length);
   assert.equal(allBlock.summary.allow.rate, 0);
+  assert.equal(allBlock.summary.allow.falseBlockRate, 1);
+  assert.ok(
+    Object.values(allBlock.summary.allowCategories).every(
+      (group) => group.falseBlockRate === 1 && group.falseBlocks === group.total,
+    ),
+  );
   assert.equal(
     allBlock.results.find((result) => result.id === "after-block")?.status,
     "false_block",
@@ -162,6 +229,27 @@ test("invalid, truncated, missing, HTTP and timeout replies cannot pass or retry
   assert.equal(report.summary.formatErrors, 6);
   assert.equal(report.summary.serviceErrors, 4);
   assert.equal(report.summary.allow.total + report.summary.block.total, cases.length * 2);
+  assert.equal(
+    report.summary.allow.falseBlockRate,
+    report.summary.falseBlocks / report.summary.allow.total,
+  );
+  for (const [category, group] of Object.entries(report.summary.allowCategories)) {
+    const members = report.results.filter((result) => result.category === category);
+    assert.equal(group.total, members.length);
+    assert.equal(
+      group.falseBlocks,
+      members.filter((result) => result.status === "false_block").length,
+    );
+    assert.equal(
+      group.formatErrors,
+      members.filter((result) => result.status === "format_error").length,
+    );
+    assert.equal(
+      group.serviceErrors,
+      members.filter((result) => result.status === "service_error").length,
+    );
+    assert.equal(group.falseBlockRate, group.falseBlocks / group.total);
+  }
   assert.equal(report.reportedCost, null);
   assert.ok(report.results.slice(0, 10).every((result) => result.status !== "pass"));
   assert.ok(
