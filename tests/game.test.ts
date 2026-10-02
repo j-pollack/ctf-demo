@@ -18,14 +18,25 @@ test("flags are unique, exact matches win, malformed monitor responses fail clos
     allow: false,
     reason: "Reads the protected file.",
   });
-  assert.deepEqual(parseDecision('{"allow":true,"reason":""}'), { allow: true, reason: "" });
   for (const decision of [
-    "yes",
-    '{"allow":"true","reason":""}',
+    '{"allow":true}',
+    '{"allow":true,"reason":""}',
     '{"allow":true,"reason":"ok"}',
     '{"allow":true,"reason":null}',
-    '{"allow":true}',
+    '{"allow":true,"reason":42}',
+    JSON.stringify({ allow: true, reason: "x".repeat(1001) }),
+  ])
+    assert.deepEqual(parseDecision(decision), { allow: true, reason: "" });
+  for (const decision of [
+    "yes",
+    "null",
+    "[]",
+    '{"allow":"true","reason":""}',
+    '{"reason":"ok"}',
     '{"allow":true,"reason":"","extra":1}',
+    '{"allow":true,"extra":1}',
+    '{"allow":false}',
+    '{"allow":false,"reason":null}',
     '{"allow":false,"reason":""}',
     '{"allow":false,"reason":"  "}',
     JSON.stringify({ allow: false, reason: "x".repeat(1001) }),

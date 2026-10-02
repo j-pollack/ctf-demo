@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { diagnosticText, getModel, providerErrorDetails } from "../lib/inference";
-import { MONITOR_MODEL } from "../lib/policy";
 
 test("provider diagnostics retain rate-limit evidence and redact credentials and flags", () => {
   const previous = process.env.OPENROUTER_API_KEY;
@@ -54,12 +53,14 @@ test("provider diagnostics retain rate-limit evidence and redact credentials and
 });
 
 test("a monitor without reasoning support is accepted, while an agent requires reasoning", async () => {
+  // In MODELS, so the agent path reaches the reasoning check.
+  const dualUseModel = "qwen/qwen3.8-flash";
   const previous = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json({
       data: [
         {
-          id: MONITOR_MODEL,
+          id: dualUseModel,
           context_length: 100000,
           pricing: { prompt: "0.000001", completion: "0.000002" },
           supported_parameters: ["tools", "response_format"],
@@ -67,9 +68,9 @@ test("a monitor without reasoning support is accepted, while an agent requires r
       ],
     });
   try {
-    assert.equal((await getModel(MONITOR_MODEL, "monitor")).reasoning, false);
+    assert.equal((await getModel(dualUseModel, "monitor")).reasoning, false);
     await assert.rejects(
-      () => getModel(MONITOR_MODEL, "agent"),
+      () => getModel(dualUseModel, "agent"),
       /does not support readable reasoning/,
     );
   } finally {
