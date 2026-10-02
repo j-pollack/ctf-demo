@@ -74,3 +74,7 @@ Investigate exact guest adoption/readiness timing with temporary client logging 
 - Existing predicate regression explicitly covers readiness true with empty vs accepted user event; actual race red/green is browser evidence, not claimed covered by pure predicate test. Temporary client logging removed after diagnosis.
 - Final offline gates: npm run check and npm run test:coverage both passed 28/28; all-source coverage 20.88% lines, 79.63% branches. Diff check passed. No useful simplification beyond the single readiness setter. Disposable QA server/database stopped; original preview environment preserved.
 - Independent correction review approved with no P0–P2 findings. Normal worktree dev preview restarted and inspected at http://localhost:3005/play; pane Rooibos. Main unchanged (pre-existing .env.example modification belongs to other work); no merge or push.
+
+## Pull request preparation
+
+At user request, merged origin/main at 3988d27 into the feature branch without conflicts (merge a4bb582). Post-merge npm run check and test:coverage passed 38/38; all-source line coverage 21.42%, branches 79.85%. Prior browser and independent-review evidence applies to unchanged UI delta. No production migration or deployment was run. PR Lens document validated and SVG rendered/inspected locally; hosted canvas publishing failed with CANVAS_UNAVAILABLE/TLS connection failure, and installed gh 2.96 lacks --attach. Generated diagram remains ignored locally, not committed.
