@@ -1,3 +1,5 @@
+import AuthAction from "@/app/auth-action";
+
 export default function Home() {
   return (
     <div className="landing">
@@ -5,9 +7,7 @@ export default function Home() {
         <a href="/" className="wordmark">
           Plant the flag<span>_</span>
         </a>
-        <a className="landing-signin" href="/play?signin=1">
-          Sign in ↗
-        </a>
+        <AuthAction />
       </header>
       <main className="landing-main">
         <p className="eyebrow">AN AI RED-TEAMING GAME</p>

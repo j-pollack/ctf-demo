@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import Link from "next/link";
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
+import AuthAction from "@/app/auth-action";
 import type { GameEvent, GameSummary, PublicGame, Season } from "@/lib/types";
 
 const label = (model: string) => model.split("/")[1];
@@ -109,6 +110,7 @@ export default function GameUI({
     [detailError, setDetailError] = useState(""),
     [detailReload, setDetailReload] = useState(0);
   const historyRequest = useRef(0),
+    signinQueryHandled = useRef(false),
     detailRequest = useRef(0),
     routeRef = useRef(pathname),
     routeGeneration = useRef(0),
@@ -164,8 +166,12 @@ export default function GameUI({
     });
   }
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("signin") === "1") setModal("login");
-  }, []);
+    if (signedIn && modal === "login") setModal(null);
+    if (account.isPending || signinQueryHandled.current) return;
+    signinQueryHandled.current = true;
+    if (!signedIn && new URLSearchParams(window.location.search).get("signin") === "1")
+      setModal("login");
+  }, [account.isPending, signedIn, modal]);
   useEffect(() => {
     const refresh = () => {
       api("/api/seasons")
@@ -890,14 +896,12 @@ export default function GameUI({
             >
               New run ↗
             </button>
-            <button
-              onClick={() => {
+            <AuthAction
+              onSignIn={() => {
                 setModal("login");
                 setEmailSent(false);
               }}
-            >
-              {signedIn ? "Account" : "Sign in"}
-            </button>
+            />
           </div>
         </header>
         {error && (
@@ -1429,21 +1433,8 @@ export default function GameUI({
           ) : (
             <>
               <p className="eyebrow">PASSWORDLESS ACCESS</p>
-              <h2>{signedIn ? "You’re signed in." : "Sign in to Plant the flag."}</h2>
-              {signedIn ? (
-                <>
-                  <p>$3 per run. Your wins appear under an anonymous operator ID.</p>
-                  <button
-                    onClick={async () => {
-                      await authClient.signOut();
-                      setGame(null);
-                      setModal(null);
-                    }}
-                  >
-                    Sign out
-                  </button>
-                </>
-              ) : emailSent ? (
+              <h2>Sign in to Plant the flag.</h2>
+              {emailSent ? (
                 <p role="status">
                   Check your inbox for your sign-in link. It expires in five minutes.
                 </p>
