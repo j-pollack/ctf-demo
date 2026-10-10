@@ -2,7 +2,7 @@ import { auth } from "./auth";
 import { GameError } from "./policy";
 export async function player(request: Request) {
   const session = await auth.api.getSession({ headers: request.headers });
-  if (!session) throw new GameError("Please start a guest session or sign in.", 401);
+  if (!session) throw new GameError("Sign in or play as a guest.", 401);
   return { id: session.user.id, signedIn: !session.user.isAnonymous };
 }
 export function checkOrigin(request: Request) {

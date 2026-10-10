@@ -26,7 +26,7 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
           {
             from: process.env.RESEND_FROM,
             to: email,
-            subject: "Your Plant the flag sign-in link",
+            subject: "Your Capture the flag sign-in link",
           },
         );
         magicLink = payload.text.match(/http:\/\/localhost\S+/)?.[0] ?? "";

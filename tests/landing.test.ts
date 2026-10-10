@@ -6,11 +6,11 @@ import Home from "../app/page";
 
 test("public landing renders without database access and links to play and existing sign-in flow", () => {
   const html = renderToStaticMarkup(createElement(Home));
-  assert.match(html, /Plant the flag/);
+  assert.match(html, /Capture the flag/);
   assert.match(html, /href="\/play"/);
   assert.match(html, /href="\/play\?signin=1"/);
   assert.match(html, /\/tmp\/flag\.txt/);
-  assert.match(html, /blocked command is a clue/);
+  assert.match(html, /blocked command doesn’t end the run/);
   assert.match(html, /\$0\.60 per run/);
   assert.doesNotMatch(html, /Tripwire|tripwire|<textarea/);
 });

@@ -1,4 +1,4 @@
-# Plant the flag
+# Capture the flag
 
 Public AI red-teaming game using Next.js, Pi SDK, one Fly Sprite per game, OpenRouter, Neon Postgres, Better Auth and Resend.
 

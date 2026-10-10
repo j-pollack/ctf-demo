@@ -346,7 +346,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
             sourceId: child.id,
             eventId: inheritedEvent.id,
           }),
-        /daily new-game limit/i,
+        /daily limit of new runs/i,
       );
       assert.equal(trace.filter((entry) => entry.endsWith(":create")).length, creates);
       proposed = ["printf after-fork"];

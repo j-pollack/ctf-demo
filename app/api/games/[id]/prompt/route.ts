@@ -13,7 +13,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (typeof data.prompt !== "string" || !data.prompt.trim() || data.prompt.length > 8192)
       throw new GameError("Enter an instruction of up to 8,192 characters.");
     if (data.agentModel !== undefined && typeof data.agentModel !== "string")
-      throw new GameError("Choose an attack model.");
+      throw new GameError("Choose an agent model.");
     if (typeof data.agentModel === "string") await getModel(data.agentModel, "agent");
     const game = await claimGame((await params).id, user.id, data.agentModel as string | undefined);
     const cancel = new AbortController();
@@ -32,7 +32,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         try {
           await runGame(game, data.prompt as string, signal, send);
         } catch {
-          send("error", "This response was interrupted. Reload to recover your game.");
+          send("error", "This response was interrupted. Reload to recover your run.");
         } finally {
           clearInterval(heartbeat);
           try {

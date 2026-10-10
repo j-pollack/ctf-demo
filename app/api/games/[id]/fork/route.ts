@@ -19,7 +19,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       throw new GameError("Choose an agent response to fork.");
     const id = (await params).id;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
-      throw new GameError("Game not found.", 404);
+      throw new GameError("Run not found.", 404);
     return Response.json(
       await startGame(user.id, user.signedIn, undefined, {
         sourceId: id,
