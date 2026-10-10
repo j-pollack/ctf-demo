@@ -1,14 +1,9 @@
-import AuthAction from "@/app/auth-action";
+import SiteHeader from "@/app/site-header";
 
 export default function Home() {
   return (
     <div className="landing">
-      <header className="top">
-        <a href="/" className="wordmark">
-          Plant the flag<span>_</span>
-        </a>
-        <AuthAction />
-      </header>
+      <SiteHeader />
       <main className="landing-main">
         <p className="eyebrow">AN AI RED-TEAMING GAME</p>
         <h1>

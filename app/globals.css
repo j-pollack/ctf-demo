@@ -89,54 +89,17 @@ strong {
   font-weight: 600;
 }
 .app {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   height: 100dvh;
   overflow: hidden;
   max-width: 1600px;
   margin: auto;
 }
-.rail {
-  border-right: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  padding: 24px 8px;
-  gap: 18px;
-  position: sticky;
-  top: 0;
-  height: 100dvh;
-}
-.mark {
-  text-align: center;
-  font-size: 20px;
-  font-weight: 900;
-  letter-spacing: -1px;
-  line-height: 0.9;
-  margin: 8px 0 32px;
-}
-.mark span {
-  display: block;
-  color: #557b1d;
-}
-.rail button {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  border: 0;
-  padding: 8px 0;
-  font-size: 10px;
-  gap: 4px;
-}
-.rail button > span {
-  font-size: 23px;
-  line-height: 1.2;
-}
-.rail .selected {
-  background: var(--accent);
-}
 .workspace {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
   min-width: 0;
 }
@@ -144,20 +107,69 @@ strong {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 15px;
-  padding: 16px 32px;
+  gap: 12px;
+  padding: 8px 20px;
   border-bottom: 1px solid var(--line);
+  min-height: 60px;
 }
 .wordmark {
-  font-size: 26px;
+  flex: 0 0 auto;
+  font-size: clamp(14px, 2vw, 22px);
   font-weight: bold;
-  letter-spacing: -1.5px;
+  letter-spacing: -1px;
+  white-space: nowrap;
 }
 .wordmark span {
   color: #557b1d;
 }
-.top button {
-  font-size: 11px;
+.brand-short {
+  display: none;
+}
+.top nav {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: clamp(2px, 1vw, 12px);
+  min-width: 0;
+}
+.top nav > a,
+.top nav > button,
+.auth-nav > a,
+.auth-nav > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.top nav [aria-current="page"]:not(.primary) {
+  text-decoration: underline;
+  text-underline-offset: 5px;
+}
+.top nav > .primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #182207;
+  padding-inline: 12px;
+}
+.auth-nav {
+  position: relative;
+  display: inline-flex;
+}
+.auth-nav [role="alert"] {
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  right: 0;
+  width: min(280px, 70vw);
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  overflow-wrap: anywhere;
 }
 .eyebrow {
   font-size: 10px;
@@ -682,36 +694,39 @@ dialog::backdrop {
   }
 }
 @media (max-width: 720px) {
-  .app {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .rail {
-    height: auto;
-    position: static;
-    flex-direction: row;
-    align-items: center;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    padding: 4px 14px;
-    gap: 10px;
-  }
-  .mark {
-    margin: 0 auto 0 0;
-    font-size: 19px;
-  }
-  .rail button {
-    padding: 5px 12px;
-    min-width: 50px;
-  }
-  .rail button > span {
-    font-size: 18px;
-  }
   .top {
-    padding: 8px 20px;
+    gap: 4px;
+    padding-inline: 8px;
   }
   .wordmark {
-    font-size: 23px;
+    font-size: 14px;
+    letter-spacing: -1px;
+  }
+  .brand-full {
+    display: none;
+  }
+  .brand-short {
+    display: inline;
+  }
+  .top nav {
+    gap: 0;
+  }
+  .top nav > a,
+  .top nav > button,
+  .auth-nav > a,
+  .auth-nav > button {
+    padding-inline: 4px;
+    font-size: 10px;
+  }
+  .top nav > .primary {
+    padding-inline: 8px;
+  }
+  .auth-nav button[aria-busy="true"] {
+    font-size: 0;
+  }
+  .auth-nav button[aria-busy="true"]::after {
+    content: "…";
+    font-size: 16px;
   }
   .console {
     display: flex;
@@ -783,6 +798,19 @@ dialog::backdrop {
   }
   .error[role="alert"] {
     padding: 12px 20px;
+  }
+}
+@media (max-width: 360px) {
+  .wordmark {
+    font-size: 11px;
+    letter-spacing: -1.2px;
+  }
+  .top nav > a,
+  .top nav > button,
+  .auth-nav > a,
+  .auth-nav > button {
+    padding-inline: 3px;
+    font-size: 9px;
   }
 }
 .entry-actions {
@@ -1066,9 +1094,6 @@ dialog::backdrop {
   .compose-foot small {
     font-size: 9px;
   }
-  .wordmark {
-    font-size: 21px;
-  }
 }
 @media (max-width: 720px) {
   .monitor .column-head {
@@ -1091,16 +1116,5 @@ dialog::backdrop {
   }
   .monitor .meter {
     margin-block: 4px;
-  }
-}
-
-.top-actions {
-  display: flex;
-  gap: 8px;
-}
-@media (max-width: 720px) {
-  .top-actions button {
-    padding-inline: 6px;
-    font-size: 10px;
   }
 }

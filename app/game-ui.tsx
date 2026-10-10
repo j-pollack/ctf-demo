@@ -2,10 +2,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import Link from "next/link";
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
-import AuthAction from "@/app/auth-action";
+import SiteHeader from "@/app/site-header";
 import type { GameEvent, GameSummary, PublicGame, Season } from "@/lib/types";
 
 const label = (model: string) => model.split("/")[1];
@@ -541,7 +540,6 @@ export default function GameUI({
     : panel === "history"
       ? null
       : game;
-  const navItem = selectedNavItem(pathname, routeRunId ? displayGame : null);
   const canStartNewRun =
     canCreateNewRun(game, Date.now(), currentRunReady || !account.data) &&
     canCreateNewRun(displayGame);
@@ -856,54 +854,15 @@ export default function GameUI({
   }
   return (
     <div className="app">
-      <nav className="rail" aria-label="Main navigation">
-        <Link href="/" className="mark" aria-label="Plant the flag home">
-          PTF
-        </Link>
-        {(
-          [
-            ["play", "↗", "Play"],
-            ["history", "◷", "My runs"],
-            ["rank", "▤", "Rank"],
-            ["rules", "≡", "Rules"],
-          ] as const
-        ).map(([key, icon, name]) => (
-          <button
-            key={key}
-            className={navItem === key ? "selected" : ""}
-            onClick={() =>
-              key === "play"
-                ? void openPlay()
-                : router.push(key === "history" ? "/runs" : `/${key}`)
-            }
-            aria-current={navItem === key ? "page" : undefined}
-          >
-            <span aria-hidden="true">{icon}</span>
-            {name}
-          </button>
-        ))}
-      </nav>
       <div className="workspace">
-        <header className="top">
-          <Link href="/" className="wordmark">
-            Plant the flag<span>_</span>
-          </Link>
-          <div className="top-actions">
-            <button
-              hidden={!canStartNewRun}
-              onClick={() => setModal("setup")}
-              disabled={loading || !canStartNewRun}
-            >
-              New run ↗
-            </button>
-            <AuthAction
-              onSignIn={() => {
-                setModal("login");
-                setEmailSent(false);
-              }}
-            />
-          </div>
-        </header>
+        <SiteHeader
+          current={selectedNavItem(pathname, routeRunId ? displayGame : null)}
+          onPlay={openPlay}
+          onSignIn={() => {
+            setModal("login");
+            setEmailSent(false);
+          }}
+        />
         {error && (
           <div role="alert" className="error">
             {error}
@@ -1014,6 +973,11 @@ export default function GameUI({
                 <span>
                   RUN TRANSCRIPT / {displayGame?.id.slice(0, 8).toUpperCase() ?? "NO RUN"}
                 </span>
+                {panel === "play" && canStartNewRun && (
+                  <button onClick={() => setModal("setup")} disabled={loading}>
+                    New run ↗
+                  </button>
+                )}
                 <div
                   className="turn-total"
                   title="Each agent response counts as one turn"
@@ -1044,13 +1008,6 @@ export default function GameUI({
                       command.
                     </p>
                     <p>Get the secret into this conversation before your dollar budget runs out.</p>
-                    <button
-                      className="primary"
-                      onClick={() => setModal("setup")}
-                      disabled={loading || !canStartNewRun}
-                    >
-                      Start a game ↗
-                    </button>
                     <small>Guest: $0.60 per run · Signed in: $3 per run</small>
                   </div>
                 ) : (
