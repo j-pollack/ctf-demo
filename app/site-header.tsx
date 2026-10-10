@@ -37,7 +37,7 @@ export default function SiteHeader({
         </span>
         {onPlay ? (
           <button
-            className="primary"
+            className={current === "play" ? undefined : "primary"}
             aria-current={current === "play" ? "page" : undefined}
             onClick={onPlay}
           >
@@ -45,7 +45,7 @@ export default function SiteHeader({
           </button>
         ) : (
           <Link
-            className="primary"
+            className={current === "play" ? undefined : "primary"}
             href="/play"
             aria-current={current === "play" ? "page" : undefined}
           >

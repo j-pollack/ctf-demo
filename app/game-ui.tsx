@@ -973,11 +973,6 @@ export default function GameUI({
                 <span>
                   RUN TRANSCRIPT / {displayGame?.id.slice(0, 8).toUpperCase() ?? "NO RUN"}
                 </span>
-                {panel === "play" && canStartNewRun && (
-                  <button onClick={() => setModal("setup")} disabled={loading}>
-                    New run ↗
-                  </button>
-                )}
                 <div
                   className="turn-total"
                   title="Each agent response counts as one turn"
@@ -1135,6 +1130,11 @@ export default function GameUI({
             </main>
             <aside className="monitor" tabIndex={0} aria-label="Monitor and budget">
               <div className="column-head">MONITOR / WATCHING</div>
+              {panel === "play" && canStartNewRun && (
+                <button onClick={() => setModal("setup")} disabled={loading}>
+                  New run ↗
+                </button>
+              )}
               <div className="budget">
                 <p className="eyebrow">AVAILABLE BUDGET</p>
                 <strong>{money(left)}</strong>

@@ -156,6 +156,16 @@ strong {
   color: #182207;
   padding-inline: 12px;
 }
+.top nav > a:hover:not(.primary),
+.top nav > button:hover:not(:disabled):not(.primary),
+.auth-nav > a:hover,
+.auth-nav > button:hover:not(:disabled) {
+  background: var(--line);
+  color: var(--ink);
+}
+.top nav > .primary:hover {
+  background: #c7f262;
+}
 .auth-nav {
   position: relative;
   display: inline-flex;
@@ -351,6 +361,9 @@ form label {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
+}
+.monitor > button {
+  margin-block: 10px 14px;
 }
 .budget {
   padding: 22px 0;
@@ -742,6 +755,12 @@ dialog::backdrop {
     flex: none;
     height: 84px;
     padding: 0 20px 12px;
+  }
+  .monitor:has(> button) {
+    height: 128px;
+  }
+  .monitor > button {
+    margin: 0;
   }
   .budget {
     padding: 14px 0;

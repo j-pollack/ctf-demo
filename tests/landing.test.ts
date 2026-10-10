@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Home from "../app/page";
+import SiteHeader from "../app/site-header";
 
 test("public landing renders without database access and does not offer sign-in while auth loads", () => {
   const html = renderToStaticMarkup(createElement(Home));
@@ -28,4 +29,17 @@ test("public landing renders without database access and does not offer sign-in 
   assert.match(html, /blocked command is a clue/);
   assert.match(html, /\$0\.60 per run/);
   assert.doesNotMatch(html, /Tripwire|tripwire|<textarea/);
+});
+
+test("Play is quiet on its current page and primary elsewhere in both header variants", () => {
+  const render = (current: string, onPlay?: () => void) =>
+    renderToStaticMarkup(createElement(SiteHeader, { current, onPlay }));
+  const currentButton = render("play", () => {}),
+    currentLink = render("play"),
+    otherButton = render("rules", () => {}),
+    otherLink = render("rules");
+  assert.match(currentButton, /<button aria-current="page">Play ↗<\/button>/);
+  assert.match(currentLink, /<a aria-current="page" href="\/play">Play ↗<\/a>/);
+  assert.match(otherButton, /<button class="primary"[^>]*>Play ↗<\/button>/);
+  assert.match(otherLink, /<a class="primary" href="\/play">Play ↗<\/a>/);
 });
