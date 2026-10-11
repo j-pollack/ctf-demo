@@ -30,6 +30,12 @@ export function canCreateNewRun(current?: PublicGame | null, now = Date.now(), r
       current.events.some((event) => event.id > 0 && event.kind === "user"))
   );
 }
+// Poll only while a turn is running server-side or an instruction awaits confirmation.
+// Pending billing alone is not a reason: a hold can stay open indefinitely, and polling it
+// re-downloads the run every 3s for as long as the tab stays open.
+export function shouldPoll(game: PublicGame, busy: boolean, unconfirmed: boolean) {
+  return !busy && (unconfirmed || !!game.busy);
+}
 export function instructionStatus(pending: PendingInstruction, next?: PublicGame) {
   if (!next || next.id !== pending.gameId) return "pending";
   if (
@@ -479,19 +485,14 @@ export default function GameUI({
     });
   }, [game?.events.length, stage, busy, unconfirmed, routeRunId]);
   useEffect(() => {
-    if (
-      !game ||
-      (!unconfirmed && !game.busy && (!game.reservedMicrodollars || game.status === "ended")) ||
-      busy
-    )
-      return;
+    if (!game || !shouldPoll(game, busy, unconfirmed)) return;
     let active = true,
       inFlight = false;
     const runId = game.id,
       epoch = accountEpoch.current,
       owner = historyOwner.current;
     const poll = () => {
-      if (inFlight) return;
+      if (inFlight || document.hidden) return;
       inFlight = true;
       const request = liveRequest.current;
       refreshGame(
@@ -513,7 +514,7 @@ export default function GameUI({
       active = false;
       clearInterval(timer);
     };
-  }, [game?.id, game?.busy, game?.reservedMicrodollars, game?.status, busy, unconfirmed]);
+  }, [game?.id, game?.busy, busy, unconfirmed]);
   useEffect(() => {
     if (panel !== "rank") return;
     setScores([]);

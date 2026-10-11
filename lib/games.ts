@@ -52,6 +52,26 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
     client.release();
   }
 }
+// Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
+// would otherwise re-download on every request.
+export const PUBLIC_GAME_COLUMNS =
+  "id,status,agent_model,monitor_model,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,season_id,lease_until";
+export type PublicGameRow = Pick<
+  GameRow,
+  | "id"
+  | "status"
+  | "agent_model"
+  | "monitor_model"
+  | "token_budget"
+  | "tokens_used"
+  | "turns"
+  | "blocks"
+  | "budget_microdollars"
+  | "spent_microdollars"
+  | "reserved_microdollars"
+  | "season_id"
+  | "lease_until"
+>;
 export async function getGame(id: string, ownerId: string) {
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new GameError("Game not found.", 404);
   const { rows } = await db.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1 AND owner_id=$2", [
@@ -61,7 +81,16 @@ export async function getGame(id: string, ownerId: string) {
   if (!rows[0]) throw new GameError("Game not found.", 404);
   return rows[0];
 }
-export async function publicGame(game: GameRow): Promise<PublicGame> {
+export async function getPublicGameRow(id: string, ownerId: string) {
+  if (!/^[a-f0-9-]{36}$/.test(id)) throw new GameError("Game not found.", 404);
+  const { rows } = await db.query<PublicGameRow>(
+    `SELECT ${PUBLIC_GAME_COLUMNS} FROM ctf.games WHERE id=$1 AND owner_id=$2`,
+    [id, ownerId],
+  );
+  if (!rows[0]) throw new GameError("Game not found.", 404);
+  return rows[0];
+}
+export async function publicGame(game: PublicGameRow): Promise<PublicGame> {
   const { rows } = await db.query<{ id: string; data: Omit<GameEvent, "id"> }>(
     "SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id",
     [game.id],

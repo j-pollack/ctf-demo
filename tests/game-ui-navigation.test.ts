@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canCreateNewRun, selectedNavItem } from "../app/game-ui";
+import { canCreateNewRun, selectedNavItem, shouldPoll } from "../app/game-ui";
 import type { PublicGame } from "../lib/types";
 
 const game = (overrides: Partial<PublicGame> = {}) =>
@@ -74,4 +74,17 @@ test("an empty continuable current run cannot be replaced, but a used or ended r
     ),
     true,
   );
+});
+
+test("polling follows live work, not pending billing", () => {
+  // A run whose billing hold never settles must not be re-fetched forever.
+  assert.equal(shouldPoll(game({ reservedMicrodollars: 36518 }), false, false), false);
+  assert.equal(
+    shouldPoll(game({ reservedMicrodollars: 36518, status: "ended" }), false, false),
+    false,
+  );
+  assert.equal(shouldPoll(game({ busy: true }), false, false), true);
+  assert.equal(shouldPoll(game(), false, true), true);
+  // The prompt stream already delivers updates while this tab drives the turn.
+  assert.equal(shouldPoll(game({ busy: true }), true, true), false);
 });
