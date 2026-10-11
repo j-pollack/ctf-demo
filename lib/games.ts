@@ -82,12 +82,12 @@ export async function getGame(id: string, ownerId: string) {
   return rows[0];
 }
 export async function getPublicGameRow(id: string, ownerId: string) {
-  if (!/^[a-f0-9-]{36}$/.test(id)) throw new GameError("Game not found.", 404);
+  if (!/^[a-f0-9-]{36}$/.test(id)) throw new GameError("Run not found.", 404);
   const { rows } = await db.query<PublicGameRow>(
     `SELECT ${PUBLIC_GAME_COLUMNS} FROM ctf.games WHERE id=$1 AND owner_id=$2`,
     [id, ownerId],
   );
-  if (!rows[0]) throw new GameError("Game not found.", 404);
+  if (!rows[0]) throw new GameError("Run not found.", 404);
   return rows[0];
 }
 // afterEventId > 0 returns only newer events, so pollers re-download nothing they already hold.
