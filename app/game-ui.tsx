@@ -30,6 +30,12 @@ export function canCreateNewRun(current?: PublicGame | null, now = Date.now(), r
       current.events.some((event) => event.id > 0 && event.kind === "user"))
   );
 }
+// Poll only while a turn is running server-side or an instruction awaits confirmation.
+// Pending billing alone is not a reason: a hold can stay open indefinitely, and polling it
+// re-downloads the run every 3s for as long as the tab stays open.
+export function shouldPoll(game: PublicGame, busy: boolean, unconfirmed: boolean) {
+  return !busy && (unconfirmed || !!game.busy);
+}
 export function instructionStatus(pending: PendingInstruction, next?: PublicGame) {
   if (!next || next.id !== pending.gameId) return "pending";
   if (
@@ -57,6 +63,16 @@ export function refreshedGame(
         ],
       }
     : next;
+}
+export function lastEventId(events: GameEvent[]) {
+  return events.reduce((max, event) => Math.max(max, event.id), 0);
+}
+// A delta response (?after=N) carries only events newer than N; keep the ones already held.
+export function withEarlierEvents(base: GameEvent[], delta: PublicGame, after: number) {
+  return {
+    ...delta,
+    events: [...base.filter((event) => event.id > 0 && event.id <= after), ...delta.events],
+  };
 }
 type Score = { name: string; turns: number; tokens: number; spend: number; blocks: number };
 async function api(url: string, options?: RequestInit) {
@@ -91,6 +107,7 @@ export default function GameUI({
   const account = authClient.useSession();
   const signedIn = !!account.data && !account.data.user.isAnonymous;
   const [game, setGame] = useState<PublicGame | null>(null),
+    latestGame = useRef<PublicGame | null>(null),
     [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false),
     [stage, setStage] = useState(""),
@@ -143,9 +160,17 @@ export default function GameUI({
     setUnconfirmed(false);
     if (status === "rejected") setPrompt((draft) => draft || submitted.text);
   }
-  function refreshGame(id: string, signal?: AbortSignal, isCurrent: () => boolean = () => true) {
-    const requestedGeneration = submissionGeneration.current;
-    return api(`/api/games/${id}`, { signal }).then((next: PublicGame) => {
+  function refreshGame(
+    id: string,
+    signal?: AbortSignal,
+    isCurrent: () => boolean = () => true,
+    base?: PublicGame | null,
+  ) {
+    const requestedGeneration = submissionGeneration.current,
+      held = base?.id === id ? base.events : [],
+      after = lastEventId(held);
+    return api(`/api/games/${id}${after ? `?after=${after}` : ""}`, { signal }).then((delta) => {
+      const next: PublicGame = after ? withEarlierEvents(held, delta, after) : delta;
       if (!signal?.aborted && isCurrent() && requestedGeneration === submissionGeneration.current) {
         reconcile(next);
         setGame((current) =>
@@ -479,19 +504,17 @@ export default function GameUI({
     });
   }, [game?.events.length, stage, busy, unconfirmed, routeRunId]);
   useEffect(() => {
-    if (
-      !game ||
-      (!unconfirmed && !game.busy && (!game.reservedMicrodollars || game.status === "ended")) ||
-      busy
-    )
-      return;
+    latestGame.current = game;
+  }, [game]);
+  useEffect(() => {
+    if (!game || !shouldPoll(game, busy, unconfirmed)) return;
     let active = true,
       inFlight = false;
     const runId = game.id,
       epoch = accountEpoch.current,
       owner = historyOwner.current;
     const poll = () => {
-      if (inFlight) return;
+      if (inFlight || document.hidden) return;
       inFlight = true;
       const request = liveRequest.current;
       refreshGame(
@@ -502,6 +525,7 @@ export default function GameUI({
           request === liveRequest.current &&
           epoch === accountEpoch.current &&
           owner === historyOwner.current,
+        latestGame.current,
       )
         .catch(() => {})
         .finally(() => {
@@ -513,7 +537,7 @@ export default function GameUI({
       active = false;
       clearInterval(timer);
     };
-  }, [game?.id, game?.busy, game?.reservedMicrodollars, game?.status, busy, unconfirmed]);
+  }, [game?.id, game?.busy, busy, unconfirmed]);
   useEffect(() => {
     if (panel !== "rank") return;
     setScores([]);

@@ -1,13 +1,13 @@
 import { db } from "@/lib/db";
-import { publicGame, startGame, type GameRow } from "@/lib/games";
+import { PUBLIC_GAME_COLUMNS, publicGame, startGame, type PublicGameRow } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export async function GET(request: Request) {
   try {
     const user = await player(request);
-    const result = await db.query<GameRow>(
-      "SELECT * FROM ctf.games WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 1",
+    const result = await db.query<PublicGameRow>(
+      `SELECT ${PUBLIC_GAME_COLUMNS} FROM ctf.games WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 1`,
       [user.id],
     );
     return Response.json(
