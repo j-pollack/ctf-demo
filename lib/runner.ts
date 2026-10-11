@@ -293,7 +293,7 @@ export async function runGame(
     }
     if (failure && game.status !== "captured") throw failure;
     if (signal.aborted)
-      await emit({ kind: "error", text: "Response stopped. Your game is still available." });
+      await emit({ kind: "error", text: "Response stopped. Your run is still open." });
   } catch (error) {
     if (game.status === "captured") return;
     console.error(
@@ -318,7 +318,7 @@ export async function runGame(
       error instanceof GameError
         ? error.message
         : signal.aborted
-          ? "Response stopped. Your game is still available."
+          ? "Response stopped. Your run is still open."
           : "This response could not finish. Please try again.";
     await emit({ kind: "error", text });
   } finally {

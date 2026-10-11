@@ -26,7 +26,7 @@ export async function GET(request: Request) {
         entries: result.rows.map(({ owner_id, ...entry }) => ({
           ...entry,
           spend: Number(entry.spend),
-          name: `Operator ${createHash("sha256").update(owner_id).digest("hex").slice(0, 6)}`,
+          name: `Player ${createHash("sha256").update(owner_id).digest("hex").slice(0, 6)}`,
         })),
         seasons,
         currentSeasonId: current.id,
