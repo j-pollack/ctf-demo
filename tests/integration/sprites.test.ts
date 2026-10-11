@@ -1277,7 +1277,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
       commandFailure = undefined;
       await assert.rejects(
         () => executeCommand(stored.sprite_name, "printf harmless", AbortSignal.abort()),
-        /could not complete/,
+        /could not finish/,
       );
       assert.equal(environments.size, 1);
     },
@@ -1321,7 +1321,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     assert.equal(paused.lease, null);
     assert.equal(environments.size, 1);
     assert.equal(commands.length, 1);
-    assert.ok(JSON.stringify(paused.messages).includes("could not complete"));
+    assert.ok(JSON.stringify(paused.messages).includes("could not finish"));
   });
   await t.test(
     "idle expiration removes its environment but preserves an active fresh run",
