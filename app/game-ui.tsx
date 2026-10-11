@@ -64,6 +64,16 @@ export function refreshedGame(
       }
     : next;
 }
+export function lastEventId(events: GameEvent[]) {
+  return events.reduce((max, event) => Math.max(max, event.id), 0);
+}
+// A delta response (?after=N) carries only events newer than N; keep the ones already held.
+export function withEarlierEvents(base: GameEvent[], delta: PublicGame, after: number) {
+  return {
+    ...delta,
+    events: [...base.filter((event) => event.id > 0 && event.id <= after), ...delta.events],
+  };
+}
 type Score = { name: string; turns: number; tokens: number; spend: number; blocks: number };
 async function api(url: string, options?: RequestInit) {
   const response = await fetch(url, options),
@@ -97,6 +107,7 @@ export default function GameUI({
   const account = authClient.useSession();
   const signedIn = !!account.data && !account.data.user.isAnonymous;
   const [game, setGame] = useState<PublicGame | null>(null),
+    latestGame = useRef<PublicGame | null>(null),
     [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false),
     [stage, setStage] = useState(""),
@@ -149,9 +160,17 @@ export default function GameUI({
     setUnconfirmed(false);
     if (status === "rejected") setPrompt((draft) => draft || submitted.text);
   }
-  function refreshGame(id: string, signal?: AbortSignal, isCurrent: () => boolean = () => true) {
-    const requestedGeneration = submissionGeneration.current;
-    return api(`/api/games/${id}`, { signal }).then((next: PublicGame) => {
+  function refreshGame(
+    id: string,
+    signal?: AbortSignal,
+    isCurrent: () => boolean = () => true,
+    base?: PublicGame | null,
+  ) {
+    const requestedGeneration = submissionGeneration.current,
+      held = base?.id === id ? base.events : [],
+      after = lastEventId(held);
+    return api(`/api/games/${id}${after ? `?after=${after}` : ""}`, { signal }).then((delta) => {
+      const next: PublicGame = after ? withEarlierEvents(held, delta, after) : delta;
       if (!signal?.aborted && isCurrent() && requestedGeneration === submissionGeneration.current) {
         reconcile(next);
         setGame((current) =>
@@ -485,6 +504,9 @@ export default function GameUI({
     });
   }, [game?.events.length, stage, busy, unconfirmed, routeRunId]);
   useEffect(() => {
+    latestGame.current = game;
+  }, [game]);
+  useEffect(() => {
     if (!game || !shouldPoll(game, busy, unconfirmed)) return;
     let active = true,
       inFlight = false;
@@ -503,6 +525,7 @@ export default function GameUI({
           request === liveRequest.current &&
           epoch === accountEpoch.current &&
           owner === historyOwner.current,
+        latestGame.current,
       )
         .catch(() => {})
         .finally(() => {

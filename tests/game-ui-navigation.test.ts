@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canCreateNewRun, selectedNavItem, shouldPoll } from "../app/game-ui";
+import {
+  canCreateNewRun,
+  lastEventId,
+  selectedNavItem,
+  shouldPoll,
+  withEarlierEvents,
+} from "../app/game-ui";
 import type { PublicGame } from "../lib/types";
 
 const game = (overrides: Partial<PublicGame> = {}) =>
@@ -87,4 +93,21 @@ test("polling follows live work, not pending billing", () => {
   assert.equal(shouldPoll(game(), false, true), true);
   // The prompt stream already delivers updates while this tab drives the turn.
   assert.equal(shouldPoll(game({ busy: true }), true, true), false);
+});
+
+test("delta polls keep held events and append only newer ones", () => {
+  const held = [
+    { id: 4, kind: "user" as const, text: "go" },
+    { id: 7, kind: "agent" as const, text: "thinking" },
+    { id: -1, kind: "user" as const, text: "optimistic" },
+  ];
+  assert.equal(lastEventId(held), 7);
+  assert.equal(lastEventId([]), 0);
+  const delta = game({ events: [{ id: 9, kind: "tool", text: "ok" }], turns: 2 });
+  const merged = withEarlierEvents(held, delta, 7);
+  assert.deepEqual(
+    merged.events.map((event) => event.id),
+    [4, 7, 9],
+  );
+  assert.equal(merged.turns, 2, "run fields come from the fresh response");
 });
