@@ -9,6 +9,16 @@ Public AI red-teaming game using Next.js, Pi SDK, one Fly Sprite per game, OpenR
 3. Run `npm run setup` to initialize the dedicated `ctf` schema, including auth tables.
 4. Run `npm run dev`. It assigns a free port starting at 3001 and sets the local auth origin automatically. Override with `PORT=3010 npm run dev` or `npm run dev -- --port 3010`; occupied/reserved overrides fail rather than silently changing ports.
 
+## Admin dashboard
+
+`/admin` shows usage, signups and spend. Access is the `isAdmin` flag on a signed-in (non-guest) user, granted only in SQL; users cannot set it themselves. Sign in once, then:
+
+```sql
+UPDATE ctf."user" SET "isAdmin" = true WHERE email = 'you@example.com';
+```
+
+Or add the email to `ADMIN_EMAILS` in `scripts/setup.ts`; every `npm run setup` (local and the production migrate workflow) grants it to existing accounts. Remove an email there before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
+
 ## Parallel worktrees
 
 Every feature uses a dedicated branch/worktree at `<primary-checkout>/.worktrees/<feature-slug>`; see [AGENTS.md](AGENTS.md) for agent workflow rules.
