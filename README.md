@@ -87,7 +87,7 @@ Admission allows ten active environments, 100 new games globally per rolling day
 
 ## Vercel
 
-This checkout is linked to `ctf-demo`. Set the server-only environment variables from `.env.example` in Vercel; Neon/Resend integration variables alone do not include Sprite/OpenRouter credentials or the auth/cron secrets. Set `BETTER_AUTH_URL` to the deployment's origin. No credential may have a `NEXT_PUBLIC_` prefix.
+This checkout is linked to `ctf-demo`. Set the server-only environment variables from `.env.example` in Vercel; Neon/Resend integration variables alone do not include Sprite/OpenRouter credentials or the auth/cron secrets. Set the same variables for Preview too, with a different `BETTER_AUTH_SECRET` from Production. Set `BETTER_AUTH_URL` to the production origin; previews leave it unset and accept only their own `VERCEL_URL`/`VERCEL_BRANCH_URL` hosts. No credential may have a `NEXT_PUBLIC_` prefix.
 
 Production migrations run through the `migrate prod` workflow; run `npm run setup` manually only for other databases or a coordinated non-additive migration. `vercel.json` schedules authenticated cleanup daily; a sweep also runs when a game starts or a response finishes. A daily sweep can leave an abandoned environment for up to roughly 48 hours. Failed deletions remain pending and retry at the next sweep.
 
