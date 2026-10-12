@@ -4,13 +4,26 @@ import { Resend } from "resend";
 import { db } from "./db";
 import { MEMBER_BUDGET_MICRODOLLARS } from "./policy";
 
+// Previews have no fixed origin: accept only this deployment's own Vercel hostnames.
+const vercelHosts = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filter(
+  (host): host is string => !!host,
+);
+
 export const auth = betterAuth({
   database: db,
   secret: process.env.BETTER_AUTH_SECRET,
-  baseURL: process.env.BETTER_AUTH_URL,
+  baseURL:
+    process.env.BETTER_AUTH_URL ||
+    (vercelHosts.length ? { allowedHosts: vercelHosts, protocol: "https" } : undefined),
   advanced: { cookiePrefix: process.env.TRIPWIRE_COOKIE_PREFIX },
-  trustedOrigins: process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : [],
+  trustedOrigins: vercelHosts.map((host) => `https://${host}`),
   rateLimit: { enabled: true, storage: "database", window: 60, max: 20 },
+  // Grant with SQL only: users can never set this through sign-up or profile updates.
+  user: {
+    additionalFields: {
+      isAdmin: { type: "boolean", required: false, defaultValue: false, input: false },
+    },
+  },
   plugins: [
     anonymous({
       generateName: () => "Guest",

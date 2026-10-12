@@ -9,6 +9,16 @@ Public AI red-teaming game using Next.js, Pi SDK, one Fly Sprite per game, OpenR
 3. Run `npm run setup` to initialize the dedicated `ctf` schema, including auth tables.
 4. Run `npm run dev`. It assigns a free port starting at 3001 and sets the local auth origin automatically. Override with `PORT=3010 npm run dev` or `npm run dev -- --port 3010`; occupied/reserved overrides fail rather than silently changing ports.
 
+## Admin dashboard
+
+`/admin` shows usage, signups and spend. Access is the `isAdmin` flag on a signed-in (non-guest) user, granted only in SQL; users cannot set it themselves. Sign in once, then:
+
+```sql
+UPDATE ctf."user" SET "isAdmin" = true WHERE email = 'you@example.com';
+```
+
+Or add the email to `ADMIN_EMAILS` in `scripts/setup.ts`; every `npm run setup` (local and the production migrate workflow) grants it to existing accounts. Remove an email there before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
+
 ## Parallel worktrees
 
 Every feature uses a dedicated branch/worktree at `<primary-checkout>/.worktrees/<feature-slug>`; see [AGENTS.md](AGENTS.md) for agent workflow rules.
@@ -87,7 +97,7 @@ Admission allows ten active environments, 100 new games globally per rolling day
 
 ## Vercel
 
-This checkout is linked to `ctf-demo`. Set the server-only environment variables from `.env.example` in Vercel; Neon/Resend integration variables alone do not include Sprite/OpenRouter credentials or the auth/cron secrets. Set `BETTER_AUTH_URL` to the deployment's origin. No credential may have a `NEXT_PUBLIC_` prefix.
+This checkout is linked to `ctf-demo`. Set the server-only environment variables from `.env.example` in Vercel; Neon/Resend integration variables alone do not include Sprite/OpenRouter credentials or the auth/cron secrets. Set the same variables for Preview too, with a different `BETTER_AUTH_SECRET` from Production. Set `BETTER_AUTH_URL` to the production origin; previews leave it unset and accept only their own `VERCEL_URL`/`VERCEL_BRANCH_URL` hosts. No credential may have a `NEXT_PUBLIC_` prefix.
 
 Production migrations run through the `migrate prod` workflow; run `npm run setup` manually only for other databases or a coordinated non-additive migration. `vercel.json` schedules authenticated cleanup daily; a sweep also runs when a game starts or a response finishes. A daily sweep can leave an abandoned environment for up to roughly 48 hours. Failed deletions remain pending and retry at the next sweep.
 
