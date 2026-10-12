@@ -13,10 +13,10 @@ export default function SiteHeader({
 }) {
   return (
     <header className="top">
-      <Link href="/" className="wordmark" aria-label="Plant the flag home">
-        <span className="brand-full">Plant the flag</span>
+      <Link href="/" className="wordmark" aria-label="Capture the flag home">
+        <span className="brand-full">Capture the flag</span>
         <span className="brand-short" aria-hidden="true">
-          PTF
+          CTF
         </span>
         <span aria-hidden="true">_</span>
       </Link>
@@ -41,7 +41,7 @@ export default function SiteHeader({
             aria-current={current === "play" ? "page" : undefined}
             onClick={onPlay}
           >
-            Play ↗
+            Play
           </button>
         ) : (
           <Link
@@ -49,7 +49,7 @@ export default function SiteHeader({
             href="/play"
             aria-current={current === "play" ? "page" : undefined}
           >
-            Play ↗
+            Play
           </Link>
         )}
       </nav>

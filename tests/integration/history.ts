@@ -26,7 +26,7 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
           {
             from: process.env.RESEND_FROM,
             to: email,
-            subject: "Your Plant the flag sign-in link",
+            subject: "Your Capture the flag sign-in link",
           },
         );
         magicLink = payload.text.match(/http:\/\/localhost\S+/)?.[0] ?? "";
@@ -167,7 +167,29 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     ]);
     const ownDetail = await detail(request(), { params: Promise.resolve({ id: ids[0] }) });
     assert.equal(ownDetail.status, 200);
-    assert.equal((await ownDetail.json()).events[0].text, "persisted transcript");
+    const fullEvents = (await ownDetail.json()).events;
+    assert.equal(fullEvents[0].text, "persisted transcript");
+    await pool.query("INSERT INTO ctf.events(game_id,data) VALUES($1,$2)", [
+      ids[0],
+      JSON.stringify({ kind: "tool", text: "newer event" }),
+    ]);
+    const params = { params: Promise.resolve({ id: ids[0] }) };
+    const delta = await (await detail(request(`?after=${fullEvents.at(-1).id}`), params)).json();
+    assert.deepEqual(
+      delta.events.map((event: { text: string }) => event.text),
+      ["newer event"],
+      "after cursor returns only newer events",
+    );
+    assert.equal(
+      (await (await detail(request(`?after=${delta.events[0].id}`), params)).json()).events.length,
+      0,
+    );
+    for (const bad of ["-1", "1.5", "abc", "9".repeat(16)])
+      assert.equal(
+        (await detail(request(`?after=${bad}`), params)).status,
+        400,
+        `reject event cursor ${bad}`,
+      );
     assert.equal(
       (await detail(request(), { params: Promise.resolve({ id: randomUUID() }) })).status,
       404,

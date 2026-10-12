@@ -31,6 +31,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     "../../db/schema.sql",
     "../../db/migrations/002-dollar-seasons.sql",
     "../../db/migrations/003-monitor-reasoning.sql",
+    "../../db/migrations/005-estimated-settlement.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
@@ -346,7 +347,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
             sourceId: child.id,
             eventId: inheritedEvent.id,
           }),
-        /daily new-game limit/i,
+        /daily limit of new runs/i,
       );
       assert.equal(trace.filter((entry) => entry.endsWith(":create")).length, creates);
       proposed = ["printf after-fork"];
@@ -1253,6 +1254,76 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
       );
     }
   });
+  await t.test("cleanup settles day-old unverifiable holds at their ceiling", async () => {
+    const spend = async () =>
+      (
+        await pool.query(
+          "SELECT sum(reserved)::bigint AS r, sum(charged)::bigint AS c FROM ctf.daily_spend",
+        )
+      ).rows[0];
+    const holds = [];
+    for (const owner of ["expired-hold", "fresh-hold"]) {
+      const game = await startGame(owner, false);
+      responses = { agent: [{ status: -1 }] };
+      await play(game.id, owner);
+      const hold = (
+        await pool.query(
+          "SELECT id,token_ceiling,cost_ceiling,generation_id FROM ctf.inference WHERE game_id=$1",
+          [game.id],
+        )
+      ).rows[0];
+      assert.equal(hold.generation_id, null, "a failed request leaves no generation id");
+      holds.push({ game, hold, before: await row(game.id) });
+    }
+    const [expired, fresh] = holds;
+    await pool.query("UPDATE ctf.inference SET created_at=now()-interval '25 hours' WHERE id=$1", [
+      expired.hold.id,
+    ]);
+    const spendBefore = await spend();
+    await cleanup();
+    const settled = (
+      await pool.query("SELECT tokens,cost,estimated,settled_at FROM ctf.inference WHERE id=$1", [
+        expired.hold.id,
+      ])
+    ).rows[0];
+    assert.ok(settled.settled_at);
+    assert.equal(settled.estimated, true);
+    assert.equal(Number(settled.cost), Number(expired.hold.cost_ceiling));
+    assert.equal(settled.tokens, expired.hold.token_ceiling);
+    const after = await row(expired.game.id),
+      ceiling = Number(expired.hold.cost_ceiling);
+    assert.equal(
+      Number(after.reserved_microdollars),
+      Number(expired.before.reserved_microdollars) - ceiling,
+    );
+    assert.equal(
+      Number(after.spent_microdollars),
+      Number(expired.before.spent_microdollars) + ceiling,
+    );
+    assert.equal(
+      after.tokens_reserved,
+      expired.before.tokens_reserved - expired.hold.token_ceiling,
+    );
+    const spendAfter = await spend();
+    assert.equal(Number(spendAfter.r), Number(spendBefore.r) - ceiling);
+    assert.equal(Number(spendAfter.c), Number(spendBefore.c) + ceiling);
+    // A hold younger than a day may still be explained; it stays pending.
+    assert.equal(
+      (await pool.query("SELECT settled_at FROM ctf.inference WHERE id=$1", [fresh.hold.id]))
+        .rows[0].settled_at,
+      null,
+    );
+    assert.equal(
+      Number((await row(fresh.game.id)).reserved_microdollars),
+      Number(fresh.before.reserved_microdollars),
+    );
+    await cleanup();
+    assert.equal(
+      Number((await row(expired.game.id)).spent_microdollars),
+      Number(after.spent_microdollars),
+      "a second sweep never charges the same hold twice",
+    );
+  });
   await t.test(
     "command adapter preserves stderr/exit, bounds output, and handles exec failure and abort",
     async () => {
@@ -1277,7 +1348,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
       commandFailure = undefined;
       await assert.rejects(
         () => executeCommand(stored.sprite_name, "printf harmless", AbortSignal.abort()),
-        /could not complete/,
+        /could not finish/,
       );
       assert.equal(environments.size, 1);
     },
@@ -1321,7 +1392,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     assert.equal(paused.lease, null);
     assert.equal(environments.size, 1);
     assert.equal(commands.length, 1);
-    assert.ok(JSON.stringify(paused.messages).includes("could not complete"));
+    assert.ok(JSON.stringify(paused.messages).includes("could not finish"));
   });
   await t.test(
     "idle expiration removes its environment but preserves an active fresh run",

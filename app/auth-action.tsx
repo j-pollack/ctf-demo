@@ -37,7 +37,7 @@ export default function AuthAction({ onSignIn }: { onSignIn?: () => void }) {
     <button onClick={onSignIn}>Sign in</button>
   ) : (
     <a className="landing-signin" href="/play?signin=1">
-      Sign in ↗
+      Sign in
     </a>
   );
 }

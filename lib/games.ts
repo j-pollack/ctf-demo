@@ -52,22 +52,56 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
     client.release();
   }
 }
+// Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
+// would otherwise re-download on every request.
+export const PUBLIC_GAME_COLUMNS =
+  "id,status,agent_model,monitor_model,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,season_id,lease_until";
+export type PublicGameRow = Pick<
+  GameRow,
+  | "id"
+  | "status"
+  | "agent_model"
+  | "monitor_model"
+  | "token_budget"
+  | "tokens_used"
+  | "turns"
+  | "blocks"
+  | "budget_microdollars"
+  | "spent_microdollars"
+  | "reserved_microdollars"
+  | "season_id"
+  | "lease_until"
+>;
 export async function getGame(id: string, ownerId: string) {
-  if (!/^[a-f0-9-]{36}$/.test(id)) throw new GameError("Game not found.", 404);
+  if (!/^[a-f0-9-]{36}$/.test(id)) throw new GameError("Run not found.", 404);
   const { rows } = await db.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1 AND owner_id=$2", [
     id,
     ownerId,
   ]);
-  if (!rows[0]) throw new GameError("Game not found.", 404);
+  if (!rows[0]) throw new GameError("Run not found.", 404);
   return rows[0];
 }
-export async function publicGame(game: GameRow): Promise<PublicGame> {
-  const { rows } = await db.query<{ id: string; data: Omit<GameEvent, "id"> }>(
-    "SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id",
-    [game.id],
+export async function getPublicGameRow(id: string, ownerId: string) {
+  if (!/^[a-f0-9-]{36}$/.test(id)) throw new GameError("Run not found.", 404);
+  const { rows } = await db.query<PublicGameRow>(
+    `SELECT ${PUBLIC_GAME_COLUMNS} FROM ctf.games WHERE id=$1 AND owner_id=$2`,
+    [id, ownerId],
   );
-  const season = (await db.query("SELECT * FROM ctf.seasons WHERE id=$1", [game.season_id]))
-    .rows[0];
+  if (!rows[0]) throw new GameError("Run not found.", 404);
+  return rows[0];
+}
+// afterEventId > 0 returns only newer events, so pollers re-download nothing they already hold.
+// Safe because each run has one writer (its lease) and the runner records events sequentially.
+export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise<PublicGame> {
+  const { rows } = await db.query<{ id: string; data: Omit<GameEvent, "id"> }>(
+    "SELECT id,data FROM ctf.events WHERE game_id=$1 AND id>$2 ORDER BY id",
+    [game.id, afterEventId],
+  );
+  const season = (
+    await db.query("SELECT id,name,starts_at,ends_at,monitor_model FROM ctf.seasons WHERE id=$1", [
+      game.season_id,
+    ])
+  ).rows[0];
   const spend = (
     await db.query(
       "SELECT role,coalesce(sum(cost),0) AS total FROM ctf.inference WHERE game_id=$1 AND settled_at IS NOT NULL GROUP BY role",
@@ -117,6 +151,7 @@ export async function record(gameId: string, event: Omit<GameEvent, "id">, lease
 }
 export async function cleanup() {
   await reconcileInference();
+  await expireUnverifiableHolds();
   await db.query(
     "UPDATE ctf.games SET status='ended' WHERE status='creating' AND updated_at<now()-interval '5 minutes'",
   );
@@ -150,9 +185,9 @@ export async function startGame(
     fork &&
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fork.sourceId)
   )
-    throw new GameError("Game not found.", 404);
+    throw new GameError("Run not found.", 404);
   if (!MODELS.some((model) => model === agentModel))
-    throw new GameError("Unsupported attack model.");
+    throw new GameError("Unsupported agent model.");
   const season = await currentSeason();
   await cleanup();
   const id = randomUUID();
@@ -164,7 +199,10 @@ export async function startGame(
       "SELECT charged+reserved AS total FROM ctf.daily_spend WHERE day=(now() AT TIME ZONE 'UTC')::date",
     );
     if (Number(spend.rows[0]?.total ?? 0) >= DAILY_CAP_MICRODOLLARS)
-      throw new GameError("Today’s inference allowance is used up. Please return tomorrow.", 429);
+      throw new GameError(
+        "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
+        429,
+      );
     const existing = await client.query<GameRow>(
       "SELECT * FROM ctf.games WHERE owner_id=$1 AND status IN ('creating','active') FOR UPDATE",
       [ownerId],
@@ -176,24 +214,24 @@ export async function startGame(
           (row.lease_until && new Date(row.lease_until).getTime() > Date.now()),
       )
     )
-      throw new GameError("Wait for the current game to finish starting or responding.", 409);
+      throw new GameError("Wait for your current run to finish starting or responding.", 409);
     const count = await client.query(
       "SELECT count(*)::int AS total FROM ctf.games WHERE status IN ('creating','active') AND owner_id<>$1",
       [ownerId],
     );
     if (count.rows[0].total >= 10)
-      throw new GameError("All game environments are busy. Please try again shortly.", 429);
+      throw new GameError("All environments are busy. Try again in a few minutes.", 429);
     const starts = await client.query(
       "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND created_at > now()-interval '24 hours'",
       [ownerId],
     );
     if (starts.rows[0].total >= (signedIn ? 20 : 3))
-      throw new GameError("You’ve reached your daily new-game limit.", 429);
+      throw new GameError("You’ve reached your daily limit of new runs.", 429);
     const totalStarts = await client.query(
       "SELECT count(*)::int AS total FROM ctf.games WHERE created_at>now()-interval '24 hours'",
     );
     if (totalStarts.rows[0].total >= 100)
-      throw new GameError("Today’s new-game allowance is used up. Please return tomorrow.", 429);
+      throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
     let forkData: ReturnType<typeof forkTranscript> | undefined;
     if (fork) {
       const source = (
@@ -202,7 +240,7 @@ export async function startGame(
           [fork.sourceId, ownerId],
         )
       ).rows[0];
-      if (!source) throw new GameError("Game not found.", 404);
+      if (!source) throw new GameError("Run not found.", 404);
       if (source.lease_until && new Date(source.lease_until).getTime() > Date.now())
         throw new GameError("Wait for the current response to finish before forking.", 409);
       const sourceEvents = (
@@ -277,7 +315,7 @@ export async function startGame(
 }
 export async function claimGame(id: string, ownerId: string, agentModel?: string) {
   if (agentModel !== undefined && !MODELS.includes(agentModel))
-    throw new GameError("Unsupported attack model.");
+    throw new GameError("Unsupported agent model.");
   await getGame(id, ownerId);
   const lease = randomUUID();
   const { rows } = await db.query<GameRow>(
@@ -285,8 +323,7 @@ export async function claimGame(id: string, ownerId: string, agentModel?: string
     FROM ctf.seasons s WHERE g.season_id=s.id AND g.id=$1 AND owner_id=$2 AND status='active' AND (lease_until IS NULL OR lease_until<now()) AND (s.ends_at IS NULL OR s.ends_at>now()) RETURNING g.*`,
     [id, ownerId, lease, agentModel ?? null],
   );
-  if (!rows[0])
-    throw new GameError("This game has ended or already has a response in progress.", 409);
+  if (!rows[0]) throw new GameError("This run has ended or is already responding.", 409);
   return rows[0];
 }
 export function requestAllowance(
@@ -361,7 +398,7 @@ export async function reserveInference(
           ? "There isn’t enough available budget for this request. Some billing is still pending."
           : available <= 0
             ? "Your inference budget is exhausted."
-            : "There isn’t enough budget for this request. Choose a cheaper attack model or start a new run.",
+            : "There isn’t enough budget for this request. Choose a cheaper agent model or start a new run.",
         available <= 0 && Number(game.reserved_microdollars) === 0 ? 402 : 400,
       );
     const globalAllowance = requestAllowance(
@@ -372,11 +409,17 @@ export async function reserveInference(
       DAILY_CAP_MICRODOLLARS - Number(spend.charged) - Number(spend.reserved),
     );
     if (globalAllowance.maxTokens < 64)
-      throw new GameError("Today’s inference allowance is used up. Please return tomorrow.", 429);
+      throw new GameError(
+        "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
+        429,
+      );
     const { maxTokens, cost } = globalAllowance;
     const tokens = input + maxTokens;
     if (Number(spend.charged) + Number(spend.reserved) + cost > DAILY_CAP_MICRODOLLARS)
-      throw new GameError("Today’s inference allowance is used up. Please return tomorrow.", 429);
+      throw new GameError(
+        "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
+        429,
+      );
     const id = randomUUID();
     await client.query("UPDATE ctf.daily_spend SET reserved=reserved+$2 WHERE day=$1", [day, cost]);
     await client.query(
@@ -421,6 +464,25 @@ export async function settleInference(
       "UPDATE ctf.inference SET tokens=$2,cost=$3,generation_id=$4,settled_at=now() WHERE id=$1",
       [id, tokens, cost, usage?.generationId ?? null],
     );
+  });
+}
+// A hold with no generation id (the request died before the provider answered) can never be
+// reconciled. After a day, settle it at its ceiling: never undercount spend, never hold forever.
+export async function expireUnverifiableHolds() {
+  await transaction(async (client) => {
+    const { rows } = await client.query(
+      "UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE settled_at IS NULL AND generation_id IS NULL AND created_at<now()-interval '24 hours' RETURNING game_id,day,token_ceiling,cost_ceiling",
+    );
+    for (const call of rows) {
+      await client.query(
+        "UPDATE ctf.daily_spend SET reserved=reserved-$2,charged=charged+$2 WHERE day=$1",
+        [call.day, call.cost_ceiling],
+      );
+      await client.query(
+        "UPDATE ctf.games SET tokens_reserved=tokens_reserved-$2,tokens_used=tokens_used+$2,reserved_microdollars=reserved_microdollars-$3,spent_microdollars=spent_microdollars+$3 WHERE id=$1",
+        [call.game_id, call.token_ceiling, call.cost_ceiling],
+      );
+    }
   });
 }
 export async function reconcileInference(gameId?: string) {

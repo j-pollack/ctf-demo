@@ -41,7 +41,7 @@ export async function executeCommand(name: string, command: string, signal?: Abo
         0,
         16000,
       );
-    throw new Error("The command could not complete in its game environment.");
+    throw new Error("The command could not finish in this run’s environment.");
   }
 }
 export async function destroyEnvironment(name: string) {

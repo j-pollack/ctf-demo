@@ -21,12 +21,12 @@ test("public landing renders without database access and does not offer sign-in 
   assert.ok(navigation.indexOf('href="/runs"') < navigation.indexOf('href="/play"'));
   assert.match(navigation, /class="primary/);
   assert.doesNotMatch(html, /class="rail"/);
-  assert.match(html, /Plant the flag/);
+  assert.match(html, /Capture the flag/);
   assert.match(html, /href="\/play"/);
   assert.match(html, /disabled="" aria-busy="true">Loading…/);
   assert.doesNotMatch(html, /href="\/play\?signin=1"/);
   assert.match(html, /\/tmp\/flag\.txt/);
-  assert.match(html, /blocked command is a clue/);
+  assert.match(html, /blocked command doesn’t end the run/);
   assert.match(html, /\$0\.60 per run/);
   assert.doesNotMatch(html, /Tripwire|tripwire|<textarea/);
 });
@@ -38,8 +38,8 @@ test("Play is quiet on its current page and primary elsewhere in both header var
     currentLink = render("play"),
     otherButton = render("rules", () => {}),
     otherLink = render("rules");
-  assert.match(currentButton, /<button aria-current="page">Play ↗<\/button>/);
-  assert.match(currentLink, /<a aria-current="page" href="\/play">Play ↗<\/a>/);
-  assert.match(otherButton, /<button class="primary"[^>]*>Play ↗<\/button>/);
-  assert.match(otherLink, /<a class="primary" href="\/play">Play ↗<\/a>/);
+  assert.match(currentButton, /<button aria-current="page">Play<\/button>/);
+  assert.match(currentLink, /<a aria-current="page" href="\/play">Play<\/a>/);
+  assert.match(otherButton, /<button class="primary"[^>]*>Play<\/button>/);
+  assert.match(otherLink, /<a class="primary" href="\/play">Play<\/a>/);
 });

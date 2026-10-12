@@ -428,16 +428,6 @@ form label {
   font-size: 10px;
   color: var(--muted);
 }
-footer {
-  flex-shrink: 0;
-  border-top: 1px solid var(--line);
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 32px;
-  font-size: 10px;
-  color: var(--muted);
-}
 .terminal {
   background: var(--accent);
   padding: 24px;
@@ -804,13 +794,6 @@ dialog::backdrop {
   }
   .filters {
     display: block;
-  }
-  footer {
-    padding: 4px 20px;
-    font-size: 9px;
-  }
-  footer > :last-child {
-    display: none;
   }
   .dialog-content {
     padding: 28px 20px;
