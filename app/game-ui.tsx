@@ -2,9 +2,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import Link from "next/link";
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
+import SiteHeader from "@/app/site-header";
 import type { GameEvent, GameStatus, GameSummary, PublicGame, Season } from "@/lib/types";
 
 const label = (model: string) => model.split("/")[1];
@@ -133,6 +133,7 @@ export default function GameUI({
     [detailError, setDetailError] = useState(""),
     [detailReload, setDetailReload] = useState(0);
   const historyRequest = useRef(0),
+    signinQueryHandled = useRef(false),
     detailRequest = useRef(0),
     routeRef = useRef(pathname),
     routeGeneration = useRef(0),
@@ -196,8 +197,12 @@ export default function GameUI({
     });
   }
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("signin") === "1") setModal("login");
-  }, []);
+    if (signedIn && modal === "login") setModal(null);
+    if (account.isPending || signinQueryHandled.current) return;
+    signinQueryHandled.current = true;
+    if (!signedIn && new URLSearchParams(window.location.search).get("signin") === "1")
+      setModal("login");
+  }, [account.isPending, signedIn, modal]);
   useEffect(() => {
     const refresh = () => {
       api("/api/seasons")
@@ -566,7 +571,6 @@ export default function GameUI({
     : panel === "history"
       ? null
       : game;
-  const navItem = selectedNavItem(pathname, routeRunId ? displayGame : null);
   const canStartNewRun =
     canCreateNewRun(game, Date.now(), currentRunReady || !account.data) &&
     canCreateNewRun(displayGame);
@@ -882,56 +886,15 @@ export default function GameUI({
   }
   return (
     <div className="app">
-      <nav className="rail" aria-label="Main navigation">
-        <Link href="/" className="mark" aria-label="Capture the flag home">
-          CTF
-        </Link>
-        {(
-          [
-            ["play", "↗", "Play"],
-            ["history", "◷", "My runs"],
-            ["rank", "▤", "Rank"],
-            ["rules", "≡", "Rules"],
-          ] as const
-        ).map(([key, icon, name]) => (
-          <button
-            key={key}
-            className={navItem === key ? "selected" : ""}
-            onClick={() =>
-              key === "play"
-                ? void openPlay()
-                : router.push(key === "history" ? "/runs" : `/${key}`)
-            }
-            aria-current={navItem === key ? "page" : undefined}
-          >
-            <span aria-hidden="true">{icon}</span>
-            {name}
-          </button>
-        ))}
-      </nav>
       <div className="workspace">
-        <header className="top">
-          <Link href="/" className="wordmark">
-            Capture the flag<span>_</span>
-          </Link>
-          <div className="top-actions">
-            <button
-              hidden={!canStartNewRun}
-              onClick={() => setModal("setup")}
-              disabled={loading || !canStartNewRun}
-            >
-              New run
-            </button>
-            <button
-              onClick={() => {
-                setModal("login");
-                setEmailSent(false);
-              }}
-            >
-              {signedIn ? "Account" : "Sign in"}
-            </button>
-          </div>
-        </header>
+        <SiteHeader
+          current={selectedNavItem(pathname, routeRunId ? displayGame : null)}
+          onPlay={openPlay}
+          onSignIn={() => {
+            setModal("login");
+            setEmailSent(false);
+          }}
+        />
         {error && (
           <div role="alert" className="error">
             {error}
@@ -1064,13 +1027,6 @@ export default function GameUI({
                       command before it runs.
                     </p>
                     <p>Get the flag into this chat before your budget runs out.</p>
-                    <button
-                      className="primary"
-                      onClick={() => setModal("setup")}
-                      disabled={loading || !canStartNewRun}
-                    >
-                      Start a run
-                    </button>
                     <small>$0.60 per run as a guest · $3 signed in</small>
                   </div>
                 ) : (
@@ -1198,6 +1154,11 @@ export default function GameUI({
             </main>
             <aside className="monitor" tabIndex={0} aria-label="Monitor and budget">
               <div className="column-head">MONITOR</div>
+              {panel === "play" && canStartNewRun && (
+                <button onClick={() => setModal("setup")} disabled={loading}>
+                  New run
+                </button>
+              )}
               <div className="budget">
                 <p className="eyebrow">BUDGET LEFT</p>
                 <strong>{money(left)}</strong>
@@ -1445,23 +1406,8 @@ export default function GameUI({
           ) : (
             <>
               <p className="eyebrow">ACCOUNT</p>
-              <h2>{signedIn ? "You’re signed in" : "Sign in"}</h2>
-              {signedIn ? (
-                <>
-                  <p>
-                    Your runs get a $3 budget. On the leaderboard you appear under an anonymous ID.
-                  </p>
-                  <button
-                    onClick={async () => {
-                      await authClient.signOut();
-                      setGame(null);
-                      setModal(null);
-                    }}
-                  >
-                    Sign out
-                  </button>
-                </>
-              ) : emailSent ? (
+              <h2>Sign in</h2>
+              {emailSent ? (
                 <p role="status">
                   Check your email for a sign-in link. It expires in five minutes.
                 </p>

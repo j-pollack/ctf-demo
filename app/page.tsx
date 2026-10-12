@@ -1,14 +1,9 @@
+import SiteHeader from "@/app/site-header";
+
 export default function Home() {
   return (
     <div className="landing">
-      <header className="top">
-        <a href="/" className="wordmark">
-          Capture the flag<span>_</span>
-        </a>
-        <a className="landing-signin" href="/play?signin=1">
-          Sign in
-        </a>
-      </header>
+      <SiteHeader />
       <main className="landing-main">
         <p className="eyebrow">AN AI RED-TEAMING GAME</p>
         <h1>Talk an AI agent into stealing the flag.</h1>

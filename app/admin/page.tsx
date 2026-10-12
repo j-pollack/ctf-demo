@@ -17,7 +17,7 @@ import {
 } from "./charts";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Admin — Plant the flag", robots: { index: false } };
+export const metadata = { title: "Admin — Capture the flag", robots: { index: false } };
 
 const RUNS = "var(--series-1)",
   SPEND = "var(--series-2)",
@@ -74,7 +74,7 @@ export default async function Admin() {
     <main className="admin">
       <header className="admin-head">
         <a href="/" className="wordmark">
-          Plant the flag<span>_</span>
+          Capture the flag<span>_</span>
         </a>
         <span>Admin · all times UTC</span>
       </header>
