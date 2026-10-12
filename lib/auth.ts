@@ -18,6 +18,12 @@ export const auth = betterAuth({
   advanced: { cookiePrefix: process.env.TRIPWIRE_COOKIE_PREFIX },
   trustedOrigins: vercelHosts.map((host) => `https://${host}`),
   rateLimit: { enabled: true, storage: "database", window: 60, max: 20 },
+  // Grant with SQL only: users can never set this through sign-up or profile updates.
+  user: {
+    additionalFields: {
+      isAdmin: { type: "boolean", required: false, defaultValue: false, input: false },
+    },
+  },
   plugins: [
     anonymous({
       generateName: () => "Guest",
