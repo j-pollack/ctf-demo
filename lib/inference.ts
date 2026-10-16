@@ -192,7 +192,8 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
   return { messages: transcript, ...(tools.size ? { tools: [...tools.values()] } : {}) };
 }
 
-export type AgentDelta = { reasoning?: string; text?: string };
+// `tool` names a tool call the moment it starts; its arguments are not streamed.
+export type AgentDelta = { reasoning?: string; text?: string; tool?: string };
 // A streamed call that sends nothing for this long, not even a keep-alive, is stuck.
 export const STREAM_IDLE_MS = 45_000;
 // Time kept back from the lease so a stopped call can still record its error.
@@ -259,8 +260,10 @@ export async function collectStream(
         .join("");
     const content = delta.content ?? "";
     message.content += content;
+    let tool = "";
     for (const call of delta.tool_calls ?? []) {
       const index = call.index ?? 0;
+      if (!message.tool_calls[index] && call.function?.name) tool = call.function.name;
       const target = (message.tool_calls[index] ??= {
         id: "",
         type: "function",
@@ -270,8 +273,12 @@ export async function collectStream(
       target.function.name += call.function?.name ?? "";
       target.function.arguments += call.function?.arguments ?? "";
     }
-    if (reasoning || content)
-      onDelta({ ...(reasoning && { reasoning }), ...(content && { text: content }) });
+    if (reasoning || content || tool)
+      onDelta({
+        ...(reasoning && { reasoning }),
+        ...(content && { text: content }),
+        ...(tool && { tool }),
+      });
   };
   const reader = body.getReader();
   while (true) {

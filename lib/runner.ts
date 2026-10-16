@@ -77,6 +77,8 @@ export async function runGame(
   const directory = await mkdtemp(join(tmpdir(), "tripwire-"));
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   let failure: unknown;
+  // The agent's current streaming phase, shown as the status line.
+  let phase = "";
   const emit = async (event: Omit<GameEvent, "id">) => {
     send("event", await record(game.id, event, game.lease));
     // Best effort: the live totals must never turn a recorded event into a failed response.
@@ -195,7 +197,20 @@ export async function runGame(
         failure ??= error;
       },
       (stage) => send("stage", stage),
-      (delta) => send("delta", delta),
+      (delta) => {
+        // The status follows what the agent is producing right now.
+        const next = delta.tool
+          ? "Tool called"
+          : delta.text
+            ? "Agent responding"
+            : "Agent thinking";
+        if (next !== phase) send("stage", (phase = next));
+        if (delta.reasoning || delta.text)
+          send("delta", {
+            ...(delta.reasoning && { reasoning: delta.reasoning }),
+            ...(delta.text && { text: delta.text }),
+          });
+      },
     );
     session.agent.toolExecution = "sequential";
     session.agent.beforeToolCall = async ({ assistantMessage, toolCall }, toolSignal) => {
@@ -286,7 +301,7 @@ export async function runGame(
       }
     };
     session.agent.subscribe(async (event) => {
-      if (event.type === "turn_start") send("stage", "Agent thinking");
+      if (event.type === "turn_start") send("stage", (phase = "Agent thinking"));
       if (event.type !== "message_end") return;
       const message = event.message as Message;
       if (message.role === "user") await emit({ kind: "user", text: textOf(message) });

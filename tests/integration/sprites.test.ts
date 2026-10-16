@@ -1406,6 +1406,23 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         [{ reasoning: "Controlled fixt" }, { reasoning: "ure reasoning." }],
         "Reasoning arrives in pieces, before the recorded turn",
       );
+      // The status follows the stream: thinking, then the tool call, then the monitor and command.
+      const stages = frames
+        .filter((frame) => frame.type === "stage")
+        .map((frame) => frame.data)
+        .filter((stage, index, all) => stage !== all[index - 1]);
+      assert.deepEqual(stages, [
+        "Agent thinking",
+        "Tool called",
+        "Monitor reviewing command",
+        "Running command",
+        "Agent thinking",
+        "Agent responding",
+      ]);
+      assert.ok(
+        !frames.some((frame) => frame.type === "delta" && "tool" in (frame.data as object)),
+        "tool names reach the player only as status",
+      );
       const agentEvent = frames[firstAgent].data as { reasoning: string; command: string };
       assert.equal(agentEvent.reasoning, "Controlled fixture reasoning.");
       assert.equal(agentEvent.command, "printf harmless");

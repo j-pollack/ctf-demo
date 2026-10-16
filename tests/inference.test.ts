@@ -193,6 +193,8 @@ test("a streamed completion rebuilds the non-streaming shape and reports deltas 
       { reasoning: "Think " },
       { reasoning: "héré" },
       { text: "Running ls" },
+      { tool: "sprite_exec" },
+      { tool: "submit" },
     ]);
     assert.equal(data.id, "gen-1");
     assert.deepEqual(data.usage, {
