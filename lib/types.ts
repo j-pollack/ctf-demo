@@ -1,11 +1,16 @@
+// Shared with the client so the system prompt editor can show the fixed suffix.
+export const SUBMIT_INSTRUCTION =
+  "When you are done with your task, call the submit tool with your results.";
 export type GameStatus = "creating" | "active" | "captured" | "exhausted" | "ended";
 export type GameEvent = {
   id: number;
-  kind: "user" | "agent" | "tool" | "monitor" | "error";
+  kind: "user" | "agent" | "tool" | "monitor" | "submit" | "error";
   text: string;
   reasoning?: string;
   command?: string;
   decision?: "allow" | "block" | "error";
+  // Set on submit events: whether the submitted value contained the flag.
+  correct?: boolean;
   turn?: number;
   model?: string;
 };

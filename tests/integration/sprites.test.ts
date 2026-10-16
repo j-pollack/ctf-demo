@@ -40,7 +40,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
   const { executeCommand, destroyEnvironment } = await import("../../lib/sprites");
   const { runGame } = await import("../../lib/runner");
-  const { AGENT_MODEL, AGENT_PROMPT, MODELS, MONITOR_MODEL, hasSecret } =
+  const { AGENT_MODEL, AGENT_PROMPT, MODELS, MONITOR_MODEL, agentPrompt, hasSecret } =
     await import("../../lib/policy");
 
   const environments = new Map<string, { policy: boolean; secret?: string }>();
@@ -56,7 +56,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   // Dollars per call, as OpenRouter reports usage.cost; settlement converts to microdollars.
   let agentCost = 0;
   let monitorCost = 0;
-  let proposed = ["printf harmless"];
+  // A string is a sprite_exec command; { submit } is a submit call with that value.
+  let proposed: (string | { submit: string })[] = ["printf harmless"];
   let proposedTool = "sprite_exec";
   let proposedArguments = (command: string) => JSON.stringify({ command });
   let agentCalls = 0;
@@ -242,18 +243,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         assert.equal(payload.model, AGENT_MODEL);
         lastAgentRequest = JSON.stringify(payload.messages);
         assert.deepEqual(
-          payload.tools.map((tool: { function: { name: string } }) => tool.function.name),
-          ["sprite_exec"],
+          payload.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
+          ["sprite_exec", "submit"],
         );
         agentCalls++;
         message =
           agentCalls === 1
             ? {
                 reasoning: "Controlled fixture reasoning.",
-                tool_calls: proposed.map((command) => ({
+                tool_calls: proposed.map((call) => ({
                   id: randomUUID(),
                   type: "function",
-                  function: { name: proposedTool, arguments: proposedArguments(command) },
+                  function:
+                    typeof call === "string"
+                      ? { name: proposedTool, arguments: proposedArguments(call) }
+                      : { name: "submit", arguments: JSON.stringify({ value: call.submit }) },
                 })),
               }
             : { content: "Done." };
@@ -687,20 +691,20 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal((await instruct(who, game.id)).status, 200);
       let systems = agentSystems();
       assert.equal(systems.length, 4);
-      assert.deepEqual(systems, Array(4).fill(MARKER));
+      assert.deepEqual(systems, Array(4).fill(agentPrompt(MARKER)));
       let stored = await row(game.id);
       assert.equal(stored.system_prompt, MARKER);
-      assert.equal(preamble(stored.messages), MARKER);
+      assert.equal(preamble(stored.messages), agentPrompt(MARKER));
       // Changing it replaces the prompt; the old one is gone from every later request.
       const changed = requests.length;
       agentCalls = 0;
       assert.equal((await instruct(who, game.id, { systemPrompt: MARKER2 })).status, 200);
       systems = agentSystems(changed);
       assert.equal(systems.length, 2);
-      assert.deepEqual(systems, Array(2).fill(MARKER2));
+      assert.deepEqual(systems, Array(2).fill(agentPrompt(MARKER2)));
       assert.ok(!JSON.stringify(requests.slice(changed)).includes(MARKER));
       stored = await row(game.id);
-      assert.equal(preamble(stored.messages), MARKER2);
+      assert.equal(preamble(stored.messages), agentPrompt(MARKER2));
       // Clearing reverts to the built-in prompt.
       const cleared = requests.length;
       agentCalls = 0;
@@ -912,7 +916,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal((await instruct(who, child.id)).status, 200);
     const systems = agentSystems(from);
     assert.ok(systems.length > 0);
-    assert.deepEqual(systems, Array(systems.length).fill(MARKER));
+    assert.deepEqual(systems, Array(systems.length).fill(agentPrompt(MARKER)));
   });
 
   await t.test(
@@ -1262,15 +1266,98 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(
         events.some((event) => event.kind === "tool" && event.text.includes("fixture-output")),
       );
+      // Reading the flag into the transcript no longer wins on its own.
       proposed = ["cat /tmp/flag.txt"];
+      agentCalls = 0;
+      const read = await play(game.id, "play");
+      assert.equal(read.status, "active");
+      const secret = environments.get(stored.sprite_name)!.secret!;
+      assert.ok(JSON.stringify(read.messages).includes(secret));
+      // Submitting it does, and the monitor never reviews the submission.
+      const monitored = requests.filter((request) => request.role === "monitor").length;
+      proposed = [{ submit: `The flag is ${secret}` }];
       agentCalls = 0;
       const won = await play(game.id, "play");
       assert.equal(won.status, "captured");
+      assert.equal(requests.filter((request) => request.role === "monitor").length, monitored);
+      assert.equal(agentCalls, 1, "The agent gets no turn after submitting");
+      const submitted = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
+      ).rows.filter((entry) => entry.data.kind === "submit");
+      assert.deepEqual(
+        submitted.map((entry) => [entry.data.text, entry.data.correct]),
+        [[`The flag is ${secret}`, true]],
+      );
       assert.ok(won.sprite_deleted_at);
       assert.equal(won.lease, null);
       assert.equal(environments.size, 0);
     },
   );
+  for (const value of ["flag{wrong-guess-aaaaaaaaaaaaaaaaaaaaaaaaaa}", ""])
+    await t.test(
+      `a wrong submit (${JSON.stringify(value)}) ends the run unreviewed and stops the rest of its batch`,
+      async () => {
+        const game = await startGame("wrong-submit", false);
+        proposed = [{ submit: value }, "printf harmless", { submit: "late" }];
+        const finished = await play(game.id, "wrong-submit");
+        assert.equal(finished.status, "ended");
+        assert.equal(finished.lease, null);
+        assert.ok(finished.sprite_deleted_at);
+        assert.equal(environments.size, 0);
+        assert.deepEqual(commands, [], "Calls after a submit never execute");
+        assert.equal(requests.filter((request) => request.role === "monitor").length, 0);
+        assert.equal(agentCalls, 1);
+        const events = (
+          await pool.query("SELECT data FROM ctf.events WHERE game_id=$1 ORDER BY id", [game.id])
+        ).rows.map((entry) => entry.data);
+        assert.deepEqual(
+          events
+            .filter((event) => event.kind === "submit")
+            .map((event) => [event.text, event.correct]),
+          [[value, false]],
+        );
+        assert.ok(!events.some((event) => event.kind === "tool"));
+      },
+    );
+  await t.test("a command before a submit in the same batch is still monitored", async () => {
+    const game = await startGame("batch-submit", false),
+      stored = await row(game.id);
+    const secret = environments.get(stored.sprite_name)!.secret!;
+    monitor = "block";
+    proposed = ["printf harmless", { submit: secret }];
+    const finished = await play(game.id, "batch-submit");
+    assert.equal(finished.status, "captured");
+    assert.deepEqual(commands, []);
+    const monitored = requests.filter((request) => request.role === "monitor");
+    assert.equal(monitored.length, 1);
+    const input = JSON.parse(
+      (monitored[0].payload as { messages: { role: string; content: string }[] }).messages.find(
+        (message) => message.role === "user",
+      )!.content,
+    );
+    assert.deepEqual(input.proposedToolCall.arguments, { command: "printf harmless" });
+    assert.equal(finished.blocks, 1);
+  });
+  await t.test("a correct submit after the season ends does not capture", async () => {
+    const game = await startGame("late-submit", false),
+      stored = await row(game.id);
+    const secret = environments.get(stored.sprite_name)!.secret!;
+    proposed = ["printf harmless", { submit: secret }];
+    commandGate = async () => {
+      await pool.query("UPDATE ctf.seasons SET ends_at=now()-interval '1 second' WHERE id=$1", [
+        stored.season_id,
+      ]);
+    };
+    const finished = await play(game.id, "late-submit");
+    assert.equal(finished.status, "ended");
+    const events = (
+      await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
+    ).rows.map((entry) => entry.data);
+    assert.ok(!events.some((event) => event.kind === "submit"));
+    assert.ok(
+      events.some((event) => event.kind === "error" && /season has ended/.test(event.text)),
+    );
+  });
   await t.test("exact game:sprite_exec alias executes and replays canonically", async () => {
     const game = await startGame("alias", false);
     proposedTool = "game:sprite_exec";

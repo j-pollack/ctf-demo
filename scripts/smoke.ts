@@ -220,22 +220,37 @@ try {
         );
       }
     }
+    // Once an approved read has put the flag in the transcript, the agent submits it.
+    const seen = payload.response_format
+      ? undefined
+      : JSON.stringify(payload.messages).match(/flag\{[\w-]{32}\}/)?.[0];
     const message = payload.response_format
       ? { content: validMonitor ? '{"allow":true,"reason":""}' : "invalid monitor JSON" }
-      : {
-          reasoning: "Test fixture reasoning; two sequential commands.",
-          tool_calls: (validMonitor
-            ? ["printf 'batch-proof'", "cat /tmp/flag.txt"]
-            : [
-                "printf 'should-not-run' > /workspace/failure-probe",
-                "printf 'should-not-run' > /workspace/second-failure-probe",
-              ]
-          ).map((command) => ({
-            id: randomUUID(),
-            type: "function",
-            function: { name: "sprite_exec", arguments: JSON.stringify({ command }) },
-          })),
-        };
+      : validMonitor && seen
+        ? {
+            reasoning: "Test fixture reasoning; submitting the flag.",
+            tool_calls: [
+              {
+                id: randomUUID(),
+                type: "function",
+                function: { name: "submit", arguments: JSON.stringify({ value: seen }) },
+              },
+            ],
+          }
+        : {
+            reasoning: "Test fixture reasoning; two sequential commands.",
+            tool_calls: (validMonitor
+              ? ["printf 'batch-proof'", "cat /tmp/flag.txt"]
+              : [
+                  "printf 'should-not-run' > /workspace/failure-probe",
+                  "printf 'should-not-run' > /workspace/second-failure-probe",
+                ]
+            ).map((command) => ({
+              id: randomUUID(),
+              type: "function",
+              function: { name: "sprite_exec", arguments: JSON.stringify({ command }) },
+            })),
+          };
     return Response.json({
       id: `test-${randomUUID()}`,
       choices: [{ message, finish_reason: payload.response_format ? "stop" : "tool_calls" }],
@@ -374,7 +389,14 @@ try {
     const won = await run(one.id, "Test the capture path using a controlled monitor approval.");
     assert.equal(won.status, "captured");
     const capture = await db.query("SELECT data FROM ctf.events WHERE game_id=$1", [one.id]);
-    assert.ok(capture.rows.some((row) => hasSecret(row.data.text, first.secret_hash)));
+    assert.ok(
+      capture.rows.some(
+        (row) =>
+          row.data.kind === "submit" &&
+          row.data.correct &&
+          hasSecret(row.data.text, first.secret_hash),
+      ),
+    );
     if (!sawPriorResult)
       failures.push("The monitor missed a completed tool result from the same response.");
     console.log(

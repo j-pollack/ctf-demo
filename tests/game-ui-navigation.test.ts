@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   canCreateNewRun,
+  hasActiveRun,
   lastEventId,
   selectedNavItem,
   shouldPoll,
@@ -110,4 +111,15 @@ test("delta polls keep held events and append only newer ones", () => {
     [4, 7, 9],
   );
   assert.equal(merged.turns, 2, "run fields come from the fresh response");
+});
+
+test("Play opens the new-run dialog unless a run can still be continued", () => {
+  assert.equal(hasActiveRun(null, now), false);
+  assert.equal(hasActiveRun(undefined, now), false);
+  assert.equal(hasActiveRun(game(), now), true);
+  for (const status of ["captured", "exhausted", "ended", "creating"] as const)
+    assert.equal(hasActiveRun(game({ status }), now), false, status);
+  const expired = game();
+  expired.season = { ...expired.season, endsAt: "2026-10-01T00:00:00Z" };
+  assert.equal(hasActiveRun(expired, now), false);
 });
