@@ -71,6 +71,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let fetchGate: ((signal: AbortSignal) => Promise<Response>) | undefined;
   let abortOn429: (() => void) | undefined;
   let lastAgentRequest = "";
+  // "cut" ends an agent stream after its first chunk, with no usage.
+  let agentStreamMode: "full" | "cut" = "full";
+  // Generation ids the fake has issued, with the cost OpenRouter later reports for them.
+  const generations = new Map<string, number>();
   const strict =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A) => {
@@ -186,6 +190,22 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "fetch",
     strict(async (input: string | URL | Request, options?: RequestInit) => {
       options?.signal?.throwIfAborted();
+      if (String(input).startsWith("https://openrouter.ai/api/v1/generation?id=")) {
+        assert.equal(
+          new Headers(options?.headers).get("authorization"),
+          "Bearer integration-router-key",
+        );
+        const id = new URL(String(input)).searchParams.get("id")!;
+        assert.ok(generations.has(id), "Reconciliation asks only about issued generations");
+        return Response.json({
+          data: {
+            finish_reason: "stop",
+            native_tokens_prompt: 3,
+            native_tokens_completion: 4,
+            total_cost: generations.get(id),
+          },
+        });
+      }
       if (String(input) === "https://openrouter.ai/api/v1/models")
         return Response.json({
           data: [...new Set([AGENT_MODEL, MONITOR_MODEL])].map((id) => ({
@@ -241,6 +261,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         };
       } else {
         assert.equal(payload.model, AGENT_MODEL);
+        assert.equal(payload.stream, true, "Agent calls stream");
         lastAgentRequest = JSON.stringify(payload.messages);
         assert.deepEqual(
           payload.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
@@ -262,19 +283,58 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
               }
             : { content: "Done." };
       }
-      return Response.json({
-        id: `test-${randomUUID()}`,
-        choices: [{ message, finish_reason: "stop" }],
-        ...(planned?.status === 299
-          ? {}
-          : {
-              usage: {
-                prompt_tokens: 1,
-                completion_tokens: 1,
-                total_tokens: 2,
-                cost: payload.response_format ? monitorCost : agentCost,
-              },
-            }),
+      const id = `test-${randomUUID()}`,
+        cost = payload.response_format ? monitorCost : agentCost,
+        usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost };
+      generations.set(id, cost);
+      if (payload.response_format) {
+        assert.equal(payload.stream, undefined, "Monitor calls never stream");
+        return Response.json({
+          id,
+          choices: [{ message, finish_reason: "stop" }],
+          ...(planned?.status === 299 ? {} : { usage }),
+        });
+      }
+      // Stream the agent turn the way OpenRouter does: reasoning, text and each tool call's
+      // arguments arrive in pieces, and usage comes last.
+      const half = (text: string) => [
+        text.slice(0, Math.ceil(text.length / 2)),
+        text.slice(Math.ceil(text.length / 2)),
+      ];
+      const reply = message as {
+        reasoning?: string;
+        content?: string;
+        tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[];
+      };
+      const deltas: Record<string, unknown>[] = [
+        ...half(reply.reasoning ?? "")
+          .filter(Boolean)
+          .map((reasoning) => ({ reasoning })),
+        ...(reply.content ? [{ content: reply.content }] : []),
+        ...(reply.tool_calls ?? []).flatMap((call, index) =>
+          half(call.function.arguments).map((part, i) => ({
+            tool_calls: [
+              i === 0
+                ? {
+                    index,
+                    id: call.id,
+                    type: call.type,
+                    function: { name: call.function.name, arguments: part },
+                  }
+                : { index, function: { arguments: part } },
+            ],
+          })),
+        ),
+      ];
+      const frames = [
+        ": OPENROUTER PROCESSING",
+        ...deltas.map((delta) => JSON.stringify({ id, choices: [{ delta }] })),
+        JSON.stringify({ id, choices: [{ delta: {}, finish_reason: "stop" }] }),
+        ...(planned?.status === 299 ? [] : [JSON.stringify({ id, choices: [], usage })]),
+        "[DONE]",
+      ].map((frame) => (frame.startsWith(":") ? `${frame}\n\n` : `data: ${frame}\n\n`));
+      return new Response((agentStreamMode === "cut" ? frames.slice(0, 2) : frames).join(""), {
+        headers: { "content-type": "text/event-stream" },
       });
     }),
   );
@@ -303,6 +363,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     fetchGate = undefined;
     abortOn429 = undefined;
     lastAgentRequest = "";
+    agentStreamMode = "full";
+    generations.clear();
   });
   t.afterEach(() =>
     assert.deepEqual(
@@ -1291,6 +1353,104 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(won.sprite_deleted_at);
       assert.equal(won.lease, null);
       assert.equal(environments.size, 0);
+    },
+  );
+  await t.test(
+    "agent reasoning streams to the player before its turn is recorded; billing settles from the stream",
+    async () => {
+      const game = await startGame("stream", false);
+      agentCost = 0.002;
+      const frames: { type: string; data: unknown }[] = [];
+      const leased = await claimGame(game.id, "stream");
+      await runGame(
+        leased,
+        "Controlled integration fixture",
+        AbortSignal.timeout(5000),
+        (type, data) => frames.push({ type, data }),
+      );
+      const firstAgent = frames.findIndex(
+        (frame) => frame.type === "event" && (frame.data as { kind: string }).kind === "agent",
+      );
+      const before = frames.slice(0, firstAgent).filter((frame) => frame.type === "delta");
+      assert.deepEqual(
+        before.map((frame) => frame.data),
+        [{ reasoning: "Controlled fixt" }, { reasoning: "ure reasoning." }],
+        "Reasoning arrives in pieces, before the recorded turn",
+      );
+      const agentEvent = frames[firstAgent].data as { reasoning: string; command: string };
+      assert.equal(agentEvent.reasoning, "Controlled fixture reasoning.");
+      assert.equal(agentEvent.command, "printf harmless");
+      assert.deepEqual(
+        commands.map((entry) => entry.command),
+        ["printf harmless"],
+      );
+      // The second turn streams its text.
+      assert.ok(frames.some((frame) => JSON.stringify(frame.data) === '{"text":"Done."}'));
+      const calls = (
+        await pool.query(
+          "SELECT cost,generation_id,settled_at FROM ctf.inference WHERE game_id=$1 AND role='agent' ORDER BY created_at",
+          [game.id],
+        )
+      ).rows;
+      assert.equal(calls.length, 2);
+      for (const call of calls) {
+        assert.ok(call.settled_at);
+        assert.equal(Number(call.cost), 2000);
+        assert.ok(generations.has(call.generation_id));
+      }
+      const stored = await row(game.id);
+      assert.equal(Number(stored.reserved_microdollars), 0);
+      assert.equal(Number(stored.spent_microdollars), 4000);
+      // Deltas are never stored: the event log holds only the finished turn.
+      const events = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
+      ).rows.map((entry) => entry.data);
+      assert.ok(!events.some((event) => event.text === "Controlled fixt"));
+    },
+  );
+  await t.test(
+    "a stream cut off midway runs nothing, keeps its hold with the generation id, and reconciles",
+    async () => {
+      const game = await startGame("cut-stream", false);
+      agentCost = 0.003;
+      agentStreamMode = "cut";
+      const finished = await play(game.id, "cut-stream");
+      assert.equal(finished.status, "active");
+      assert.equal(finished.lease, null);
+      assert.deepEqual(commands, []);
+      const hold = (
+        await pool.query(
+          "SELECT id,generation_id,settled_at,cost_ceiling FROM ctf.inference WHERE game_id=$1",
+          [game.id],
+        )
+      ).rows;
+      assert.equal(hold.length, 1);
+      assert.equal(hold[0].settled_at, null);
+      assert.ok(generations.has(hold[0].generation_id), "the id from the first chunk is kept");
+      const held = await row(game.id);
+      assert.equal(Number(held.reserved_microdollars), Number(hold[0].cost_ceiling));
+      const errors = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
+      ).rows.filter((entry) => entry.data.kind === "error");
+      assert.equal(errors.length, 1);
+      // Once old enough, reconciliation asks OpenRouter for the real cost and settles it.
+      await pool.query(
+        "UPDATE ctf.inference SET created_at=now()-interval '3 minutes' WHERE id=$1",
+        [hold[0].id],
+      );
+      await cleanup();
+      const settled = (
+        await pool.query("SELECT tokens,cost,settled_at,estimated FROM ctf.inference WHERE id=$1", [
+          hold[0].id,
+        ])
+      ).rows[0];
+      assert.ok(settled.settled_at);
+      assert.equal(settled.estimated, false);
+      assert.equal(Number(settled.cost), 3000);
+      assert.equal(settled.tokens, 7);
+      const after = await row(game.id);
+      assert.equal(Number(after.reserved_microdollars), 0);
+      assert.equal(Number(after.spent_microdollars), Number(held.spent_microdollars) + 3000);
     },
   );
   for (const value of ["flag{wrong-guess-aaaaaaaaaaaaaaaaaaaaaaaaaa}", ""])

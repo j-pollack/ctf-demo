@@ -195,6 +195,7 @@ export async function runGame(
         failure ??= error;
       },
       (stage) => send("stage", stage),
+      (delta) => send("delta", delta),
     );
     session.agent.toolExecution = "sequential";
     session.agent.beforeToolCall = async ({ assistantMessage, toolCall }, toolSignal) => {

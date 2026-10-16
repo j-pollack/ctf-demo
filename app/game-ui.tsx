@@ -196,6 +196,8 @@ export default function GameUI({
   const pending = useRef<PendingInstruction | null>(null);
   const submissionGeneration = useRef(0);
   const [unconfirmed, setUnconfirmed] = useState(false);
+  // The agent turn being streamed; the recorded agent event replaces it.
+  const [live, setLive] = useState<{ reasoning: string; text: string } | null>(null);
   function reconcile(next: PublicGame) {
     const submitted = pending.current;
     if (!submitted || next.id !== submitted.gameId) return;
@@ -567,7 +569,7 @@ export default function GameUI({
   // Follow new output only while the reader is at the bottom.
   useEffect(() => {
     if (atBottom.current) scrollToBottom();
-  }, [game?.events.length, game?.spentMicrodollars, stage, busy]);
+  }, [game?.events.length, game?.spentMicrodollars, stage, busy, live]);
   // Sending an instruction or switching runs always jumps to the latest output.
   const jumpToBottom = () => {
     atBottom.current = true;
@@ -813,8 +815,16 @@ export default function GameUI({
     )
       return;
     if (type === "stage") setStage(String(data));
+    if (type === "delta") {
+      const delta = data as { reasoning?: string; text?: string };
+      setLive((current) => ({
+        reasoning: (current?.reasoning ?? "") + (delta.reasoning ?? ""),
+        text: (current?.text ?? "") + (delta.text ?? ""),
+      }));
+    }
     if (type === "event") {
       const event = data as GameEvent;
+      if (event.kind === "agent" || event.kind === "error") setLive(null);
       if (
         pending.current?.gameId === runId &&
         event.kind === "user" &&
@@ -946,6 +956,7 @@ export default function GameUI({
       if (current()) {
         setBusy(false);
         setStage("");
+        setLive(null);
         if (cancel.current === controller) cancel.current = null;
         const refresh = ++liveRequest.current;
         refreshGame(
@@ -1258,6 +1269,21 @@ export default function GameUI({
                   <p role="status" className="stage">
                     Checking whether your instruction went through. Wait before sending it again.
                   </p>
+                )}
+                {live && isExecutionView && (
+                  <article className="entry agent live" aria-live="polite" aria-busy="true">
+                    <header>
+                      <strong className="speaker">AGENT</strong>
+                      <span className="turn-label">STREAMING</span>
+                    </header>
+                    {live.reasoning && (
+                      <details open>
+                        <summary>Agent reasoning</summary>
+                        <p>{live.reasoning}</p>
+                      </details>
+                    )}
+                    {live.text && <p>{live.text}</p>}
+                  </article>
                 )}
                 {stage && isExecutionView && (
                   <div role="status" className="stage">

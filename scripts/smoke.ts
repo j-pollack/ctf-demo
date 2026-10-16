@@ -18,9 +18,12 @@ import { DAILY_CAP_MICRODOLLARS, hasSecret, MODELS } from "../lib/policy";
 const owner = `smoke-${randomUUID()}`,
   other = `smoke-${randomUUID()}`;
 const games: string[] = [];
+// Streamed agent deltas seen by run(); the live checks assert the provider really streams.
+let deltas = 0;
 async function run(id: string, prompt: string, model?: string) {
   const game = await claimGame(id, owner, model);
   await runGame(game, prompt, AbortSignal.timeout(180000), (type, data) => {
+    if (type === "delta") deltas++;
     if (type === "stage") console.log(String(data));
     if (type === "event" && (data as { kind: string }).kind === "error")
       console.log("Game reported:", (data as { text: string }).text);
@@ -90,6 +93,21 @@ try {
     );
     assert.equal(afterHarmless.status, "active");
     console.log("Approved command executed after a block; reasoning and transcript persisted.");
+    // Contract: OpenRouter streams agent turns and still reports usage, so every call settles.
+    assert.ok(deltas > 0, "live agent calls must stream reasoning or text deltas");
+    const agentCalls = (
+      await db.query(
+        "SELECT cost,generation_id,settled_at FROM ctf.inference WHERE game_id=$1 AND role='agent'",
+        [one.id],
+      )
+    ).rows;
+    assert.ok(agentCalls.length > 0);
+    for (const call of agentCalls) {
+      assert.ok(call.settled_at, "a streamed agent call must settle from its final usage chunk");
+      assert.ok(call.generation_id);
+      assert.ok(Number(call.cost) > 0);
+    }
+    console.log(`Agent calls streamed ${deltas} deltas and settled from streamed usage.`);
 
     const leased = await claimGame(one.id, owner);
     await assert.rejects(() => claimGame(one.id, owner), /already/);
@@ -122,6 +140,34 @@ try {
     console.log("Checking message flow with controlled model replies; no live inference calls.");
 
   const originalFetch = globalThis.fetch;
+  // Controlled agent replies honour the streaming request, as OpenRouter does.
+  const reply = (
+    payload: { stream?: boolean },
+    body: {
+      id: string;
+      choices: { message: Record<string, unknown>; finish_reason: string }[];
+      usage: Record<string, number>;
+    },
+  ) => {
+    if (!payload.stream) return Response.json(body);
+    const { message, finish_reason } = body.choices[0];
+    const delta = {
+      ...message,
+      ...(Array.isArray(message.tool_calls) && {
+        tool_calls: message.tool_calls.map((call, index) => ({ ...call, index })),
+      }),
+    };
+    return new Response(
+      [
+        { id: body.id, choices: [{ delta }] },
+        { id: body.id, choices: [{ delta: {}, finish_reason }] },
+        { id: body.id, choices: [], usage: body.usage },
+      ]
+        .map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`)
+        .join("") + "data: [DONE]\n\n",
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  };
   let validMonitor = false;
   let throttledMonitor = false;
   let blockFixture = true;
@@ -175,7 +221,7 @@ try {
               ],
             }
           : { content: "The command was blocked." };
-      return Response.json({
+      return reply(payload, {
         id: `test-${randomUUID()}`,
         choices: [
           {
@@ -251,7 +297,7 @@ try {
               function: { name: "sprite_exec", arguments: JSON.stringify({ command }) },
             })),
           };
-    return Response.json({
+    return reply(payload, {
       id: `test-${randomUUID()}`,
       choices: [{ message, finish_reason: payload.response_format ? "stop" : "tool_calls" }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },

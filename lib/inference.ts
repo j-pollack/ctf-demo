@@ -192,7 +192,97 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
   return { messages: transcript, ...(tools.size ? { tools: [...tools.values()] } : {}) };
 }
 
-// Non-streaming provider calls keep accounting and raw reasoning in one authoritative response.
+export type AgentDelta = { reasoning?: string; text?: string };
+type StreamedToolCall = { id: string; type: string; function: { name: string; arguments: string } };
+type Fragment = Record<string, unknown> & { index?: number };
+// Fragments of one reasoning detail share an index; their text-like fields concatenate.
+function mergeFragment(parts: Fragment[], part: Fragment) {
+  const existing = parts.find((item) => (item.index ?? 0) === (part.index ?? 0));
+  if (!existing) return void parts.push({ ...part });
+  for (const [key, value] of Object.entries(part))
+    existing[key] =
+      ["text", "summary", "data"].includes(key) && typeof value === "string"
+        ? String(existing[key] ?? "") + value
+        : value;
+}
+// Rebuilds a streamed chat completion into the non-streaming response shape, so billing and
+// transcript handling stay identical. The generation id is reported as soon as it arrives, so a
+// stream cut off midway can still be reconciled.
+export async function collectStream(
+  body: ReadableStream<Uint8Array>,
+  onDelta: (delta: AgentDelta) => void,
+  onId: (id: string) => Promise<unknown>,
+) {
+  const message = {
+    content: "",
+    reasoning: "",
+    reasoning_details: [] as Fragment[],
+    tool_calls: [] as StreamedToolCall[],
+  };
+  const data: {
+    id?: string;
+    error?: unknown;
+    usage?: Record<string, number> & { completion_tokens_details?: { reasoning_tokens?: number } };
+    choices: { message: typeof message; finish_reason: string | null }[];
+  } = { choices: [{ message, finish_reason: null }] };
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const line = async (text: string) => {
+    // SSE comments (": OPENROUTER PROCESSING") and the [DONE] marker carry no data.
+    if (!text.startsWith("data:")) return;
+    const value = text.slice(5).trim();
+    if (value === "[DONE]") return;
+    const chunk = JSON.parse(value);
+    if (typeof chunk.id === "string" && !data.id) {
+      data.id = chunk.id;
+      await onId(chunk.id);
+    }
+    if (chunk.error) data.error = chunk.error;
+    if (chunk.usage) data.usage = chunk.usage;
+    const choice = chunk.choices?.[0];
+    if (!choice) return;
+    if (choice.finish_reason) data.choices[0].finish_reason = choice.finish_reason;
+    const delta = choice.delta ?? {};
+    const details: Fragment[] = delta.reasoning_details ?? [];
+    details.forEach((part) => mergeFragment(message.reasoning_details, part));
+    let reasoning = delta.reasoning ?? delta.reasoning_content ?? "";
+    message.reasoning += reasoning;
+    if (!reasoning)
+      reasoning = details
+        .filter((part) => part.type === "reasoning.text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("");
+    const content = delta.content ?? "";
+    message.content += content;
+    for (const call of delta.tool_calls ?? []) {
+      const index = call.index ?? 0;
+      const target = (message.tool_calls[index] ??= {
+        id: "",
+        type: "function",
+        function: { name: "", arguments: "" },
+      });
+      if (call.id) target.id = call.id;
+      target.function.name += call.function?.name ?? "";
+      target.function.arguments += call.function?.arguments ?? "";
+    }
+    if (reasoning || content)
+      onDelta({ ...(reasoning && { reasoning }), ...(content && { text: content }) });
+  };
+  for await (const bytes of body) {
+    buffer += decoder.decode(bytes, { stream: true });
+    let end;
+    while ((end = buffer.indexOf("\n")) >= 0) {
+      const text = buffer.slice(0, end).trim();
+      buffer = buffer.slice(end + 1);
+      await line(text);
+    }
+  }
+  await line((buffer + decoder.decode()).trim());
+  return data;
+}
+
+// Agent calls stream so the player can watch reasoning arrive; the assembled response is still
+// the one authoritative record for accounting and the transcript.
 export async function infer(
   game: GameRow,
   role: "agent" | "monitor",
@@ -200,6 +290,7 @@ export async function infer(
   messages: Message[],
   signal?: AbortSignal,
   onRetry?: (message: string) => void,
+  onDelta?: (delta: AgentDelta) => void,
 ): Promise<AssistantMessage> {
   signal?.throwIfAborted();
   if (!process.env.OPENROUTER_API_KEY) throw new Error("Inference is not configured.");
@@ -222,6 +313,7 @@ export async function infer(
       max_price: { prompt: model.cost.input, completion: model.cost.output },
     },
     ...(role === "monitor" ? { response_format: { type: "json_object" } } : {}),
+    ...(onDelta ? { stream: true } : {}),
   };
   const ceiling = inputCeiling(payload);
   if (ceiling + 4096 > model.contextWindow)
@@ -288,7 +380,12 @@ export async function infer(
       onRetry?.(role === "agent" ? "Agent thinking" : "Monitor reviewing command");
     }
     if (!response) throw new Error("Inference service did not respond.");
-    const data = await response.json();
+    const data =
+      onDelta && response.body
+        ? await collectStream(response.body, onDelta, (id) =>
+            db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [reservation.id, id]),
+          )
+        : await response.json();
     requestSignal.throwIfAborted();
     if (typeof data.id === "string")
       await db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [
@@ -424,10 +521,11 @@ export function agentStream(
   model: Model<"openai-completions">,
   onFailure: (error: unknown) => void,
   onRetry?: (message: string) => void,
+  onDelta?: (delta: AgentDelta) => void,
 ) {
   return (_model: Model<Api>, context: TranscriptContext, options?: { signal?: AbortSignal }) => {
     const stream = createAssistantMessageEventStream();
-    void infer(game, "agent", model, context.messages, options?.signal, onRetry)
+    void infer(game, "agent", model, context.messages, options?.signal, onRetry, onDelta)
       .then((message) =>
         stream.push({
           type: "done",
