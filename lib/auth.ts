@@ -1,7 +1,9 @@
 import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
 import { anonymous, magicLink } from "better-auth/plugins";
 import { Resend } from "resend";
 import { db } from "./db";
+import { signInEmailError } from "./email";
 import { MEMBER_BUDGET_MICRODOLLARS } from "./policy";
 
 // Previews have no fixed origin: accept only this deployment's own Vercel hostnames.
@@ -45,7 +47,11 @@ export const auth = betterAuth({
           subject: "Your Capture the flag sign-in link",
           text: `Sign in to Capture the flag:\n\n${url}\n\nThis link expires in five minutes. If you didn't request it, ignore this email.`,
         });
-        if (result.error) throw new Error("Could not send your sign-in link. Please try again.");
+        if (result.error) {
+          const { status, message } = signInEmailError(result.error);
+          // A plain Error becomes an empty 500; APIError carries the message to the player.
+          throw new APIError(status, { message });
+        }
       },
     }),
   ],

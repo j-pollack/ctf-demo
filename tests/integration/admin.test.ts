@@ -172,4 +172,42 @@ await test("admin stats aggregate real persisted rows", async (t) => {
       ["temp@guest.invalid", true, 1, 200_000],
     ],
   );
+
+  // Site monitor: only the OpenRouter catalog is faked; any other request fails the test.
+  const { setSeasonMonitor } = await import("../../lib/admin");
+  const { currentSeason } = await import("../../lib/seasons");
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    assert.equal(String(input), "https://openrouter.ai/api/v1/models");
+    return Response.json({
+      data: [
+        { id: "z-ai/glm-5.3", supported_parameters: ["response_format", "reasoning"] },
+        { id: "qwen/qwen3.8-flash", supported_parameters: ["tools", "reasoning"] },
+      ].map((m) => ({
+        ...m,
+        context_length: 100000,
+        pricing: { prompt: "0.000001", completion: "0.000002" },
+      })),
+    });
+  });
+  const week = await currentSeason();
+  const monitor = async () =>
+    (await pool.query("SELECT monitor_model FROM ctf.seasons WHERE id=$1", [week.id])).rows[0]
+      .monitor_model;
+  const before = await monitor();
+  await assert.rejects(setSeasonMonitor("evil/model"), /Unsupported monitor model/);
+  await assert.rejects(setSeasonMonitor("qwen/qwen3.8-flash"), /required request format/);
+  assert.equal(await monitor(), before, "rejected choices leave the season untouched");
+  await setSeasonMonitor("z-ai/glm-5.3");
+  assert.equal(await monitor(), "z-ai/glm-5.3");
+  assert.equal((await currentSeason()).monitorModel, "z-ai/glm-5.3");
+  assert.equal(
+    (await pool.query("SELECT monitor_model FROM ctf.seasons WHERE id='s1'")).rows[0].monitor_model,
+    "mon/a",
+    "only the current season changes",
+  );
+  assert.deepEqual(
+    (await pool.query("SELECT DISTINCT monitor_model FROM ctf.games")).rows,
+    [{ monitor_model: "mon/a" }],
+    "started runs keep their monitor",
+  );
 });
