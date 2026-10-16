@@ -197,7 +197,7 @@ export default function GameUI({
   const submissionGeneration = useRef(0);
   const [unconfirmed, setUnconfirmed] = useState(false);
   // The agent turn being streamed; the recorded agent event replaces it.
-  const [live, setLive] = useState<{ reasoning: string; text: string } | null>(null);
+  const [live, setLive] = useState<LiveTurn | null>(null);
   function reconcile(next: PublicGame) {
     const submitted = pending.current;
     if (!submitted || next.id !== submitted.gameId) return;
@@ -816,11 +816,7 @@ export default function GameUI({
       return;
     if (type === "stage") setStage(String(data));
     if (type === "delta") {
-      const delta = data as { reasoning?: string; text?: string };
-      setLive((current) => ({
-        reasoning: (current?.reasoning ?? "") + (delta.reasoning ?? ""),
-        text: (current?.text ?? "") + (delta.text ?? ""),
-      }));
+      setLive((current) => withDelta(current, data as LiveDelta));
     }
     if (type === "event") {
       const event = data as GameEvent;
@@ -1212,13 +1208,13 @@ export default function GameUI({
                       </p>
                     )}
                     {groupTurns(displayGame.events).map(
-                      ({ event, calls, remainder }, index, groups) => (
+                      ({ event, calls, pending }, index, groups) => (
                         <Entry
                           key={event.id}
                           event={event}
                           previous={groups[index - 1]?.event}
                           calls={calls}
-                          remainder={remainder}
+                          pending={pending}
                           disabled={loading || displayGame.busy}
                           onFork={() => {
                             setError("");
@@ -1283,6 +1279,11 @@ export default function GameUI({
                       </details>
                     )}
                     {live.text && <p>{live.text}</p>}
+                    {live.calls.map((call, index) => (
+                      <div className="call" key={index}>
+                        <pre>{liveCall(call)}</pre>
+                      </div>
+                    ))}
                   </article>
                 )}
                 {stage && isExecutionView && (
@@ -1659,6 +1660,57 @@ function ModelSelect({
     </label>
   );
 }
+// The agent turn being streamed: reasoning, reply text and tool calls as far as they've arrived.
+export type LiveTurn = { reasoning: string; text: string; calls: { name: string; args: string }[] };
+type LiveDelta = {
+  reasoning?: string;
+  text?: string;
+  calls?: { index: number; name?: string; arguments?: string }[];
+};
+export function withDelta(current: LiveTurn | null, delta: LiveDelta): LiveTurn {
+  const calls = [...(current?.calls ?? [])];
+  for (const piece of delta.calls ?? []) {
+    const call = calls[piece.index] ?? { name: "", args: "" };
+    calls[piece.index] = {
+      name: call.name + (piece.name ?? ""),
+      args: call.args + (piece.arguments ?? ""),
+    };
+  }
+  return {
+    reasoning: (current?.reasoning ?? "") + (delta.reasoning ?? ""),
+    text: (current?.text ?? "") + (delta.text ?? ""),
+    calls,
+  };
+}
+// Reads one string argument out of tool-call JSON that may still be arriving.
+export function partialArgument(json: string, key: string) {
+  const start = json.match(new RegExp(`"${key}"\\s*:\\s*"`));
+  if (!start) return "";
+  const escapes: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" };
+  let out = "";
+  for (let i = start.index! + start[0].length; i < json.length; i++) {
+    const char = json[i];
+    if (char === '"') break;
+    if (char !== "\\") {
+      out += char;
+      continue;
+    }
+    const next = json[++i];
+    if (next === undefined) break;
+    if (next === "u") {
+      const hex = json.slice(i + 1, i + 5);
+      if (!/^[0-9a-fA-F]{4}$/.test(hex)) break;
+      out += String.fromCharCode(parseInt(hex, 16));
+      i += 4;
+    } else out += escapes[next] ?? next;
+  }
+  return out;
+}
+export function liveCall({ name, args }: { name: string; args: string }) {
+  if (name === "sprite_exec") return partialArgument(args, "command");
+  if (name === "submit") return `submit: ${partialArgument(args, "value")}`;
+  return `${name} ${args}`.trim();
+}
 export type Call = {
   command: string;
   decision: "allow" | "block" | "error";
@@ -1682,7 +1734,7 @@ export function displayCommand(raw?: string) {
 // Folds each agent turn's monitor reviews and tool results into calls on the agent event.
 // Only a tool result directly after a review is absorbed; any other event stays standalone.
 export function groupTurns(events: GameEvent[]) {
-  const groups: { event: GameEvent; calls: Call[]; remainder: string }[] = [];
+  const groups: { event: GameEvent; calls: Call[]; pending: string[] }[] = [];
   for (let i = 0; i < events.length; i++) {
     const event = events[i],
       calls: Call[] = [];
@@ -1701,18 +1753,21 @@ export function groupTurns(events: GameEvent[]) {
       }
       calls.push(call);
     }
-    // Commands the monitor has not reviewed (yet, or ever after an error) stay visible.
-    const command = displayCommand(event.command) ?? "";
-    const reviewed = calls.map((call) => call.command).join("\n");
-    groups.push({
-      event,
-      calls,
-      remainder: !reviewed
+    // Commands the monitor has not reviewed (yet, or ever after an error) stay visible, one per
+    // call. Turns recorded before `commands` existed only have the joined text.
+    let pending: string[];
+    if (event.commands) pending = event.commands.slice(calls.length);
+    else {
+      const command = displayCommand(event.command) ?? "";
+      const reviewed = calls.map((call) => call.command).join("\n");
+      const rest = !reviewed
         ? command
         : command.startsWith(`${reviewed}\n`)
           ? command.slice(reviewed.length + 1)
-          : "",
-    });
+          : "";
+      pending = rest ? [rest] : [];
+    }
+    groups.push({ event, calls, pending });
   }
   return groups;
 }
@@ -1720,7 +1775,7 @@ export function Entry({
   event,
   previous,
   calls,
-  remainder = "",
+  pending,
   disabled = false,
   showActions = true,
   onFork,
@@ -1729,7 +1784,7 @@ export function Entry({
   event: GameEvent;
   previous?: GameEvent;
   calls?: Call[];
-  remainder?: string;
+  pending?: string[];
   disabled?: boolean;
   showActions?: boolean;
   onFork?: () => void;
@@ -1745,7 +1800,10 @@ export function Entry({
         {event.text && <p>{event.text}</p>}
       </article>
     );
-  const command = calls ? remainder : displayCommand(event.command);
+  const waiting =
+    pending ??
+    event.commands ??
+    (displayCommand(event.command) ? [displayCommand(event.command)!] : []);
   return (
     <article className={`entry ${event.kind}`}>
       <header>
@@ -1821,7 +1879,7 @@ export function Entry({
           <p>{event.text}</p>
         ))}
       {calls?.map((call, index) => (
-        <React.Fragment key={index}>
+        <div className="call" key={index}>
           {call.command && <pre>{call.command}</pre>}
           {call.decision === "allow" ? (
             call.output && <CallOutput text={call.output} />
@@ -1831,9 +1889,13 @@ export function Entry({
               {call.reason && <p>{call.reason}</p>}
             </div>
           )}
-        </React.Fragment>
+        </div>
       ))}
-      {command && <pre>{command}</pre>}
+      {waiting.map((command, index) => (
+        <div className="call" key={`waiting-${index}`}>
+          <pre>{command}</pre>
+        </div>
+      ))}
     </article>
   );
 }
@@ -1875,7 +1937,7 @@ export function ForkPreview({ events, selectedId }: { events: GameEvent[]; selec
           event={group.event}
           previous={groups[index - 1]?.event}
           calls={group.calls}
-          remainder={group.remainder}
+          pending={group.pending}
           showActions={false}
         />
       ))}

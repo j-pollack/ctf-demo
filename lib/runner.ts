@@ -199,17 +199,14 @@ export async function runGame(
       (stage) => send("stage", stage),
       (delta) => {
         // The status follows what the agent is producing right now.
-        const next = delta.tool
+        const next = delta.calls
           ? "Tool called"
           : delta.text
             ? "Agent responding"
             : "Agent thinking";
         if (next !== phase) send("stage", (phase = next));
-        if (delta.reasoning || delta.text)
-          send("delta", {
-            ...(delta.reasoning && { reasoning: delta.reasoning }),
-            ...(delta.text && { text: delta.text }),
-          });
+        // Tool calls render as the agent writes them, before the monitor sees them.
+        send("delta", delta);
       },
     );
     session.agent.toolExecution = "sequential";
@@ -315,21 +312,31 @@ export async function runGame(
           game.id,
           game.lease,
         ]);
-        const calls = message.content
-          .flatMap((part) =>
-            part.type === "toolCall" && part.name === "sprite_exec"
-              ? [String(part.arguments.command ?? "")]
-              : [],
-          )
-          .join("\n");
+        const commands = message.content.flatMap((part) =>
+          part.type === "toolCall" && part.name === "sprite_exec"
+            ? [String(part.arguments.command ?? "")]
+            : [],
+        );
+        const truncated =
+          message.stopReason === "length" &&
+          !textOf(message).trim() &&
+          !message.content.some((part) => part.type === "toolCall");
         await emit({
           kind: "agent",
           text: textOf(message),
           reasoning: reasoningOf(message),
-          command: calls || undefined,
+          // `command` keeps the joined form older clients and runs rely on.
+          command: commands.join("\n") || undefined,
+          ...(commands.length && { commands }),
           turn: game.turns,
           model: message.model,
         });
+        // An empty turn would otherwise look like the agent said nothing.
+        if (truncated)
+          await emit({
+            kind: "error",
+            text: "The agent used its whole output allowance thinking and stopped before answering. Try again, or ask for something smaller.",
+          });
       }
       if (message.role === "toolResult" && message.toolName !== "submit")
         await emit({ kind: "tool", text: textOf(message), turn: game.turns });

@@ -192,8 +192,12 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
   return { messages: transcript, ...(tools.size ? { tools: [...tools.values()] } : {}) };
 }
 
-// `tool` names a tool call the moment it starts; its arguments are not streamed.
-export type AgentDelta = { reasoning?: string; text?: string; tool?: string };
+// A piece of one tool call: `name` arrives with its first piece, `arguments` text in pieces.
+export type CallFragment = { index: number; name?: string; arguments?: string };
+export type AgentDelta = { reasoning?: string; text?: string; calls?: CallFragment[] };
+// Reasoning counts toward output, so agents need room to think and then answer. Admission still
+// lowers this to what the run's remaining budget can pay for.
+export const AGENT_OUTPUT_TOKENS = 16_384;
 // A streamed call that sends nothing for this long, not even a keep-alive, is stuck.
 export const STREAM_IDLE_MS = 45_000;
 // Time kept back from the lease so a stopped call can still record its error.
@@ -260,10 +264,13 @@ export async function collectStream(
         .join("");
     const content = delta.content ?? "";
     message.content += content;
-    let tool = "";
+    const calls: CallFragment[] = [];
     for (const call of delta.tool_calls ?? []) {
       const index = call.index ?? 0;
-      if (!message.tool_calls[index] && call.function?.name) tool = call.function.name;
+      const name = call.function?.name ?? "",
+        args = call.function?.arguments ?? "";
+      if (name || args)
+        calls.push({ index, ...(name && { name }), ...(args && { arguments: args }) });
       const target = (message.tool_calls[index] ??= {
         id: "",
         type: "function",
@@ -273,11 +280,11 @@ export async function collectStream(
       target.function.name += call.function?.name ?? "";
       target.function.arguments += call.function?.arguments ?? "";
     }
-    if (reasoning || content || tool)
+    if (reasoning || content || calls.length)
       onDelta({
         ...(reasoning && { reasoning }),
         ...(content && { text: content }),
-        ...(tool && { tool }),
+        ...(calls.length && { calls }),
       });
   };
   const reader = body.getReader();
@@ -355,7 +362,7 @@ export async function infer(
     role,
     model.id,
     ceiling,
-    role === "agent" ? 4096 : 2048,
+    role === "agent" ? Math.min(AGENT_OUTPUT_TOKENS, model.contextWindow - ceiling) : 2048,
     model.cost.input / 1e6,
     model.cost.output / 1e6,
   );

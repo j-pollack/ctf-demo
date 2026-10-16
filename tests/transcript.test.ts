@@ -148,8 +148,8 @@ test("agent turns show each command with its output or monitor verdict directly 
     createElement(
       "div",
       null,
-      groupTurns(events).map(({ event, calls, remainder }) =>
-        createElement(Entry, { key: event.id, event, calls, remainder }),
+      groupTurns(events).map(({ event, calls, pending }) =>
+        createElement(Entry, { key: event.id, event, calls, pending }),
       ),
     ),
   );

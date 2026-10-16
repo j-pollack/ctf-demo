@@ -285,6 +285,12 @@ i {
   font-size: 11px;
   margin: 10px 0 0;
 }
+/* Each tool call is its own block, so several calls in one turn read as separate commands. */
+.entry .call + .call {
+  margin-top: 14px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--line);
+}
 .entry pre.call-output,
 .entry div.call-output {
   margin-top: 0;

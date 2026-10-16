@@ -74,6 +74,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   // "cut" ends an agent stream after its first chunk, with no usage; "endless" sends its first
   // chunk and then only keep-alives until the request is aborted.
   let agentStreamMode: "full" | "cut" | "endless" = "full";
+  // "length" makes the first agent reply reasoning only, stopped at the output limit.
+  let agentFinish: "stop" | "length" = "stop";
   // Generation ids the fake has issued, with the cost OpenRouter later reports for them.
   const generations = new Map<string, number>();
   const strict =
@@ -270,19 +272,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         );
         agentCalls++;
         message =
-          agentCalls === 1
-            ? {
-                reasoning: "Controlled fixture reasoning.",
-                tool_calls: proposed.map((call) => ({
-                  id: randomUUID(),
-                  type: "function",
-                  function:
-                    typeof call === "string"
-                      ? { name: proposedTool, arguments: proposedArguments(call) }
-                      : { name: "submit", arguments: JSON.stringify({ value: call.submit }) },
-                })),
-              }
-            : { content: "Done." };
+          agentCalls === 1 && agentFinish === "length"
+            ? { reasoning: "Thinking at length." }
+            : agentCalls === 1
+              ? {
+                  reasoning: "Controlled fixture reasoning.",
+                  tool_calls: proposed.map((call) => ({
+                    id: randomUUID(),
+                    type: "function",
+                    function:
+                      typeof call === "string"
+                        ? { name: proposedTool, arguments: proposedArguments(call) }
+                        : { name: "submit", arguments: JSON.stringify({ value: call.submit }) },
+                  })),
+                }
+              : { content: "Done." };
       }
       const id = `test-${randomUUID()}`,
         cost = payload.response_format ? monitorCost : agentCost,
@@ -330,7 +334,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const frames = [
         ": OPENROUTER PROCESSING",
         ...deltas.map((delta) => JSON.stringify({ id, choices: [{ delta }] })),
-        JSON.stringify({ id, choices: [{ delta: {}, finish_reason: "stop" }] }),
+        JSON.stringify({
+          id,
+          choices: [{ delta: {}, finish_reason: agentCalls === 1 ? agentFinish : "stop" }],
+        }),
         ...(planned?.status === 299 ? [] : [JSON.stringify({ id, choices: [], usage })]),
         "[DONE]",
       ].map((frame) => (frame.startsWith(":") ? `${frame}\n\n` : `data: ${frame}\n\n`));
@@ -393,6 +400,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     abortOn429 = undefined;
     lastAgentRequest = "";
     agentStreamMode = "full";
+    agentFinish = "stop";
     generations.clear();
   });
   t.afterEach(() =>
@@ -1400,7 +1408,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const firstAgent = frames.findIndex(
         (frame) => frame.type === "event" && (frame.data as { kind: string }).kind === "agent",
       );
-      const before = frames.slice(0, firstAgent).filter((frame) => frame.type === "delta");
+      const before = frames
+        .slice(0, firstAgent)
+        .filter((frame) => frame.type === "delta" && "reasoning" in (frame.data as object));
       assert.deepEqual(
         before.map((frame) => frame.data),
         [{ reasoning: "Controlled fixt" }, { reasoning: "ure reasoning." }],
@@ -1419,13 +1429,20 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         "Agent thinking",
         "Agent responding",
       ]);
-      assert.ok(
-        !frames.some((frame) => frame.type === "delta" && "tool" in (frame.data as object)),
-        "tool names reach the player only as status",
-      );
+      // The tool call reaches the player as the agent writes it, before the recorded turn.
+      const streamedCalls = frames
+        .slice(0, firstAgent)
+        .flatMap((frame) =>
+          frame.type === "delta" ? ((frame.data as { calls?: unknown[] }).calls ?? []) : [],
+        );
+      assert.deepEqual(streamedCalls, [
+        { index: 0, name: "sprite_exec", arguments: '{"command":"pri' },
+        { index: 0, arguments: 'ntf harmless"}' },
+      ]);
       const agentEvent = frames[firstAgent].data as { reasoning: string; command: string };
       assert.equal(agentEvent.reasoning, "Controlled fixture reasoning.");
       assert.equal(agentEvent.command, "printf harmless");
+      assert.deepEqual((agentEvent as { commands?: string[] }).commands, ["printf harmless"]);
       assert.deepEqual(
         commands.map((entry) => entry.command),
         ["printf harmless"],
@@ -1532,6 +1549,45 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const after = await row(game.id);
       assert.equal(after.status, "active");
       assert.equal(after.lease, null);
+    },
+  );
+  await t.test(
+    "agents get room to think and answer; a turn cut off while thinking says so",
+    async () => {
+      const game = await startGame("long-think", false);
+      agentFinish = "length";
+      const finished = await play(game.id, "long-think");
+      const agentRequests = requests.filter((request) => request.role === "agent");
+      assert.equal(agentRequests.length, 1, "a cut-off turn ends the response");
+      assert.equal((agentRequests[0].payload as { max_tokens: number }).max_tokens, 16_384);
+      assert.deepEqual(commands, []);
+      assert.equal(finished.status, "active");
+      const events = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1 ORDER BY id", [game.id])
+      ).rows.map((entry) => entry.data);
+      assert.deepEqual(
+        events.slice(-2).map((event) => [event.kind, event.reasoning ?? event.text]),
+        [
+          ["agent", "Thinking at length."],
+          [
+            "error",
+            "The agent used its whole output allowance thinking and stopped before answering. Try again, or ask for something smaller.",
+          ],
+        ],
+      );
+      // A run with too little budget left gets a smaller allowance, never an overspend.
+      agentFinish = "stop";
+      await pool.query(
+        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+reserved_microdollars+20000 WHERE id=$1",
+        [game.id],
+      );
+      requests.length = 0;
+      agentCalls = 0;
+      await play(game.id, "long-think");
+      const capped = requests.find((request) => request.role === "agent")!.payload as {
+        max_tokens: number;
+      };
+      assert.ok(capped.max_tokens > 0 && capped.max_tokens < 16_384, `${capped.max_tokens}`);
     },
   );
   for (const value of ["flag{wrong-guess-aaaaaaaaaaaaaaaaaaaaaaaaaa}", ""])
