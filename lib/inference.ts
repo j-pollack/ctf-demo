@@ -193,6 +193,10 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
 }
 
 export type AgentDelta = { reasoning?: string; text?: string };
+// A streamed call that sends nothing for this long, not even a keep-alive, is stuck.
+export const STREAM_IDLE_MS = 45_000;
+// Time kept back from the lease so a stopped call can still record its error.
+const LEASE_MARGIN_MS = 5_000;
 type StreamedToolCall = { id: string; type: string; function: { name: string; arguments: string } };
 type Fragment = Record<string, unknown> & { index?: number };
 // Fragments of one reasoning detail share an index; their text-like fields concatenate.
@@ -212,6 +216,7 @@ export async function collectStream(
   body: ReadableStream<Uint8Array>,
   onDelta: (delta: AgentDelta) => void,
   onId: (id: string) => Promise<unknown>,
+  idleMs = STREAM_IDLE_MS,
 ) {
   const message = {
     content: "",
@@ -268,7 +273,23 @@ export async function collectStream(
     if (reasoning || content)
       onDelta({ ...(reasoning && { reasoning }), ...(content && { text: content }) });
   };
-  for await (const bytes of body) {
+  const reader = body.getReader();
+  while (true) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stalled = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new GameError("The agent stopped responding. Please try again.", 504)),
+        idleMs,
+      );
+    });
+    const next = await Promise.race([reader.read(), stalled])
+      .catch(async (error) => {
+        await reader.cancel().catch(() => {});
+        throw error;
+      })
+      .finally(() => clearTimeout(timer));
+    if (next.done) break;
+    const bytes = next.value;
     buffer += decoder.decode(bytes, { stream: true });
     let end;
     while ((end = buffer.indexOf("\n")) >= 0) {
@@ -337,7 +358,13 @@ export async function infer(
   let knownUnbilled = false;
   let response: Response | undefined,
     providerError: ReturnType<typeof providerErrorDetails> | undefined;
-  const deadline = AbortSignal.timeout(90000);
+  // A streamed agent call may use whatever the response's lease has left while it keeps making
+  // progress; non-streaming calls keep a fixed bound.
+  const deadline = AbortSignal.timeout(
+    onDelta
+      ? Math.max(0, new Date(game.lease_until ?? 0).getTime() - Date.now() - LEASE_MARGIN_MS)
+      : 90000,
+  );
   const requestSignal = AbortSignal.any([signal ?? new AbortController().signal, deadline]);
   try {
     for (let attempt = 1; attempt <= 5; attempt++) {
@@ -510,6 +537,11 @@ export async function infer(
         usageVerified: settled,
       }),
     );
+    if (onDelta && deadline.aborted && !signal?.aborted)
+      throw new GameError(
+        "The agent ran out of time for this response. Any charge settles automatically; try again or ask for a shorter answer.",
+        504,
+      );
     throw error;
   } finally {
     if (!settled && knownUnbilled) await settleInference(reservation.id, { tokens: 0, cost: 0 });

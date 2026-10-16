@@ -253,3 +253,45 @@ test("detail-only reasoning still streams, and a mid-stream error or cut-off lea
   assert.equal(cut.usage, undefined);
   assert.equal(cut.choices[0].finish_reason, null);
 });
+
+// Emits chunks on a schedule; never closes unless `close` is set.
+const timed = (steps: { after: number; text: string }[], close: boolean) =>
+  new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (const step of steps) {
+        await new Promise((resolve) => setTimeout(resolve, step.after));
+        controller.enqueue(new TextEncoder().encode(step.text));
+      }
+      if (close) controller.close();
+    },
+  });
+
+test("a stream that goes silent is stopped, but keep-alives count as progress", async () => {
+  const first = frame({ id: "gen-4", choices: [{ delta: { reasoning: "a" } }] });
+  const started = Date.now();
+  await assert.rejects(
+    collectStream(
+      timed([{ after: 0, text: first }], false),
+      () => {},
+      async () => {},
+      40,
+    ),
+    /stopped responding/,
+  );
+  assert.ok(Date.now() - started < 1000);
+  // Seven keep-alives 20ms apart outlast a 40ms idle limit without tripping it.
+  const kept = await collectStream(
+    timed(
+      [
+        { after: 0, text: first },
+        ...Array.from({ length: 7 }, () => ({ after: 20, text: ": OPENROUTER PROCESSING\n\n" })),
+        { after: 20, text: frame({ id: "gen-4", choices: [{ delta: { content: "done" } }] }) },
+      ],
+      true,
+    ),
+    () => {},
+    async () => {},
+    40,
+  );
+  assert.equal(kept.choices[0].message.content, "done");
+});

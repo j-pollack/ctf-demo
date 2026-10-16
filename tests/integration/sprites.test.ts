@@ -71,8 +71,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let fetchGate: ((signal: AbortSignal) => Promise<Response>) | undefined;
   let abortOn429: (() => void) | undefined;
   let lastAgentRequest = "";
-  // "cut" ends an agent stream after its first chunk, with no usage.
-  let agentStreamMode: "full" | "cut" = "full";
+  // "cut" ends an agent stream after its first chunk, with no usage; "endless" sends its first
+  // chunk and then only keep-alives until the request is aborted.
+  let agentStreamMode: "full" | "cut" | "endless" = "full";
   // Generation ids the fake has issued, with the cost OpenRouter later reports for them.
   const generations = new Map<string, number>();
   const strict =
@@ -333,6 +334,34 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         ...(planned?.status === 299 ? [] : [JSON.stringify({ id, choices: [], usage })]),
         "[DONE]",
       ].map((frame) => (frame.startsWith(":") ? `${frame}\n\n` : `data: ${frame}\n\n`));
+      if (agentStreamMode === "endless") {
+        const signal = options!.signal!;
+        const encoder = new TextEncoder();
+        let timer: ReturnType<typeof setInterval> | undefined;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(frames.slice(0, 2).join("")));
+              timer = setInterval(
+                () => controller.enqueue(encoder.encode(": OPENROUTER PROCESSING\n\n")),
+                100,
+              );
+              signal.addEventListener(
+                "abort",
+                () => {
+                  clearInterval(timer);
+                  controller.error(signal.reason);
+                },
+                { once: true },
+              );
+            },
+            cancel() {
+              clearInterval(timer);
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
       return new Response((agentStreamMode === "cut" ? frames.slice(0, 2) : frames).join(""), {
         headers: { "content-type": "text/event-stream" },
       });
@@ -1451,6 +1480,41 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const after = await row(game.id);
       assert.equal(Number(after.reserved_microdollars), 0);
       assert.equal(Number(after.spent_microdollars), Number(held.spent_microdollars) + 3000);
+    },
+  );
+  await t.test(
+    "a streaming agent call that is still alive runs until the lease runs low, not a fixed cap",
+    async () => {
+      const game = await startGame("long-stream", false);
+      agentStreamMode = "endless";
+      const leased = await claimGame(game.id, "long-stream");
+      // Leave 7s on the lease: the call may use all but the 5s margin, then stops cleanly.
+      const { rows } = await pool.query(
+        "UPDATE ctf.games SET lease_until=now()+interval '7 seconds' WHERE id=$1 RETURNING lease_until",
+        [game.id],
+      );
+      leased.lease_until = rows[0].lease_until;
+      const started = Date.now();
+      await runGame(leased, "Controlled integration fixture", AbortSignal.timeout(15000), () => {});
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed >= 1500 && elapsed < 4000, `stopped after ${elapsed}ms`);
+      assert.deepEqual(commands, []);
+      const errors = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
+      ).rows.filter((entry) => entry.data.kind === "error");
+      assert.equal(errors.length, 1);
+      assert.match(errors[0].data.text, /ran out of time/);
+      const hold = (
+        await pool.query("SELECT generation_id,settled_at FROM ctf.inference WHERE game_id=$1", [
+          game.id,
+        ])
+      ).rows;
+      assert.equal(hold.length, 1);
+      assert.equal(hold[0].settled_at, null);
+      assert.ok(generations.has(hold[0].generation_id), "the stopped call can still reconcile");
+      const after = await row(game.id);
+      assert.equal(after.status, "active");
+      assert.equal(after.lease, null);
     },
   );
   for (const value of ["flag{wrong-guess-aaaaaaaaaaaaaaaaaaaaaaaaaa}", ""])
