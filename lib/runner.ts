@@ -12,13 +12,20 @@ import {
   defineTool,
 } from "@earendil-works/pi-coding-agent";
 import { db } from "./db";
-import { assertLease, cleanup, publicGame, record, type GameRow } from "./games";
+import { assertLease, cleanup, gameBilling, publicGame, record, type GameRow } from "./games";
 import { agentStream, diagnosticText, getModel, infer, reasoningOf, textOf } from "./inference";
-import { AGENT_PROMPT, GameError, hasSecret, MONITOR_PROMPT, parseDecision } from "./policy";
+import {
+  AGENT_PROMPT,
+  GameError,
+  hasSecret,
+  MONITOR_PROMPT,
+  monitorPayload,
+  parseDecision,
+} from "./policy";
 import { executeCommand } from "./sprites";
 import type { GameEvent } from "./types";
 
-export function repairMessages(messages: Message[]): Message[] {
+export function repairMessages(messages: Message[], prompt = AGENT_PROMPT): Message[] {
   const repaired: Message[] = [];
   for (const message of messages) {
     if (
@@ -49,12 +56,12 @@ export function repairMessages(messages: Message[]): Message[] {
   // including transcripts created before this fix with an empty leading system message.
   const first = repaired[0];
   if (first?.role === "system")
-    repaired[0] = { ...first, sections: { ...first.sections, preamble: AGENT_PROMPT } };
+    repaired[0] = { ...first, sections: { ...first.sections, preamble: prompt } };
   else
     repaired.unshift({
       role: "system",
       content: "",
-      sections: { preamble: AGENT_PROMPT },
+      sections: { preamble: prompt },
       timestamp: Date.now(),
     });
   return repaired;
@@ -65,11 +72,27 @@ export async function runGame(
   signal: AbortSignal,
   send: (type: string, data: unknown) => void,
 ) {
+  // `||`, not `??`: Pi treats an empty override as "use the built-in coding prompt".
+  const agentPrompt = game.system_prompt || AGENT_PROMPT;
   const directory = await mkdtemp(join(tmpdir(), "tripwire-"));
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   let failure: unknown;
-  const emit = async (event: Omit<GameEvent, "id">) =>
+  const emit = async (event: Omit<GameEvent, "id">) => {
     send("event", await record(game.id, event, game.lease));
+    // Best effort: the live totals must never turn a recorded event into a failed response.
+    await gameBilling(game.id)
+      .then((billing) => send("billing", billing))
+      .catch((error) =>
+        console.error(
+          JSON.stringify({
+            event: "billing.read.failed",
+            timestamp: new Date().toISOString(),
+            gameId: game.id,
+            error: diagnosticText(error instanceof Error ? error.message : error),
+          }),
+        ),
+      );
+  };
   try {
     const [model, monitor] = await Promise.all([
       getModel(game.agent_model, "agent"),
@@ -92,7 +115,7 @@ export async function runGame(
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPromptOverride: () => AGENT_PROMPT,
+      systemPromptOverride: () => agentPrompt,
     });
     await loader.reload();
     const runtime = await ModelRuntime.create({
@@ -102,7 +125,7 @@ export async function runGame(
       allowModelNetwork: false,
     });
     const manager = SessionManager.inMemory(directory);
-    repairMessages(game.messages).forEach((message) => manager.appendMessage(message));
+    repairMessages(game.messages, agentPrompt).forEach((message) => manager.appendMessage(message));
     const tool = defineTool({
       name: "sprite_exec",
       label: "Game command",
@@ -164,11 +187,7 @@ export async function runGame(
           },
           {
             role: "user",
-            content: JSON.stringify({
-              agentSystemPrompt: AGENT_PROMPT,
-              transcript: session!.messages,
-              proposedToolCall: toolCall,
-            }),
+            content: JSON.stringify(monitorPayload(session!.messages, toolCall)),
             timestamp: Date.now(),
           },
         ];

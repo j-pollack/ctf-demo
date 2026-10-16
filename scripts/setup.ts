@@ -12,6 +12,8 @@ try {
     "002-dollar-seasons.sql",
     "003-monitor-reasoning.sql",
     "005-estimated-settlement.sql",
+    "006-system-prompt.sql",
+    "007-inference-game-index.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

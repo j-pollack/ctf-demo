@@ -29,6 +29,8 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     "../../db/migrations/002-dollar-seasons.sql",
     "../../db/migrations/003-monitor-reasoning.sql",
     "../../db/migrations/005-estimated-settlement.sql",
+    "../../db/migrations/006-system-prompt.sql",
+    "../../db/migrations/007-inference-game-index.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";

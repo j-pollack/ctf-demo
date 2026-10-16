@@ -21,6 +21,7 @@ export type PublicGame = {
   status: GameStatus;
   agentModel: string;
   monitorModel: string;
+  systemPrompt: string;
   tokenBudget: number;
   tokensUsed: number;
   budgetMicrodollars: number;

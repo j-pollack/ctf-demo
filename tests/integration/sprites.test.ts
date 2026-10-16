@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Pool } from "pg";
 import { Sprite, SpritesClient, ExecError, type ExecOptions } from "@fly/sprites";
-import type { Message } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, type Message } from "@earendil-works/pi-ai";
 
 // Only the runner's fresh loopback database is accepted; never read .env.local.
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -18,7 +18,8 @@ const pool = new Pool({
 // Use the existing pool seam with a real pg Pool, not mocked SQL or relaxed production TLS.
 (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = pool;
 
-await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }, async (t) => {
+// ~45 s on a loaded host; 60 s left no headroom.
+await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 }, async (t) => {
   t.after(async () => {
     await pool.end();
   });
@@ -32,12 +33,15 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     "../../db/migrations/002-dollar-seasons.sql",
     "../../db/migrations/003-monitor-reasoning.sql",
     "../../db/migrations/005-estimated-settlement.sql",
+    "../../db/migrations/006-system-prompt.sql",
+    "../../db/migrations/007-inference-game-index.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
   const { executeCommand, destroyEnvironment } = await import("../../lib/sprites");
   const { runGame } = await import("../../lib/runner");
-  const { AGENT_MODEL, MODELS, MONITOR_MODEL, hasSecret } = await import("../../lib/policy");
+  const { AGENT_MODEL, AGENT_PROMPT, MODELS, MONITOR_MODEL, hasSecret } =
+    await import("../../lib/policy");
 
   const environments = new Map<string, { policy: boolean; secret?: string }>();
   const trace: string[] = [];
@@ -49,6 +53,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
   let commandFailure: Error | undefined;
   let commandGate: ((signal: AbortSignal) => Promise<void>) | undefined;
   let monitor = "allow";
+  // Dollars per call, as OpenRouter reports usage.cost; settlement converts to microdollars.
+  let agentCost = 0;
+  let monitorCost = 0;
   let proposed = ["printf harmless"];
   let proposedTool = "sprite_exec";
   let proposedArguments = (command: string) => JSON.stringify({ command });
@@ -256,7 +263,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
         choices: [{ message, finish_reason: "stop" }],
         ...(planned?.status === 299
           ? {}
-          : { usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 } }),
+          : {
+              usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                cost: payload.response_format ? monitorCost : agentCost,
+              },
+            }),
       });
     }),
   );
@@ -274,6 +288,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
     commandGate = undefined;
     commandResult = { stdout: "fixture-output", stderr: "", exitCode: 0 };
     monitor = "allow";
+    agentCost = 0;
+    monitorCost = 0;
     proposed = ["printf harmless"];
     proposedTool = "sprite_exec";
     proposedArguments = (command) => JSON.stringify({ command });
@@ -300,6 +316,36 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
   };
 
   await (await import("./history")).runHistoryTests(t, pool);
+
+  process.env.BETTER_AUTH_SECRET = "integration-only-secret-at-least-32-bytes";
+  process.env.BETTER_AUTH_URL = "http://localhost";
+  process.env.TRIPWIRE_COOKIE_PREFIX = "ctf-integration";
+  const { auth } = await import("../../lib/auth");
+  await (
+    await (await import("better-auth/db/migration")).getMigrations(auth.options)
+  ).runMigrations();
+  // Each guest gets its own forwarded IP so tests never share the sign-in rate-limit bucket.
+  const origin = "http://localhost";
+  let guests = 0;
+  const guest = async () => {
+    const session = await auth.handler(
+      new Request(`${origin}/api/auth/sign-in/anonymous`, {
+        method: "POST",
+        headers: {
+          origin,
+          "Content-Type": "application/json",
+          "x-forwarded-for": `203.0.113.${100 + guests++}`,
+        },
+        body: "{}",
+      }),
+    );
+    assert.equal(session.status, 200);
+    const cookie = session.headers
+      .getSetCookie()
+      .map((value) => value.split(";")[0])
+      .join("; ");
+    return { cookie, id: (await session.json()).user.id as string };
+  };
 
   await t.test(
     "fork continuation repairs prior tool calls without replay and supports fork-of-fork",
@@ -365,12 +411,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
   );
 
   await t.test("database rate limiting reports a Retry-After within its window", async () => {
-    process.env.BETTER_AUTH_SECRET = "integration-only-secret-at-least-32-bytes";
-    process.env.BETTER_AUTH_URL = "http://localhost";
-    process.env.TRIPWIRE_COOKIE_PREFIX = "ctf-integration";
-    const { auth } = await import("../../lib/auth");
-    const { getMigrations } = await import("better-auth/db/migration");
-    await (await getMigrations(auth.options)).runMigrations();
     // Same order as scripts/setup.ts: this migration adjusts a Better Auth table.
     await pool.query(
       await readFile(
@@ -395,27 +435,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
   await t.test(
     "actual authenticated fork route snapshots a validated transcript prefix",
     async () => {
-      process.env.BETTER_AUTH_SECRET = "integration-only-secret-at-least-32-bytes";
-      process.env.BETTER_AUTH_URL = "http://localhost";
-      process.env.TRIPWIRE_COOKIE_PREFIX = "ctf-integration";
-      const { auth } = await import("../../lib/auth");
-      const { getMigrations } = await import("better-auth/db/migration");
-      await (await getMigrations(auth.options)).runMigrations();
-      const origin = "http://localhost";
-      const session = await auth.handler(
-        new Request(`${origin}/api/auth/sign-in/anonymous`, {
-          method: "POST",
-          headers: { origin, "Content-Type": "application/json" },
-          body: "{}",
-        }),
-      );
-      assert.equal(session.status, 200);
-      const cookie = session.headers
-        .getSetCookie()
-        .map((value) => value.split(";")[0])
-        .join("; ");
-      const guest = await session.json();
-      const source = await startGame(guest.user.id, false);
+      const who = await guest();
+      const cookie = who.cookie;
+      const source = await startGame(who.id, false);
       const baseMessages = [
         { role: "system", content: "", sections: { preamble: "system" }, timestamp: 1 },
         { role: "user", content: "first", timestamp: 2 },
@@ -576,17 +598,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
         { params: Promise.resolve({ id: source.id }) },
       );
       assert.equal(unauthorized.status, 401);
-      const foreignSession = await auth.handler(
-        new Request(`${origin}/api/auth/sign-in/anonymous`, {
-          method: "POST",
-          headers: { origin, "Content-Type": "application/json" },
-          body: "{}",
-        }),
-      );
-      const foreignCookie = foreignSession.headers
-        .getSetCookie()
-        .map((value) => value.split(";")[0])
-        .join("; ");
+      const foreignGuest = await guest();
+      const foreignCookie = foreignGuest.cookie;
       const foreign = await POST(
         new Request(`${origin}/api/games/${source.id}/fork`, {
           method: "POST",
@@ -609,11 +622,298 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 60_000 }
         { params: Promise.resolve({ id: source.id }) },
       );
       assert.equal(mismatch.status, 409);
-      await pool.query('DELETE FROM "user" WHERE id=ANY($1::text[])', [
-        [guest.user.id, (await foreignSession.json()).user.id],
-      ]);
+      await pool.query('DELETE FROM "user" WHERE id=ANY($1::text[])', [[who.id, foreignGuest.id]]);
     },
   );
+
+  const MARKER = "HiddenMarker7Q2",
+    MARKER2 = "OtherMarker9Z4";
+  const agentSystems = (from = 0) =>
+    requests
+      .slice(from)
+      .filter((request) => request.role === "agent")
+      .map(
+        (request) =>
+          (request.payload as { messages: { role: string; content: unknown }[] }).messages.find(
+            (message) => message.role === "system",
+          )?.content,
+      );
+  const preamble = (messages: Message[]) =>
+    getCurrentSystemMessage(messages as Parameters<typeof getCurrentSystemMessage>[0])?.sections
+      ?.preamble;
+  // The real prompt route; the SSE body must be consumed for the run to finish.
+  const instructFrames = async (
+    who: { cookie: string },
+    gameId: string,
+    extra: Record<string, unknown> = {},
+  ) => {
+    const { POST } = await import("../../app/api/games/[id]/prompt/route");
+    const response = await POST(
+      new Request(`${origin}/api/games/${gameId}/prompt`, {
+        method: "POST",
+        headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "Controlled integration fixture", ...extra }),
+      }),
+      { params: Promise.resolve({ id: gameId }) },
+    );
+    const text = response.headers.get("content-type")?.includes("text/event-stream")
+      ? await response.text()
+      : "";
+    const frames = text
+      .split("\n\n")
+      .filter((frame) => frame.trim())
+      .map((frame) => ({
+        type: frame.match(/^event: (.*)$/m)![1],
+        data: JSON.parse(frame.match(/^data: (.*)$/m)![1]),
+      }));
+    return { response, frames };
+  };
+  const instruct = async (
+    who: { cookie: string },
+    gameId: string,
+    extra: Record<string, unknown> = {},
+  ) => (await instructFrames(who, gameId, extra)).response;
+
+  await t.test(
+    "system prompt is saved with an instruction, persists, changes and clears; monitor never sees it",
+    async () => {
+      const who = await guest();
+      const game = await startGame(who.id, false);
+      assert.equal((await row(game.id)).system_prompt, "");
+      assert.equal((await instruct(who, game.id, { systemPrompt: MARKER })).status, 200);
+      assert.equal((await row(game.id)).system_prompt, MARKER);
+      // A later instruction that omits systemPrompt keeps it.
+      agentCalls = 0;
+      assert.equal((await instruct(who, game.id)).status, 200);
+      let systems = agentSystems();
+      assert.equal(systems.length, 4);
+      assert.deepEqual(systems, Array(4).fill(MARKER));
+      let stored = await row(game.id);
+      assert.equal(stored.system_prompt, MARKER);
+      assert.equal(preamble(stored.messages), MARKER);
+      // Changing it replaces the prompt; the old one is gone from every later request.
+      const changed = requests.length;
+      agentCalls = 0;
+      assert.equal((await instruct(who, game.id, { systemPrompt: MARKER2 })).status, 200);
+      systems = agentSystems(changed);
+      assert.equal(systems.length, 2);
+      assert.deepEqual(systems, Array(2).fill(MARKER2));
+      assert.ok(!JSON.stringify(requests.slice(changed)).includes(MARKER));
+      stored = await row(game.id);
+      assert.equal(preamble(stored.messages), MARKER2);
+      // Clearing reverts to the built-in prompt.
+      const cleared = requests.length;
+      agentCalls = 0;
+      assert.equal((await instruct(who, game.id, { systemPrompt: "" })).status, 200);
+      systems = agentSystems(cleared);
+      assert.equal(systems.length, 2);
+      assert.deepEqual(systems, Array(2).fill(AGENT_PROMPT));
+      assert.ok(!JSON.stringify(requests.slice(cleared)).includes(MARKER2));
+      stored = await row(game.id);
+      assert.equal(stored.system_prompt, "");
+      assert.equal(preamble(stored.messages), AGENT_PROMPT);
+      // Monitor requests across every phase.
+      const monitored = requests.filter((request) => request.role === "monitor");
+      assert.equal(monitored.length, 4);
+      for (const { payload } of monitored) {
+        const text = JSON.stringify(payload);
+        assert.ok(!text.includes(MARKER) && !text.includes(MARKER2));
+        const input = JSON.parse(
+          (payload as { messages: { role: string; content: string }[] }).messages.find(
+            (message) => message.role === "user",
+          )!.content,
+        );
+        assert.ok(!("agentSystemPrompt" in input));
+        assert.ok(!input.transcript.some((message: { role: string }) => message.role === "system"));
+        assert.ok(
+          input.transcript.some(
+            (message: { role: string; content: unknown }) =>
+              message.role === "user" &&
+              JSON.stringify(message.content).includes("Controlled integration fixture"),
+          ),
+        );
+        assert.equal(input.proposedToolCall.name, "sprite_exec");
+        assert.deepEqual(input.proposedToolCall.arguments, { command: "printf harmless" });
+      }
+    },
+  );
+
+  await t.test("without a system prompt the agent keeps the built-in prompt", async () => {
+    const game = await startGame("no-prompt-owner", false);
+    assert.equal((await row(game.id)).system_prompt, "");
+    await play(game.id, "no-prompt-owner");
+    agentCalls = 0;
+    const finished = await play(game.id, "no-prompt-owner");
+    const systems = agentSystems();
+    assert.equal(systems.length, 4);
+    assert.deepEqual(systems, Array(4).fill(AGENT_PROMPT));
+    assert.equal(preamble(finished.messages), AGENT_PROMPT);
+    assert.ok(
+      !requests.some((request) =>
+        JSON.stringify(request.payload).includes("expert coding assistant"),
+      ),
+    );
+  });
+
+  await t.test(
+    "prompt route rejects an invalid system prompt before claiming or inferring; start route ignores it",
+    async () => {
+      const who = await guest();
+      const game = await startGame(who.id, false);
+      assert.equal((await instruct(who, game.id, { systemPrompt: MARKER })).status, 200);
+      const before = await row(game.id);
+      const inference = async () =>
+        Number((await pool.query("SELECT count(*) AS n FROM ctf.inference")).rows[0].n);
+      const sent = requests.length,
+        billed = await inference();
+      for (const systemPrompt of [123, ["x"], { a: 1 }, true, null, "x".repeat(8193)]) {
+        const response = await instruct(who, game.id, { systemPrompt });
+        assert.equal(response.status, 400);
+        assert.match((await response.json()).error, /system prompt/i);
+        const after = await row(game.id);
+        assert.equal(after.lease, null);
+        assert.equal(after.lease_until, null);
+        assert.equal(after.system_prompt, MARKER);
+        assert.deepEqual(after.updated_at, before.updated_at);
+        assert.equal(after.agent_model, before.agent_model);
+        assert.deepEqual(after.messages, before.messages);
+        assert.equal(requests.length, sent);
+        assert.equal(await inference(), billed);
+      }
+      // Whitespace-only is valid and clears it.
+      agentCalls = 0;
+      assert.equal((await instruct(who, game.id, { systemPrompt: " \n " })).status, 200);
+      assert.equal((await row(game.id)).system_prompt, "");
+      // The start route has no system-prompt input.
+      const { POST } = await import("../../app/api/games/route");
+      const started = await POST(
+        new Request(`${origin}/api/games`, {
+          method: "POST",
+          headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+          body: JSON.stringify({ systemPrompt: MARKER }),
+        }),
+      );
+      assert.equal(started.status, 200);
+      assert.equal((await row((await started.json()).id)).system_prompt, "");
+    },
+  );
+
+  await t.test("another player cannot change or run with a run's system prompt", async () => {
+    const owner = await guest(),
+      intruder = await guest();
+    const game = await startGame(owner.id, false);
+    assert.equal((await instruct(owner, game.id, { systemPrompt: MARKER })).status, 200);
+    const before = await row(game.id);
+    const sent = requests.length;
+    const response = await instruct(intruder, game.id, { systemPrompt: "Intruder prompt" });
+    assert.equal(response.status, 404);
+    const after = await row(game.id);
+    assert.equal(after.system_prompt, MARKER);
+    assert.equal(after.lease, null);
+    assert.deepEqual(after.updated_at, before.updated_at);
+    assert.deepEqual(after.messages, before.messages);
+    assert.equal(requests.length, sent);
+  });
+
+  const billingKeys = [
+    "budgetMicrodollars",
+    "spentMicrodollars",
+    "reservedMicrodollars",
+    "agentSpendMicrodollars",
+    "monitorSpendMicrodollars",
+  ] as const;
+  const pick = (value: Record<string, unknown>) =>
+    Object.fromEntries(billingKeys.map((key) => [key, value[key]]));
+
+  await t.test(
+    "billing frames follow every recorded event with exact cumulative totals",
+    async () => {
+      // 40 and 13 microdollars per call, so any lag or mix-up is visible.
+      agentCost = 0.00004;
+      monitorCost = 0.000013;
+      const who = await guest();
+      const game = await startGame(who.id, false);
+      const { response, frames } = await instructFrames(who, game.id);
+      assert.equal(response.status, 200);
+      const events = frames.filter((frame) => frame.type === "event");
+      assert.deepEqual(
+        events.map((frame) => frame.data.kind),
+        ["user", "agent", "monitor", "tool", "agent"],
+      );
+      // Cumulative agent and monitor microdollars after each recorded event.
+      const totals = [
+        [0, 0],
+        [40, 0],
+        [40, 13],
+        [40, 13],
+        [80, 13],
+      ];
+      frames.forEach((frame, index) => {
+        if (frame.type !== "event") return;
+        const next = frames[index + 1];
+        assert.equal(next?.type, "billing", `no billing frame after ${frame.data.kind} event`);
+        const [agent, monitored] = totals[events.indexOf(frame)];
+        assert.equal(next.data.agentSpendMicrodollars, agent, `agent after ${frame.data.kind}`);
+        assert.equal(
+          next.data.monitorSpendMicrodollars,
+          monitored,
+          `monitor after ${frame.data.kind}`,
+        );
+        assert.equal(next.data.spentMicrodollars, agent + monitored);
+      });
+      const billing = frames.filter((frame) => frame.type === "billing");
+      assert.equal(billing.length, events.length);
+      const done = frames.find((frame) => frame.type === "done")!;
+      assert.deepEqual(pick(billing.at(-1)!.data), pick(done.data));
+      assert.equal(done.data.spentMicrodollars, 93);
+      assert.equal(Number((await row(game.id)).spent_microdollars), 93);
+    },
+  );
+
+  await t.test("a monitor error event's billing frame includes that monitor call", async () => {
+    agentCost = 0.00004;
+    monitorCost = 0.000013;
+    monitor = "invalid";
+    const who = await guest();
+    const game = await startGame(who.id, false);
+    const { frames } = await instructFrames(who, game.id);
+    const index = frames.findIndex(
+      (frame) => frame.type === "event" && frame.data.decision === "error",
+    );
+    assert.ok(index > 0);
+    const after = frames[index + 1];
+    assert.equal(after.type, "billing");
+    assert.equal(after.data.agentSpendMicrodollars, 40);
+    assert.equal(after.data.monitorSpendMicrodollars, 13);
+    assert.equal(after.data.spentMicrodollars, 53);
+    const done = frames.find((frame) => frame.type === "done")!;
+    assert.deepEqual(
+      pick(frames.filter((frame) => frame.type === "billing").at(-1)!.data),
+      pick(done.data),
+    );
+  });
+
+  await t.test("fork inherits the current system prompt and the child agent uses it", async () => {
+    const who = await guest();
+    const parent = await startGame(who.id, false);
+    assert.equal((await instruct(who, parent.id, { systemPrompt: MARKER })).status, 200);
+    const agentEvent = (
+      await pool.query("SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id", [parent.id])
+    ).rows.find((event) => event.data.kind === "agent");
+    assert.ok(agentEvent);
+    const child = await startGame(who.id, false, undefined, {
+      sourceId: parent.id,
+      eventId: Number(agentEvent.id),
+    });
+    assert.equal((await row(child.id)).system_prompt, MARKER);
+    assert.equal(child.systemPrompt, MARKER);
+    const from = requests.length;
+    agentCalls = 0;
+    assert.equal((await instruct(who, child.id)).status, 200);
+    const systems = agentSystems(from);
+    assert.ok(systems.length > 0);
+    assert.deepEqual(systems, Array(systems.length).fill(MARKER));
+  });
 
   await t.test(
     "failed fork provisioning ends the replaced source and cleans the partial child",

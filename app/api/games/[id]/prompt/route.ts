@@ -15,7 +15,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (data.agentModel !== undefined && typeof data.agentModel !== "string")
       throw new GameError("Choose an agent model.");
     if (typeof data.agentModel === "string") await getModel(data.agentModel, "agent");
-    const game = await claimGame((await params).id, user.id, data.agentModel as string | undefined);
+    const game = await claimGame(
+      (await params).id,
+      user.id,
+      data.agentModel as string | undefined,
+      data.systemPrompt,
+    );
     const cancel = new AbortController();
     const signal = AbortSignal.any([cancel.signal, request.signal, AbortSignal.timeout(230000)]);
     const encoder = new TextEncoder();

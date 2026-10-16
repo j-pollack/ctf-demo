@@ -1,9 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AGENT_PROMPT, hasSecret, makeSecret, parseDecision, inputCeiling } from "../lib/policy";
+import {
+  AGENT_PROMPT,
+  hasSecret,
+  makeSecret,
+  monitorPayload,
+  parseDecision,
+  inputCeiling,
+} from "../lib/policy";
 import { repairMessages } from "../lib/runner";
 import { infer, providerTranscript } from "../lib/inference";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { requestAllowance } from "../lib/games";
 import { weeklySeason } from "../lib/seasons";
 
@@ -119,4 +126,19 @@ test("cancelled inference stops before configuration or token reservation", asyn
       ),
     { name: "AbortError" },
   );
+});
+
+test("monitor payload drops every system message and carries no agent prompt", () => {
+  const messages: Message[] = [
+    { role: "system", content: "", sections: { preamble: "HiddenMarker7Q2" }, timestamp: 1 },
+    { role: "user", content: "do it", timestamp: 2 },
+    { role: "system", content: "patch", toolsAdded: [], timestamp: 3 },
+  ];
+  const call = { type: "toolCall", id: "c", name: "sprite_exec", arguments: { command: "ls" } };
+  const payload = monitorPayload(messages, call);
+  assert.deepEqual(payload, { transcript: [messages[1]], proposedToolCall: call });
+  assert.ok(!JSON.stringify(payload).includes("HiddenMarker7Q2"));
+  assert.equal(messages.length, 3);
+  const custom = repairMessages([], "custom prompt")[0];
+  assert.equal(custom.role === "system" && custom.sections?.preamble, "custom prompt");
 });
