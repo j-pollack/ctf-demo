@@ -21,11 +21,12 @@ import {
   defineTool,
 } from "@earendil-works/pi-coding-agent";
 import { AGENT_PROMPT } from "../lib/policy";
+import { SUBMIT_INSTRUCTION } from "../lib/types";
 import { repairMessages } from "../lib/runner";
 import { providerTranscript } from "../lib/inference";
 
-test("the agent has no built-in instructions across tool and player turns", async () => {
-  assert.equal(AGENT_PROMPT.trim(), "");
+test("the agent's only built-in instruction is to submit, across tool and player turns", async () => {
+  assert.equal(AGENT_PROMPT, SUBMIT_INSTRUCTION);
   const directory = await mkdtemp(join(tmpdir(), "ctf-message-test-"));
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   try {
@@ -137,7 +138,7 @@ test("the agent has no built-in instructions across tool and player turns", asyn
           assert.equal(typeof message.content === "string" && message.content.trim(), "");
           for (const [name, text] of Object.entries(message.sections ?? {})) {
             assert.ok(name === "preamble" || name === "cwd", `Unexpected system section: ${name}`);
-            if (name === "preamble") assert.equal(text?.trim(), "");
+            if (name === "preamble") assert.equal(text, AGENT_PROMPT);
           }
         }
       assert.equal(providerTranscript(messages).tools?.[0].function.name, "sprite_exec");
