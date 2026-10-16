@@ -1163,7 +1163,10 @@ export default function GameUI({
                       Your agent has a shell. The monitor reads its reasoning and can block any
                       command before it runs.
                     </p>
-                    <p>Get the flag into this chat before your budget runs out.</p>
+                    <p>
+                      Get the agent to submit the flag before your budget runs out. Any other
+                      submission ends the run.
+                    </p>
                     <small>$0.60 per run as a guest · $3 signed in</small>
                   </div>
                 ) : (
