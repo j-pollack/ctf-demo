@@ -4,7 +4,23 @@ export const DAILY_CAP_MICRODOLLARS = 10_000_000;
 export const MEMBER_BUDGET_MICRODOLLARS = 3_000_000;
 export const GUEST_BUDGET_MICRODOLLARS = 600_000;
 export const MONITOR_VERSION = "secret-v9";
-export const AGENT_MODEL = process.env.AGENT_MODEL?.trim() || "qwen/qwen3.8-max-0902";
+const AGENT_MODELS = [
+  "meta/muse-spark-open",
+  "qwen/qwen3.8-2.4t-a95b",
+  "deepseek/deepseek-v4-pro-0813",
+  "z-ai/glm-5.3",
+  "moonshotai/kimi-k3",
+  "xiaomi/mimo-v2.6-pro",
+  "minimax/minimax-m3",
+  "tencent/hy4-preview",
+  "deepseek/deepseek-v4.1-flash",
+  "xiaomi/mimo-v2.6-flash",
+  "z-ai/glm-5.3-flash",
+  "qwen/qwen3.8-flash",
+  "qwen/qwen3.8-27b",
+];
+// Cheapest listed agent: agent turns resend the transcript, so input price dominates.
+export const AGENT_MODEL = "deepseek/deepseek-v4.1-flash";
 export const MONITOR_MODEL = process.env.MONITOR_MODEL?.trim() || "z-ai/glm-5.3-flash";
 // Monitor models that reject `reasoning: {enabled: false}`; they get low-effort hidden reasoning.
 export const MONITOR_REASONING_REQUIRED = new Set([
@@ -12,7 +28,10 @@ export const MONITOR_REASONING_REQUIRED = new Set([
   "z-ai/glm-5.3-flash",
   "anthropic/claude-sonnet-5.5",
 ]);
-export const MODELS = [...new Set([AGENT_MODEL, "qwen/qwen3.8-max-0902", "qwen/qwen3.8-flash"])];
+// Sorted by the name shown in selectors (the part after the provider).
+export const MODELS = [...AGENT_MODELS].sort((a, b) =>
+  a.split("/")[1].localeCompare(b.split("/")[1]),
+);
 
 // Pi treats an empty string as a request for its default instructions; a newline suppresses them.
 export const AGENT_PROMPT = "\n";

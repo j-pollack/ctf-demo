@@ -1,4 +1,7 @@
 import { db } from "./db";
+import { getModel } from "./inference";
+import { GameError, MODELS } from "./policy";
+import { currentSeason } from "./seasons";
 
 // Admin is a database flag on the user; guests never qualify.
 export function isAdmin(
@@ -67,4 +70,12 @@ export async function adminStats() {
     seasons: seasons.rows,
     spenders: spenders.rows,
   };
+}
+
+// Swaps this week's monitor in place: new runs use it, started runs keep the one they copied.
+export async function setSeasonMonitor(model: string) {
+  if (!MODELS.includes(model)) throw new GameError("Unsupported monitor model.");
+  await getModel(model, "monitor"); // OpenRouter must offer it with JSON responses.
+  const season = await currentSeason();
+  await db.query("UPDATE ctf.seasons SET monitor_model=$1 WHERE id=$2", [model, season.id]);
 }
