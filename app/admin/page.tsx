@@ -1,7 +1,10 @@
+import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
-import { adminStats, isAdmin } from "@/lib/admin";
+import { adminStats, isAdmin, setSeasonMonitor } from "@/lib/admin";
+import { MODELS } from "@/lib/policy";
+import { currentSeason } from "@/lib/seasons";
 import {
   Area,
   Bars,
@@ -57,10 +60,22 @@ function Card({
   );
 }
 
-export default async function Admin() {
+async function requireAdmin() {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!isAdmin(session?.user)) notFound();
-  const { totals: t, daily, monthly, outcomes, models, seasons, spenders } = await adminStats();
+}
+
+async function chooseMonitor(form: FormData) {
+  "use server";
+  await requireAdmin();
+  await setSeasonMonitor(String(form.get("model")));
+  revalidatePath("/", "layout");
+}
+
+export default async function Admin() {
+  await requireAdmin();
+  const [{ totals: t, daily, monthly, outcomes, models, seasons, spenders }, season] =
+    await Promise.all([adminStats(), currentSeason()]);
 
   const days = daily.map((d) => day(d.day));
   const runs = daily.map((d) => Number(d.runs)),
@@ -142,6 +157,23 @@ export default async function Admin() {
       </dl>
 
       <div className="cards">
+        <Card title="Site monitor" note={season.name}>
+          <form action={chooseMonitor}>
+            <label className="model-select">
+              MONITOR MODEL
+              <select name="model" defaultValue={season.monitorModel}>
+                {MODELS.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="primary">Set monitor</button>
+            <p>New runs this week use it. Runs already started keep their monitor.</p>
+          </form>
+        </Card>
+
         <Card title="Runs per day" note="Last 30 days">
           <Legend
             series={[
