@@ -88,7 +88,7 @@ test("binary cases retain category totals", () => {
     assert.equal(JSON.stringify(input).includes('"category"'), false);
   }
   assert.equal(
-    monitorInput(cases.find((item) => item.id === "after-block")!).transcript[3].role,
+    monitorInput(cases.find((item) => item.id === "after-block")!).transcript[2].role,
     "toolResult",
   );
 });
@@ -121,7 +121,7 @@ test("audit labels allow ordinary metadata and script creation without changing 
     createHash("sha256")
       .update(JSON.stringify(cases.map((item) => ({ id: item.id, input: monitorInput(item) }))))
       .digest("hex"),
-    "7b5e3a9ee6d5c248c0f2c3f7d18e8a181d1beec827c700f331b38b91424db964",
+    "7f4cfc1fdec729db53ea0c3c52303026b405586203e8907ee951c536bec9fced",
   );
 });
 

@@ -23,6 +23,7 @@ export type GameRow = {
   secret_hash: string;
   agent_model: string;
   monitor_model: string;
+  system_prompt: string;
   status: GameStatus;
   token_budget: number;
   tokens_used: number;
@@ -55,13 +56,14 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,monitor_model,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,season_id,lease_until";
+  "id,status,agent_model,monitor_model,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,season_id,lease_until";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
   | "status"
   | "agent_model"
   | "monitor_model"
+  | "system_prompt"
   | "token_budget"
   | "tokens_used"
   | "turns"
@@ -90,6 +92,25 @@ export async function getPublicGameRow(id: string, ownerId: string) {
   if (!rows[0]) throw new GameError("Run not found.", 404);
   return rows[0];
 }
+// One read of a run's money, shared by publicGame and the runner's live `billing` frames.
+export async function gameBilling(gameId: string) {
+  const { rows } = await db.query(
+    `SELECT g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
+      coalesce(sum(i.cost) FILTER (WHERE i.role='agent'),0) AS agent,
+      coalesce(sum(i.cost) FILTER (WHERE i.role='monitor'),0) AS monitor
+    FROM ctf.games g LEFT JOIN ctf.inference i ON i.game_id=g.id AND i.settled_at IS NOT NULL
+    WHERE g.id=$1 GROUP BY g.id`,
+    [gameId],
+  );
+  const row = rows[0];
+  return {
+    budgetMicrodollars: Number(row.budget_microdollars),
+    spentMicrodollars: Number(row.spent_microdollars),
+    reservedMicrodollars: Number(row.reserved_microdollars),
+    agentSpendMicrodollars: Number(row.agent),
+    monitorSpendMicrodollars: Number(row.monitor),
+  };
+}
 // afterEventId > 0 returns only newer events, so pollers re-download nothing they already hold.
 // Safe because each run has one writer (its lease) and the runner records events sequentially.
 export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise<PublicGame> {
@@ -102,26 +123,18 @@ export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise
       game.season_id,
     ])
   ).rows[0];
-  const spend = (
-    await db.query(
-      "SELECT role,coalesce(sum(cost),0) AS total FROM ctf.inference WHERE game_id=$1 AND settled_at IS NOT NULL GROUP BY role",
-      [game.id],
-    )
-  ).rows;
+  const billing = await gameBilling(game.id);
   return {
     id: game.id,
     status: game.status,
     agentModel: game.agent_model,
     monitorModel: game.monitor_model,
+    systemPrompt: game.system_prompt,
     tokenBudget: game.token_budget,
     tokensUsed: game.tokens_used,
     turns: game.turns,
     blocks: game.blocks,
-    budgetMicrodollars: Number(game.budget_microdollars),
-    spentMicrodollars: Number(game.spent_microdollars),
-    reservedMicrodollars: Number(game.reserved_microdollars),
-    agentSpendMicrodollars: Number(spend.find((row) => row.role === "agent")?.total ?? 0),
-    monitorSpendMicrodollars: Number(spend.find((row) => row.role === "monitor")?.total ?? 0),
+    ...billing,
     season: {
       id: season.id,
       name: season.name,
@@ -188,6 +201,7 @@ export async function startGame(
     throw new GameError("Run not found.", 404);
   if (!MODELS.some((model) => model === agentModel))
     throw new GameError("Unsupported agent model.");
+  let systemPrompt = "";
   const season = await currentSeason();
   await cleanup();
   const id = randomUUID();
@@ -258,6 +272,7 @@ export async function startGame(
       if (selected.kind !== "agent" || !MODELS.includes(selected.model ?? ""))
         throw new GameError("The selected response cannot be safely forked.", 409);
       agentModel = selected.model!;
+      systemPrompt = source.system_prompt;
       await client.query("UPDATE ctf.games SET lease=NULL,lease_until=NULL WHERE id=$1", [
         source.id,
       ]);
@@ -267,8 +282,8 @@ export async function startGame(
       [ownerId],
     );
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id,budget_microdollars)
-      SELECT $1,$2,$3,$4,$5,monitor_model,monitor_version,$6,id,$7 FROM ctf.seasons WHERE id=$8 AND ends_at>now() RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id,budget_microdollars,system_prompt)
+      SELECT $1,$2,$3,$4,$5,monitor_model,monitor_version,$6,id,$7,$9 FROM ctf.seasons WHERE id=$8 AND ends_at>now() RETURNING *`,
       [
         id,
         ownerId,
@@ -278,6 +293,7 @@ export async function startGame(
         signedIn ? 500000 : 100000,
         signedIn ? MEMBER_BUDGET_MICRODOLLARS : GUEST_BUDGET_MICRODOLLARS,
         season.id,
+        systemPrompt,
       ],
     );
     if (!rows[0]) throw new GameError("The season just ended. Start a new run.", 409);
@@ -313,15 +329,31 @@ export async function startGame(
     throw error;
   }
 }
-export async function claimGame(id: string, ownerId: string, agentModel?: string) {
+export async function claimGame(
+  id: string,
+  ownerId: string,
+  agentModel?: string,
+  systemPrompt?: unknown,
+) {
   if (agentModel !== undefined && !MODELS.includes(agentModel))
     throw new GameError("Unsupported agent model.");
+  if (
+    systemPrompt !== undefined &&
+    (typeof systemPrompt !== "string" || systemPrompt.length > 8192)
+  )
+    throw new GameError("Enter a system prompt of up to 8,192 characters.");
   await getGame(id, ownerId);
   const lease = randomUUID();
   const { rows } = await db.query<GameRow>(
-    `UPDATE ctf.games g SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),agent_model=coalesce($4,agent_model)
+    `UPDATE ctf.games g SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),agent_model=coalesce($4,agent_model),system_prompt=coalesce($5,system_prompt)
     FROM ctf.seasons s WHERE g.season_id=s.id AND g.id=$1 AND owner_id=$2 AND status='active' AND (lease_until IS NULL OR lease_until<now()) AND (s.ends_at IS NULL OR s.ends_at>now()) RETURNING g.*`,
-    [id, ownerId, lease, agentModel ?? null],
+    [
+      id,
+      ownerId,
+      lease,
+      agentModel ?? null,
+      systemPrompt === undefined ? null : systemPrompt.trim() ? systemPrompt : "",
+    ],
   );
   if (!rows[0]) throw new GameError("This run has ended or is already responding.", 409);
   return rows[0];

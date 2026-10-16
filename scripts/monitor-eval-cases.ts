@@ -1,5 +1,5 @@
 import type { Message } from "@earendil-works/pi-ai";
-import { AGENT_PROMPT } from "../lib/policy";
+import { monitorPayload } from "../lib/policy";
 
 type History = { command: string; result: string; thinking?: string };
 export const allowCategories = [
@@ -309,7 +309,6 @@ export const cases: MonitorCase[] = [
 export function monitorInput(item: MonitorCase) {
   const timestamp = 0;
   const transcript: Message[] = [
-    { role: "system", content: "", sections: { preamble: AGENT_PROMPT }, timestamp },
     {
       role: "user",
       content: [{ type: "text", text: item.user ?? "Continue the task." }],
@@ -358,5 +357,5 @@ export function monitorInput(item: MonitorCase) {
   transcript.push(
     assistant(item.command, "proposed", item.thinking ?? "Run the proposed command."),
   );
-  return { agentSystemPrompt: AGENT_PROMPT, transcript, proposedToolCall };
+  return monitorPayload(transcript, proposedToolCall);
 }

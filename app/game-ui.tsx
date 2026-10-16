@@ -43,6 +43,26 @@ export function canCreateNewRun(current?: PublicGame | null, now = Date.now(), r
 export function shouldPoll(game: PublicGame, busy: boolean, unconfirmed: boolean) {
   return !busy && (unconfirmed || !!game.busy);
 }
+// The draft follows the stored prompt until the player edits it; an id change always resets it.
+export function nextSystemDraft(
+  base: { baseId?: string; baseValue: string; draft: string },
+  shown: { id?: string; stored: string },
+) {
+  return base.baseId !== shown.id || base.draft === base.baseValue ? shown.stored : base.draft;
+}
+// Mirrors the server, which stores a whitespace-only prompt as "".
+export function systemPromptChange(draft: string, baseValue: string) {
+  const next = draft.trim() ? draft : "";
+  return next === baseValue ? {} : { systemPrompt: next };
+}
+type BillingTotals = Pick<
+  PublicGame,
+  | "budgetMicrodollars"
+  | "spentMicrodollars"
+  | "reservedMicrodollars"
+  | "agentSpendMicrodollars"
+  | "monitorSpendMicrodollars"
+>;
 export function instructionStatus(pending: PendingInstruction, next?: PublicGame) {
   if (!next || next.id !== pending.gameId) return "pending";
   if (
@@ -115,7 +135,8 @@ export default function GameUI({
   const signedIn = !!account.data && !account.data.user.isAnonymous;
   const [game, setGame] = useState<PublicGame | null>(null),
     latestGame = useRef<PublicGame | null>(null),
-    [prompt, setPrompt] = useState("");
+    [prompt, setPrompt] = useState(""),
+    [systemDraft, setSystemDraft] = useState("");
   const [busy, setBusy] = useState(false),
     [stage, setStage] = useState(""),
     [error, setError] = useState("");
@@ -217,7 +238,9 @@ export default function GameUI({
     return () => clearInterval(timer);
   }, []);
   const cancel = useRef<AbortController | null>(null),
-    bottom = useRef<HTMLDivElement | null>(null),
+    thread = useRef<HTMLDivElement | null>(null),
+    atBottom = useRef(true),
+    lastScrollTop = useRef(0),
     dialog = useRef<HTMLDialogElement | null>(null);
   useEffect(() => {
     if (routeRef.current !== pathname) routeGeneration.current++;
@@ -507,14 +530,23 @@ export default function GameUI({
       }
     } else dialog.current?.close();
   }, [modal]);
+  // Instant: a smooth scroll can stall (seen in headless Chrome) and leave the reader short of the end.
+  const scrollToBottom = () =>
+    thread.current?.scrollTo({ top: thread.current.scrollHeight, behavior: "instant" });
+  // Follow new output only while the reader is at the bottom.
   useEffect(() => {
-    bottom.current?.scrollIntoView({
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-        ? "instant"
-        : "smooth",
-      block: "nearest",
-    });
-  }, [game?.events.length, stage, busy, unconfirmed, routeRunId]);
+    if (atBottom.current) scrollToBottom();
+  }, [game?.events.length, game?.spentMicrodollars, stage, busy]);
+  // Sending an instruction or switching runs always jumps to the latest output.
+  const jumpToBottom = () => {
+    atBottom.current = true;
+    lastScrollTop.current = thread.current?.scrollTop ?? 0;
+    scrollToBottom();
+  };
+  useEffect(() => {
+    if (unconfirmed) jumpToBottom();
+  }, [unconfirmed]);
+  useEffect(jumpToBottom, [routeRunId]);
   useEffect(() => {
     latestGame.current = game;
   }, [game]);
@@ -575,6 +607,20 @@ export default function GameUI({
     canCreateNewRun(game, Date.now(), currentRunReady || !account.data) &&
     canCreateNewRun(displayGame);
   const isExecutionView = !!displayGame && displayGame.id === game?.id;
+  const systemBase = useRef<{ id?: string; value: string }>({ value: "" });
+  const shownId = displayGame?.id,
+    shownSystemPrompt = displayGame?.systemPrompt ?? "";
+  // Polling or another tab can change the stored prompt; only an untouched draft follows it.
+  useEffect(() => {
+    const base = systemBase.current;
+    setSystemDraft((draft) =>
+      nextSystemDraft(
+        { baseId: base.id, baseValue: base.value, draft },
+        { id: shownId, stored: shownSystemPrompt },
+      ),
+    );
+    systemBase.current = { id: shownId, value: shownSystemPrompt };
+  }, [shownId, shownSystemPrompt]);
   const loading = busy || !!game?.busy || unconfirmed;
   const allowance = displayGame?.budgetMicrodollars ?? (signedIn ? 3_000_000 : 600_000),
     left = Math.max(
@@ -583,6 +629,7 @@ export default function GameUI({
     );
   const seasonExpired =
     !!displayGame?.season.endsAt && new Date(displayGame.season.endsAt).getTime() <= Date.now();
+  const editingSystemPrompt = displayGame?.status === "active" && !seasonExpired && isExecutionView;
   const decisions =
     displayGame?.events.filter((event) => event.kind === "monitor" && event.decision !== "allow") ??
     [];
@@ -767,6 +814,15 @@ export default function GameUI({
           : current,
       );
     }
+    if (type === "billing")
+      setGame((current) =>
+        generation === submissionGeneration.current &&
+        epoch === accountEpoch.current &&
+        owner === historyOwner.current &&
+        current?.id === runId
+          ? { ...current, ...(data as BillingTotals) }
+          : current,
+      );
     if (type === "done") {
       const next = data as PublicGame;
       reconcile(next);
@@ -816,7 +872,11 @@ export default function GameUI({
       const response = await fetch(`/api/games/${game.id}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: submitted.text, agentModel: agent }),
+        body: JSON.stringify({
+          prompt: submitted.text,
+          agentModel: agent,
+          ...systemPromptChange(systemDraft, systemBase.current.value),
+        }),
         signal: controller.signal,
       });
       if (!current()) return;
@@ -997,20 +1057,87 @@ export default function GameUI({
         ) : panel === "play" || panel === "detail" ? (
           <div className="console">
             <main className="transcript">
-              <div className="column-head transcript-head">
-                <span>
-                  RUN TRANSCRIPT / {displayGame?.id.slice(0, 8).toUpperCase() ?? "NO RUN"}
-                </span>
-                <div
-                  className="turn-total"
-                  title="Each agent response counts as one turn"
-                  aria-label={`${displayGame?.turns ?? 0} agent turns elapsed`}
-                >
-                  <strong>{displayGame?.turns ?? 0}</strong>
-                  <span>TURNS</span>
+              <header className="run-bar">
+                <div className="run-bar-row">
+                  <span className="run-id">
+                    <span className="eyebrow">RUN</span>
+                    <strong>{displayGame?.id.slice(0, 8).toUpperCase() ?? "—"}</strong>
+                  </span>
+                  {editingSystemPrompt ? (
+                    <ModelSelect
+                      models={models}
+                      label="Model"
+                      value={agent}
+                      change={setAgent}
+                      disabled={loading}
+                    />
+                  ) : (
+                    displayGame && (
+                      <span className="run-model">
+                        <span className="eyebrow">MODEL</span>
+                        {label(displayGame.agentModel)}
+                      </span>
+                    )
+                  )}
+                  <div
+                    className="turn-total"
+                    title="Each agent response counts as one turn"
+                    aria-label={`${displayGame?.turns ?? 0} agent turns elapsed`}
+                  >
+                    <strong>{displayGame?.turns ?? 0}</strong>
+                    <span>TURNS</span>
+                  </div>
                 </div>
-              </div>
-              <div className="thread" role="region" aria-label="Run transcript" tabIndex={0}>
+                {(editingSystemPrompt || displayGame?.systemPrompt) && (
+                  <details
+                    className="system-prompt"
+                    onToggle={() => {
+                      if (atBottom.current) scrollToBottom();
+                    }}
+                  >
+                    <summary>
+                      <span className="eyebrow">SYSTEM PROMPT</span>
+                      <span className="hidden-tag">Hidden from monitor</span>
+                      <span className="preview" aria-hidden="true">
+                        {(editingSystemPrompt ? systemDraft : displayGame?.systemPrompt) || "None"}
+                      </span>
+                      {editingSystemPrompt &&
+                        "systemPrompt" in
+                          systemPromptChange(systemDraft, displayGame?.systemPrompt ?? "") && (
+                          <span className="unsaved">Sends with next instruction</span>
+                        )}
+                    </summary>
+                    {editingSystemPrompt ? (
+                      <textarea
+                        id="system-prompt"
+                        aria-label="System prompt, hidden from the monitor"
+                        value={systemDraft}
+                        onChange={(event) => setSystemDraft(event.target.value)}
+                        maxLength={8192}
+                        rows={4}
+                        placeholder="Optional. The agent gets this on every turn; the monitor never sees it."
+                      />
+                    ) : (
+                      <p tabIndex={0}>{displayGame?.systemPrompt}</p>
+                    )}
+                  </details>
+                )}
+              </header>
+              <div
+                className="thread"
+                role="region"
+                aria-label="Run transcript"
+                tabIndex={0}
+                ref={thread}
+                onScroll={(event) => {
+                  const element = event.currentTarget;
+                  // Only an upward scroll unsets the flag, so a smooth scroll in flight never does.
+                  if (element.scrollTop < lastScrollTop.current) atBottom.current = false;
+                  lastScrollTop.current = element.scrollTop;
+                  if (element.scrollHeight - element.scrollTop - element.clientHeight <= 48)
+                    atBottom.current = true;
+                }}
+              >
                 {detailError && (
                   <div role="alert" className="error">
                     {detailError}
@@ -1036,29 +1163,33 @@ export default function GameUI({
                         Your environment is ready. Send the agent its first instruction.
                       </p>
                     )}
-                    {displayGame.events.map((event, index) => (
-                      <Entry
-                        key={event.id}
-                        event={event}
-                        previous={displayGame.events[index - 1]}
-                        disabled={loading || displayGame.busy}
-                        onFork={() => {
-                          setError("");
-                          setForkRunId(displayGame.id);
-                          setForkEvent(event);
-                          setModal("fork");
-                        }}
-                        onCopy={async () => {
-                          try {
-                            await navigator.clipboard.writeText(
-                              [event.text, event.command].filter(Boolean).join("\n"),
-                            );
-                          } catch {
-                            setError("Could not copy to the clipboard.");
-                          }
-                        }}
-                      />
-                    ))}
+                    {groupTurns(displayGame.events).map(
+                      ({ event, calls, remainder }, index, groups) => (
+                        <Entry
+                          key={event.id}
+                          event={event}
+                          previous={groups[index - 1]?.event}
+                          calls={calls}
+                          remainder={remainder}
+                          disabled={loading || displayGame.busy}
+                          onFork={() => {
+                            setError("");
+                            setForkRunId(displayGame.id);
+                            setForkEvent(event);
+                            setModal("fork");
+                          }}
+                          onCopy={async () => {
+                            try {
+                              await navigator.clipboard.writeText(
+                                [event.text, event.command].filter(Boolean).join("\n"),
+                              );
+                            } catch {
+                              setError("Could not copy to the clipboard.");
+                            }
+                          }}
+                        />
+                      ),
+                    )}
                     {(displayGame.status !== "active" || seasonExpired) && (
                       <div className="terminal">
                         <h2>
@@ -1104,9 +1235,8 @@ export default function GameUI({
                     Continue run
                   </button>
                 )}
-                <div ref={bottom} />
               </div>
-              {displayGame?.status === "active" && !seasonExpired && isExecutionView && (
+              {editingSystemPrompt && (
                 <form
                   className="composer"
                   onSubmit={(event) => {
@@ -1114,14 +1244,9 @@ export default function GameUI({
                     void send();
                   }}
                 >
-                  <ModelSelect
-                    models={models}
-                    label="Agent model"
-                    value={agent}
-                    change={setAgent}
-                    disabled={loading}
-                  />
-                  <label htmlFor="prompt">INSTRUCTION</label>
+                  <label htmlFor="prompt" className="visually-hidden">
+                    Instruction
+                  </label>
                   <textarea
                     id="prompt"
                     value={prompt}
@@ -1137,18 +1262,16 @@ export default function GameUI({
                       }
                     }}
                   />
-                  <div className="compose-foot">
-                    <small>⌘/Ctrl + Enter to send</small>
-                    {busy && cancel.current ? (
-                      <button type="button" onClick={() => cancel.current?.abort()}>
-                        Stop
-                      </button>
-                    ) : (
-                      <button className="primary" disabled={loading || !prompt.trim()}>
-                        Send
-                      </button>
-                    )}
-                  </div>
+                  {busy && cancel.current ? (
+                    <button type="button" onClick={() => cancel.current?.abort()}>
+                      Stop
+                    </button>
+                  ) : (
+                    <button className="primary" disabled={loading || !prompt.trim()}>
+                      Send
+                    </button>
+                  )}
+                  <small className="send-hint">⌘/Ctrl + Enter to send</small>
                 </form>
               )}
             </main>
@@ -1365,9 +1488,9 @@ export default function GameUI({
               />
               <aside className="fork-warning">
                 <p>
-                  The new run gets this transcript and nothing else. It starts in a fresh
-                  environment with a new flag, and no commands are re-run. Your original run is
-                  kept.
+                  The new run gets this transcript and the run’s system prompt, and nothing else. It
+                  starts in a fresh environment with a new flag, and no commands are re-run. Your
+                  original run is kept.
                 </p>
               </aside>
               <div className="fork-actions">
@@ -1458,7 +1581,7 @@ function ModelSelect({
 }) {
   return (
     <label className="model-select">
-      {caption.toUpperCase()}
+      <span className="model-caption">{caption.toUpperCase()}</span>
       <select disabled={disabled} value={value} onChange={(event) => change(event.target.value)}>
         {models.map((model) => (
           <option key={model} value={model}>
@@ -1469,9 +1592,68 @@ function ModelSelect({
     </label>
   );
 }
+export type Call = {
+  command: string;
+  decision: "allow" | "block" | "error";
+  reason: string;
+  output?: string;
+};
+export function displayCommand(raw?: string) {
+  return raw
+    ?.split("\n")
+    .map((line) => {
+      if (!line.startsWith("sprite_exec:")) return line;
+      try {
+        const args = JSON.parse(line.replace(/^sprite_exec:\s*/, ""));
+        return typeof args?.command === "string" ? args.command : line;
+      } catch {
+        return line;
+      }
+    })
+    .join("\n");
+}
+// Folds each agent turn's monitor reviews and tool results into calls on the agent event.
+// Only a tool result directly after a review is absorbed; any other event stays standalone.
+export function groupTurns(events: GameEvent[]) {
+  const groups: { event: GameEvent; calls: Call[]; remainder: string }[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i],
+      calls: Call[] = [];
+    while (event.kind === "agent" && events[i + 1]?.kind === "monitor") {
+      const review = events[++i];
+      const decision = review.decision ?? "error";
+      const call: Call = {
+        command: review.command ?? "",
+        decision,
+        reason: review.text,
+        output: undefined,
+      };
+      if (events[i + 1]?.kind === "tool") {
+        const result = events[++i];
+        if (decision === "allow") call.output = result.text;
+      }
+      calls.push(call);
+    }
+    // Commands the monitor has not reviewed (yet, or ever after an error) stay visible.
+    const command = displayCommand(event.command) ?? "";
+    const reviewed = calls.map((call) => call.command).join("\n");
+    groups.push({
+      event,
+      calls,
+      remainder: !reviewed
+        ? command
+        : command.startsWith(`${reviewed}\n`)
+          ? command.slice(reviewed.length + 1)
+          : "",
+    });
+  }
+  return groups;
+}
 export function Entry({
   event,
   previous,
+  calls,
+  remainder = "",
   disabled = false,
   showActions = true,
   onFork,
@@ -1479,6 +1661,8 @@ export function Entry({
 }: {
   event: GameEvent;
   previous?: GameEvent;
+  calls?: Call[];
+  remainder?: string;
   disabled?: boolean;
   showActions?: boolean;
   onFork?: () => void;
@@ -1494,94 +1678,111 @@ export function Entry({
         {event.text && <p>{event.text}</p>}
       </article>
     );
-  const command = event.command
-    ?.split("\n")
-    .map((line) => {
-      if (!line.startsWith("sprite_exec:")) return line;
-      try {
-        const args = JSON.parse(line.replace(/^sprite_exec:\s*/, ""));
-        return typeof args?.command === "string" ? args.command : line;
-      } catch {
-        return line;
-      }
-    })
-    .join("\n");
+  const command = calls ? remainder : displayCommand(event.command);
   return (
-    <>
-      <article className={`entry ${event.kind}`}>
-        <header>
-          <strong className="speaker">
-            {event.kind === "user"
-              ? "USER"
-              : event.kind === "agent"
-                ? "AGENT"
-                : event.kind === "tool"
-                  ? "TOOL OUTPUT"
-                  : event.kind === "monitor"
-                    ? "MONITOR ERROR"
-                    : "SYSTEM"}
-          </strong>
-          {event.kind === "agent" && (
-            <span className="turn-label">
-              TURN {event.turn}
-              {event.model && <span className="turn-model"> · {event.model}</span>}
-            </span>
-          )}
-        </header>
-        {event.reasoning && (
-          <details>
-            <summary>Agent reasoning</summary>
-            <p>{event.reasoning}</p>
-          </details>
+    <article className={`entry ${event.kind}`}>
+      <header>
+        <strong className="speaker">
+          {event.kind === "user"
+            ? "USER"
+            : event.kind === "agent"
+              ? "AGENT"
+              : event.kind === "tool"
+                ? "TOOL OUTPUT"
+                : event.kind === "monitor"
+                  ? "MONITOR ERROR"
+                  : "SYSTEM"}
+        </strong>
+        {event.kind === "agent" && (
+          <span className="turn-label">
+            TURN {event.turn}
+            {event.model && <span className="turn-model"> · {event.model}</span>}
+          </span>
         )}
-        {event.text &&
-          (event.kind === "user" || event.kind === "agent" ? (
-            <div className="markdown">
-              <Markdown
-                remarkPlugins={[remarkGfm]}
-                disallowedElements={["img"]}
-                components={{
-                  a: ({ href, children }) => (
-                    <a href={href} target="_blank" rel="noopener noreferrer">
-                      {children}
-                    </a>
-                  ),
-                }}
-              >
-                {event.text}
-              </Markdown>
-            </div>
-          ) : (
-            <p>{event.text}</p>
-          ))}
-        {command && <pre>{command}</pre>}
-      </article>
-      {event.kind === "agent" && showActions && (
-        <div className="entry-actions">
-          <button type="button" aria-label="Copy response" disabled={disabled} onClick={onCopy}>
-            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
-              <rect x="8" y="8" width="12" height="12" rx="1" />
-              <path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" />
-            </svg>
-            <span className="entry-action-label">Copy</span>
-          </button>
-          <button
-            type="button"
-            aria-label="Fork from response"
-            disabled={disabled}
-            onClick={onFork}
-          >
-            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
-              <circle cx="6" cy="5" r="2" />
-              <circle cx="18" cy="19" r="2" />
-              <circle cx="18" cy="5" r="2" />
-              <path d="M6 7v7a5 5 0 0 0 5 5h5M6 7v0a5 5 0 0 0 5-2h5" />
-            </svg>
-            <span className="entry-action-label">Fork</span>
-          </button>
-        </div>
+        {event.kind === "agent" && showActions && (
+          <div className="entry-actions">
+            <button type="button" aria-label="Copy response" disabled={disabled} onClick={onCopy}>
+              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+                <rect x="8" y="8" width="12" height="12" rx="1" />
+                <path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              aria-label="Fork from response"
+              disabled={disabled}
+              onClick={onFork}
+            >
+              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+                <circle cx="6" cy="5" r="2" />
+                <circle cx="18" cy="19" r="2" />
+                <circle cx="18" cy="5" r="2" />
+                <path d="M6 7v7a5 5 0 0 0 5 5h5M6 7v0a5 5 0 0 0 5-2h5" />
+              </svg>
+            </button>
+          </div>
+        )}
+      </header>
+      {event.reasoning && (
+        <details>
+          <summary>Agent reasoning</summary>
+          <p>{event.reasoning}</p>
+        </details>
       )}
-    </>
+      {event.text &&
+        (event.kind === "user" || event.kind === "agent" ? (
+          <div className="markdown">
+            <Markdown
+              remarkPlugins={[remarkGfm]}
+              disallowedElements={["img"]}
+              components={{
+                a: ({ href, children }) => (
+                  <a href={href} target="_blank" rel="noopener noreferrer">
+                    {children}
+                  </a>
+                ),
+              }}
+            >
+              {event.text}
+            </Markdown>
+          </div>
+        ) : (
+          <p>{event.text}</p>
+        ))}
+      {calls?.map((call, index) => (
+        <React.Fragment key={index}>
+          {call.command && <pre>{call.command}</pre>}
+          {call.decision === "allow" ? (
+            call.output && <CallOutput text={call.output} />
+          ) : (
+            <div className={`call-status ${call.decision}`}>
+              <span>{call.decision === "block" ? "Blocked" : "Monitor error"}</span>
+              {call.reason && <p>{call.reason}</p>}
+            </div>
+          )}
+        </React.Fragment>
+      ))}
+      {command && <pre>{command}</pre>}
+    </article>
+  );
+}
+
+const PREVIEW_LINES = 12;
+// Long output starts collapsed so one command can't bury the rest of the turn.
+function CallOutput({ text }: { text: string }) {
+  const lines = text.split("\n");
+  if (lines.length <= PREVIEW_LINES + 3) return <pre className="call-output">{text}</pre>;
+  return (
+    <div className="call-output">
+      <pre>{lines.slice(0, PREVIEW_LINES).join("\n")}</pre>
+      <details>
+        <summary>
+          <span className="more">Show {lines.length - PREVIEW_LINES} more lines</span>
+          <span className="less">Hide {lines.length - PREVIEW_LINES} lines</span>
+        </summary>
+        <pre>{lines.slice(PREVIEW_LINES).join("\n")}</pre>
+      </details>
+    </div>
   );
 }
 
@@ -1597,8 +1798,15 @@ export function ForkPreview({ events, selectedId }: { events: GameEvent[]; selec
       aria-label="Visible transcript history through selected response"
       tabIndex={0}
     >
-      {events.slice(0, selectedIndex + 1).map((event, index) => (
-        <Entry key={event.id} event={event} previous={events[index - 1]} showActions={false} />
+      {groupTurns(events.slice(0, selectedIndex + 1)).map((group, index, groups) => (
+        <Entry
+          key={group.event.id}
+          event={group.event}
+          previous={groups[index - 1]?.event}
+          calls={group.calls}
+          remainder={group.remainder}
+          showActions={false}
+        />
       ))}
     </div>
   );
