@@ -1,1 +1,4 @@
-{ "crons": [{ "path": "/api/cleanup", "schedule": "0 9 * * *" }] }
+{
+  "buildCommand": "node --import tsx scripts/vercel-build.ts",
+  "crons": [{ "path": "/api/cleanup", "schedule": "0 9 * * *" }]
+}
