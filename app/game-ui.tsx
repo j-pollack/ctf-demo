@@ -44,6 +44,13 @@ export function canCreateNewRun(current?: PublicGame | null, now = Date.now(), r
       current.events.some((event) => event.id > 0 && event.kind === "user"))
   );
 }
+// A run the player can still continue: active and its season not over.
+export function hasActiveRun(current?: PublicGame | null, now = Date.now()) {
+  return (
+    current?.status === "active" &&
+    !(!!current.season.endsAt && Date.parse(current.season.endsAt) <= now)
+  );
+}
 // Poll only while a turn is running server-side or an instruction awaits confirmation.
 // Pending billing alone is not a reason: a hold can stay open indefinitely, and polling it
 // re-downloads the run every 3s for as long as the tab stays open.
@@ -172,7 +179,9 @@ export default function GameUI({
     forkRequest = useRef(0),
     latestRequest = useRef(0),
     startRequest = useRef(0),
-    starting = useRef(false);
+    starting = useRef(false),
+    // Armed on arriving at /play and on each Play click; opens setup once if there's no active run.
+    setupOnPlay = useRef(true);
   const [modal, setModal] = useState<"setup" | "login" | "fork" | null>(null),
     [forkEvent, setForkEvent] = useState<GameEvent | null>(null),
     [forkRunId, setForkRunId] = useState<string | null>(null),
@@ -431,6 +440,7 @@ export default function GameUI({
     }
   }
   function openPlay() {
+    setupOnPlay.current = true;
     setPlayError("");
     router.push("/play");
     if (pathname === "/play") setPlayReload((value) => value + 1);
@@ -528,6 +538,20 @@ export default function GameUI({
         }
       });
   }, [account.data?.user.id]);
+  useEffect(() => {
+    if (pathname !== "/play") setupOnPlay.current = true;
+    else if (
+      setupOnPlay.current &&
+      !modal &&
+      !busy &&
+      !account.isPending &&
+      (!account.data || currentRunReady) &&
+      new URLSearchParams(window.location.search).get("signin") !== "1"
+    ) {
+      setupOnPlay.current = false;
+      if (!hasActiveRun(game)) setModal("setup");
+    }
+  }, [pathname, playReload, account.isPending, account.data, currentRunReady, game, modal, busy]);
   useEffect(() => {
     if (modal) {
       dialog.current?.showModal();
