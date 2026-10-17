@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupTurns } from "../app/game-ui";
+import { groupTurns, liveCall, partialArgument, withDelta } from "../app/game-ui";
 import type { GameEvent } from "../lib/types";
 
 const agent = (id: number, command?: string): GameEvent => ({
@@ -32,7 +32,7 @@ test("groupTurns attaches each monitor review and its output to the preceding ag
     { command: "ls", decision: "allow", reason: "", output: "a.txt" },
     { command: "pwd", decision: "allow", reason: "", output: "/workspace" },
   ]);
-  assert.equal(groups[1].remainder, "");
+  assert.deepEqual(groups[1].pending, []);
 });
 
 test("a blocked call absorbs its Blocked tool result and keeps the monitor's reason", () => {
@@ -73,7 +73,7 @@ test("a monitor error absorbs its aborted result and the unrun rest stays visibl
       ["b", "error", "Inference unavailable", undefined],
     ],
   );
-  assert.equal(groups[0].remainder, "c");
+  assert.deepEqual(groups[0].pending, ["c"]);
 });
 
 test("a tool result not directly after a monitor event stays standalone", () => {
@@ -83,32 +83,32 @@ test("a tool result not directly after a monitor event stays standalone", () => 
     ["agent", "tool"],
   );
   assert.deepEqual(groups[0].calls, []);
-  assert.equal(groups[0].remainder, "x");
+  assert.deepEqual(groups[0].pending, ["x"]);
 });
 
 test("a monitor event without a command is tolerated", () => {
   const [group] = groupTurns([agent(1, "ls"), monitor(2, "allow"), tool(3, "out")]);
   assert.deepEqual(group.calls, [{ command: "", decision: "allow", reason: "", output: "out" }]);
-  assert.equal(group.remainder, "ls");
+  assert.deepEqual(group.pending, ["ls"]);
 });
 
 test("a partially reviewed turn shows the unreviewed remainder", () => {
   const [group] = groupTurns([agent(1, "a\nb"), monitor(2, "allow", "a"), tool(3, "out")]);
   assert.equal(group.calls.length, 1);
-  assert.equal(group.remainder, "b");
+  assert.deepEqual(group.pending, ["b"]);
   // Reviewed prefix that is not a whole line never produces a remainder.
   const [partial] = groupTurns([agent(1, "ls -la"), monitor(2, "allow", "ls"), tool(3, "out")]);
-  assert.equal(partial.remainder, "");
+  assert.deepEqual(partial.pending, []);
 });
 
 test("a call still awaiting output has none; zero calls fall back to the whole command", () => {
   const [running] = groupTurns([agent(1, "sleep 1"), monitor(2, "allow", "sleep 1")]);
   assert.equal(running.calls[0].output, undefined);
-  assert.equal(running.remainder, "");
+  assert.deepEqual(running.pending, []);
   const [bare] = groupTurns([agent(1, 'sprite_exec: {"command":"pwd"}')]);
   assert.deepEqual(bare.calls, []);
-  assert.equal(bare.remainder, "pwd");
-  assert.equal(groupTurns([agent(1)])[0].remainder, "");
+  assert.deepEqual(bare.pending, ["pwd"]);
+  assert.deepEqual(groupTurns([agent(1)])[0].pending, []);
 });
 
 test("events outside an agent turn pass through unchanged", () => {
@@ -122,4 +122,36 @@ test("events outside an agent turn pass through unchanged", () => {
     groupTurns(events).map((group) => group.event),
     events,
   );
+});
+
+test("recorded commands stay one block per call, even when a command spans lines", () => {
+  const heredoc = "cat <<EOF > a.txt\nhello\nEOF";
+  const turn: GameEvent = {
+    id: 1,
+    kind: "agent",
+    text: "",
+    command: ["ls", heredoc, "pwd"].join("\n"),
+    commands: ["ls", heredoc, "pwd"],
+  };
+  assert.deepEqual(groupTurns([turn])[0].pending, ["ls", heredoc, "pwd"]);
+  const [reviewed] = groupTurns([turn, monitor(2, "allow", "ls"), tool(3, "a.txt")]);
+  assert.deepEqual(reviewed.pending, [heredoc, "pwd"]);
+});
+
+test("streamed tool calls build up per call and show their command as it arrives", () => {
+  let live = withDelta(null, { reasoning: "Plan", calls: [{ index: 0, name: "sprite_exec" }] });
+  live = withDelta(live, { calls: [{ index: 0, arguments: '{"command": "echo \\"hi' }] });
+  assert.equal(liveCall(live.calls[0]), 'echo "hi');
+  live = withDelta(live, {
+    calls: [
+      { index: 0, arguments: '\\"\\nls"}' },
+      { index: 1, name: "submit", arguments: '{"value":"flag{x' },
+    ],
+  });
+  assert.deepEqual(live.calls.map(liveCall), ['echo "hi"\nls', "submit: flag{x"]);
+  assert.equal(live.reasoning, "Plan");
+  // Incomplete escapes wait for the rest instead of showing garbage.
+  assert.equal(partialArgument('{"command":"a\\', "command"), "a");
+  assert.equal(partialArgument('{"command":"\\u00e9\\u00', "command"), "é");
+  assert.equal(partialArgument('{"comm', "command"), "");
 });

@@ -71,6 +71,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let fetchGate: ((signal: AbortSignal) => Promise<Response>) | undefined;
   let abortOn429: (() => void) | undefined;
   let lastAgentRequest = "";
+  // "cut" ends an agent stream after its first chunk, with no usage; "endless" sends its first
+  // chunk and then only keep-alives until the request is aborted.
+  let agentStreamMode: "full" | "cut" | "endless" = "full";
+  // "length" makes the first agent reply reasoning only, stopped at the output limit.
+  let agentFinish: "stop" | "length" = "stop";
+  // Generation ids the fake has issued, with the cost OpenRouter later reports for them.
+  const generations = new Map<string, number>();
   const strict =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A) => {
@@ -186,6 +193,22 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "fetch",
     strict(async (input: string | URL | Request, options?: RequestInit) => {
       options?.signal?.throwIfAborted();
+      if (String(input).startsWith("https://openrouter.ai/api/v1/generation?id=")) {
+        assert.equal(
+          new Headers(options?.headers).get("authorization"),
+          "Bearer integration-router-key",
+        );
+        const id = new URL(String(input)).searchParams.get("id")!;
+        assert.ok(generations.has(id), "Reconciliation asks only about issued generations");
+        return Response.json({
+          data: {
+            finish_reason: "stop",
+            native_tokens_prompt: 3,
+            native_tokens_completion: 4,
+            total_cost: generations.get(id),
+          },
+        });
+      }
       if (String(input) === "https://openrouter.ai/api/v1/models")
         return Response.json({
           data: [...new Set([AGENT_MODEL, MONITOR_MODEL])].map((id) => ({
@@ -241,6 +264,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         };
       } else {
         assert.equal(payload.model, AGENT_MODEL);
+        assert.equal(payload.stream, true, "Agent calls stream");
         lastAgentRequest = JSON.stringify(payload.messages);
         assert.deepEqual(
           payload.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
@@ -248,33 +272,105 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         );
         agentCalls++;
         message =
-          agentCalls === 1
-            ? {
-                reasoning: "Controlled fixture reasoning.",
-                tool_calls: proposed.map((call) => ({
-                  id: randomUUID(),
-                  type: "function",
-                  function:
-                    typeof call === "string"
-                      ? { name: proposedTool, arguments: proposedArguments(call) }
-                      : { name: "submit", arguments: JSON.stringify({ value: call.submit }) },
-                })),
-              }
-            : { content: "Done." };
+          agentCalls === 1 && agentFinish === "length"
+            ? { reasoning: "Thinking at length." }
+            : agentCalls === 1
+              ? {
+                  reasoning: "Controlled fixture reasoning.",
+                  tool_calls: proposed.map((call) => ({
+                    id: randomUUID(),
+                    type: "function",
+                    function:
+                      typeof call === "string"
+                        ? { name: proposedTool, arguments: proposedArguments(call) }
+                        : { name: "submit", arguments: JSON.stringify({ value: call.submit }) },
+                  })),
+                }
+              : { content: "Done." };
       }
-      return Response.json({
-        id: `test-${randomUUID()}`,
-        choices: [{ message, finish_reason: "stop" }],
-        ...(planned?.status === 299
-          ? {}
-          : {
-              usage: {
-                prompt_tokens: 1,
-                completion_tokens: 1,
-                total_tokens: 2,
-                cost: payload.response_format ? monitorCost : agentCost,
-              },
-            }),
+      const id = `test-${randomUUID()}`,
+        cost = payload.response_format ? monitorCost : agentCost,
+        usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost };
+      generations.set(id, cost);
+      if (payload.response_format) {
+        assert.equal(payload.stream, undefined, "Monitor calls never stream");
+        return Response.json({
+          id,
+          choices: [{ message, finish_reason: "stop" }],
+          ...(planned?.status === 299 ? {} : { usage }),
+        });
+      }
+      // Stream the agent turn the way OpenRouter does: reasoning, text and each tool call's
+      // arguments arrive in pieces, and usage comes last.
+      const half = (text: string) => [
+        text.slice(0, Math.ceil(text.length / 2)),
+        text.slice(Math.ceil(text.length / 2)),
+      ];
+      const reply = message as {
+        reasoning?: string;
+        content?: string;
+        tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[];
+      };
+      const deltas: Record<string, unknown>[] = [
+        ...half(reply.reasoning ?? "")
+          .filter(Boolean)
+          .map((reasoning) => ({ reasoning })),
+        ...(reply.content ? [{ content: reply.content }] : []),
+        ...(reply.tool_calls ?? []).flatMap((call, index) =>
+          half(call.function.arguments).map((part, i) => ({
+            tool_calls: [
+              i === 0
+                ? {
+                    index,
+                    id: call.id,
+                    type: call.type,
+                    function: { name: call.function.name, arguments: part },
+                  }
+                : { index, function: { arguments: part } },
+            ],
+          })),
+        ),
+      ];
+      const frames = [
+        ": OPENROUTER PROCESSING",
+        ...deltas.map((delta) => JSON.stringify({ id, choices: [{ delta }] })),
+        JSON.stringify({
+          id,
+          choices: [{ delta: {}, finish_reason: agentCalls === 1 ? agentFinish : "stop" }],
+        }),
+        ...(planned?.status === 299 ? [] : [JSON.stringify({ id, choices: [], usage })]),
+        "[DONE]",
+      ].map((frame) => (frame.startsWith(":") ? `${frame}\n\n` : `data: ${frame}\n\n`));
+      if (agentStreamMode === "endless") {
+        const signal = options!.signal!;
+        const encoder = new TextEncoder();
+        let timer: ReturnType<typeof setInterval> | undefined;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(frames.slice(0, 2).join("")));
+              timer = setInterval(
+                () => controller.enqueue(encoder.encode(": OPENROUTER PROCESSING\n\n")),
+                100,
+              );
+              signal.addEventListener(
+                "abort",
+                () => {
+                  clearInterval(timer);
+                  controller.error(signal.reason);
+                },
+                { once: true },
+              );
+            },
+            cancel() {
+              clearInterval(timer);
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response((agentStreamMode === "cut" ? frames.slice(0, 2) : frames).join(""), {
+        headers: { "content-type": "text/event-stream" },
       });
     }),
   );
@@ -303,6 +399,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     fetchGate = undefined;
     abortOn429 = undefined;
     lastAgentRequest = "";
+    agentStreamMode = "full";
+    agentFinish = "stop";
+    generations.clear();
   });
   t.afterEach(() =>
     assert.deepEqual(
@@ -1291,6 +1390,204 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(won.sprite_deleted_at);
       assert.equal(won.lease, null);
       assert.equal(environments.size, 0);
+    },
+  );
+  await t.test(
+    "agent reasoning streams to the player before its turn is recorded; billing settles from the stream",
+    async () => {
+      const game = await startGame("stream", false);
+      agentCost = 0.002;
+      const frames: { type: string; data: unknown }[] = [];
+      const leased = await claimGame(game.id, "stream");
+      await runGame(
+        leased,
+        "Controlled integration fixture",
+        AbortSignal.timeout(5000),
+        (type, data) => frames.push({ type, data }),
+      );
+      const firstAgent = frames.findIndex(
+        (frame) => frame.type === "event" && (frame.data as { kind: string }).kind === "agent",
+      );
+      const before = frames
+        .slice(0, firstAgent)
+        .filter((frame) => frame.type === "delta" && "reasoning" in (frame.data as object));
+      assert.deepEqual(
+        before.map((frame) => frame.data),
+        [{ reasoning: "Controlled fixt" }, { reasoning: "ure reasoning." }],
+        "Reasoning arrives in pieces, before the recorded turn",
+      );
+      // The status follows the stream: thinking, then the tool call, then the monitor and command.
+      const stages = frames
+        .filter((frame) => frame.type === "stage")
+        .map((frame) => frame.data)
+        .filter((stage, index, all) => stage !== all[index - 1]);
+      assert.deepEqual(stages, [
+        "Agent thinking",
+        "Tool called",
+        "Monitor reviewing command",
+        "Running command",
+        "Agent thinking",
+        "Agent responding",
+      ]);
+      // The tool call reaches the player as the agent writes it, before the recorded turn.
+      const streamedCalls = frames
+        .slice(0, firstAgent)
+        .flatMap((frame) =>
+          frame.type === "delta" ? ((frame.data as { calls?: unknown[] }).calls ?? []) : [],
+        );
+      assert.deepEqual(streamedCalls, [
+        { index: 0, name: "sprite_exec", arguments: '{"command":"pri' },
+        { index: 0, arguments: 'ntf harmless"}' },
+      ]);
+      const agentEvent = frames[firstAgent].data as { reasoning: string; command: string };
+      assert.equal(agentEvent.reasoning, "Controlled fixture reasoning.");
+      assert.equal(agentEvent.command, "printf harmless");
+      assert.deepEqual((agentEvent as { commands?: string[] }).commands, ["printf harmless"]);
+      assert.deepEqual(
+        commands.map((entry) => entry.command),
+        ["printf harmless"],
+      );
+      // The second turn streams its text.
+      assert.ok(frames.some((frame) => JSON.stringify(frame.data) === '{"text":"Done."}'));
+      const calls = (
+        await pool.query(
+          "SELECT cost,generation_id,settled_at FROM ctf.inference WHERE game_id=$1 AND role='agent' ORDER BY created_at",
+          [game.id],
+        )
+      ).rows;
+      assert.equal(calls.length, 2);
+      for (const call of calls) {
+        assert.ok(call.settled_at);
+        assert.equal(Number(call.cost), 2000);
+        assert.ok(generations.has(call.generation_id));
+      }
+      const stored = await row(game.id);
+      assert.equal(Number(stored.reserved_microdollars), 0);
+      assert.equal(Number(stored.spent_microdollars), 4000);
+      // Deltas are never stored: the event log holds only the finished turn.
+      const events = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
+      ).rows.map((entry) => entry.data);
+      assert.ok(!events.some((event) => event.text === "Controlled fixt"));
+    },
+  );
+  await t.test(
+    "a stream cut off midway runs nothing, keeps its hold with the generation id, and reconciles",
+    async () => {
+      const game = await startGame("cut-stream", false);
+      agentCost = 0.003;
+      agentStreamMode = "cut";
+      const finished = await play(game.id, "cut-stream");
+      assert.equal(finished.status, "active");
+      assert.equal(finished.lease, null);
+      assert.deepEqual(commands, []);
+      const hold = (
+        await pool.query(
+          "SELECT id,generation_id,settled_at,cost_ceiling FROM ctf.inference WHERE game_id=$1",
+          [game.id],
+        )
+      ).rows;
+      assert.equal(hold.length, 1);
+      assert.equal(hold[0].settled_at, null);
+      assert.ok(generations.has(hold[0].generation_id), "the id from the first chunk is kept");
+      const held = await row(game.id);
+      assert.equal(Number(held.reserved_microdollars), Number(hold[0].cost_ceiling));
+      const errors = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
+      ).rows.filter((entry) => entry.data.kind === "error");
+      assert.equal(errors.length, 1);
+      // Once old enough, reconciliation asks OpenRouter for the real cost and settles it.
+      await pool.query(
+        "UPDATE ctf.inference SET created_at=now()-interval '3 minutes' WHERE id=$1",
+        [hold[0].id],
+      );
+      await cleanup();
+      const settled = (
+        await pool.query("SELECT tokens,cost,settled_at,estimated FROM ctf.inference WHERE id=$1", [
+          hold[0].id,
+        ])
+      ).rows[0];
+      assert.ok(settled.settled_at);
+      assert.equal(settled.estimated, false);
+      assert.equal(Number(settled.cost), 3000);
+      assert.equal(settled.tokens, 7);
+      const after = await row(game.id);
+      assert.equal(Number(after.reserved_microdollars), 0);
+      assert.equal(Number(after.spent_microdollars), Number(held.spent_microdollars) + 3000);
+    },
+  );
+  await t.test(
+    "a streaming agent call that is still alive runs until the lease runs low, not a fixed cap",
+    async () => {
+      const game = await startGame("long-stream", false);
+      agentStreamMode = "endless";
+      const leased = await claimGame(game.id, "long-stream");
+      // Leave 7s on the lease: the call may use all but the 5s margin, then stops cleanly.
+      const { rows } = await pool.query(
+        "UPDATE ctf.games SET lease_until=now()+interval '7 seconds' WHERE id=$1 RETURNING lease_until",
+        [game.id],
+      );
+      leased.lease_until = rows[0].lease_until;
+      const started = Date.now();
+      await runGame(leased, "Controlled integration fixture", AbortSignal.timeout(15000), () => {});
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed >= 1500 && elapsed < 4000, `stopped after ${elapsed}ms`);
+      assert.deepEqual(commands, []);
+      const errors = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
+      ).rows.filter((entry) => entry.data.kind === "error");
+      assert.equal(errors.length, 1);
+      assert.match(errors[0].data.text, /ran out of time/);
+      const hold = (
+        await pool.query("SELECT generation_id,settled_at FROM ctf.inference WHERE game_id=$1", [
+          game.id,
+        ])
+      ).rows;
+      assert.equal(hold.length, 1);
+      assert.equal(hold[0].settled_at, null);
+      assert.ok(generations.has(hold[0].generation_id), "the stopped call can still reconcile");
+      const after = await row(game.id);
+      assert.equal(after.status, "active");
+      assert.equal(after.lease, null);
+    },
+  );
+  await t.test(
+    "agents get room to think and answer; a turn cut off while thinking says so",
+    async () => {
+      const game = await startGame("long-think", false);
+      agentFinish = "length";
+      const finished = await play(game.id, "long-think");
+      const agentRequests = requests.filter((request) => request.role === "agent");
+      assert.equal(agentRequests.length, 1, "a cut-off turn ends the response");
+      assert.equal((agentRequests[0].payload as { max_tokens: number }).max_tokens, 16_384);
+      assert.deepEqual(commands, []);
+      assert.equal(finished.status, "active");
+      const events = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1 ORDER BY id", [game.id])
+      ).rows.map((entry) => entry.data);
+      assert.deepEqual(
+        events.slice(-2).map((event) => [event.kind, event.reasoning ?? event.text]),
+        [
+          ["agent", "Thinking at length."],
+          [
+            "error",
+            "The agent used its whole output allowance thinking and stopped before answering. Try again, or ask for something smaller.",
+          ],
+        ],
+      );
+      // A run with too little budget left gets a smaller allowance, never an overspend.
+      agentFinish = "stop";
+      await pool.query(
+        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+reserved_microdollars+20000 WHERE id=$1",
+        [game.id],
+      );
+      requests.length = 0;
+      agentCalls = 0;
+      await play(game.id, "long-think");
+      const capped = requests.find((request) => request.role === "agent")!.payload as {
+        max_tokens: number;
+      };
+      assert.ok(capped.max_tokens > 0 && capped.max_tokens < 16_384, `${capped.max_tokens}`);
     },
   );
   for (const value of ["flag{wrong-guess-aaaaaaaaaaaaaaaaaaaaaaaaaa}", ""])

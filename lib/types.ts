@@ -8,6 +8,8 @@ export type GameEvent = {
   text: string;
   reasoning?: string;
   command?: string;
+  // An agent turn's sprite_exec commands, one per call, in order.
+  commands?: string[];
   decision?: "allow" | "block" | "error";
   // Set on submit events: whether the submitted value contained the flag.
   correct?: boolean;

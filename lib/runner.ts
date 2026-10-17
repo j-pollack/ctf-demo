@@ -77,6 +77,8 @@ export async function runGame(
   const directory = await mkdtemp(join(tmpdir(), "tripwire-"));
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   let failure: unknown;
+  // The agent's current streaming phase, shown as the status line.
+  let phase = "";
   const emit = async (event: Omit<GameEvent, "id">) => {
     send("event", await record(game.id, event, game.lease));
     // Best effort: the live totals must never turn a recorded event into a failed response.
@@ -195,6 +197,17 @@ export async function runGame(
         failure ??= error;
       },
       (stage) => send("stage", stage),
+      (delta) => {
+        // The status follows what the agent is producing right now.
+        const next = delta.calls
+          ? "Tool called"
+          : delta.text
+            ? "Agent responding"
+            : "Agent thinking";
+        if (next !== phase) send("stage", (phase = next));
+        // Tool calls render as the agent writes them, before the monitor sees them.
+        send("delta", delta);
+      },
     );
     session.agent.toolExecution = "sequential";
     session.agent.beforeToolCall = async ({ assistantMessage, toolCall }, toolSignal) => {
@@ -285,7 +298,7 @@ export async function runGame(
       }
     };
     session.agent.subscribe(async (event) => {
-      if (event.type === "turn_start") send("stage", "Agent thinking");
+      if (event.type === "turn_start") send("stage", (phase = "Agent thinking"));
       if (event.type !== "message_end") return;
       const message = event.message as Message;
       if (message.role === "user") await emit({ kind: "user", text: textOf(message) });
@@ -299,21 +312,31 @@ export async function runGame(
           game.id,
           game.lease,
         ]);
-        const calls = message.content
-          .flatMap((part) =>
-            part.type === "toolCall" && part.name === "sprite_exec"
-              ? [String(part.arguments.command ?? "")]
-              : [],
-          )
-          .join("\n");
+        const commands = message.content.flatMap((part) =>
+          part.type === "toolCall" && part.name === "sprite_exec"
+            ? [String(part.arguments.command ?? "")]
+            : [],
+        );
+        const truncated =
+          message.stopReason === "length" &&
+          !textOf(message).trim() &&
+          !message.content.some((part) => part.type === "toolCall");
         await emit({
           kind: "agent",
           text: textOf(message),
           reasoning: reasoningOf(message),
-          command: calls || undefined,
+          // `command` keeps the joined form older clients and runs rely on.
+          command: commands.join("\n") || undefined,
+          ...(commands.length && { commands }),
           turn: game.turns,
           model: message.model,
         });
+        // An empty turn would otherwise look like the agent said nothing.
+        if (truncated)
+          await emit({
+            kind: "error",
+            text: "The agent used its whole output allowance thinking and stopped before answering. Try again, or ask for something smaller.",
+          });
       }
       if (message.role === "toolResult" && message.toolName !== "submit")
         await emit({ kind: "tool", text: textOf(message), turn: game.turns });
