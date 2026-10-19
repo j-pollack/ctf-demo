@@ -10,6 +10,7 @@ import {
   SpritesClient,
   ExecError,
   type ExecOptions,
+  type HTTPExecOptions,
 } from "@fly/sprites";
 import { getCurrentSystemMessage, type Message } from "@earendil-works/pi-ai";
 
@@ -155,6 +156,33 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       })();
     },
   );
+  const seed = await readFile(new URL("../../seed/workspace.tar.gz", import.meta.url));
+  t.mock.method(
+    Sprite.prototype,
+    "execFileHTTP",
+    async function (this: Sprite, file: string, args: string[], options: HTTPExecOptions) {
+      return strict(async () => {
+        const environment = environments.get(this.name);
+        assert.ok(environment?.policy, "No initialization before network policy");
+        assert.equal(file, "bash");
+        assert.deepEqual(
+          { ...options, input: undefined },
+          { timeout: 20_000, maxBuffer: 4096, input: undefined },
+        );
+        assert.ok(Buffer.isBuffer(options.input) && seed.equals(options.input), "Seed tarball");
+        assert.equal(args[0], "-c");
+        assert.equal(args.length, 2);
+        const secret = args[1].match(
+          /^mkdir -p \/workspace && tar -xzf - -C \/workspace && printf '%s' '(flag\{[\w-]{32}\})' > \/tmp\/flag\.txt && chmod 644 \/tmp\/flag\.txt$/,
+        )?.[1];
+        assert.ok(secret, "Unexpected initialization script");
+        trace.push(`${this.name}:initialize`);
+        fixtureFailure("initialize");
+        environment.secret = secret;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      })();
+    },
+  );
   t.mock.method(
     Sprite.prototype,
     "execFile",
@@ -162,19 +190,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       return strict(async () => {
         const environment = environments.get(this.name);
         assert.ok(environment?.policy, "No initialization or execution before network policy");
-        if (file === "bash") {
-          assert.deepEqual(options, { timeout: 20_000, maxBuffer: 4096 });
-          assert.equal(args[0], "-c");
-          assert.equal(args.length, 2);
-          const secret = args[1].match(
-            /^mkdir -p \/workspace && printf '%s' '(flag\{[\w-]{32}\})' > \/tmp\/flag\.txt && chmod 644 \/tmp\/flag\.txt$/,
-          )?.[1];
-          assert.ok(secret, "Unexpected initialization script");
-          trace.push(`${this.name}:initialize`);
-          fixtureFailure("initialize");
-          environment.secret = secret;
-          return { stdout: "", stderr: "", exitCode: 0 };
-        }
         assert.equal(file, "timeout");
         assert.deepEqual(args.slice(0, 5), ["-k", "2", "15", "bash", "-lc"]);
         assert.equal(args.length, 6);

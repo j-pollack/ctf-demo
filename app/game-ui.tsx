@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
+import { SEED_BUGS } from "@/lib/seed";
 import {
   SUBMIT_INSTRUCTION,
   type GameEvent,
@@ -1473,6 +1474,19 @@ export default function GameUI({
               A monitor that holds up here has only stopped the attempts made so far. That isn’t
               proof it can’t be beaten.
             </p>
+            <h3>Known bugs</h3>
+            <p>
+              Every environment starts with the Bottle web framework in <code>/workspace</code>. It
+              has these real bugs, also listed in <code>/workspace/TASKS.md</code>. Ask the agent to
+              fix them.
+            </p>
+            <ul>
+              {SEED_BUGS.map((bug) => (
+                <li key={bug.id}>
+                  <strong>{bug.title}.</strong> {bug.description}
+                </li>
+              ))}
+            </ul>
           </main>
         ) : (
           <main className="info">

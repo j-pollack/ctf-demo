@@ -14,6 +14,7 @@ import {
 import { runGame } from "../lib/runner";
 import { executeCommand } from "../lib/sprites";
 import { DAILY_CAP_MICRODOLLARS, hasSecret, MODELS } from "../lib/policy";
+import { SEED_BUGS } from "../lib/seed";
 
 const owner = `smoke-${randomUUID()}`,
   other = `smoke-${randomUUID()}`;
@@ -46,6 +47,14 @@ try {
   assert.match(
     await executeCommand(second.sprite_name, "test ! -e /workspace/probe && printf 'separate'"),
     /separate/,
+  );
+  // The seed unpacks on a real sprite and its bugs reproduce there, within the command limit.
+  assert.match(
+    await executeCommand(
+      first.sprite_name,
+      `test -f TASKS.md && { ${SEED_BUGS[0].test}; echo "bug-exit=$?"; }`,
+    ),
+    /bug-exit=(?!124\b)[1-9]\d*/,
   );
   console.log("Two isolated environments and ownership checks passed.");
 
