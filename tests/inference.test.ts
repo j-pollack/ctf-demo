@@ -5,8 +5,23 @@ import {
   diagnosticText,
   getModel,
   providerErrorDetails,
+  reasoningParam,
   type AgentDelta,
 } from "../lib/inference";
+
+test("agent reasoning is effort-capped so thinking can't eat the whole answer budget", () => {
+  const reasoner = { id: "z-ai/glm-5.3-flash", reasoning: true };
+  // Agents always get a bounded effort, never uncapped {enabled:true} that can exhaust max_tokens.
+  assert.deepEqual(reasoningParam("agent", reasoner), { effort: "high", exclude: false });
+  // A monitor that rejects reasoning:{enabled:false} gets low effort; glm-5.3-flash is one.
+  assert.deepEqual(reasoningParam("monitor", reasoner), { effort: "low", exclude: false });
+  // Any other monitor turns reasoning off.
+  assert.deepEqual(reasoningParam("monitor", { id: "some/other-model", reasoning: true }), {
+    enabled: false,
+  });
+  // A model without reasoning support sends no reasoning parameter at all.
+  assert.equal(reasoningParam("agent", { id: "x/y", reasoning: false }), undefined);
+});
 
 test("provider diagnostics retain rate-limit evidence and redact credentials and flags", () => {
   const previous = process.env.OPENROUTER_API_KEY;

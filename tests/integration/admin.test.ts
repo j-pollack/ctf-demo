@@ -31,6 +31,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     "../../db/migrations/005-estimated-settlement.sql",
     "../../db/migrations/006-system-prompt.sql",
     "../../db/migrations/007-inference-game-index.sql",
+    "../../db/migrations/008-block-ends-run.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";
@@ -210,4 +211,46 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     [{ monitor_model: "mon/a" }],
     "started runs keep their monitor",
   );
+
+  // A fork inherits its parent's account: count it as a run, but sum money and effort once.
+  const base = (await adminStats()).totals;
+  const { MODELS } = await import("../../lib/policy");
+  const parentRun = await game("m2", "blocked", 400_000, 0, 3, 1);
+  const childRun = await game("m2", "captured", 700_000, 0, 5, 1);
+  await pool.query(
+    "UPDATE ctf.games SET agent_model=$3,forked_from=CASE WHEN id=$2 THEN $1::uuid END WHERE id IN ($1,$2)",
+    [parentRun, childRun, MODELS[0]],
+  );
+  await pool.query(
+    `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+    VALUES($1,$2,(now() AT TIME ZONE 'UTC')::date,'agent','other/model',10,10,10,400000,now())`,
+    [randomUUID(), parentRun],
+  );
+  const forked = await adminStats();
+  assert.deepEqual(
+    {
+      runs: forked.totals.runs - base.runs,
+      captures: forked.totals.captures - base.captures,
+      spend: forked.totals.spend - base.spend,
+      turns: forked.totals.turns - base.turns,
+      blocks: forked.totals.blocks - base.blocks,
+    },
+    { runs: 2, captures: 1, spend: 700_000, turns: 5, blocks: 1 },
+  );
+  assert.equal(forked.outcomes.find((x) => x.status === "blocked")?.spend, 0);
+  assert.equal(forked.spenders.find((x) => x.who === "two@example.invalid")?.spend, 700_000);
+  assert.equal(forked.seasons.find((x) => x.id === "s1")?.spend, 4_900_000);
+
+  // The leaderboard's agent filter looks at the whole lineage's inference, not just the last run.
+  const { GET } = await import("../../app/api/leaderboard/route");
+  const board = async (agent = "") =>
+    (await (await GET(new Request(`http://localhost/api/leaderboard?season=s1${agent}`))).json())
+      .entries as { spend: number; monitor_reasoning: boolean }[];
+  const mine = <T extends { spend: number }>(entries: T[]) =>
+    entries.filter((x) => x.spend === 700_000);
+  assert.equal(mine(await board()).length, 1);
+  assert.equal(mine(await board()).at(0)?.monitor_reasoning, true);
+  assert.equal(mine(await board(`&agent=${encodeURIComponent(MODELS[0])}`)).length, 0);
+  await pool.query("UPDATE ctf.inference SET model=$2 WHERE game_id=$1", [parentRun, MODELS[0]]);
+  assert.equal(mine(await board(`&agent=${encodeURIComponent(MODELS[0])}`)).length, 1);
 });

@@ -13,10 +13,10 @@ export async function GET(request: Request) {
     if (!seasons.some((season) => season.id === seasonId) || (agent && !MODELS.includes(agent)))
       return Response.json({ entries: [], seasons, currentSeasonId: current.id });
     const result = await db.query(
-      `WITH best AS (SELECT DISTINCT ON (g.owner_id) g.owner_id,g.turns,g.tokens_used AS tokens,g.spent_microdollars AS spend,g.blocks,g.updated_at AS captured_at
+      `WITH best AS (SELECT DISTINCT ON (g.owner_id) g.owner_id,g.turns,g.tokens_used AS tokens,g.spent_microdollars AS spend,g.blocks,g.monitor_reasoning,g.updated_at AS captured_at
       FROM ctf.games g JOIN ctf."user" u ON u.id=g.owner_id
       WHERE g.status='captured' AND g.season_id=$1 AND g.reserved_microdollars=0 AND u."isAnonymous" IS NOT TRUE
-        AND ($2::text IS NULL OR (g.agent_model=$2 AND NOT EXISTS(SELECT 1 FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent' AND i.model<>$2)))
+        AND ($2::text IS NULL OR (g.agent_model=$2 AND NOT EXISTS(SELECT 1 FROM ctf.inference i WHERE i.game_id IN (WITH RECURSIVE lineage(id,parent) AS (SELECT g.id,g.forked_from UNION ALL SELECT p.id,p.forked_from FROM ctf.games p JOIN lineage l ON p.id=l.parent) SELECT id FROM lineage) AND i.role='agent' AND i.model<>$2)))
       ORDER BY g.owner_id,g.spent_microdollars,g.turns,g.updated_at) SELECT * FROM best ORDER BY spend,turns,captured_at LIMIT 50`,
       [seasonId, agent],
     );

@@ -2,7 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Entry, ForkPreview, groupTurns, refreshedGame } from "../app/game-ui";
+import {
+  BLOCKED_NOTICE,
+  BlockedNotice,
+  composerAfterFork,
+  Entry,
+  groupTurns,
+  refreshedGame,
+} from "../app/game-ui";
 import type { GameEvent, PublicGame } from "../lib/types";
 
 test("transcript distinguishes speakers, renders commands and shows only blocked decisions", () => {
@@ -20,7 +27,7 @@ test("transcript distinguishes speakers, renders commands and shows only blocked
   });
   assert.match(agent, />AGENT</);
   assert.match(agent, /aria-label="Copy response"/);
-  assert.match(agent, /aria-label="Fork from response"/);
+  assert.doesNotMatch(agent, /Fork/, "forking lives on the blocked banner, not on each message");
   assert.match(agent, /<\/span><div class="entry-actions"><button[^>]*aria-label="Copy response"/);
   assert.doesNotMatch(agent, /<\/article><div class="entry-actions">|entry-action-label/);
   assert.match(agent, /TURN 3/);
@@ -95,32 +102,6 @@ test("run refreshes cannot replace a newly selected child with a stale parent", 
   assert.equal(refreshedGame(null, staleParent), null);
 });
 
-test("fork preview shows the full visible prefix through selection only", () => {
-  const selectedText = `${"long text ".repeat(60)}\n\n<script>safe</script>`;
-  const events: GameEvent[] = [
-    { id: 1, kind: "user", text: "Earlier instruction" },
-    { id: 2, kind: "agent", text: "Earlier answer", turn: 1, model: "m" },
-    { id: 3, kind: "monitor", text: "hidden allow", decision: "allow" },
-    { id: 4, kind: "tool", text: "Earlier tool output" },
-    { id: 5, kind: "user", text: "Selected instruction" },
-    { id: 6, kind: "agent", text: selectedText, turn: 2, model: "m" },
-    { id: 7, kind: "tool", text: "Later tool output" },
-    { id: 8, kind: "agent", text: "Later answer", turn: 3, model: "m" },
-  ];
-  const html = renderToStaticMarkup(createElement(ForkPreview, { events, selectedId: 6 }));
-  assert.match(html, /Earlier instruction/);
-  assert.match(html, /Earlier answer/);
-  assert.match(html, /Earlier tool output/);
-  assert.ok(html.includes(selectedText.slice(500, 560)));
-  assert.match(
-    html,
-    /role="region" aria-label="Visible transcript history through selected response" tabindex="0"/,
-  );
-  assert.doesNotMatch(html, /Later tool output|Later answer|hidden allow|Copy|Fork/);
-  assert.match(html, /&lt;script&gt;safe&lt;\/script&gt;/);
-  assert.doesNotMatch(html, /<script>/);
-});
-
 test("agent turns show each command with its output or monitor verdict directly beneath", () => {
   const events: GameEvent[] = [
     {
@@ -172,30 +153,15 @@ test("agent turns show each command with its output or monitor verdict directly 
   assert.equal(html.match(/<article/g)?.length, 1);
 });
 
-test("copy and fork sit in the agent header as compact labelled icon buttons", () => {
+test("copy sits in the agent header as a compact labelled icon button", () => {
   const html = renderToStaticMarkup(
     createElement(Entry, { event: { id: 1, kind: "agent", text: "Hi", turn: 2, model: "m" } }),
   );
   const header = html.slice(html.indexOf("<header>"), html.indexOf("</header>"));
   assert.match(header, /<div class="entry-actions">/);
   assert.match(header, /aria-label="Copy response"/);
-  assert.match(header, /aria-label="Fork from response"/);
+  assert.doesNotMatch(header, /Fork/);
   assert.doesNotMatch(html, /<\/article><div class="entry-actions">|entry-action-label/);
-});
-
-test("fork preview shows the selected turn's commands without their outputs", () => {
-  const events: GameEvent[] = [
-    { id: 1, kind: "agent", text: "Earlier", turn: 1, model: "m", command: "ls" },
-    { id: 2, kind: "monitor", text: "", decision: "allow", command: "ls" },
-    { id: 3, kind: "tool", text: "earlier output" },
-    { id: 4, kind: "agent", text: "Selected", turn: 2, model: "m", command: "pwd" },
-    { id: 5, kind: "monitor", text: "", decision: "allow", command: "pwd" },
-    { id: 6, kind: "tool", text: "later output" },
-  ];
-  const html = renderToStaticMarkup(createElement(ForkPreview, { events, selectedId: 4 }));
-  assert.match(html, /<pre>ls<\/pre>[^]*earlier output/);
-  assert.match(html, /<pre>pwd<\/pre>/);
-  assert.doesNotMatch(html, /later output|TOOL OUTPUT/);
 });
 
 test("long command output starts collapsed after 12 lines; short output stays whole", () => {
@@ -216,4 +182,43 @@ test("long command output starts collapsed after 12 lines; short output stays wh
   assert.match(long, /Show 28 more lines/);
   assert.match(long, /<details>[\s\S]*<pre>line13\n[\s\S]*line40<\/pre><\/details>/);
   assert.doesNotMatch(long.split("<details>")[0], /line13/);
+});
+
+test("a submission is quoted as the submitted value and collapses after 12 lines", () => {
+  const render = (text: string, correct: boolean) =>
+    renderToStaticMarkup(
+      createElement(Entry, { event: { id: 1, kind: "submit", text, correct, turn: 2 } }),
+    );
+  const short = render("flag{maybe}", false);
+  assert.match(short, /SUBMITTED · WRONG/);
+  // The value is quoted so it clearly reads as what the agent handed in, not game prose.
+  assert.match(short, /<figure class="submission"><figcaption>The agent submitted this value:/);
+  assert.match(short, /<blockquote><pre class="call-output">flag\{maybe\}<\/pre><\/blockquote>/);
+  assert.match(render("flag{real}", true), /SUBMITTED · CORRECT/);
+  // A long essay-style submission starts collapsed, like command output.
+  const long = render(Array.from({ length: 40 }, (_, i) => `line${i + 1}`).join("\n"), false);
+  assert.match(long, /<div class="call-output"><pre>line1\n[\s\S]*line12<\/pre><details>/);
+  assert.match(long, /Show 28 more lines/);
+  assert.doesNotMatch(long.split("<details>")[0], /line13/);
+});
+
+test("a blocked run says it is over and offers a fork only when forkable", () => {
+  assert.equal(
+    BLOCKED_NOTICE,
+    "Your run is over. The monitor decided this conversation is attempting to exfiltrate data. If that's wrong, fork the previous message and try again with a new instruction.",
+  );
+  const render = (forkable: boolean) =>
+    renderToStaticMarkup(createElement(BlockedNotice, { forkable, disabled: false, onFork() {} }));
+  const forkable = render(true);
+  assert.match(forkable, /<h2>Run blocked<\/h2>/);
+  assert.ok(
+    forkable.includes("Your run is over.") && forkable.includes("fork the previous message"),
+  );
+  assert.match(forkable, /<button[^>]*>Fork<\/button>/);
+  assert.doesNotMatch(render(false), /<button/);
+});
+
+test("after a fork the composer holds the dropped instruction, or is empty", () => {
+  assert.equal(composerAfterFork({ retryInstruction: "try the other way" }), "try the other way");
+  assert.equal(composerAfterFork({}), "");
 });

@@ -1,73 +1,86 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Message } from "@earendil-works/pi-ai";
-import { forkTranscript } from "../lib/fork-transcript";
+import { forkBeforeLastInstruction } from "../lib/fork-transcript";
 import type { GameEvent } from "../lib/types";
 
-const messages = [
-  { role: "system", content: "system", timestamp: 1 },
-  { role: "user", content: "first", timestamp: 2 },
+const system = { role: "system", content: "", sections: { preamble: "p" }, timestamp: 1 };
+const user = (text: string) => ({ role: "user", content: text, timestamp: 2 });
+const assistant = (text: string) => ({
+  role: "assistant",
+  content: [
+    { type: "thinking", thinking: `plan ${text}` },
+    { type: "text", text },
+  ],
+  model: "m",
+  stopReason: "stop",
+  timestamp: 3,
+});
+const blockedTurn = [
   {
     role: "assistant",
-    content: [
-      { type: "text", text: "first" },
-      { type: "text", text: "answer" },
-      { type: "toolCall", id: "call", name: "sprite_exec", arguments: { command: "pwd" } },
-    ],
+    content: [{ type: "toolCall", id: "b", name: "sprite_exec", arguments: { command: "cat" } }],
     model: "m",
     stopReason: "toolUse",
-    timestamp: 3,
-  },
-  {
-    role: "toolResult",
-    toolCallId: "call",
-    toolName: "sprite_exec",
-    content: [{ type: "text", text: "old output" }],
-    isError: false,
     timestamp: 4,
   },
   {
-    role: "assistant",
-    content: [{ type: "text", text: "two" }],
-    model: "m",
-    stopReason: "stop",
+    role: "toolResult",
+    toolCallId: "b",
+    toolName: "sprite_exec",
+    content: [{ type: "text", text: "Blocked" }],
+    isError: true,
     timestamp: 5,
   },
+];
+const messages = [
+  system,
+  user("one"),
+  assistant("first"),
+  user("two"),
+  ...blockedTurn,
 ] as Message[];
 const events: GameEvent[] = [
-  { id: 1, kind: "user", text: "first" },
-  { id: 2, kind: "agent", text: "first\nanswer", model: "m", turn: 1 },
-  { id: 3, kind: "monitor", text: "blocked", decision: "block", turn: 1 },
-  { id: 4, kind: "tool", text: "old output", turn: 1 },
-  { id: 5, kind: "agent", text: "two", model: "m", turn: 2 },
+  { id: 10, kind: "user", text: "one", checkpoint: "v1" },
+  { id: 11, kind: "agent", text: "first", turn: 1 },
+  { id: 12, kind: "user", text: "two", checkpoint: "v2" },
+  { id: 13, kind: "agent", text: "", turn: 2, command: "cat" },
+  { id: 14, kind: "monitor", text: "no", decision: "block", turn: 2 },
 ];
 
-test("fork preserves exact conversation prefix through selected assistant, not its tools", () => {
-  const prefix = forkTranscript(messages, events, 2, 2);
-  assert.deepEqual(prefix.messages, messages.slice(0, 3));
-  assert.deepEqual(prefix.events, events.slice(0, 2));
-  assert.equal(prefix.turns, 1);
-  assert.equal(prefix.blocks, 0);
+test("the cut keeps everything before the last instruction and names what was dropped", () => {
+  const cut = forkBeforeLastInstruction(messages, events);
+  assert.deepEqual(cut.messages, messages.slice(0, 3));
+  assert.deepEqual(cut.events, events.slice(0, 2));
+  assert.equal(cut.instruction, "two");
+  assert.equal(cut.checkpoint, "v2");
+  assert.equal(cut.userEventId, 12);
 });
 
-test("fork rejects an unmappable or inconsistent successful-turn boundary", () => {
-  assert.throws(() => forkTranscript(messages, events, 3, 2), /safely forked/);
-  assert.throws(() => forkTranscript(messages, events, 2, 3), /safely forked/);
-  assert.throws(() => forkTranscript(messages, events, 2, 999), /safely forked/);
-  assert.throws(
-    () => forkTranscript(messages, [{ ...events[1], turn: 2 }, ...events.slice(2)], 2, 2),
-    /safely forked/,
-  );
-  assert.throws(
-    () => forkTranscript(messages, [{ ...events[1], text: "wrong" }, ...events.slice(2)], 2, 2),
-    /safely forked/,
-  );
-  const wrongModel = messages.map((message, index) =>
-    index === 2 ? { ...message, model: "other" } : message,
-  ) as Message[];
-  assert.throws(() => forkTranscript(wrongModel, events, 2, 2), /safely forked/);
+test("a first instruction leaves only the system message", () => {
+  const first = forkBeforeLastInstruction([system, user("one"), ...blockedTurn] as Message[], [
+    { id: 1, kind: "user", text: "one", checkpoint: "v1" },
+    ...events.slice(3),
+  ]);
+  assert.deepEqual(first.messages, [system]);
+  assert.deepEqual(first.events, []);
+  assert.equal(first.checkpoint, "v1");
 });
 
-test("fork block count reflects only blocked events in the inherited prefix", () => {
-  assert.equal(forkTranscript(messages, events, 2, 5).blocks, 1);
+test("an array-content user message is matched by its text", () => {
+  const parts = [system, { role: "user", content: [{ type: "text", text: "one" }], timestamp: 2 }];
+  const cut = forkBeforeLastInstruction(parts as Message[], [
+    { id: 1, kind: "user", text: "one", checkpoint: "v9" },
+  ]);
+  assert.equal(cut.instruction, "one");
+});
+
+test("a history that cannot be matched to a checkpoint is refused", () => {
+  const bad: [Message[], GameEvent[]][] = [
+    [[system] as Message[], events],
+    [messages, events.filter((event) => event.kind !== "user")],
+    [messages, events.map((e) => (e.id === 12 ? { ...e, text: "other" } : e))],
+    [messages, events.map((e) => (e.id === 12 ? { ...e, checkpoint: undefined } : e))],
+  ];
+  for (const [m, e] of bad) assert.throws(() => forkBeforeLastInstruction(m, e), /safely forked/);
 });

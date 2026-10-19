@@ -1,52 +1,26 @@
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import type { GameEvent } from "./types";
 
-const successful = (message: Message): message is AssistantMessage =>
-  message.role === "assistant" &&
-  message.stopReason !== "error" &&
-  message.stopReason !== "aborted";
-const text = (message: Message) =>
+const unsafe = () => new Error("The run history cannot be safely forked.");
+const textOf = (message: Message) =>
   typeof message.content === "string"
     ? message.content
-    : message.content
-        .filter((part) => part.type === "text")
-        .map((part) => part.text)
-        .join("\n");
+    : message.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 
-export function forkTranscript(
-  messages: Message[],
-  events: GameEvent[],
-  turns: number,
-  eventId: number,
-) {
-  const agents = events.filter((event) => event.kind === "agent");
-  const assistants = messages.filter(successful);
-  if (
-    assistants.length !== turns ||
-    agents.length !== turns ||
-    agents.some((event, index) => {
-      const message = assistants[index];
-      return (
-        event.turn !== index + 1 ||
-        !message ||
-        event.model !== message.model ||
-        event.text !== text(message)
-      );
-    })
-  )
-    throw new Error("The run history cannot be safely forked.");
-  const selected = events.findIndex((event) => event.id === eventId && event.kind === "agent");
-  if (selected < 0) throw new Error("The selected response cannot be safely forked.");
-  const turn = events[selected].turn;
-  if (turn === undefined || turn < 1)
-    throw new Error("The selected response cannot be safely forked.");
-  const boundary = messages.indexOf(assistants[turn - 1]);
-  if (boundary < 0) throw new Error("The selected response cannot be safely forked.");
-  const prefix = events.slice(0, selected + 1);
+// A fork goes back to just before the player's last instruction: the Pi transcript and the visible
+// history are cut there, and the sprite is restored to the checkpoint taken at that instruction.
+// The last user event must be that same instruction and carry its checkpoint, or the history is
+// not safe to fork.
+export function forkBeforeLastInstruction(messages: Message[], events: GameEvent[]) {
+  const at = messages.findLastIndex((message) => message.role === "user");
+  const eventAt = events.findLastIndex((event) => event.kind === "user");
+  const event = events[eventAt];
+  if (at < 0 || !event?.checkpoint || event.text !== textOf(messages[at])) throw unsafe();
   return {
-    messages: messages.slice(0, boundary + 1),
-    events: prefix,
-    turns: turn,
-    blocks: prefix.filter((event) => event.kind === "monitor" && event.decision === "block").length,
+    messages: messages.slice(0, at),
+    events: events.slice(0, eventAt),
+    instruction: event.text,
+    checkpoint: event.checkpoint,
+    userEventId: event.id,
   };
 }
