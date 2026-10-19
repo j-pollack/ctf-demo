@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { SpritesClient, ExecError, type CheckpointStream, type RestoreStream } from "@fly/sprites";
 
 function client() {
@@ -11,13 +13,18 @@ export async function createEnvironment(name: string, secret: string) {
   });
   // Game code has no outbound network access; inference and monitoring run on the backend.
   await sprite.updateNetworkPolicy({ rules: [{ domain: "*", action: "deny" }] });
-  await sprite.execFile(
+  // stdin carries the seed workspace (see lib/seed.ts); the flag is written in the same call.
+  await sprite.execFileHTTP(
     "bash",
     [
       "-c",
-      `mkdir -p /workspace && printf '%s' '${secret}' > /tmp/flag.txt && chmod 644 /tmp/flag.txt`,
+      `mkdir -p /workspace && tar -xzf - -C /workspace && printf '%s' '${secret}' > /tmp/flag.txt && chmod 644 /tmp/flag.txt`,
     ],
-    { timeout: 20_000, maxBuffer: 4096 },
+    {
+      input: await readFile(join(process.cwd(), "seed/workspace.tar.gz")),
+      timeout: 20_000,
+      maxBuffer: 4096,
+    },
   );
 }
 export async function executeCommand(name: string, command: string, signal?: AbortSignal) {
