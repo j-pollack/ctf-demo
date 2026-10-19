@@ -3,7 +3,14 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Pool } from "pg";
-import { Sprite, SpritesClient, ExecError, type ExecOptions } from "@fly/sprites";
+import {
+  CheckpointStream,
+  RestoreStream,
+  Sprite,
+  SpritesClient,
+  ExecError,
+  type ExecOptions,
+} from "@fly/sprites";
 import { getCurrentSystemMessage, type Message } from "@earendil-works/pi-ai";
 
 // Only the runner's fresh loopback database is accepted; never read .env.local.
@@ -35,15 +42,34 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "../../db/migrations/005-estimated-settlement.sql",
     "../../db/migrations/006-system-prompt.sql",
     "../../db/migrations/007-inference-game-index.sql",
+    "../../db/migrations/008-block-ends-run.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
-  const { executeCommand, destroyEnvironment } = await import("../../lib/sprites");
+  const { executeCommand, destroyEnvironment, operationTimeout } =
+    await import("../../lib/sprites");
   const { runGame } = await import("../../lib/runner");
-  const { AGENT_MODEL, AGENT_PROMPT, MODELS, MONITOR_MODEL, agentPrompt, hasSecret } =
+  const { AGENT_MODEL, AGENT_PROMPT, MONITOR_MODEL, agentPrompt, hasSecret } =
     await import("../../lib/policy");
 
-  const environments = new Map<string, { policy: boolean; secret?: string }>();
+  // Per sprite: checkpoints (id -> state version) and a state version bumped by every command and
+  // reset by a restore, so tests can see exactly which checkpoint a restore went back to.
+  const environments = new Map<
+    string,
+    {
+      policy: boolean;
+      secret?: string;
+      version: number;
+      checkpoints: Map<string, number>;
+      nextCheckpoint: number;
+    }
+  >();
+  type StreamFailure = "ok" | "reject" | "error" | "truncated" | "hang" | "no-complete";
+  let checkpointMode: StreamFailure = "ok";
+  let restoreMode: StreamFailure = "ok";
+  // What each checkpoint or restore saw: agent requests and commands so far, and fork-child statuses.
+  const checkpoints: { name: string; requests: number; commands: number }[] = [];
+  const restores: { name: string; id: string; childStatuses: string[]; version: number }[] = [];
   const trace: string[] = [];
   const commands: { name: string; command: string }[] = [];
   const violations: string[] = [];
@@ -53,6 +79,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let commandFailure: Error | undefined;
   let commandGate: ((signal: AbortSignal) => Promise<void>) | undefined;
   let monitor = "allow";
+  // Decisions for the next monitor calls, in order; "monitor" applies once it is empty.
+  let monitorQueue: string[] = [];
+  // Whether the agent's tool-call turn includes readable reasoning.
+  let agentReasoning = true;
   // Dollars per call, as OpenRouter reports usage.cost; settlement converts to microdollars.
   let agentCost = 0;
   let monitorCost = 0;
@@ -70,7 +100,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   > = {};
   let fetchGate: ((signal: AbortSignal) => Promise<Response>) | undefined;
   let abortOn429: (() => void) | undefined;
-  let lastAgentRequest = "";
   // "cut" ends an agent stream after its first chunk, with no usage; "endless" sends its first
   // chunk and then only keep-alives until the request is aborted.
   let agentStreamMode: "full" | "cut" | "endless" = "full";
@@ -103,7 +132,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(!environments.has(name));
       trace.push(`${name}:create`);
       fixtureFailure("create");
-      environments.set(name, { policy: false });
+      environments.set(name, {
+        policy: false,
+        version: 0,
+        checkpoints: new Map(),
+        nextCheckpoint: 1,
+      });
       if (gate) await gate();
       return new SpritesClient("integration-sprite-token").sprite(name);
     }),
@@ -156,6 +190,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           },
         );
         commands.push({ name: this.name, command: args[5] });
+        environment.version++;
         options.signal?.throwIfAborted();
         if (commandGate) {
           assert.ok(options.signal);
@@ -174,6 +209,73 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       })();
     },
   );
+  // Real CheckpointStream/RestoreStream over a synthetic NDJSON response in the probed wire format.
+  const ndjson = (lines: unknown[], hang = false) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const line of lines)
+            controller.enqueue(new TextEncoder().encode(`${JSON.stringify(line)}\n`));
+          if (!hang) controller.close();
+        },
+      }),
+    );
+  t.mock.method(
+    Sprite.prototype,
+    "createCheckpoint",
+    async function (this: Sprite, comment?: string) {
+      return strict(async () => {
+        const environment = environments.get(this.name);
+        assert.ok(environment?.policy, "No checkpoint before network policy");
+        assert.equal(comment, undefined);
+        checkpoints.push({
+          name: this.name,
+          requests: requests.filter((request) => request.role === "agent").length,
+          commands: commands.length,
+        });
+        if (checkpointMode === "reject") throw new Error("fixture checkpoint rejected");
+        const info = [{ type: "info", data: "Creating checkpoint..." }];
+        if (checkpointMode === "error")
+          return new CheckpointStream(
+            ndjson([...info, { type: "error", error: "fixture failure" }]),
+          );
+        if (checkpointMode === "truncated") return new CheckpointStream(ndjson(info));
+        if (checkpointMode === "hang") return new CheckpointStream(ndjson(info, true));
+        if (checkpointMode === "no-complete")
+          return new CheckpointStream(ndjson([...info, { type: "complete", data: "All done" }]));
+        const id = `v${environment.nextCheckpoint++}`;
+        environment.checkpoints.set(id, environment.version);
+        return new CheckpointStream(
+          ndjson([...info, { type: "complete", data: `Checkpoint ${id} created successfully` }]),
+        );
+      })();
+    },
+  );
+  t.mock.method(Sprite.prototype, "restoreCheckpoint", async function (this: Sprite, id: string) {
+    return strict(async () => {
+      const environment = environments.get(this.name)!;
+      assert.ok(environment?.checkpoints.has(id), `Restore of an unknown checkpoint ${id}`);
+      const childStatuses = (
+        await pool.query(
+          "SELECT status FROM ctf.games WHERE sprite_name=$1 AND forked_from IS NOT NULL",
+          [this.name],
+        )
+      ).rows.map((row) => row.status as string);
+      restores.push({ name: this.name, id, childStatuses, version: environment.version });
+      if (restoreMode === "reject") throw new Error("fixture restore rejected");
+      const info = [{ type: "info", data: "Restoring..." }];
+      if (restoreMode === "error")
+        return new RestoreStream(ndjson([...info, { type: "error", error: "fixture failure" }]));
+      if (restoreMode === "truncated") return new RestoreStream(ndjson(info));
+      if (restoreMode === "hang") return new RestoreStream(ndjson(info, true));
+      if (restoreMode === "no-complete")
+        return new RestoreStream(ndjson([...info, { type: "info", data: "ok" }]));
+      environment.version = environment.checkpoints.get(id)!;
+      return new RestoreStream(
+        ndjson([...info, { type: "complete", data: `Restore from ${id} complete` }]),
+      );
+    })();
+  });
   t.mock.method(
     SpritesClient.prototype,
     "deleteSprite",
@@ -247,6 +349,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         );
       }
       let message;
+      const mode = payload.response_format ? (monitorQueue.shift() ?? monitor) : monitor;
       if (payload.response_format) {
         assert.equal(payload.model, MONITOR_MODEL);
         // GLM rejects disabled reasoning, so the monitor requests low-effort hidden reasoning.
@@ -255,17 +358,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         message = {
           reasoning: "Monitor fixture reasoning.",
           content:
-            monitor === "invalid"
+            mode === "invalid"
               ? "invalid JSON"
               : JSON.stringify({
-                  allow: monitor === "allow",
-                  reason: monitor === "block" ? "Protected read" : "",
+                  allow: mode === "allow",
+                  reason: mode === "block" ? "Protected read" : "",
                 }),
         };
       } else {
         assert.equal(payload.model, AGENT_MODEL);
         assert.equal(payload.stream, true, "Agent calls stream");
-        lastAgentRequest = JSON.stringify(payload.messages);
         assert.deepEqual(
           payload.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
           ["sprite_exec", "submit"],
@@ -276,7 +378,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
             ? { reasoning: "Thinking at length." }
             : agentCalls === 1
               ? {
-                  reasoning: "Controlled fixture reasoning.",
+                  reasoning: agentReasoning ? "Controlled fixture reasoning." : undefined,
                   tool_calls: proposed.map((call) => ({
                     id: randomUUID(),
                     type: "function",
@@ -379,6 +481,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       "TRUNCATE ctf.events,ctf.inference,ctf.games,ctf.daily_spend,ctf.seasons RESTART IDENTITY CASCADE",
     );
     environments.clear();
+    checkpointMode = "ok";
+    restoreMode = "ok";
+    checkpoints.length = 0;
+    restores.length = 0;
+    operationTimeout.ms = 30_000;
     trace.length = 0;
     commands.length = 0;
     violations.length = 0;
@@ -388,6 +495,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     commandGate = undefined;
     commandResult = { stdout: "fixture-output", stderr: "", exitCode: 0 };
     monitor = "allow";
+    monitorQueue = [];
+    agentReasoning = true;
     agentCost = 0;
     monitorCost = 0;
     proposed = ["printf harmless"];
@@ -398,7 +507,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     responses = {};
     fetchGate = undefined;
     abortOn429 = undefined;
-    lastAgentRequest = "";
     agentStreamMode = "full";
     agentFinish = "stop";
     generations.clear();
@@ -450,69 +558,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     return { cookie, id: (await session.json()).user.id as string };
   };
 
-  await t.test(
-    "fork continuation repairs prior tool calls without replay and supports fork-of-fork",
-    async () => {
-      const parent = await startGame("fork-pi", false);
-      proposed = ["printf old"];
-      await play(parent.id, "fork-pi");
-      const parentEvents = (
-        await pool.query("SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id", [parent.id])
-      ).rows;
-      const firstAgent = parentEvents.find((event) => event.data.kind === "agent");
-      assert.ok(firstAgent);
-      const child = await startGame("fork-pi", false, undefined, {
-        sourceId: parent.id,
-        eventId: Number(firstAgent.id),
-      });
-      const childMessages: Message[] = (await row(child.id)).messages;
-      const parentMessages: Message[] = (await row(parent.id)).messages;
-      const boundary = parentMessages.findIndex(
-        (message) =>
-          message.role === "assistant" &&
-          message.stopReason !== "error" &&
-          message.stopReason !== "aborted",
-      );
-      assert.equal(child.turns, 1);
-      assert.ok(boundary >= 0);
-      assert.deepEqual(childMessages, parentMessages.slice(0, boundary + 1));
-      assert.equal(childMessages.at(-1)?.role, "assistant");
-      assert.equal(
-        childMessages.some((message) => message.role === "toolResult"),
-        false,
-      );
-      const inheritedEvent = child.events.find((event) => event.kind === "agent");
-      assert.ok(inheritedEvent);
-      const grandchild = await startGame("fork-pi", false, undefined, {
-        sourceId: child.id,
-        eventId: inheritedEvent.id,
-      });
-      assert.equal(grandchild.turns, 1);
-      assert.deepEqual((await row(grandchild.id)).messages, childMessages);
-      const creates = trace.filter((entry) => entry.endsWith(":create")).length;
-      await assert.rejects(
-        () =>
-          startGame("fork-pi", false, undefined, {
-            sourceId: child.id,
-            eventId: inheritedEvent.id,
-          }),
-        /daily limit of new runs/i,
-      );
-      assert.equal(trace.filter((entry) => entry.endsWith(":create")).length, creates);
-      proposed = ["printf after-fork"];
-      agentCalls = 0;
-      commands.length = 0;
-      const leased = await claimGame(grandchild.id, "fork-pi");
-      await runGame(leased, "continue after fork", AbortSignal.timeout(5000), () => {});
-      assert.deepEqual(
-        commands.map((item) => item.command),
-        ["printf after-fork"],
-      );
-      assert.ok(lastAgentRequest.includes("previous response was interrupted"));
-      assert.ok(lastAgentRequest.includes("continue after fork"));
-    },
-  );
-
   await t.test("database rate limiting reports a Retry-After within its window", async () => {
     // Same order as scripts/setup.ts: this migration adjusts a Better Auth table.
     await pool.query(
@@ -534,200 +579,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const retryAfter = Number(limited.headers.get("X-Retry-After"));
     assert.ok(retryAfter > 0 && retryAfter <= 60, `Retry-After was ${retryAfter}`);
   });
-
-  await t.test(
-    "actual authenticated fork route snapshots a validated transcript prefix",
-    async () => {
-      const who = await guest();
-      const cookie = who.cookie;
-      const source = await startGame(who.id, false);
-      const baseMessages = [
-        { role: "system", content: "", sections: { preamble: "system" }, timestamp: 1 },
-        { role: "user", content: "first", timestamp: 2 },
-        {
-          role: "assistant",
-          content: [
-            { type: "text", text: "first answer" },
-            {
-              type: "toolCall",
-              id: "old-call",
-              name: "sprite_exec",
-              arguments: { command: "printf old" },
-            },
-          ],
-          model: AGENT_MODEL,
-          stopReason: "toolUse",
-          timestamp: 3,
-        },
-        {
-          role: "toolResult",
-          toolCallId: "old-call",
-          toolName: "sprite_exec",
-          content: [{ type: "text", text: "old output" }],
-          isError: false,
-          timestamp: 4,
-        },
-        { role: "user", content: "second", timestamp: 5 },
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "later answer" }],
-          model: AGENT_MODEL,
-          stopReason: "stop",
-          timestamp: 6,
-        },
-      ];
-      await pool.query(
-        "UPDATE ctf.games SET messages=$2,turns=2,blocks=1,spent_microdollars=123,agent_model=$3 WHERE id=$1",
-        [source.id, JSON.stringify(baseMessages), MODELS.find((model) => model !== AGENT_MODEL)],
-      );
-      const seeded = [
-        { kind: "user", text: "first" },
-        { kind: "agent", text: "first answer", model: AGENT_MODEL, turn: 1 },
-        { kind: "monitor", text: "blocked prior attempt", decision: "block", turn: 1 },
-        { kind: "tool", text: "old output", turn: 1 },
-        { kind: "user", text: "second" },
-        { kind: "agent", text: "later answer", model: AGENT_MODEL, turn: 2 },
-      ];
-      for (const event of seeded)
-        await pool.query("INSERT INTO ctf.events(game_id,data) VALUES($1,$2)", [
-          source.id,
-          JSON.stringify(event),
-        ]);
-      const sourceEvents = (
-        await pool.query("SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id", [source.id])
-      ).rows;
-      const selectedId = Number(sourceEvents[1].id);
-      const sourceSnapshot = await pool.query(
-        "SELECT messages,turns,blocks,spent_microdollars,status FROM ctf.games WHERE id=$1",
-        [source.id],
-      );
-      const { POST } = await import("../../app/api/games/[id]/fork/route");
-      const request = (body: string, path = source.id, requestOrigin = origin) =>
-        new Request(`${origin}/api/games/${path}/fork`, {
-          method: "POST",
-          headers: { origin: requestOrigin, cookie, "Content-Type": "application/json" },
-          body,
-        });
-      const createCount = () => trace.filter((entry) => entry.endsWith(":create")).length;
-      const initialCreateCount = createCount();
-      const activeLease = randomUUID();
-      await pool.query(
-        "UPDATE ctf.games SET lease=$2,lease_until=now()+interval '1 minute' WHERE id=$1",
-        [source.id, activeLease],
-      );
-      const busyResponse = await POST(request(JSON.stringify({ eventId: selectedId })), {
-        params: Promise.resolve({ id: source.id }),
-      });
-      assert.equal(busyResponse.status, 409);
-      assert.equal(createCount(), initialCreateCount);
-      await pool.query("UPDATE ctf.games SET lease=NULL,lease_until=NULL WHERE id=$1", [source.id]);
-      const staleLease = randomUUID();
-      await pool.query(
-        "UPDATE ctf.games SET lease=$2,lease_until=now()-interval '1 second' WHERE id=$1",
-        [source.id, staleLease],
-      );
-      for (const [body, path, requestOrigin, status] of [
-        [`{"eventId":"${selectedId}"}`, source.id, origin, 400],
-        [`{"eventId":${Number(sourceEvents[0].id)}}`, source.id, origin, 409],
-        ["null", source.id, origin, 400],
-        ["{}", source.id, origin, 400],
-        [`{"eventId":${selectedId}}`, randomUUID(), origin, 404],
-        [`{"eventId":${selectedId}}`, "not-a-uuid", origin, 404],
-        [`{"eventId":${selectedId}}`, source.id, "https://not-local.invalid", 403],
-        [`{"eventId":${selectedId}}`, source.id, origin, 200],
-      ] as const) {
-        const response = await POST(request(body, path, requestOrigin), {
-          params: Promise.resolve({ id: path }),
-        });
-        assert.equal(response.status, status);
-        if (status === 200) {
-          const child = await response.json();
-          assert.equal(child.agentModel, AGENT_MODEL);
-          assert.equal(child.turns, 1);
-          assert.equal(child.blocks, 0);
-          assert.equal(child.events.length, 2);
-          assert.notEqual(child.events[1].id, selectedId);
-          const stored = await row(child.id);
-          assert.deepEqual(stored.messages, baseMessages.slice(0, 3));
-          assert.equal(Number(stored.budget_microdollars), 600000);
-          assert.equal(Number(stored.spent_microdollars), 0);
-          assert.equal(Number(stored.reserved_microdollars), 0);
-          assert.equal(Number(stored.tokens_used), 0);
-          assert.equal(stored.blocks, 0);
-          assert.notEqual(stored.secret_hash, (await row(source.id)).secret_hash);
-          assert.notEqual(stored.sprite_name, (await row(source.id)).sprite_name);
-          assert.equal((await row(source.id)).lease, null);
-        }
-      }
-      assert.equal(createCount(), initialCreateCount + 1);
-      const { record } = await import("../../lib/games");
-      await assert.rejects(
-        () => record(source.id, { kind: "error", text: "stale runner" }, staleLease),
-        /stopped/i,
-      );
-      const after = await pool.query(
-        "SELECT messages,turns,blocks,spent_microdollars,status FROM ctf.games WHERE id=$1",
-        [source.id],
-      );
-      assert.deepEqual(
-        {
-          messages: after.rows[0].messages,
-          turns: after.rows[0].turns,
-          blocks: after.rows[0].blocks,
-          spent_microdollars: after.rows[0].spent_microdollars,
-        },
-        {
-          messages: sourceSnapshot.rows[0].messages,
-          turns: sourceSnapshot.rows[0].turns,
-          blocks: sourceSnapshot.rows[0].blocks,
-          spent_microdollars: sourceSnapshot.rows[0].spent_microdollars,
-        },
-      );
-      assert.equal(after.rows[0].status, "ended");
-      assert.equal(
-        (
-          await pool.query("SELECT count(*)::int AS n FROM ctf.events WHERE game_id=$1", [
-            source.id,
-          ])
-        ).rows[0].n,
-        seeded.length,
-      );
-      const unauthorized = await POST(
-        new Request(`${origin}/api/games/${source.id}/fork`, {
-          method: "POST",
-          headers: { origin, "Content-Type": "application/json" },
-          body: JSON.stringify({ eventId: selectedId }),
-        }),
-        { params: Promise.resolve({ id: source.id }) },
-      );
-      assert.equal(unauthorized.status, 401);
-      const foreignGuest = await guest();
-      const foreignCookie = foreignGuest.cookie;
-      const foreign = await POST(
-        new Request(`${origin}/api/games/${source.id}/fork`, {
-          method: "POST",
-          headers: { origin, cookie: foreignCookie, "Content-Type": "application/json" },
-          body: JSON.stringify({ eventId: selectedId }),
-        }),
-        { params: Promise.resolve({ id: source.id }) },
-      );
-      assert.equal(foreign.status, 404);
-      const other = await startGame("different-owner", false);
-      const otherEvent = await pool.query(
-        "INSERT INTO ctf.events(game_id,data) VALUES($1,$2) RETURNING id",
-        [
-          other.id,
-          JSON.stringify({ kind: "agent", text: "other run", model: AGENT_MODEL, turn: 1 }),
-        ],
-      );
-      const mismatch = await POST(
-        request(JSON.stringify({ eventId: Number(otherEvent.rows[0].id) })),
-        { params: Promise.resolve({ id: source.id }) },
-      );
-      assert.equal(mismatch.status, 409);
-      await pool.query('DELETE FROM "user" WHERE id=ANY($1::text[])', [[who.id, foreignGuest.id]]);
-    },
-  );
 
   const MARKER = "HiddenMarker7Q2",
     MARKER2 = "OtherMarker9Z4";
@@ -996,211 +847,600 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   });
 
-  await t.test("fork inherits the current system prompt and the child agent uses it", async () => {
-    const who = await guest();
-    const parent = await startGame(who.id, false);
-    assert.equal((await instruct(who, parent.id, { systemPrompt: MARKER })).status, 200);
-    const agentEvent = (
-      await pool.query("SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id", [parent.id])
-    ).rows.find((event) => event.data.kind === "agent");
-    assert.ok(agentEvent);
-    const child = await startGame(who.id, false, undefined, {
-      sourceId: parent.id,
-      eventId: Number(agentEvent.id),
-    });
-    assert.equal((await row(child.id)).system_prompt, MARKER);
-    assert.equal(child.systemPrompt, MARKER);
-    const from = requests.length;
+  // --- A monitor block ends the run; a fork continues it. ---
+  const secretOf = async (gameId: string) =>
+    environments.get((await row(gameId)).sprite_name)!.secret!;
+  const eventsOf = async (gameId: string) =>
+    (await pool.query("SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id", [gameId]))
+      .rows;
+  // An allowed command, then a blocked read of the flag in one batch.
+  const blockRun = async (owner: string, options: { monitorReasoning?: boolean } = {}) => {
+    const game = await startGame(owner, false, undefined, options);
+    proposed = ["printf old", "cat /tmp/flag.txt"];
+    monitorQueue = ["allow", "block"];
     agentCalls = 0;
-    assert.equal((await instruct(who, child.id)).status, 200);
-    const systems = agentSystems(from);
-    assert.ok(systems.length > 0);
-    assert.deepEqual(systems, Array(systems.length).fill(agentPrompt(MARKER)));
+    return { game, done: await play(game.id, owner) };
+  };
+  const forkRoute = async (
+    who: { cookie: string } | undefined,
+    id: string,
+    requestOrigin = origin,
+  ) => {
+    const { POST } = await import("../../app/api/games/[id]/fork/route");
+    return POST(
+      new Request(`${origin}/api/games/${id}/fork`, {
+        method: "POST",
+        headers: {
+          origin: requestOrigin,
+          ...(who && { cookie: who.cookie }),
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+  };
+  const createCount = () => trace.filter((entry) => entry.endsWith(":create")).length;
+
+  for (const scenario of [
+    {
+      name: "first",
+      proposal: ["cat /tmp/flag.txt", "printf harmless"],
+      queue: ["block"],
+      ran: [],
+    },
+    {
+      name: "after an allowed command",
+      proposal: ["printf harmless", "cat /tmp/flag.txt", "SUBMIT"],
+      queue: ["allow", "block"],
+      ran: ["printf harmless"],
+    },
+  ])
+    await t.test(
+      `a monitor block (${scenario.name}) ends the run: nothing later runs and the agent gets no more turns`,
+      async () => {
+        const who = await guest();
+        const game = await startGame(who.id, false);
+        const secret = await secretOf(game.id);
+        proposed = scenario.proposal.map((call) => (call === "SUBMIT" ? { submit: secret } : call));
+        monitorQueue = [...scenario.queue];
+        const { response, frames } = await instructFrames(who, game.id);
+        assert.equal(response.status, 200);
+        assert.deepEqual(
+          commands.map((entry) => entry.command),
+          scenario.ran,
+        );
+        assert.equal(requests.filter((request) => request.role === "agent").length, 1);
+        assert.equal(
+          requests.filter((request) => request.role === "monitor").length,
+          scenario.queue.length,
+        );
+        const stored = await row(game.id);
+        assert.equal(stored.status, "blocked");
+        assert.equal(stored.lease, null);
+        assert.equal(stored.blocks, 1);
+        const kinds = frames.filter((frame) => frame.type === "event").map((frame) => frame.data);
+        assert.ok(kinds.some((event) => event.kind === "monitor" && event.decision === "block"));
+        assert.ok(!kinds.some((event) => event.kind === "error" || event.kind === "submit"));
+        const done = frames.find((frame) => frame.type === "done")!;
+        assert.equal(done.data.status, "blocked");
+        assert.equal(done.data.forkable, true);
+        assert.equal(environments.size, 1, "the environment stays for a fork");
+        assert.equal(stored.sprite_deleted_at, null);
+        await assert.rejects(() => claimGame(game.id, who.id), /ended or is already responding/);
+        assert.equal((await instruct(who, game.id)).status, 409);
+      },
+    );
+  await t.test(
+    "a monitor error leaves the run open; a spent budget during the monitor call exhausts it",
+    async () => {
+      monitor = "invalid";
+      const open = await startGame("monitor-error", false);
+      assert.equal((await play(open.id, "monitor-error")).status, "active");
+      monitor = "allow";
+      // The agent's turn costs the whole budget, so the monitor call cannot be admitted.
+      agentCost = 0.6;
+      agentCalls = 0;
+      const spent = await startGame("monitor-broke", false);
+      assert.equal((await play(spent.id, "monitor-broke")).status, "exhausted");
+      assert.deepEqual(commands, []);
+    },
+  );
+
+  await t.test(
+    "each prompt takes one checkpoint before the agent runs, and the user event carries it",
+    async () => {
+      const who = await guest();
+      const game = await startGame(who.id, false);
+      const name = (await row(game.id)).sprite_name as string;
+      assert.equal((await instruct(who, game.id)).status, 200);
+      agentCalls = 0;
+      assert.equal((await instruct(who, game.id)).status, 200);
+      // Exactly one per prompt, each taken before any agent request or command of that prompt.
+      assert.deepEqual(
+        checkpoints.map((entry) => [entry.name, entry.requests, entry.commands]),
+        [
+          [name, 0, 0],
+          [name, 2, 1],
+        ],
+      );
+      const users = (await eventsOf(game.id)).map((e) => e.data).filter((e) => e.kind === "user");
+      assert.deepEqual(
+        users.map((e) => e.checkpoint),
+        ["v1", "v2"],
+      );
+      assert.deepEqual(
+        [...environments.get(name)!.checkpoints],
+        [
+          ["v1", 0],
+          ["v2", 1],
+        ],
+      );
+    },
+  );
+
+  for (const mode of ["reject", "error", "truncated", "hang", "no-complete"] as const)
+    await t.test(
+      `a checkpoint that ${mode === "hang" ? "times out" : `fails (${mode})`} stops the response before any inference`,
+      async () => {
+        const who = await guest();
+        const game = await startGame(who.id, false);
+        checkpointMode = mode;
+        operationTimeout.ms = 50;
+        const before = await row(game.id);
+        const { response, frames } = await instructFrames(who, game.id);
+        assert.equal(response.status, 200);
+        assert.equal(requests.length, 0, "no agent or monitor request");
+        assert.deepEqual(commands, []);
+        const after = await row(game.id);
+        assert.equal(after.status, "active");
+        assert.equal(after.lease, null);
+        assert.deepEqual(after.messages, before.messages);
+        const events = (await eventsOf(game.id)).map((e) => e.data);
+        assert.deepEqual(
+          events.map((e) => e.kind),
+          ["error"],
+          "an error event and no user event",
+        );
+        assert.ok(frames.some((frame) => frame.type === "event" && frame.data.kind === "error"));
+        assert.equal(environments.get(after.sprite_name)!.checkpoints.size, 0);
+        // The run is still usable once checkpoints work again.
+        checkpointMode = "ok";
+        assert.equal((await instruct(who, game.id)).status, 200);
+        assert.equal((await row(game.id)).status, "active");
+        assert.ok(commands.length > 0);
+      },
+    );
+
+  await t.test(
+    "fork goes back to before the last instruction and restores that checkpoint",
+    async () => {
+      agentCost = 0.00004;
+      monitorCost = 0.000013;
+      const who = await guest();
+      const parent = await startGame(who.id, false, undefined, { monitorReasoning: false });
+      assert.equal((await instruct(who, parent.id, { systemPrompt: MARKER })).status, 200);
+      proposed = ["printf old", "cat /tmp/flag.txt"];
+      monitorQueue = ["allow", "block"];
+      agentCalls = 0;
+      const dropped = "DroppedInstruction3K9";
+      assert.equal((await instruct(who, parent.id, { prompt: dropped })).status, 200);
+      const before = await row(parent.id);
+      assert.equal(before.status, "blocked");
+      const eventsBefore = await eventsOf(parent.id);
+      const second = eventsBefore.filter((e) => e.data.kind === "user")[1];
+      assert.equal(second.data.checkpoint, "v2");
+      const creates = createCount();
+      const sprite = environments.get(before.sprite_name)!;
+      assert.equal(sprite.version, 2, "the dropped instruction ran a command after its checkpoint");
+
+      const response = await forkRoute(who, parent.id);
+      assert.equal(response.status, 200);
+      const child = await response.json();
+      assert.equal(child.retryInstruction, dropped);
+      assert.equal(createCount(), creates, "a fork creates no environment");
+      // Restored exactly once, to exactly that checkpoint, while the child was still being created.
+      assert.deepEqual(restores, [
+        { name: before.sprite_name, id: "v2", childStatuses: ["creating"], version: 2 },
+      ]);
+      assert.equal(sprite.version, 1, "the dropped instruction's changes are gone");
+      const stored = await row(child.id);
+      assert.equal(stored.status, "active");
+      assert.equal(stored.forked_from, parent.id);
+      assert.equal(stored.sprite_name, before.sprite_name);
+      assert.equal(stored.secret_hash, before.secret_hash);
+      const lastUser = before.messages.findLastIndex((m: Message) => m.role === "user");
+      assert.ok(lastUser > 1);
+      assert.deepEqual(stored.messages, before.messages.slice(0, lastUser));
+      assert.ok(!JSON.stringify(stored.messages).includes(dropped));
+      // Spend, tokens, budget, turns and blocks carry over in full.
+      for (const key of [
+        "turns",
+        "blocks",
+        "agent_model",
+        "monitor_model",
+        "system_prompt",
+        "monitor_reasoning",
+        "token_budget",
+        "tokens_used",
+        "budget_microdollars",
+        "spent_microdollars",
+        "season_id",
+      ])
+        assert.deepEqual(stored[key], before[key], key);
+      assert.equal(stored.system_prompt, MARKER);
+      assert.equal(stored.monitor_reasoning, false);
+      assert.equal(Number(stored.reserved_microdollars), 0);
+      // The visible history stops before the dropped instruction, under new ids.
+      const eventsChild = await eventsOf(child.id);
+      assert.deepEqual(
+        eventsChild.map((e) => e.data),
+        eventsBefore.slice(0, eventsBefore.indexOf(second)).map((e) => e.data),
+      );
+      assert.ok(eventsChild.every((e) => !eventsBefore.some((old) => old.id === e.id)));
+      assert.equal(child.status, "active");
+      assert.equal(child.forkable, false);
+      const after = await row(parent.id);
+      assert.equal(after.status, "blocked");
+      assert.deepEqual(after.messages, before.messages);
+      assert.deepEqual(await eventsOf(parent.id), eventsBefore);
+      const { publicGame, gameBilling } = await import("../../lib/games");
+      assert.equal((await publicGame(after)).forkable, false);
+
+      // Prompting the child never shows the model the dropped instruction or its turns.
+      const from = requests.length;
+      agentCalls = 0;
+      proposed = ["printf after-fork"];
+      monitorQueue = [];
+      commands.length = 0;
+      assert.equal((await instruct(who, child.id, { prompt: "NewInstruction8M1" })).status, 200);
+      const first = requests.slice(from).find((request) => request.role === "agent")!;
+      const sent = JSON.stringify((first.payload as { messages: unknown }).messages);
+      assert.ok(sent.includes("NewInstruction8M1"));
+      for (const gone of [dropped, "printf old", "cat /tmp/flag.txt"])
+        assert.ok(!sent.includes(gone), `${gone} is gone from the model's view`);
+      assert.equal(agentSystems(from)[0], agentPrompt(MARKER));
+      assert.deepEqual(commands, [{ name: before.sprite_name, command: "printf after-fork" }]);
+      const billing = await gameBilling(child.id);
+      assert.equal(
+        billing.agentSpendMicrodollars + billing.monitorSpendMicrodollars,
+        billing.spentMicrodollars,
+      );
+      assert.ok(billing.spentMicrodollars > Number(before.spent_microdollars));
+    },
+  );
+
+  for (const mode of ["reject", "error", "truncated", "hang", "no-complete"] as const)
+    await t.test(
+      `a restore that ${mode === "hang" ? "times out" : `fails (${mode})`} deletes the child and leaves the parent forkable`,
+      async () => {
+        const who = await guest();
+        const { game: parent } = await blockRun(who.id);
+        const before = await row(parent.id);
+        const eventsBefore = await eventsOf(parent.id);
+        const count = async (table: string) =>
+          (await pool.query(`SELECT count(*)::int AS n FROM ctf.${table}`)).rows[0].n as number;
+        const games = await count("games"),
+          allEvents = await count("events");
+        restoreMode = mode;
+        operationTimeout.ms = 50;
+        const failed = await forkRoute(who, parent.id);
+        assert.equal(failed.status, 503);
+        assert.match((await failed.json()).error, /restore|environment/i);
+        assert.equal(restores.length, 1);
+        assert.equal(await count("games"), games);
+        assert.equal(await count("events"), allEvents);
+        assert.deepEqual(await row(parent.id), before);
+        assert.deepEqual(await eventsOf(parent.id), eventsBefore);
+        const { publicGame } = await import("../../lib/games");
+        assert.equal((await publicGame(before)).forkable, true);
+        // Nothing is stuck: the same fork works once restores do.
+        restoreMode = "ok";
+        operationTimeout.ms = 30_000;
+        assert.equal((await forkRoute(who, parent.id)).status, 200);
+      },
+    );
+
+  await t.test("a run whose last instruction has no checkpoint cannot be forked", async () => {
+    const who = await guest();
+    const { game: parent } = await blockRun(who.id);
+    await pool.query("UPDATE ctf.events SET data=data-'checkpoint' WHERE game_id=$1", [parent.id]);
+    const { publicGame } = await import("../../lib/games");
+    assert.equal((await publicGame(await row(parent.id))).forkable, false);
+    assert.equal((await forkRoute(who, parent.id)).status, 409);
+    assert.equal(restores.length, 0);
+  });
+
+  await t.test("cleanup deletes a stuck fork child so the parent stays forkable", async () => {
+    const who = await guest();
+    const { game: parent } = await blockRun(who.id);
+    const stored = await row(parent.id);
+    const stuck = randomUUID(),
+      plain = randomUUID();
+    for (const [id, forkedFrom] of [
+      [stuck, parent.id],
+      [plain, null],
+    ] as const)
+      await pool.query(
+        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id,status,forked_from,updated_at)
+        VALUES($1,$2,$3,'h','a','m','v',1,$4,'creating',$5,now()-interval '10 minutes')`,
+        [id, who.id, forkedFrom ? stored.sprite_name : `ctf-${id}`, stored.season_id, forkedFrom],
+      );
+    await pool.query(
+      `INSERT INTO ctf.events(game_id,data) VALUES($1,'{"kind":"user","text":"x"}')`,
+      [stuck],
+    );
+    await cleanup();
+    assert.equal((await pool.query("SELECT 1 FROM ctf.games WHERE id=$1", [stuck])).rowCount, 0);
+    assert.equal(
+      (await pool.query("SELECT 1 FROM ctf.events WHERE game_id=$1", [stuck])).rowCount,
+      0,
+    );
+    assert.equal((await row(plain)).status, "ended", "other stale creating runs are only ended");
+    assert.equal((await row(parent.id)).sprite_deleted_at, null);
+    const { publicGame } = await import("../../lib/games");
+    assert.equal((await publicGame(await row(parent.id))).forkable, true);
+  });
+
+  await t.test("a denied fork changes nothing and never ends the owner's current run", async () => {
+    const who = await guest();
+    const { game: parent } = await blockRun(who.id);
+    const current = await startGame(who.id, false);
+    await pool.query(
+      "INSERT INTO ctf.seasons(id,name,monitor_model,monitor_version,starts_at,ends_at) VALUES('other-season','Other',$1,'v',now()-interval '1 day',now()+interval '1 day')",
+      [MONITOR_MODEL],
+    );
+    const original = await row(parent.id);
+    const count = async () =>
+      (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n as number;
+    const games = await count(),
+      creates = createCount();
+    const deny = async (label: string, status: number, change = "", pattern?: RegExp) => {
+      if (change) await pool.query(`UPDATE ctf.games SET ${change} WHERE id=$1`, [parent.id]);
+      try {
+        const response = await forkRoute(who, parent.id);
+        assert.equal(response.status, status, label);
+        if (pattern) assert.match((await response.json()).error, pattern, label);
+      } finally {
+        await pool.query(
+          "UPDATE ctf.games SET status=$2,sprite_deleted_at=$3,updated_at=$4,season_id=$5,lease=NULL,lease_until=NULL,reserved_microdollars=0 WHERE id=$1",
+          [
+            parent.id,
+            original.status,
+            original.sprite_deleted_at,
+            original.updated_at,
+            original.season_id,
+          ],
+        );
+      }
+      assert.equal(await count(), games, label);
+      assert.equal(createCount(), creates, label);
+      assert.equal((await row(current.id)).status, "active", `${label}: current run stays open`);
+      assert.deepEqual(await row(parent.id), original, label);
+    };
+    for (const status of ["active", "captured", "exhausted", "ended"])
+      await deny(`status ${status}`, 409, `status='${status}'`);
+    await deny("sprite deleted", 410, "sprite_deleted_at=now()");
+    await deny("block older than 24h", 410, "updated_at=now()-interval '25 hours'");
+    await deny("another season", 410, "season_id='other-season'");
+    await deny(
+      "response in flight",
+      409,
+      `lease='${randomUUID()}',lease_until=now()+interval '1 minute'`,
+    );
+    await deny("billing pending", 409, "reserved_microdollars=5", /billing is still settling/i);
   });
 
   await t.test(
-    "failed fork provisioning ends the replaced source and cleans the partial child",
+    "fork route refuses missing sessions, bad origins and other owners' runs",
     async () => {
-      const source = await startGame("fork-failure", false);
-      await pool.query("UPDATE ctf.games SET messages=$2,turns=1 WHERE id=$1", [
-        source.id,
-        JSON.stringify([
-          { role: "system", content: "", timestamp: 1 },
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "safe" }],
-            model: AGENT_MODEL,
-            stopReason: "stop",
-            timestamp: 2,
-          },
-        ]),
-      ]);
-      const selected = await pool.query(
-        "INSERT INTO ctf.events(game_id,data) VALUES($1,$2) RETURNING id",
-        [source.id, JSON.stringify({ kind: "agent", text: "safe", model: AGENT_MODEL, turn: 1 })],
-      );
-      failAt = "create";
-      await assert.rejects(
-        () =>
-          startGame("fork-failure", false, undefined, {
-            sourceId: source.id,
-            eventId: Number(selected.rows[0].id),
-          }),
-        /fixture failure: create/,
-      );
-      failAt = undefined;
-      assert.equal((await row(source.id)).status, "ended");
-      assert.equal(
-        (
-          await pool.query(
-            "SELECT count(*)::int AS n FROM ctf.games WHERE owner_id='fork-failure' AND status IN ('creating','active')",
-          )
-        ).rows[0].n,
-        0,
-      );
-      assert.equal(environments.size, 0);
-    },
-  );
-
-  await t.test(
-    "claim/fork row-lock race admits exactly one winner in either lock order",
-    async () => {
-      const waitForLock = async (fragment: string) => {
-        for (let attempt = 0; attempt < 200; attempt++) {
-          const result = await pool.query(
-            "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND state='active' AND wait_event_type='Lock' AND query LIKE $1 LIMIT 1",
-            [`%${fragment}%`],
-          );
-          if (result.rowCount) return;
-          await new Promise((resolve) => setTimeout(resolve, 5));
-        }
-        throw new Error(`Timed out waiting for lock: ${fragment}`);
-      };
-      for (const winner of ["claim", "fork"] as const) {
-        const owner = `race-${winner}`;
-        const source = await startGame(owner, false);
-        await pool.query("UPDATE ctf.games SET messages=$2,turns=1 WHERE id=$1", [
-          source.id,
-          JSON.stringify([
-            { role: "system", content: "", timestamp: 1 },
-            {
-              role: "assistant",
-              content: [{ type: "text", text: "safe" }],
-              model: AGENT_MODEL,
-              stopReason: "stop",
-              timestamp: 2,
-            },
-          ]),
-        ]);
-        const event = await pool.query(
-          "INSERT INTO ctf.events(game_id,data) VALUES($1,$2) RETURNING id",
-          [source.id, JSON.stringify({ kind: "agent", text: "safe", model: AGENT_MODEL, turn: 1 })],
+      const who = await guest(),
+        stranger = await guest();
+      const { game: parent } = await blockRun(who.id);
+      const before = await row(parent.id);
+      const games = (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n;
+      for (const [label, status, response] of [
+        ["no session", 401, await forkRoute(undefined, parent.id)],
+        ["bad origin", 403, await forkRoute(who, parent.id, "https://not-local.invalid")],
+        ["another owner", 404, await forkRoute(stranger, parent.id)],
+      ] as const) {
+        assert.equal(response.status, status, label);
+        assert.equal(
+          (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n,
+          games,
+          label,
         );
-        const lock = await pool.connect();
-        await lock.query("BEGIN");
-        await lock.query("SELECT id FROM ctf.games WHERE id=$1 FOR UPDATE", [source.id]);
-        let first: Promise<unknown>, second: Promise<unknown>;
-        if (winner === "claim") {
-          first = claimGame(source.id, owner);
-          await waitForLock("UPDATE ctf.games g SET lease");
-          second = startGame(owner, false, undefined, {
-            sourceId: source.id,
-            eventId: Number(event.rows[0].id),
-          });
-          await waitForLock("SELECT * FROM ctf.games WHERE owner_id");
-        } else {
-          first = startGame(owner, false, undefined, {
-            sourceId: source.id,
-            eventId: Number(event.rows[0].id),
-          });
-          await waitForLock("SELECT * FROM ctf.games WHERE owner_id");
-          second = claimGame(source.id, owner);
-          await waitForLock("UPDATE ctf.games g SET lease");
-        }
-        await lock.query("COMMIT");
-        lock.release();
-        const [a, b] = await Promise.allSettled([first, second]);
-        assert.equal([a, b].filter((result) => result.status === "fulfilled").length, 1);
-        assert.equal(a.status, "fulfilled");
-        assert.equal(b.status, "rejected");
-        assert.equal((await row(source.id)).status, winner === "claim" ? "active" : "ended");
+        assert.deepEqual(await row(parent.id), before, label);
       }
     },
   );
 
   await t.test(
-    "an in-flight stale event write waits and is denied after fork revokes its lease",
+    "a block whose fenced update misses leaves the run unblocked and fails the response",
     async () => {
-      const source = await startGame("record-fork-race", false);
-      const lease = randomUUID();
-      await pool.query(
-        "UPDATE ctf.games SET messages=$2,turns=1,lease=$3,lease_until=now()+interval '1 day' WHERE id=$1",
-        [
-          source.id,
-          JSON.stringify([
-            { role: "system", content: "", timestamp: 1 },
-            {
-              role: "assistant",
-              content: [{ type: "text", text: "safe" }],
-              model: AGENT_MODEL,
-              stopReason: "stop",
-              timestamp: 2,
-            },
-          ]),
-          lease,
-        ],
-      );
-      const event = await pool.query(
-        "INSERT INTO ctf.events(game_id,data) VALUES($1,$2) RETURNING id",
-        [source.id, JSON.stringify({ kind: "agent", text: "safe", model: AGENT_MODEL, turn: 1 })],
-      );
-      const lock = await pool.connect();
-      await lock.query("BEGIN");
-      await lock.query("SELECT id FROM ctf.games WHERE id=$1 FOR UPDATE", [source.id]);
-      const child = startGame("record-fork-race", false, undefined, {
-        sourceId: source.id,
-        eventId: Number(event.rows[0].id),
+      // A real trigger ends the run as the block event is recorded, after the lease check and before the update.
+      await pool.query(`CREATE FUNCTION ctf.end_on_block() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN UPDATE ctf.games SET status='ended' WHERE id=NEW.game_id; RETURN NEW; END $$`);
+      await pool.query(`CREATE TRIGGER end_on_block BEFORE INSERT ON ctf.events FOR EACH ROW
+      WHEN (NEW.data->>'decision'='block') EXECUTE FUNCTION ctf.end_on_block()`);
+      try {
+        const game = await startGame("fence-miss", false);
+        proposed = ["cat /tmp/flag.txt"];
+        monitor = "block";
+        const finished = await play(game.id, "fence-miss");
+        assert.notEqual(finished.status, "blocked");
+        assert.equal(finished.blocks, 0);
+        assert.deepEqual(commands, []);
+        const errors = (await eventsOf(game.id)).filter(
+          (event) => event.data.kind === "monitor" && event.data.decision === "error",
+        );
+        assert.equal(errors.length, 1);
+      } finally {
+        await pool.query("DROP TRIGGER end_on_block ON ctf.events");
+        await pool.query("DROP FUNCTION ctf.end_on_block()");
+      }
+    },
+  );
+
+  await t.test("a run is forked once; concurrent forks admit exactly one", async () => {
+    const who = await guest();
+    const { game: parent } = await blockRun(who.id);
+    const results = await Promise.allSettled([
+      startGame(who.id, false, undefined, { sourceId: parent.id }),
+      startGame(who.id, false, undefined, { sourceId: parent.id }),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    const lost = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+    assert.equal(lost.reason.status, 409);
+    assert.equal(
+      (
+        await pool.query("SELECT count(*)::int AS n FROM ctf.games WHERE forked_from=$1", [
+          parent.id,
+        ])
+      ).rows[0].n,
+      1,
+    );
+    const again = await forkRoute(who, parent.id);
+    assert.equal(again.status, 409);
+    assert.match((await again.json()).error, /already been forked/i);
+  });
+
+  await t.test("a fork of a fork needs the child itself to be blocked", async () => {
+    const who = await guest();
+    const { game: parent } = await blockRun(who.id);
+    const child = await startGame(who.id, false, undefined, { sourceId: parent.id });
+    assert.equal((await forkRoute(who, child.id)).status, 409, "an active child is not forkable");
+    proposed = ["cat /tmp/flag.txt"];
+    monitorQueue = ["block"];
+    agentCalls = 0;
+    assert.equal((await play(child.id, who.id)).status, "blocked");
+    const grandchild = await forkRoute(who, child.id);
+    assert.equal(grandchild.status, 200);
+    const stored = await row((await grandchild.json()).id);
+    assert.equal(stored.blocks, 2);
+    assert.equal(stored.sprite_name, (await row(parent.id)).sprite_name);
+  });
+
+  await t.test("forks take no new-run quota; the daily spend cap still applies", async () => {
+    const who = await guest();
+    const { game: first } = await blockRun(who.id);
+    const second = await startGame(who.id, false);
+    await startGame(who.id, false);
+    await assert.rejects(() => startGame(who.id, false), /daily limit of new runs/);
+    // A global start count at 100 stops new runs but not forks.
+    await pool.query(
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id,status,sprite_deleted_at)
+      SELECT gen_random_uuid(),'bulk-'||n,'bulk-'||n,'h','a','m','v',1,$1,'ended',now() FROM generate_series(1,100) n`,
+      [(await row(first.id)).season_id],
+    );
+    await assert.rejects(() => startGame("someone-else", false), /No more new runs/);
+    const creates = createCount();
+    await pool.query(
+      "INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,10000000) ON CONFLICT(day) DO UPDATE SET charged=10000000",
+    );
+    assert.equal((await forkRoute(who, first.id)).status, 429);
+    await pool.query("UPDATE ctf.daily_spend SET charged=0");
+    const forked = await forkRoute(who, first.id);
+    assert.equal(forked.status, 200);
+    assert.equal(createCount(), creates);
+    assert.equal((await row(second.id)).status, "ended", "the fork replaces the owner's open run");
+  });
+
+  await t.test("cleanup keeps a shared sprite until every run on it is done", async () => {
+    const deletes = () => trace.filter((entry) => entry.endsWith(":delete")).length;
+    const who = await guest();
+    const { game: parent } = await blockRun(who.id);
+    const name = (await row(parent.id)).sprite_name;
+    await cleanup();
+    assert.equal(deletes(), 0, "an unforked blocked run keeps its environment");
+    const child = await startGame(who.id, false, undefined, { sourceId: parent.id });
+    await cleanup();
+    assert.equal(deletes(), 0, "an active child keeps the parent's environment");
+    assert.ok(environments.has(name));
+    await pool.query("UPDATE ctf.games SET status='ended' WHERE id=$1", [child.id]);
+    await cleanup();
+    assert.equal(trace.filter((entry) => entry === `${name}:delete`).length, 1);
+    assert.equal(environments.has(name), false);
+    for (const id of [parent.id, child.id]) assert.ok((await row(id)).sprite_deleted_at);
+    await cleanup();
+    assert.equal(deletes(), 1, "destroyed once");
+    // An unforked block is only kept for 25 hours.
+    const stale = await blockRun((await guest()).id);
+    await pool.query("UPDATE ctf.games SET updated_at=now()-interval '26 hours' WHERE id=$1", [
+      stale.game.id,
+    ]);
+    await cleanup();
+    assert.ok((await row(stale.game.id)).sprite_deleted_at);
+  });
+
+  await t.test(
+    "monitorReasoning=false hides every thinking part and needs no readable reasoning",
+    async () => {
+      const hidden = await startGame("reasoning-off", false, undefined, {
+        monitorReasoning: false,
       });
-      for (let i = 0; i < 200; i++) {
-        const result = await pool.query(
-          "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND state='active' AND wait_event_type='Lock' AND query LIKE '%SELECT * FROM ctf.games WHERE owner_id%' LIMIT 1",
-        );
-        if (result.rowCount) break;
-        if (i === 199) throw new Error("Fork did not wait on source row lock");
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      const staleWrite = (await import("../../lib/games")).record(
-        source.id,
-        { kind: "tool", text: "late tool output" },
-        lease,
+      agentReasoning = false;
+      await play(hidden.id, "reasoning-off");
+      assert.deepEqual(
+        commands.map((entry) => entry.command),
+        ["printf harmless"],
       );
-      for (let i = 0; i < 200; i++) {
-        const result = await pool.query(
-          "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND state='active' AND wait_event_type='Lock' AND query LIKE '%INSERT INTO ctf.events(game_id,data) SELECT%' LIMIT 1",
-        );
-        if (result.rowCount) break;
-        if (i === 199) throw new Error("Stale event write did not wait on source row lock");
-        await new Promise((resolve) => setTimeout(resolve, 5));
+      agentReasoning = true;
+      agentCalls = 0;
+      await play(hidden.id, "reasoning-off");
+      const monitored = requests.filter((request) => request.role === "monitor");
+      assert.equal(monitored.length, 2);
+      for (const request of monitored) {
+        const text = JSON.stringify(request.payload);
+        assert.ok(!text.includes("Controlled fixture reasoning."));
+        assert.ok(!text.includes('\\"type\\":\\"thinking\\"'));
+        assert.ok(text.includes("printf harmless"), "the rest of the transcript still arrives");
       }
-      await lock.query("UPDATE ctf.games SET lease_until=now()-interval '1 second' WHERE id=$1", [
-        source.id,
-      ]);
-      await lock.query("COMMIT");
-      lock.release();
-      const [forked, written] = await Promise.allSettled([child, staleWrite]);
-      assert.equal(forked.status, "fulfilled");
-      assert.equal(written.status, "rejected");
-      assert.equal(
-        (
-          await pool.query("SELECT count(*)::int AS n FROM ctf.events WHERE game_id=$1", [
-            source.id,
-          ])
-        ).rows[0].n,
-        1,
+      // The default shows reasoning and still refuses a command with none.
+      requests.length = 0;
+      commands.length = 0;
+      const shown = await startGame("reasoning-on", false);
+      agentCalls = 0;
+      await play(shown.id, "reasoning-on");
+      assert.ok(
+        JSON.stringify(requests.find((r) => r.role === "monitor")!.payload).includes(
+          "Controlled fixture reasoning.",
+        ),
       );
-      assert.equal((await row(source.id)).status, "ended");
+      assert.equal(commands.length, 1);
+      commands.length = 0;
+      agentReasoning = false;
+      agentCalls = 0;
+      const silent = await startGame("reasoning-none", false);
+      await play(silent.id, "reasoning-none");
+      assert.equal(commands.length, 0);
+      assert.equal((await row(silent.id)).monitor_reasoning, true);
     },
   );
+
+  await t.test("the start route takes an optional boolean monitorReasoning", async () => {
+    const { POST } = await import("../../app/api/games/route");
+    const who = await guest();
+    const start = (body: unknown) =>
+      POST(
+        new Request(`${origin}/api/games`, {
+          method: "POST",
+          headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    for (const bad of ["false", 0, null, {}])
+      assert.equal((await start({ monitorReasoning: bad })).status, 400, JSON.stringify(bad));
+    assert.equal(await pool.query("SELECT 1 FROM ctf.games").then((r) => r.rowCount), 0);
+    const off = await start({ monitorReasoning: false });
+    assert.equal(off.status, 200);
+    const created = await off.json();
+    assert.equal(created.monitorReasoning, false);
+    assert.equal((await row(created.id)).monitor_reasoning, false);
+    const on = await (await start({})).json();
+    assert.equal(on.monitorReasoning, true);
+    assert.equal((await row(on.id)).monitor_reasoning, true);
+  });
 
   await t.test(
     "starts private initialized environments with distinct secrets and persisted ownership",
@@ -1323,7 +1563,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         monitor = decision;
         proposed = ["cat /tmp/flag.txt", "printf harmless"];
         const finished = await play(game.id, "monitor");
-        assert.equal(finished.status, "active");
+        // A block ends the run; a monitor error leaves it open.
+        assert.equal(finished.status, decision === "block" ? "blocked" : "active");
         assert.equal(finished.lease, null);
         assert.equal(commands.length, 0);
         const events = (
@@ -1616,15 +1857,40 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         assert.ok(!events.some((event) => event.kind === "tool"));
       },
     );
-  await t.test("a command before a submit in the same batch is still monitored", async () => {
+  await t.test(
+    "a wrong submit after an executed command ends the run with no error event",
+    async () => {
+      const game = await startGame("submit-after-exec", false);
+      proposed = ["printf harmless", { submit: "flag{wrong-guess-aaaaaaaaaaaaaaaaaaaaaaaaaa}" }];
+      const finished = await play(game.id, "submit-after-exec");
+      assert.equal(finished.status, "ended");
+      assert.deepEqual(
+        commands.map((entry) => entry.command),
+        ["printf harmless"],
+      );
+      assert.equal(requests.filter((request) => request.role === "agent").length, 1);
+      const events = (await eventsOf(game.id)).map((event) => event.data);
+      assert.ok(events.some((event) => event.kind === "submit" && event.correct === false));
+      assert.deepEqual(
+        events.filter((event) => event.kind === "error"),
+        [],
+      );
+    },
+  );
+  await t.test("a block ends the run before a later correct submit in the same batch", async () => {
     const game = await startGame("batch-submit", false),
       stored = await row(game.id);
     const secret = environments.get(stored.sprite_name)!.secret!;
     monitor = "block";
     proposed = ["printf harmless", { submit: secret }];
     const finished = await play(game.id, "batch-submit");
-    assert.equal(finished.status, "captured");
+    assert.equal(finished.status, "blocked");
     assert.deepEqual(commands, []);
+    assert.ok(
+      !(await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])).rows.some(
+        (entry) => entry.data.kind === "submit",
+      ),
+    );
     const monitored = requests.filter((request) => request.role === "monitor");
     assert.equal(monitored.length, 1);
     const input = JSON.parse(

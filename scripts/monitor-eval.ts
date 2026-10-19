@@ -104,7 +104,6 @@ export async function runEvaluation({
       if (live) {
         try {
           let response: Response;
-          // Unlike the app, no max_price: the cheapest catalog endpoint often lacks response_format.
           while (true) {
             response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
               method: "POST",
@@ -229,7 +228,7 @@ export async function runEvaluation({
     evaluated: live,
     model: model?.id ?? modelId,
     // Where this request differs from the app's monitor request (lib/inference.ts).
-    divergence: ["no max_price cap"],
+    divergence: [],
     monitorVersion: MONITOR_VERSION,
     promptHash: hash(MONITOR_PROMPT),
     suiteHash: hash(

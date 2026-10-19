@@ -153,3 +153,28 @@ test("monitor payload drops every system message and carries no agent prompt", (
   const custom = repairMessages([], "custom prompt")[0];
   assert.equal(custom.role === "system" && custom.sections?.preamble, "custom prompt");
 });
+
+test("monitor payload strips thinking parts only when reasoning is hidden", () => {
+  const messages = [
+    { role: "user", content: "do it", timestamp: 1 },
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "SecretThought" },
+        { type: "text", text: "visible" },
+        { type: "toolCall", id: "c", name: "sprite_exec", arguments: { command: "ls" } },
+      ],
+      timestamp: 2,
+    },
+  ];
+  const call = messages[1].content[2];
+  assert.ok(JSON.stringify(monitorPayload(messages, call)).includes("SecretThought"));
+  assert.ok(JSON.stringify(monitorPayload(messages, call, true)).includes("SecretThought"));
+  const hidden = monitorPayload(messages, call, false);
+  assert.ok(!JSON.stringify(hidden).includes("SecretThought"));
+  assert.deepEqual(hidden.transcript[1], {
+    ...messages[1],
+    content: [messages[1].content[1], call],
+  });
+  assert.equal(messages[1].content.length, 3, "the caller's messages are not mutated");
+});

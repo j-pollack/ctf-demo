@@ -320,6 +320,24 @@ i {
 .call-output details:not([open]) .less {
   display: none;
 }
+/* The submission is quoted verbatim so it reads as the value the agent handed in, not game prose. */
+.entry .submission {
+  margin: 10px 0 0;
+}
+.entry .submission figcaption {
+  font-size: 10px;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.entry .submission blockquote {
+  margin: 0;
+}
+.entry .submission pre.call-output,
+.entry .submission div.call-output {
+  border-left-width: 3px;
+  border-left-color: #a3ad96;
+}
 .call-status {
   margin-top: 10px;
   color: var(--blocked);
@@ -490,6 +508,12 @@ aside.monitor {
   background: var(--accent);
   padding: 24px;
   margin-top: 22px;
+}
+.terminal .primary {
+  margin-top: 14px;
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
 }
 .terminal h2 {
   font-size: 24px;
@@ -885,13 +909,6 @@ dialog::backdrop {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.fork-preview {
-  max-height: min(40dvh, 320px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  border: 1px solid var(--line);
-  padding: 0 12px;
-}
 .fork-dialog-content {
   max-height: calc(100dvh - 24px);
   overflow-y: auto;
@@ -913,10 +930,18 @@ dialog::backdrop {
   flex: 1;
   min-width: 0;
 }
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+.dialog-content .check input {
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
 @media (max-width: 480px) {
-  .fork-preview {
-    max-height: min(28dvh, 224px);
-  }
   .fork-actions {
     flex-direction: column;
   }

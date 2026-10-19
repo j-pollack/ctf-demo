@@ -13,8 +13,8 @@ import {
 } from "./policy";
 import { currentSeason } from "./seasons";
 import type { GameEvent, GameStatus, PublicGame } from "./types";
-import { createEnvironment, destroyEnvironment } from "./sprites";
-import { forkTranscript } from "./fork-transcript";
+import { createEnvironment, destroyEnvironment, restoreEnvironment } from "./sprites";
+import { forkBeforeLastInstruction } from "./fork-transcript";
 
 export type GameRow = {
   id: string;
@@ -23,6 +23,7 @@ export type GameRow = {
   secret_hash: string;
   agent_model: string;
   monitor_model: string;
+  monitor_version: string;
   system_prompt: string;
   status: GameStatus;
   token_budget: number;
@@ -38,7 +39,12 @@ export type GameRow = {
   lease: string | null;
   lease_until: Date | null;
   sprite_deleted_at: Date | null;
+  updated_at: Date;
+  forked_from: string | null;
+  monitor_reasoning: boolean;
 };
+// A blocked run's environment is kept this long so its owner can fork it (cleanup adds a margin).
+const FORK_WINDOW_MS = 24 * 60 * 60 * 1000;
 export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
   const client = await db.connect();
   try {
@@ -56,7 +62,7 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,monitor_model,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,season_id,lease_until";
+  "id,status,agent_model,monitor_model,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,season_id,lease_until,monitor_reasoning,sprite_deleted_at,updated_at";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
@@ -73,6 +79,9 @@ export type PublicGameRow = Pick<
   | "reserved_microdollars"
   | "season_id"
   | "lease_until"
+  | "monitor_reasoning"
+  | "sprite_deleted_at"
+  | "updated_at"
 >;
 export async function getGame(id: string, ownerId: string) {
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new GameError("Run not found.", 404);
@@ -94,11 +103,15 @@ export async function getPublicGameRow(id: string, ownerId: string) {
 }
 // One read of a run's money, shared by publicGame and the runner's live `billing` frames.
 export async function gameBilling(gameId: string) {
+  // A fork inherits its parent's spend, so the agent/monitor split sums the whole lineage.
   const { rows } = await db.query(
-    `SELECT g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
+    `WITH RECURSIVE lineage(id,parent) AS (
+      SELECT id,forked_from FROM ctf.games WHERE id=$1
+      UNION ALL SELECT g.id,g.forked_from FROM ctf.games g JOIN lineage l ON g.id=l.parent)
+    SELECT g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
       coalesce(sum(i.cost) FILTER (WHERE i.role='agent'),0) AS agent,
       coalesce(sum(i.cost) FILTER (WHERE i.role='monitor'),0) AS monitor
-    FROM ctf.games g LEFT JOIN ctf.inference i ON i.game_id=g.id AND i.settled_at IS NOT NULL
+    FROM ctf.games g LEFT JOIN ctf.inference i ON i.game_id IN (SELECT id FROM lineage) AND i.settled_at IS NOT NULL
     WHERE g.id=$1 GROUP BY g.id`,
     [gameId],
   );
@@ -124,6 +137,17 @@ export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise
     ])
   ).rows[0];
   const billing = await gameBilling(game.id);
+  const forked = (await db.query("SELECT 1 FROM ctf.games WHERE forked_from=$1", [game.id]))
+    .rowCount;
+  const checkpointed =
+    game.status === "blocked" &&
+    !!(
+      await db.query(
+        "SELECT data->>'checkpoint' AS checkpoint FROM ctf.events WHERE game_id=$1 AND data->>'kind'='user' ORDER BY id DESC LIMIT 1",
+        [game.id],
+      )
+    ).rows[0]?.checkpoint;
+  const busy = !!game.lease_until && new Date(game.lease_until).getTime() > Date.now();
   return {
     id: game.id,
     status: game.status,
@@ -134,6 +158,15 @@ export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise
     tokensUsed: game.tokens_used,
     turns: game.turns,
     blocks: game.blocks,
+    monitorReasoning: game.monitor_reasoning,
+    forkable:
+      game.status === "blocked" &&
+      !forked &&
+      checkpointed &&
+      !busy &&
+      !game.sprite_deleted_at &&
+      Date.now() - new Date(game.updated_at).getTime() < FORK_WINDOW_MS &&
+      (!season.ends_at || season.ends_at.getTime() > Date.now()),
     ...billing,
     season: {
       id: season.id,
@@ -142,7 +175,7 @@ export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise
       endsAt: season.ends_at?.toISOString() ?? null,
       monitorModel: season.monitor_model,
     },
-    busy: !!game.lease_until && new Date(game.lease_until).getTime() > Date.now(),
+    busy,
     events: rows.map((row) => ({ ...row.data, id: Number(row.id) })),
   };
 }
@@ -165,6 +198,15 @@ export async function record(gameId: string, event: Omit<GameEvent, "id">, lease
 export async function cleanup() {
   await reconcileInference();
   await expireUnverifiableHolds();
+  // A fork child stuck in `creating` never ran: delete it so its parent can be forked again.
+  await transaction(async (client) => {
+    const stuck =
+      "status='creating' AND forked_from IS NOT NULL AND updated_at<now()-interval '5 minutes'";
+    await client.query(
+      `DELETE FROM ctf.events WHERE game_id IN (SELECT id FROM ctf.games WHERE ${stuck})`,
+    );
+    await client.query(`DELETE FROM ctf.games WHERE ${stuck}`);
+  });
   await db.query(
     "UPDATE ctf.games SET status='ended' WHERE status='creating' AND updated_at<now()-interval '5 minutes'",
   );
@@ -174,14 +216,24 @@ export async function cleanup() {
   await db.query(
     "UPDATE ctf.games g SET status='ended' FROM ctf.seasons s WHERE g.season_id=s.id AND s.ends_at<=now() AND g.status IN ('active','creating') AND (g.lease_until IS NULL OR g.lease_until<now())",
   );
-  const { rows } = await db.query<GameRow>(
-    "SELECT * FROM ctf.games WHERE sprite_deleted_at IS NULL AND status IN ('captured','exhausted','ended') LIMIT 20",
+  // Forks share their parent's sprite: destroy it once, when every run on it is done. A blocked run
+  // is done once forked, or after 25h (the fork window plus a margin so cleanup cannot race a fork).
+  const { rows } = await db.query<{ sprite_name: string }>(
+    `SELECT g.sprite_name FROM ctf.games g
+    WHERE g.sprite_name IN (SELECT sprite_name FROM ctf.games WHERE sprite_deleted_at IS NULL)
+    GROUP BY g.sprite_name
+    HAVING bool_or(g.sprite_deleted_at IS NULL) AND bool_and(g.status IN ('captured','exhausted','ended')
+      OR (g.status='blocked' AND (g.updated_at<now()-interval '25 hours'
+        OR EXISTS(SELECT 1 FROM ctf.games c WHERE c.forked_from=g.id)))) LIMIT 20`,
   );
   await Promise.all(
-    rows.map(async (game) => {
+    rows.map(async ({ sprite_name }) => {
       try {
-        await destroyEnvironment(game.sprite_name);
-        await db.query("UPDATE ctf.games SET sprite_deleted_at=now() WHERE id=$1", [game.id]);
+        await destroyEnvironment(sprite_name);
+        await db.query(
+          "UPDATE ctf.games SET sprite_deleted_at=now() WHERE sprite_name=$1 AND sprite_deleted_at IS NULL",
+          [sprite_name],
+        );
       } catch {
         /* Keep the deletion pending for the next sweep. */
       }
@@ -192,16 +244,13 @@ export async function startGame(
   ownerId: string,
   signedIn: boolean,
   agentModel: string = AGENT_MODEL,
-  fork?: { sourceId: string; eventId: number },
+  options: { monitorReasoning?: boolean; sourceId?: string } = {},
 ) {
-  if (
-    fork &&
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fork.sourceId)
-  )
+  const { sourceId, monitorReasoning = true } = options;
+  if (sourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sourceId))
     throw new GameError("Run not found.", 404);
   if (!MODELS.some((model) => model === agentModel))
     throw new GameError("Unsupported agent model.");
-  let systemPrompt = "";
   const season = await currentSeason();
   await cleanup();
   const id = randomUUID();
@@ -235,88 +284,125 @@ export async function startGame(
     );
     if (count.rows[0].total >= 10)
       throw new GameError("All environments are busy. Try again in a few minutes.", 429);
+    // A fork reuses its parent's sprite, so it takes no new-run quota.
     const starts = await client.query(
-      "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND created_at > now()-interval '24 hours'",
+      "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND forked_from IS NULL AND created_at > now()-interval '24 hours'",
       [ownerId],
     );
-    if (starts.rows[0].total >= (signedIn ? 20 : 3))
+    if (!sourceId && starts.rows[0].total >= (signedIn ? 20 : 3))
       throw new GameError("You’ve reached your daily limit of new runs.", 429);
     const totalStarts = await client.query(
-      "SELECT count(*)::int AS total FROM ctf.games WHERE created_at>now()-interval '24 hours'",
+      "SELECT count(*)::int AS total FROM ctf.games WHERE forked_from IS NULL AND created_at>now()-interval '24 hours'",
     );
-    if (totalStarts.rows[0].total >= 100)
+    if (!sourceId && totalStarts.rows[0].total >= 100)
       throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
-    let forkData: ReturnType<typeof forkTranscript> | undefined;
-    if (fork) {
-      const source = (
+    let source: GameRow | undefined;
+    let cut: ReturnType<typeof forkBeforeLastInstruction> | undefined;
+    if (sourceId) {
+      // Every check runs before the owner's other runs are ended.
+      source = (
         await client.query<GameRow>(
           "SELECT * FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
-          [fork.sourceId, ownerId],
+          [sourceId, ownerId],
         )
       ).rows[0];
       if (!source) throw new GameError("Run not found.", 404);
+      if (source.status !== "blocked")
+        throw new GameError("Only a run the monitor blocked can be forked.", 409);
+      if ((await client.query("SELECT 1 FROM ctf.games WHERE forked_from=$1", [sourceId])).rowCount)
+        throw new GameError("This run has already been forked.", 409);
+      if (
+        source.sprite_deleted_at ||
+        Date.now() - new Date(source.updated_at).getTime() >= FORK_WINDOW_MS
+      )
+        throw new GameError("This run’s environment is gone, so it can’t be forked.", 410);
+      if (source.season_id !== season.id)
+        throw new GameError("This run’s season has ended. Start a new run.", 410);
       if (source.lease_until && new Date(source.lease_until).getTime() > Date.now())
         throw new GameError("Wait for the current response to finish before forking.", 409);
-      const sourceEvents = (
-        await client.query<{ id: string; data: GameEvent }>(
-          "SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id",
-          [source.id],
-        )
-      ).rows.map((row) => ({ ...row.data, id: Number(row.id) }));
+      if (Number(source.reserved_microdollars) > 0)
+        throw new GameError("Billing is still settling; try again shortly.", 409);
       try {
-        forkData = forkTranscript(source.messages, sourceEvents, source.turns, fork.eventId);
+        const history = (
+          await client.query<{ id: string; data: GameEvent }>(
+            "SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id",
+            [source.id],
+          )
+        ).rows.map((row) => ({ ...row.data, id: Number(row.id) }));
+        cut = forkBeforeLastInstruction(source.messages, history);
       } catch {
-        throw new GameError("The selected response cannot be safely forked.", 409);
+        throw new GameError("This run can’t be safely forked.", 409);
       }
-      const selected = forkData.events.at(-1)!;
-      if (selected.kind !== "agent" || !MODELS.includes(selected.model ?? ""))
-        throw new GameError("The selected response cannot be safely forked.", 409);
-      agentModel = selected.model!;
-      systemPrompt = source.system_prompt;
-      await client.query("UPDATE ctf.games SET lease=NULL,lease_until=NULL WHERE id=$1", [
-        source.id,
-      ]);
     }
     await client.query(
       "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE owner_id=$1 AND status IN ('creating','active')",
       [ownerId],
     );
+    // A fork is born `creating` on its parent's sprite and secret, carrying the parent's whole
+    // account; it turns active once the sprite is restored to the dropped instruction's checkpoint.
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id,budget_microdollars,system_prompt)
-      SELECT $1,$2,$3,$4,$5,monitor_model,monitor_version,$6,id,$7,$9 FROM ctf.seasons WHERE id=$8 AND ends_at>now() RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars)
+      SELECT $1,$2,$3,$4,$5,coalesce($14,monitor_model),coalesce($15,monitor_version),$6,id,$7,$9,$10,$11,$12,$13,$16,$17,$18,$19 FROM ctf.seasons WHERE id=$8 AND ends_at>now() RETURNING *`,
       [
         id,
         ownerId,
-        `ctf-${id}`,
-        hash,
-        agentModel,
-        signedIn ? 500000 : 100000,
-        signedIn ? MEMBER_BUDGET_MICRODOLLARS : GUEST_BUDGET_MICRODOLLARS,
+        source?.sprite_name ?? `ctf-${id}`,
+        source?.secret_hash ?? hash,
+        source?.agent_model ?? agentModel,
+        source?.token_budget ?? (signedIn ? 500000 : 100000),
+        source?.budget_microdollars ??
+          (signedIn ? MEMBER_BUDGET_MICRODOLLARS : GUEST_BUDGET_MICRODOLLARS),
         season.id,
-        systemPrompt,
+        source?.system_prompt ?? "",
+        source?.monitor_reasoning ?? monitorReasoning,
+        "creating",
+        source?.id ?? null,
+        JSON.stringify(cut?.messages ?? []),
+        source?.monitor_model ?? null,
+        source?.monitor_version ?? null,
+        source?.turns ?? 0,
+        source?.blocks ?? 0,
+        source?.tokens_used ?? 0,
+        source?.spent_microdollars ?? 0,
       ],
     );
     if (!rows[0]) throw new GameError("The season just ended. Start a new run.", 409);
-    if (forkData) {
-      await client.query("UPDATE ctf.games SET messages=$2,turns=$3,blocks=$4 WHERE id=$1", [
-        id,
-        JSON.stringify(forkData.messages),
-        forkData.turns,
-        forkData.blocks,
-      ]);
-      for (const event of forkData.events) {
-        const { id: _id, ...data } = event;
-        await client.query("INSERT INTO ctf.events(game_id,data) VALUES($1,$2)", [
-          id,
-          JSON.stringify(data),
-        ]);
-      }
-      rows[0].messages = forkData.messages;
-      rows[0].turns = forkData.turns;
-      rows[0].blocks = forkData.blocks;
-    }
-    return rows[0];
+    // The player-visible history up to the dropped instruction is copied as it was.
+    if (source && cut)
+      await client.query(
+        "INSERT INTO ctf.events(game_id,data) SELECT $1,data FROM ctf.events WHERE game_id=$2 AND id<$3 ORDER BY id",
+        [id, source.id, cut.userEventId],
+      );
+    return { ...rows[0], cut };
   });
+  if (game.cut) {
+    const { cut, ...child } = game;
+    try {
+      await restoreEnvironment(child.sprite_name, cut.checkpoint);
+    } catch (error) {
+      // The child never ran and has no inference; remove it so the parent can be forked again.
+      await transaction(async (client) => {
+        await client.query("DELETE FROM ctf.events WHERE game_id=$1", [id]);
+        await client.query("DELETE FROM ctf.games WHERE id=$1 AND status='creating'", [id]);
+      });
+      console.error(
+        JSON.stringify({
+          event: "fork.restore.failed",
+          timestamp: new Date().toISOString(),
+          gameId: id,
+          error: String(error instanceof Error ? error.message : error).slice(0, 300),
+        }),
+      );
+      throw new GameError(
+        "Could not restore the environment, so the run was not forked. Try again.",
+        503,
+      );
+    }
+    await db.query("UPDATE ctf.games SET status='active',updated_at=now() WHERE id=$1", [id]);
+    child.status = "active";
+    await cleanup();
+    return { ...(await publicGame(child)), retryInstruction: cut.instruction };
+  }
   try {
     await createEnvironment(game.sprite_name, secret);
     await db.query("UPDATE ctf.games SET status='active',updated_at=now() WHERE id=$1", [id]);

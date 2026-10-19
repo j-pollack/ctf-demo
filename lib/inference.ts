@@ -316,6 +316,21 @@ export async function collectStream(
   return data;
 }
 
+// The reasoning parameter sent to OpenRouter. Agents get capped-effort reasoning (high ≈ 80% of
+// max_tokens) so thinking stays generous but can never consume the whole answer budget and leave no
+// room to act or reply — the failure where an agent "thinks" until stopReason=length with no tool
+// call. Monitors reason only when the model rejects reasoning:{enabled:false}, and then at low effort.
+export function reasoningParam(
+  role: "agent" | "monitor",
+  model: Pick<Model<"openai-completions">, "id" | "reasoning">,
+) {
+  if (!model.reasoning) return undefined;
+  if (role === "agent") return { effort: "high", exclude: false };
+  return MONITOR_REASONING_REQUIRED.has(model.id)
+    ? { effort: "low", exclude: false }
+    : { enabled: false };
+}
+
 // Agent calls stream so the player can watch reasoning arrive; the assembled response is still
 // the one authoritative record for accounting and the transcript.
 export async function infer(
@@ -329,24 +344,13 @@ export async function infer(
 ): Promise<AssistantMessage> {
   signal?.throwIfAborted();
   if (!process.env.OPENROUTER_API_KEY) throw new Error("Inference is not configured.");
+  const reasoning = reasoningParam(role, model);
   const payload = {
     model: model.id,
     ...providerTranscript(messages, model.id),
     session_id: `${game.id}:${role}`,
-    ...(model.reasoning
-      ? {
-          reasoning:
-            role === "agent"
-              ? { enabled: true, exclude: false }
-              : MONITOR_REASONING_REQUIRED.has(model.id)
-                ? { effort: "low", exclude: false }
-                : { enabled: false },
-        }
-      : {}),
-    provider: {
-      require_parameters: true,
-      max_price: { prompt: model.cost.input, completion: model.cost.output },
-    },
+    ...(reasoning ? { reasoning } : {}),
+    provider: { require_parameters: true },
     ...(role === "monitor" ? { response_format: { type: "json_object" } } : {}),
     ...(onDelta ? { stream: true } : {}),
   };
