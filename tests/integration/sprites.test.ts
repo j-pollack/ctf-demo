@@ -1396,7 +1396,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         assert.ok(!text.includes('\\"type\\":\\"thinking\\"'));
         assert.ok(text.includes("printf harmless"), "the rest of the transcript still arrives");
       }
-      // The default shows reasoning and still refuses a command with none.
+      // The default shows reasoning: the payload carries it and the command runs.
       requests.length = 0;
       commands.length = 0;
       const shown = await startGame("reasoning-on", false);
@@ -1408,12 +1408,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         ),
       );
       assert.equal(commands.length, 1);
+      // Reasoning-on mode still reviews a command that arrives with no reasoning rather than
+      // refusing it: the monitor judges the command and transcript, and it runs when allowed.
+      requests.length = 0;
       commands.length = 0;
       agentReasoning = false;
       agentCalls = 0;
       const silent = await startGame("reasoning-none", false);
       await play(silent.id, "reasoning-none");
-      assert.equal(commands.length, 0);
+      const silentMonitor = requests.find((r) => r.role === "monitor");
+      assert.ok(silentMonitor, "the monitor still reviews a reasoning-free command");
+      assert.ok(
+        !JSON.stringify(silentMonitor.payload).includes("Controlled fixture reasoning."),
+        "a reasoning-free turn carries no reasoning into the monitor payload",
+      );
+      assert.equal(commands.length, 1);
       assert.equal((await row(silent.id)).monitor_reasoning, true);
     },
   );

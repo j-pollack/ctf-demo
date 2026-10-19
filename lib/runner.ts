@@ -213,7 +213,7 @@ export async function runGame(
       },
     );
     session.agent.toolExecution = "sequential";
-    session.agent.beforeToolCall = async ({ assistantMessage, toolCall }, toolSignal) => {
+    session.agent.beforeToolCall = async ({ toolCall }, toolSignal) => {
       // A submission or a block ends the run: nothing after it runs, including later calls in the same batch.
       if (game.status !== "active")
         return { block: true, reason: "The run is over.", terminate: true };
@@ -228,10 +228,9 @@ export async function runGame(
       const command = args.command as string;
       try {
         await assertLease(game);
-        if (game.monitor_reasoning && !reasoningOf(assistantMessage).trim())
-          throw new Error(
-            "Readable agent reasoning was unavailable. The command was not executed.",
-          );
+        // The monitor judges the command (and reasoning, when the run shares it); an empty
+        // reasoning string just means it decides on the command and transcript, as it always does
+        // when the run hides reasoning. Missing reasoning is never on its own a reason to stall.
         send("stage", "Monitor reviewing command");
         // Pi's hook context can omit earlier results in a batch; the session has every completed message.
         const messages: Message[] = [
@@ -299,9 +298,7 @@ export async function runGame(
         const text =
           error instanceof GameError
             ? error.message
-            : error instanceof Error && error.message.startsWith("Readable")
-              ? error.message
-              : "The monitor could not make a valid decision. The command was not executed.";
+            : "The monitor could not make a valid decision. The command was not executed.";
         await emit({ kind: "monitor", text, command, decision: "error", turn: game.turns });
         return { block: true, reason: text, terminate: true };
       }
