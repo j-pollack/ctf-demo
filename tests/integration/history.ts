@@ -59,15 +59,14 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       (await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count,
       beforeAnonymousRequest,
     );
-    await pool.query(
-      "INSERT INTO ctf.seasons(id,name,monitor_model,monitor_version) VALUES('history-fixture','Fixture','monitor','v1')",
-    );
-    const ids = Array.from({ length: 22 }, randomUUID);
+    const ids: string[] = Array.from({ length: 22 }, randomUUID);
+    const difficulties = ["easy", "medium", "hard"];
+    const difficultyOf = (id: string) => difficulties[ids.indexOf(id) % 3];
     for (let i = 0; i < ids.length; i++)
       await pool.query(
         `INSERT INTO ctf.games
-      (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,season_id,created_at,messages)
-      VALUES($1,$2,$3,'never-select-this','agent','monitor','v1',100,$6,'history-fixture',$5,$4)`,
+      (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,monitor_difficulty,created_at,messages)
+      VALUES($1,$2,$3,'never-select-this','agent','monitor','v1',100,$6,$7,$5,$4)`,
         [
           ids[i],
           session.user.id,
@@ -75,12 +74,13 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
           JSON.stringify([{ secret: "must not list" }]),
           `2026-01-01 00:00:00.00000${i < 3 ? 3 : 1}+00`,
           ["active", "captured", "exhausted", "ended"][i % 4],
+          difficulties[i % 3],
         ],
       );
     const foreignId = randomUUID();
     await pool.query(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id)
-      VALUES($1,'other-owner',$2,'other-secret','agent','monitor','v1',100,'history-fixture')`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget)
+      VALUES($1,'other-owner',$2,'other-secret','agent','monitor','v1',100)`,
       [foreignId, `other-${foreignId}`],
     );
     const first = await GET(request("?limit=2"));
@@ -93,6 +93,10 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     );
     assert.ok(firstBody.nextCursor);
     assert.deepEqual(
+      firstBody.runs.map((run: { monitorDifficulty: string }) => run.monitorDifficulty),
+      sorted.slice(0, 2).map(difficultyOf),
+    );
+    assert.deepEqual(
       Object.keys(firstBody.runs[0]).sort(),
       [
         "agentModel",
@@ -100,9 +104,9 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
         "budgetMicrodollars",
         "createdAt",
         "id",
+        "monitorDifficulty",
         "monitorModel",
         "reservedMicrodollars",
-        "season",
         "spentMicrodollars",
         "status",
         "turns",

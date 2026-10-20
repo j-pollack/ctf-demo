@@ -15,6 +15,7 @@ try {
     "006-system-prompt.sql",
     "007-inference-game-index.sql",
     "008-block-ends-run.sql",
+    "009-monitor-choice.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

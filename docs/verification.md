@@ -17,8 +17,8 @@ Measured on macOS arm64 with Node 24.16.0, installed dependencies and warm cache
 | `npm run check`                    | 1.73 s          | All four offline gates above                                                                                                                                                                            |
 | `npm run build`                    | 3.14 s          | One warm production build; bundling, Next type validation and route compilation, not live HTTP behavior                                                                                                 |
 | `npm run test:coverage`            | 1.71 s          | Same offline tests with source-mapped, all-source coverage                                                                                                                                              |
-| `npm run check:budget`             | Not measured    | Real Postgres concurrency, billing holds/settlement/refunds/reconciliation and seasons; provider generation response stubbed for its fixture                                                            |
-| `npm run check:auth`               | Not measured    | Real Better Auth handlers and Postgres; anonymous-to-member transfer, single-use magic link, $3 upgrade, private season/model leaderboards; outbound email intercepted                                  |
+| `npm run check:budget`             | Not measured    | Real Postgres concurrency, billing holds/settlement/refunds/reconciliation and lease checks; provider generation response stubbed for its fixture                                                       |
+| `npm run check:auth`               | Not measured    | Real Better Auth handlers and Postgres; anonymous-to-member transfer, single-use magic link, $3 upgrade, private per-monitor leaderboards; outbound email intercepted                                   |
 | `npm run smoke -- --messages-only` | Not measured    | Real Postgres, Pi SDK and two Sprites; controlled completion responses exercise block privacy, switching, pending billing, monitor errors/429, sequential tool results, capture, exhaustion and cleanup |
 | `npm run smoke`                    | Not measured    | Adds live agent/monitor inference: direct read rejection, continued play, readable reasoning, leases and concurrent cap admission                                                                       |
 | `npm run setup`                    | Not timed       | Schema/auth migration operation, not a test; changes the configured database                                                                                                                            |
@@ -29,12 +29,12 @@ No repository CI workflow or saved browser/e2e test definitions were found. `npm
 
 ### Existing offline tests
 
-| File                         | Count | Classification and coverage                                                                                                                                                                      |
-| ---------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tests/game.test.ts`         | 5     | Mixed unit checks: flags and strict fail-closed monitor parsing; transcript repair/provider replay and model switching; pricing/admission arithmetic; Monday UTC rotation; pre-aborted inference |
-| `tests/inference.test.ts`    | 2     | Diagnostic redaction/truncation; model capability checks with a stubbed catalog fetch                                                                                                            |
-| `tests/message-flow.test.ts` | 1     | Genuine in-process SDK integration: real Pi session/resource loader/runtime, fake model stream and shell tool; checks prompt isolation and replay across turns                                   |
-| `tests/transcript.test.ts`   | 2     | Component integration: real React SSR/Markdown rendering; speakers, tool display, blocked/error decisions and unsafe HTML/links/images                                                           |
+| File                         | Count | Classification and coverage                                                                                                                                                                                              |
+| ---------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tests/game.test.ts`         | 5     | Mixed unit checks: flags and strict fail-closed monitor parsing; transcript repair/provider replay and model switching; pricing/admission arithmetic; monitor prompt hash and difficulty contract; pre-aborted inference |
+| `tests/inference.test.ts`    | 2     | Diagnostic redaction/truncation; model capability checks with a stubbed catalog fetch                                                                                                                                    |
+| `tests/message-flow.test.ts` | 1     | Genuine in-process SDK integration: real Pi session/resource loader/runtime, fake model stream and shell tool; checks prompt isolation and replay across turns                                                           |
+| `tests/transcript.test.ts`   | 2     | Component integration: real React SSR/Markdown rendering; speakers, tool display, blocked/error decisions and unsafe HTML/links/images                                                                                   |
 
 The concurrently added `tests/worktree.test.ts` contributes one additional filesystem/Git/local-socket integration test for port reservation, private credential copying and checkout pruning. It uses no external services.
 
@@ -83,7 +83,7 @@ Keep `node:test`, assertions and `tsx`; no runner migration needed. Proposed com
 
 Move only dependency-free logic into a small pure module where needed, rather than mocking imported `db` or `runner`: admission arithmetic currently lives in `games`, and transcript repair in `runner`. Preserve public behavior/callers. Split the existing mixed tests accordingly; retain the SDK and SSR tests as offline integration tests.
 
-Add table-driven edge cases for strict monitor schemas and reasons, flag matching, pricing precision/rounding/invalid input and 63/64-token admission boundaries, UTC season boundaries, transcript repair/idempotence, reasoning transfer, diagnostic redaction and HTTP origin/body-size/JSON validation. Test contract outputs and rejected inputs, not internal helper calls.
+Add table-driven edge cases for strict monitor schemas and reasons, flag matching, pricing precision/rounding/invalid input and 63/64-token admission boundaries, transcript repair/idempotence, reasoning transfer, diagnostic redaction and HTTP origin/body-size/JSON validation. Test contract outputs and rejected inputs, not internal helper calls.
 
 ### Deterministic integrations on every PR
 
@@ -100,11 +100,11 @@ Reuse/convert the assertions in `auth-check`, `budget-check` and controlled smok
 Required integration invariants:
 
 1. Cross-owner reads/prompts fail; wrong/missing origins, oversized/chunked/malformed bodies and invalid prompts/models fail before work or spending. Cron authorization denies unauthorized cleanup.
-2. Concurrent starts respect capacity/per-owner/global limits; concurrent claims allow one lease; expired leases/seasons cannot spend. Assert at least one admitted request as well as upper bounds, so tests cannot pass when everything rejects.
+2. Concurrent starts respect capacity/per-owner/global limits; concurrent claims allow one lease; expired leases cannot spend. Assert at least one admitted request as well as upper bounds, so tests cannot pass when everything rejects.
 3. Concurrent reservations cannot exceed guest/member/daily caps; settlement is idempotent, unknown usage retains holds, known unbilled failures refund, and reconciliation settles once. Exercise contention on real independent DB connections, with ample unrelated daily budget.
 4. Block reasons persist only in player events, never in agent/monitor replay; invalid/error decisions execute zero commands and stop subsequent tool calls. Completed tool results reach the next decision in a multi-tool response.
 5. Switching attack models preserves environment/flag/history and drops incompatible reasoning signatures; capture derives from agent/reasoning/tool output, not guessed player text. Exhaustion, abort, failed initialization and retryable deletion leave recoverable persisted state.
-6. Real magic-link flow transfers a guest run and upgrades budget once; replay is rejected; settled cheapest wins are season-separated/private and mixed-strategy filters exclude mixed runs.
+6. Real magic-link flow transfers a guest run and upgrades budget once; replay is rejected; settled cheapest wins are monitor/difficulty-separated/private and mixed-strategy filters exclude mixed runs.
 7. Run setup twice on a fresh database and on a representative legacy fixture: preserve transcripts/confirmed charges, backup uncertain historical billing, and prove reruns do not change balances. Never run this against shared data.
 
 ### Real service smoke and browser e2e before promotion

@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { db } from "../lib/db";
 import { auth } from "../lib/auth";
-import { makeSecret, AGENT_MODEL, MODELS, MONITOR_VERSION } from "../lib/policy";
+import { makeSecret, AGENT_MODEL, MODELS, MONITOR_MODEL, MONITOR_VERSION } from "../lib/policy";
 import { player } from "../lib/http";
 import { GET as leaderboard } from "../app/api/leaderboard/route";
-import { currentSeason } from "../lib/seasons";
 
 // Exercise the real auth handlers while capturing the outbound email locally.
 const fetchOriginal = globalThis.fetch;
@@ -23,7 +22,7 @@ const origin = process.env.BETTER_AUTH_URL!,
   email = `ctf-auth-${id}@example.invalid`;
 const userIds: string[] = [];
 const gameIds = [id],
-  archiveId = `auth-check-${id}`;
+  otherMonitor = `auth-check/${id}`;
 const cookies = (response: Response) =>
   response.headers
     .getSetCookie()
@@ -45,19 +44,17 @@ try {
     (await player(new Request(origin, { headers: { cookie: guestCookie } }))).signedIn,
     false,
   );
-  const season = await currentSeason();
   await db.query(
-    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,season_id)
-    VALUES($1,$2,$3,$4,$5,$6,$7,100000,'active',now(),$8)`,
+    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,100000,'active',now())`,
     [
       id,
       guest.user.id,
       `auth-check-${id}`,
       makeSecret().hash,
       AGENT_MODEL,
-      season.monitorModel,
+      MONITOR_MODEL,
       MONITOR_VERSION,
-      season.id,
     ],
   );
   const sent = await auth.handler(
@@ -96,27 +93,22 @@ try {
     pending = randomUUID(),
     archived = randomUUID();
   gameIds.push(cheaper, pending, archived);
-  await db.query(
-    "INSERT INTO ctf.seasons(id,name,monitor_model,monitor_version) VALUES($1,'Temporary archive check',$2,$3)",
-    [archiveId, season.monitorModel, MONITOR_VERSION],
-  );
-  for (const [gameId, seasonId, turns, spend, reserved] of [
-    [cheaper, season.id, 8, 1000, 0],
-    [pending, season.id, 1, 0, 100],
-    [archived, archiveId, 99, 500, 0],
+  for (const [gameId, monitor, turns, spend, reserved] of [
+    [cheaper, MONITOR_MODEL, 8, 1000, 0],
+    [pending, MONITOR_MODEL, 1, 0, 100],
+    [archived, otherMonitor, 99, 500, 0],
   ] as const) {
     await db.query(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,season_id,turns,spent_microdollars,reserved_microdollars)
-      VALUES($1,$2,$3,$4,$5,$6,$7,500000,'captured',now(),$8,$9,$10,$11)`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,turns,spent_microdollars,reserved_microdollars)
+      VALUES($1,$2,$3,$4,$5,$6,$7,500000,'captured',now(),$8,$9,$10)`,
       [
         gameId,
         member.id,
         `auth-check-${gameId}`,
         makeSecret().hash,
         AGENT_MODEL,
-        season.monitorModel,
+        monitor,
         MONITOR_VERSION,
-        seasonId,
         turns,
         spend,
         reserved,
@@ -125,7 +117,9 @@ try {
   }
   const operator = `Operator ${createHash("sha256").update(member.id).digest("hex").slice(0, 6)}`;
   const ranked = await (
-    await leaderboard(new Request(`${origin}/api/leaderboard?season=${season.id}`))
+    await leaderboard(
+      new Request(`${origin}/api/leaderboard?monitor=${encodeURIComponent(MONITOR_MODEL)}`),
+    )
   ).json();
   assert.equal(
     ranked.entries.find((entry: { name: string }) => entry.name === operator)?.turns,
@@ -133,12 +127,14 @@ try {
     "cheapest settled capture wins, not the pending or fastest capture",
   );
   const archive = await (
-    await leaderboard(new Request(`${origin}/api/leaderboard?season=${archiveId}`))
+    await leaderboard(
+      new Request(`${origin}/api/leaderboard?monitor=${encodeURIComponent(otherMonitor)}`),
+    )
   ).json();
   assert.equal(
     archive.entries.find((entry: { name: string }) => entry.name === operator)?.turns,
     99,
-    "historical seasons must stay separate",
+    "each monitor has its own board",
   );
   await db.query(
     "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
@@ -151,7 +147,7 @@ try {
   const fixed = await (
     await leaderboard(
       new Request(
-        `${origin}/api/leaderboard?season=${season.id}&agent=${encodeURIComponent(AGENT_MODEL)}`,
+        `${origin}/api/leaderboard?monitor=${encodeURIComponent(MONITOR_MODEL)}&agent=${encodeURIComponent(AGENT_MODEL)}`,
       ),
     )
   ).json();
@@ -163,13 +159,12 @@ try {
   const replay = await auth.handler(new Request(link));
   assert.match(replay.headers.get("location") ?? "", /INVALID_TOKEN/);
   console.log(
-    "Passwordless verification, single-use links, guest-run transfer, $3 upgrade and private season leaderboard entries passed. No email was sent.",
+    "Passwordless verification, single-use links, guest-run transfer, $3 upgrade and private per-monitor leaderboard entries passed. No email was sent.",
   );
 } finally {
   globalThis.fetch = fetchOriginal;
   await db.query("DELETE FROM ctf.inference WHERE game_id=ANY($1::uuid[])", [gameIds]);
   await db.query("DELETE FROM ctf.games WHERE id=ANY($1::uuid[])", [gameIds]);
-  await db.query("DELETE FROM ctf.seasons WHERE id=$1", [archiveId]);
   await db.query('DELETE FROM ctf."user" WHERE id=ANY($1::text[]) OR email=$2', [userIds, email]);
   await db.end();
 }

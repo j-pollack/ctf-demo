@@ -10,30 +10,16 @@ import {
   settleInference,
   transaction,
 } from "../lib/games";
-import { AGENT_MODEL, makeSecret, MODELS, MONITOR_VERSION } from "../lib/policy";
-import { currentSeason, MONITOR_ROTATION } from "../lib/seasons";
+import { AGENT_MODEL, makeSecret, MODELS, MONITOR_MODEL, MONITOR_VERSION } from "../lib/policy";
 
 const id = randomUUID(),
-  owner = `budget-check-${id}`,
-  expiredSeason = `budget-check-${id}`;
+  owner = `budget-check-${id}`;
 const originalFetch = globalThis.fetch;
 try {
-  const season = await currentSeason(),
-    savedRoster = [...MONITOR_ROTATION];
-  try {
-    MONITOR_ROTATION.splice(0, MONITOR_ROTATION.length, "different-next-season-monitor");
-    assert.equal(
-      (await currentSeason()).monitorModel,
-      season.monitorModel,
-      "published seasons must ignore later roster changes",
-    );
-  } finally {
-    MONITOR_ROTATION.splice(0, MONITOR_ROTATION.length, ...savedRoster);
-  }
   await db.query(
-    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,season_id)
-    VALUES($1,$2,$2,$3,$4,$5,$6,100000,'active',now(),$7)`,
-    [id, owner, makeSecret().hash, AGENT_MODEL, season.monitorModel, MONITOR_VERSION, season.id],
+    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
+    VALUES($1,$2,$2,$3,$4,$5,$6,100000,'active',now())`,
+    [id, owner, makeSecret().hash, AGENT_MODEL, MONITOR_MODEL, MONITOR_VERSION],
   );
   const game = await claimGame(id, owner);
   const attempted = await Promise.allSettled(
@@ -92,22 +78,9 @@ try {
     owner,
     MODELS.find((model) => model !== AGENT_MODEL),
   );
-  assert.equal(switched.monitor_model, season.monitorModel);
-  assert.equal(switched.season_id, season.id);
+  assert.equal(switched.monitor_model, MONITOR_MODEL);
   await assert.rejects(() => claimGame(id, owner, AGENT_MODEL), /already/);
-  await db.query(
-    `INSERT INTO ctf.seasons(id,name,starts_at,ends_at,monitor_model,monitor_version)
-    VALUES($1,'Temporary boundary check',now()-interval '14 days',now()-interval '7 days',$2,$3)`,
-    [expiredSeason, season.monitorModel, MONITOR_VERSION],
-  );
-  await db.query("UPDATE ctf.games SET season_id=$2,lease=NULL,lease_until=NULL WHERE id=$1", [
-    id,
-    expiredSeason,
-  ]);
-  await assert.rejects(() => claimGame(id, owner), /ended/);
-  console.log(
-    "Concurrent dollar admission, actual spend, pending holds, refunds, immutable season monitors and expired-season rejection passed.",
-  );
+  console.log("Concurrent dollar admission, actual spend, pending holds and refunds passed.");
 } finally {
   globalThis.fetch = originalFetch;
   // These are synthetic billing records in a test-only game: undo their cap impact.
@@ -125,7 +98,6 @@ try {
       );
     await client.query("DELETE FROM ctf.inference WHERE game_id=$1", [id]);
     await client.query("DELETE FROM ctf.games WHERE id=$1", [id]);
-    await client.query("DELETE FROM ctf.seasons WHERE id=$1", [expiredSeason]);
   });
   await db.end();
 }

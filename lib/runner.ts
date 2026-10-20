@@ -19,7 +19,7 @@ import {
   agentPrompt as withSubmitInstruction,
   GameError,
   hasSecret,
-  MONITOR_PROMPT,
+  MONITOR_PROMPTS,
   monitorPayload,
   parseDecision,
 } from "./policy";
@@ -102,9 +102,6 @@ export async function runGame(
       getModel(game.agent_model, "agent"),
       getModel(game.monitor_model, "monitor"),
     ]);
-    const season = (
-      await db.query("SELECT monitor_prompt FROM ctf.seasons WHERE id=$1", [game.season_id])
-    ).rows[0];
     const settings = SettingsManager.inMemory({
       compaction: { enabled: false },
       retry: { enabled: false },
@@ -161,14 +158,13 @@ export async function runGame(
         const correct = hasSecret(value, game.secret_hash);
         const ended = await db.query(
           correct
-            ? "UPDATE ctf.games g SET status='captured' FROM ctf.seasons s WHERE g.season_id=s.id AND g.id=$1 AND lease=$2 AND g.status='active' AND (s.ends_at IS NULL OR s.ends_at>now())"
+            ? "UPDATE ctf.games SET status='captured' WHERE id=$1 AND lease=$2 AND status='active'"
             : "UPDATE ctf.games SET status='ended' WHERE id=$1 AND lease=$2 AND status='active'",
           [game.id, game.lease],
         );
         if (correct && !ended.rowCount) {
-          // The catch below marks the run ended; no later call in this batch may run.
-          game.status = "ended";
-          failure = new GameError("This season has ended. Start a new run.", 410);
+          // Only a lost lease misses the fenced update; no later call in this batch may run.
+          failure = new GameError("This response has stopped.", 409);
           session!.agent.abort();
         } else {
           game.status = correct ? "captured" : "ended";
@@ -236,7 +232,7 @@ export async function runGame(
         const messages: Message[] = [
           {
             role: "system",
-            content: season.monitor_prompt ?? MONITOR_PROMPT,
+            content: MONITOR_PROMPTS[game.monitor_difficulty],
             timestamp: Date.now(),
           },
           {
@@ -383,11 +379,6 @@ export async function runGame(
     if (error instanceof GameError && error.status === 402)
       await db.query(
         "UPDATE ctf.games SET status='exhausted' WHERE id=$1 AND lease=$2 AND status='active'",
-        [game.id, game.lease],
-      );
-    if (error instanceof GameError && error.status === 410)
-      await db.query(
-        "UPDATE ctf.games SET status='ended' WHERE id=$1 AND lease=$2 AND status='active'",
         [game.id, game.lease],
       );
     const text =

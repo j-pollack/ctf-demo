@@ -4,6 +4,7 @@ import {
   canCreateNewRun,
   hasActiveRun,
   lastEventId,
+  runStarted,
   selectedNavItem,
   shouldPoll,
   withEarlierEvents,
@@ -15,17 +16,8 @@ const game = (overrides: Partial<PublicGame> = {}) =>
     id: "run",
     status: "active",
     events: [],
-    season: {
-      id: "season",
-      name: "Season",
-      startsAt: null,
-      endsAt: "2030-01-01T00:00:00Z",
-      monitorModel: "monitor/model",
-    },
     ...overrides,
   }) as PublicGame;
-
-const now = Date.parse("2026-10-02T00:00:00Z");
 
 test("navigation selection follows canonical route and whether a detail can continue", () => {
   const continuable = game();
@@ -42,45 +34,34 @@ test("navigation selection follows canonical route and whether a detail can cont
     ["/runs/run", { ...continuable, status: "captured" }, null],
     ["/runs/run", { ...continuable, status: "exhausted" }, null],
     ["/runs/run", { ...continuable, status: "creating" }, null],
-    [
-      "/runs/run",
-      { ...continuable, season: { ...continuable.season, endsAt: "2026-10-01T00:00:00Z" } },
-      null,
-    ],
+    ["/runs/run", { ...continuable, status: "blocked" }, null],
   ];
   for (const [path, detail, expected] of cases)
-    assert.equal(selectedNavItem(path, detail, now), expected, `${path} with ${detail?.status}`);
+    assert.equal(selectedNavItem(path, detail), expected, `${path} with ${detail?.status}`);
 });
 
-test("an empty continuable current run cannot be replaced, but a used or ended run can", () => {
-  assert.equal(canCreateNewRun(undefined, now, false), false);
-  assert.equal(canCreateNewRun(null, now), true);
-  assert.equal(canCreateNewRun(game(), now), false);
-  assert.equal(canCreateNewRun(game(), now, true), false);
+test("a run has started once it has a recorded instruction", () => {
+  assert.equal(runStarted(game()), false);
+  assert.equal(runStarted(game({ events: [{ id: 3, kind: "agent", text: "hi" }] })), false);
+  assert.equal(runStarted(game({ events: [{ id: -1, kind: "user", text: "optimistic" }] })), false);
+  assert.equal(runStarted(game({ events: [{ id: 1, kind: "user", text: "go" }] })), true);
+});
+
+test("an empty current run cannot be replaced, but a used or ended run can", () => {
+  assert.equal(canCreateNewRun(undefined, false), false);
+  assert.equal(canCreateNewRun(null), true);
+  assert.equal(canCreateNewRun(game()), false);
+  assert.equal(canCreateNewRun(game(), true), false);
   assert.equal(
-    canCreateNewRun(game({ events: [{ id: 1, kind: "user", text: "go" }] }), now, true),
+    canCreateNewRun(game({ events: [{ id: 1, kind: "user", text: "go" }] }), true),
     true,
   );
   assert.equal(
-    canCreateNewRun(game({ events: [{ id: -1, kind: "user", text: "optimistic" }] }), now),
+    canCreateNewRun(game({ events: [{ id: -1, kind: "user", text: "optimistic" }] })),
     false,
   );
-  assert.equal(canCreateNewRun(game({ status: "ended" }), now), true);
-  assert.equal(
-    canCreateNewRun(
-      game({
-        season: {
-          id: "season",
-          name: "Season",
-          startsAt: null,
-          endsAt: "2026-10-02T00:00:00Z",
-          monitorModel: "monitor/model",
-        },
-      }),
-      now,
-    ),
-    true,
-  );
+  for (const status of ["ended", "captured", "exhausted", "blocked"] as const)
+    assert.equal(canCreateNewRun(game({ status })), true, status);
 });
 
 test("polling follows live work, not pending billing", () => {
@@ -114,12 +95,9 @@ test("delta polls keep held events and append only newer ones", () => {
 });
 
 test("Play opens the new-run dialog unless a run can still be continued", () => {
-  assert.equal(hasActiveRun(null, now), false);
-  assert.equal(hasActiveRun(undefined, now), false);
-  assert.equal(hasActiveRun(game(), now), true);
+  assert.equal(hasActiveRun(null), false);
+  assert.equal(hasActiveRun(undefined), false);
+  assert.equal(hasActiveRun(game()), true);
   for (const status of ["captured", "exhausted", "ended", "creating"] as const)
-    assert.equal(hasActiveRun(game({ status }), now), false, status);
-  const expired = game();
-  expired.season = { ...expired.season, endsAt: "2026-10-01T00:00:00Z" };
-  assert.equal(hasActiveRun(expired, now), false);
+    assert.equal(hasActiveRun(game({ status })), false, status);
 });

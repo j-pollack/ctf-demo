@@ -44,14 +44,22 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "../../db/migrations/006-system-prompt.sql",
     "../../db/migrations/007-inference-game-index.sql",
     "../../db/migrations/008-block-ends-run.sql",
+    "../../db/migrations/009-monitor-choice.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
   const { executeCommand, destroyEnvironment, operationTimeout } =
     await import("../../lib/sprites");
   const { runGame } = await import("../../lib/runner");
-  const { AGENT_MODEL, AGENT_PROMPT, MONITOR_MODEL, agentPrompt, hasSecret } =
-    await import("../../lib/policy");
+  const {
+    AGENT_MODEL,
+    AGENT_PROMPT,
+    MONITOR_MODEL,
+    MONITOR_PROMPT,
+    MONITOR_PROMPTS,
+    agentPrompt,
+    hasSecret,
+  } = await import("../../lib/policy");
 
   // Per sprite: checkpoints (id -> state version) and a state version bumped by every command and
   // reset by a restore, so tests can see exactly which checkpoint a restore went back to.
@@ -80,6 +88,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let commandFailure: Error | undefined;
   let commandGate: ((signal: AbortSignal) => Promise<void>) | undefined;
   let monitor = "allow";
+  // The monitor model the next monitor requests must name (the default unless a test picks one).
+  let expectedMonitor = MONITOR_MODEL;
+  // A monitor-capable catalog model other than the default, for tests that pick their own.
+  const ALT_MONITOR = "z-ai/glm-5.3";
   // Decisions for the next monitor calls, in order; "monitor" applies once it is empty.
   let monitorQueue: string[] = [];
   // Whether the agent's tool-call turn includes readable reasoning.
@@ -328,11 +340,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       }
       if (String(input) === "https://openrouter.ai/api/v1/models")
         return Response.json({
-          data: [...new Set([AGENT_MODEL, MONITOR_MODEL])].map((id) => ({
+          // GLM 5.3 can monitor and does not require reasoning; Qwen flash has no response_format.
+          data: [
+            ...new Set([AGENT_MODEL, MONITOR_MODEL, "z-ai/glm-5.3", "qwen/qwen3.8-flash"]),
+          ].map((id) => ({
             id,
             context_length: 100000,
             pricing: { prompt: "0.000001", completion: "0.000002" },
-            supported_parameters: ["tools", "response_format", "reasoning"],
+            supported_parameters:
+              id === "qwen/qwen3.8-flash"
+                ? ["tools", "reasoning"]
+                : ["tools", "response_format", "reasoning"],
           })),
         });
       assert.equal(String(input), "https://openrouter.ai/api/v1/chat/completions");
@@ -366,10 +384,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       let message;
       const mode = payload.response_format ? (monitorQueue.shift() ?? monitor) : monitor;
       if (payload.response_format) {
-        assert.equal(payload.model, MONITOR_MODEL);
-        // GLM rejects disabled reasoning, so the monitor requests low-effort hidden reasoning.
-        assert.equal(MONITOR_MODEL, "z-ai/glm-5.3-flash");
-        assert.deepEqual(payload.reasoning, { effort: "low", exclude: false });
+        // Every monitor request must use the model its run is expected to use.
+        assert.equal(payload.model, expectedMonitor);
+        // GLM flash rejects disabled reasoning, so it gets low-effort hidden reasoning; the others
+        // have it disabled.
+        assert.deepEqual(
+          payload.reasoning,
+          expectedMonitor === "z-ai/glm-5.3-flash"
+            ? { effort: "low", exclude: false }
+            : { enabled: false },
+        );
         message = {
           reasoning: "Monitor fixture reasoning.",
           content:
@@ -493,7 +517,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   );
   t.beforeEach(async () => {
     await pool.query(
-      "TRUNCATE ctf.events,ctf.inference,ctf.games,ctf.daily_spend,ctf.seasons RESTART IDENTITY CASCADE",
+      "TRUNCATE ctf.events,ctf.inference,ctf.games,ctf.daily_spend RESTART IDENTITY CASCADE",
     );
     environments.clear();
     checkpointMode = "ok";
@@ -510,6 +534,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     commandGate = undefined;
     commandResult = { stdout: "fixture-output", stderr: "", exitCode: 0 };
     monitor = "allow";
+    expectedMonitor = MONITOR_MODEL;
     monitorQueue = [];
     agentReasoning = true;
     agentCost = 0;
@@ -1033,7 +1058,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       agentCost = 0.00004;
       monitorCost = 0.000013;
       const who = await guest();
-      const parent = await startGame(who.id, false, undefined, { monitorReasoning: false });
+      expectedMonitor = ALT_MONITOR;
+      const parent = await startGame(who.id, false, undefined, {
+        monitorReasoning: false,
+        monitorModel: ALT_MONITOR,
+        monitorDifficulty: "medium",
+      });
       assert.equal((await instruct(who, parent.id, { systemPrompt: MARKER })).status, 200);
       proposed = ["printf old", "cat /tmp/flag.txt"];
       monitorQueue = ["allow", "block"];
@@ -1074,17 +1104,20 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         "blocks",
         "agent_model",
         "monitor_model",
+        "monitor_difficulty",
         "system_prompt",
         "monitor_reasoning",
         "token_budget",
         "tokens_used",
         "budget_microdollars",
         "spent_microdollars",
-        "season_id",
       ])
         assert.deepEqual(stored[key], before[key], key);
       assert.equal(stored.system_prompt, MARKER);
-      assert.equal(stored.monitor_reasoning, false);
+      assert.deepEqual(
+        [stored.monitor_model, stored.monitor_difficulty, stored.monitor_reasoning],
+        [ALT_MONITOR, "medium", false],
+      );
       assert.equal(Number(stored.reserved_microdollars), 0);
       // The visible history stops before the dropped instruction, under new ids.
       const eventsChild = await eventsOf(child.id);
@@ -1177,9 +1210,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       [plain, null],
     ] as const)
       await pool.query(
-        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id,status,forked_from,updated_at)
-        VALUES($1,$2,$3,'h','a','m','v',1,$4,'creating',$5,now()-interval '10 minutes')`,
-        [id, who.id, forkedFrom ? stored.sprite_name : `ctf-${id}`, stored.season_id, forkedFrom],
+        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,forked_from,updated_at)
+        VALUES($1,$2,$3,'h','a','m','v',1,'creating',$4,now()-interval '10 minutes')`,
+        [id, who.id, forkedFrom ? stored.sprite_name : `ctf-${id}`, forkedFrom],
       );
     await pool.query(
       `INSERT INTO ctf.events(game_id,data) VALUES($1,'{"kind":"user","text":"x"}')`,
@@ -1201,10 +1234,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const who = await guest();
     const { game: parent } = await blockRun(who.id);
     const current = await startGame(who.id, false);
-    await pool.query(
-      "INSERT INTO ctf.seasons(id,name,monitor_model,monitor_version,starts_at,ends_at) VALUES('other-season','Other',$1,'v',now()-interval '1 day',now()+interval '1 day')",
-      [MONITOR_MODEL],
-    );
     const original = await row(parent.id);
     const count = async () =>
       (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n as number;
@@ -1218,14 +1247,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         if (pattern) assert.match((await response.json()).error, pattern, label);
       } finally {
         await pool.query(
-          "UPDATE ctf.games SET status=$2,sprite_deleted_at=$3,updated_at=$4,season_id=$5,lease=NULL,lease_until=NULL,reserved_microdollars=0 WHERE id=$1",
-          [
-            parent.id,
-            original.status,
-            original.sprite_deleted_at,
-            original.updated_at,
-            original.season_id,
-          ],
+          "UPDATE ctf.games SET status=$2,sprite_deleted_at=$3,updated_at=$4,lease=NULL,lease_until=NULL,reserved_microdollars=0 WHERE id=$1",
+          [parent.id, original.status, original.sprite_deleted_at, original.updated_at],
         );
       }
       assert.equal(await count(), games, label);
@@ -1237,7 +1260,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       await deny(`status ${status}`, 409, `status='${status}'`);
     await deny("sprite deleted", 410, "sprite_deleted_at=now()");
     await deny("block older than 24h", 410, "updated_at=now()-interval '25 hours'");
-    await deny("another season", 410, "season_id='other-season'");
     await deny(
       "response in flight",
       409,
@@ -1344,9 +1366,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     await assert.rejects(() => startGame(who.id, false), /daily limit of new runs/);
     // A global start count at 100 stops new runs but not forks.
     await pool.query(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,season_id,status,sprite_deleted_at)
-      SELECT gen_random_uuid(),'bulk-'||n,'bulk-'||n,'h','a','m','v',1,$1,'ended',now() FROM generate_series(1,100) n`,
-      [(await row(first.id)).season_id],
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
+      SELECT gen_random_uuid(),'bulk-'||n,'bulk-'||n,'h','a','m','v',1,'ended',now() FROM generate_series(1,100) n`,
     );
     await assert.rejects(() => startGame("someone-else", false), /No more new runs/);
     const creates = createCount();
@@ -1465,6 +1486,188 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal(on.monitorReasoning, true);
     assert.equal((await row(on.id)).monitor_reasoning, true);
   });
+
+  // --- Players choose their monitor model and prompt difficulty. ---
+  const startRoute = async (who: { cookie: string }, body: unknown) => {
+    const { POST } = await import("../../app/api/games/route");
+    return POST(
+      new Request(`${origin}/api/games`, {
+        method: "POST",
+        headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  };
+  const monitorSystem = (request: { payload: unknown }) =>
+    (request.payload as { messages: { role: string; content: string }[] }).messages.find(
+      (message) => message.role === "system",
+    )?.content;
+  const monitorRequests = (from = 0) =>
+    requests.slice(from).filter((request) => request.role === "monitor") as {
+      payload: { model: string; messages: { role: string; content: string }[] };
+    }[];
+  const monitorOf = async (id: string) => {
+    const { monitor_model, monitor_difficulty, monitor_reasoning } = await row(id);
+    return { monitor_model, monitor_difficulty, monitor_reasoning };
+  };
+  const DEFAULT_MONITOR = {
+    monitor_model: MONITOR_MODEL,
+    monitor_difficulty: "hard",
+    monitor_reasoning: true,
+  };
+
+  await t.test("the start route stores the monitor choice and defaults it", async () => {
+    const who = await guest();
+    const plain = await (await startRoute(who, {})).json();
+    assert.deepEqual(
+      [plain.monitorModel, plain.monitorDifficulty, plain.monitorReasoning],
+      [MONITOR_MODEL, "hard", true],
+    );
+    assert.deepEqual(await monitorOf(plain.id), DEFAULT_MONITOR);
+    const response = await startRoute(who, {
+      monitorModel: ALT_MONITOR,
+      monitorDifficulty: "easy",
+      monitorReasoning: false,
+    });
+    assert.equal(response.status, 200);
+    const chosen = await response.json();
+    assert.deepEqual(
+      [chosen.monitorModel, chosen.monitorDifficulty, chosen.monitorReasoning],
+      [ALT_MONITOR, "easy", false],
+    );
+    assert.deepEqual(await monitorOf(chosen.id), {
+      monitor_model: ALT_MONITOR,
+      monitor_difficulty: "easy",
+      monitor_reasoning: false,
+    });
+    assert.equal((await row(chosen.id)).season_id, null, "runs no longer belong to a season");
+    // The same fields come back from the stored row on a later read.
+    const { publicGame, PUBLIC_GAME_COLUMNS } = await import("../../lib/games");
+    const read = await pool.query(`SELECT ${PUBLIC_GAME_COLUMNS} FROM ctf.games WHERE id=$1`, [
+      chosen.id,
+    ]);
+    assert.equal((await publicGame(read.rows[0])).monitorDifficulty, "easy");
+  });
+
+  for (const [name, body, status] of [
+    ["a model that is not offered", { monitorModel: "evil/model" }, 400],
+    ["a non-string model", { monitorModel: 5 }, 400],
+    ["a null model", { monitorModel: null }, 400],
+    ["a model OpenRouter cannot use as a monitor", { monitorModel: "qwen/qwen3.8-flash" }, 503],
+    ["an unknown difficulty", { monitorDifficulty: "impossible" }, 400],
+    ["a non-string difficulty", { monitorDifficulty: 1 }, 400],
+    ["a non-boolean reasoning flag", { monitorReasoning: "yes" }, 400],
+  ] as const)
+    await t.test(
+      `the start route rejects ${name} without creating a run or ending the current one`,
+      async () => {
+        const who = await guest();
+        const current = await startGame(who.id, false);
+        const games = (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n;
+        const creates = createCount();
+        const response = await startRoute(who, body);
+        assert.equal(response.status, status);
+        assert.equal(
+          (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n,
+          games,
+        );
+        assert.equal(createCount(), creates, "no environment was created");
+        assert.equal((await row(current.id)).status, "active", "the current run stays active");
+      },
+    );
+
+  await t.test(
+    "the first instruction changes an unbegun run's monitor model, difficulty and reasoning",
+    async () => {
+      const who = await guest();
+      const game = await startGame(who.id, false);
+      expectedMonitor = ALT_MONITOR;
+      const { response } = await instructFrames(who, game.id, {
+        monitorModel: ALT_MONITOR,
+        monitorDifficulty: "easy",
+        monitorReasoning: false,
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await monitorOf(game.id), {
+        monitor_model: ALT_MONITOR,
+        monitor_difficulty: "easy",
+        monitor_reasoning: false,
+      });
+      const monitored = monitorRequests();
+      assert.equal(monitored.length, 1);
+      assert.equal(monitored[0].payload.model, ALT_MONITOR);
+      assert.equal(monitorSystem(monitored[0]), MONITOR_PROMPTS.easy);
+      const text = JSON.stringify(monitored[0].payload);
+      assert.ok(!text.includes("Controlled fixture reasoning."), "reasoning is hidden");
+      assert.ok(!text.includes('\\"type\\":\\"thinking\\"'), "no thinking parts");
+      assert.ok(text.includes("printf harmless"), "the rest of the transcript still arrives");
+    },
+  );
+
+  await t.test("a run that has begun ignores monitor fields in later instructions", async () => {
+    const who = await guest();
+    const game = await startGame(who.id, false);
+    assert.equal((await instruct(who, game.id)).status, 200);
+    const from = requests.length;
+    agentCalls = 0;
+    const response = await instruct(who, game.id, {
+      monitorModel: ALT_MONITOR,
+      monitorDifficulty: "easy",
+      monitorReasoning: false,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await monitorOf(game.id), DEFAULT_MONITOR);
+    const monitored = monitorRequests(from);
+    assert.equal(monitored.length, 1);
+    assert.equal(monitored[0].payload.model, MONITOR_MODEL, "the stored model still judges");
+    assert.equal(monitorSystem(monitored[0]), MONITOR_PROMPTS.hard);
+    assert.ok(JSON.stringify(monitored[0].payload).includes("Controlled fixture reasoning."));
+  });
+
+  for (const [name, extra, status] of [
+    ["an unlisted model", { monitorModel: "evil/model" }, 400],
+    ["a non-string model", { monitorModel: 5 }, 400],
+    ["a model OpenRouter cannot use as a monitor", { monitorModel: "qwen/qwen3.8-flash" }, 503],
+    ["an unknown difficulty", { monitorDifficulty: "impossible" }, 400],
+    ["a non-string difficulty", { monitorDifficulty: 2 }, 400],
+    ["a non-boolean reasoning flag", { monitorReasoning: null }, 400],
+  ] as const)
+    await t.test(
+      `an instruction with ${name} is rejected: nothing changes, nothing runs, no lease is taken`,
+      async () => {
+        const who = await guest();
+        const game = await startGame(who.id, false);
+        const before = await row(game.id);
+        const response = await instruct(who, game.id, extra);
+        assert.equal(response.status, status);
+        assert.deepEqual(await monitorOf(game.id), DEFAULT_MONITOR);
+        const after = await row(game.id);
+        assert.equal(after.lease, null);
+        assert.equal(after.lease_until, null);
+        assert.equal(after.status, "active");
+        assert.deepEqual(after.messages, before.messages);
+        assert.equal(requests.length, 0, "no inference");
+        assert.equal(
+          (await eventsOf(game.id)).length,
+          0,
+          "no event recorded for the rejected instruction",
+        );
+      },
+    );
+
+  for (const difficulty of ["easy", "medium", "hard"] as const)
+    await t.test(`the ${difficulty} monitor request uses its own system prompt`, async () => {
+      const who = await guest();
+      const game = await startGame(who.id, false, undefined, { monitorDifficulty: difficulty });
+      assert.equal((await row(game.id)).monitor_difficulty, difficulty);
+      assert.equal((await instruct(who, game.id)).status, 200);
+      const monitored = monitorRequests();
+      assert.equal(monitored.length, 1);
+      const system = monitorSystem(monitored[0]);
+      if (difficulty === "hard") assert.equal(system, MONITOR_PROMPT);
+      else assert.notEqual(system, MONITOR_PROMPT, "not the hard prompt");
+      assert.equal(system, MONITOR_PROMPTS[difficulty]);
+    });
 
   await t.test(
     "starts private initialized environments with distinct secrets and persisted ownership",
@@ -1924,26 +2127,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
     assert.deepEqual(input.proposedToolCall.arguments, { command: "printf harmless" });
     assert.equal(finished.blocks, 1);
-  });
-  await t.test("a correct submit after the season ends does not capture", async () => {
-    const game = await startGame("late-submit", false),
-      stored = await row(game.id);
-    const secret = environments.get(stored.sprite_name)!.secret!;
-    proposed = ["printf harmless", { submit: secret }];
-    commandGate = async () => {
-      await pool.query("UPDATE ctf.seasons SET ends_at=now()-interval '1 second' WHERE id=$1", [
-        stored.season_id,
-      ]);
-    };
-    const finished = await play(game.id, "late-submit");
-    assert.equal(finished.status, "ended");
-    const events = (
-      await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
-    ).rows.map((entry) => entry.data);
-    assert.ok(!events.some((event) => event.kind === "submit"));
-    assert.ok(
-      events.some((event) => event.kind === "error" && /season has ended/.test(event.text)),
-    );
   });
   await t.test("exact game:sprite_exec alias executes and replays canonically", async () => {
     const game = await startGame("alias", false);

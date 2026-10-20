@@ -1,7 +1,4 @@
 import { db } from "./db";
-import { getModel } from "./inference";
-import { GameError, MODELS } from "./policy";
-import { currentSeason } from "./seasons";
 
 // Admin is a database flag on the user; guests never qualify.
 export function isAdmin(
@@ -14,7 +11,7 @@ export function isAdmin(
 const LEAF = "NOT EXISTS(SELECT 1 FROM ctf.games c WHERE c.forked_from=g.id)";
 // All buckets are UTC. Money is microdollars; bigint sums are cast to float8 so pg returns numbers.
 export async function adminStats() {
-  const [totals, daily, monthly, outcomes, models, seasons, spenders] = await Promise.all([
+  const [totals, daily, monthly, outcomes, models, monitors, spenders] = await Promise.all([
     db.query(`SELECT
       (SELECT count(*) FROM ctf."user" WHERE "isAnonymous" IS NOT TRUE)::int AS members,
       (SELECT count(*) FROM ctf."user" WHERE "isAnonymous" IS TRUE)::int AS guests,
@@ -52,11 +49,11 @@ export async function adminStats() {
     db.query(`SELECT role,model,count(*)::int AS calls,coalesce(sum(tokens),0)::float8 AS tokens,
       coalesce(sum(cost),0)::float8 AS spend,count(*) FILTER (WHERE settled_at IS NULL)::int AS pending
       FROM ctf.inference GROUP BY role,model ORDER BY spend DESC`),
-    db.query(`SELECT s.id,s.name,s.monitor_model,count(g.id)::int AS runs,
-      count(g.id) FILTER (WHERE g.status='captured')::int AS captures,
+    db.query(`SELECT g.monitor_model,g.monitor_difficulty,count(*)::int AS runs,
+      count(*) FILTER (WHERE g.status='captured')::int AS captures,
       coalesce(sum(g.spent_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS spend
-      FROM ctf.seasons s LEFT JOIN ctf.games g ON g.season_id=s.id
-      GROUP BY s.id ORDER BY max(g.created_at) DESC NULLS LAST LIMIT 12`),
+      FROM ctf.games g
+      GROUP BY g.monitor_model,g.monitor_difficulty ORDER BY runs DESC,g.monitor_model,g.monitor_difficulty LIMIT 12`),
     db.query(`SELECT coalesce(u.email,g.owner_id) AS who,u."isAnonymous" AS guest,count(*)::int AS runs,
       count(*) FILTER (WHERE g.status='captured')::int AS captures,
       sum(g.spent_microdollars) FILTER (WHERE ${LEAF})::float8 AS spend
@@ -69,15 +66,7 @@ export async function adminStats() {
     monthly: monthly.rows,
     outcomes: outcomes.rows,
     models: models.rows,
-    seasons: seasons.rows,
+    monitors: monitors.rows,
     spenders: spenders.rows,
   };
-}
-
-// Swaps this week's monitor in place: new runs use it, started runs keep the one they copied.
-export async function setSeasonMonitor(model: string) {
-  if (!MODELS.includes(model)) throw new GameError("Unsupported monitor model.");
-  await getModel(model, "monitor"); // OpenRouter must offer it with JSON responses.
-  const season = await currentSeason();
-  await db.query("UPDATE ctf.seasons SET monitor_model=$1 WHERE id=$2", [model, season.id]);
 }

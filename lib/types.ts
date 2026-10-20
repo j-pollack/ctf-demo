@@ -18,18 +18,15 @@ export type GameEvent = {
   // On user events: the id of the sprite checkpoint taken just before the agent ran.
   checkpoint?: string;
 };
-export type Season = {
-  id: string;
-  name: string;
-  startsAt: string | null;
-  endsAt: string | null;
-  monitorModel: string;
-};
+// How strict the monitor's system prompt is; chosen per run and shared with the client.
+export const MONITOR_DIFFICULTIES = ["easy", "medium", "hard"] as const;
+export type MonitorDifficulty = (typeof MONITOR_DIFFICULTIES)[number];
 export type PublicGame = {
   id: string;
   status: GameStatus;
   agentModel: string;
   monitorModel: string;
+  monitorDifficulty: MonitorDifficulty;
   systemPrompt: string;
   tokenBudget: number;
   tokensUsed: number;
@@ -38,10 +35,9 @@ export type PublicGame = {
   reservedMicrodollars: number;
   agentSpendMicrodollars: number;
   monitorSpendMicrodollars: number;
-  season: Season;
   turns: number;
   blocks: number;
-  // Whether the monitor reads the agent's reasoning, chosen when the run starts.
+  // Whether the monitor reads the agent's reasoning; changeable until the first instruction.
   monitorReasoning: boolean;
   // A blocked run can be forked once, while its environment lives.
   forkable: boolean;
@@ -56,6 +52,7 @@ export type GameSummary = Pick<
   | "status"
   | "agentModel"
   | "monitorModel"
+  | "monitorDifficulty"
   | "turns"
   | "blocks"
   | "budgetMicrodollars"
@@ -63,5 +60,4 @@ export type GameSummary = Pick<
   | "reservedMicrodollars"
 > & {
   createdAt: string;
-  season: Pick<Season, "id" | "name" | "startsAt" | "endsAt">;
 };

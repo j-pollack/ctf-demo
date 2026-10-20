@@ -39,7 +39,8 @@ button {
   padding: 10px 14px;
   min-height: 44px;
 }
-button:disabled {
+button:disabled,
+select:disabled {
   opacity: 0.55;
   cursor: default;
 }
@@ -553,6 +554,11 @@ aside.monitor {
   font-size: 10px;
   letter-spacing: 0.8px;
 }
+/* The explainer under a setup select. */
+.model-select + small {
+  display: block;
+  margin: -6px 0 18px;
+}
 .model-select select {
   display: block;
   width: 100%;
@@ -929,17 +935,6 @@ dialog::backdrop {
 .fork-actions button {
   flex: 1;
   min-width: 0;
-}
-.check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 12px 0;
-}
-.dialog-content .check input {
-  width: auto;
-  margin: 0;
-  padding: 0;
 }
 @media (max-width: 480px) {
   .fork-actions {
