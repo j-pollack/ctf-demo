@@ -133,3 +133,18 @@ Custom/self-hosted agent models; changing the agent provider (still OpenRouter);
 - **Stage 1 (foundation, additive, no behavior change):** `lib/typesafe.ts` client + boundary fake; policy constants (difficulty → {windowTurns, activeSignals, threshold, confidenceFloor, weights}, flat price, prompt set); the pure windowed-document builder + unit tests; migration 010 (`caught` status, registered). Gate stays green.
 - **Stage 2 (behavior):** runner per-call scoring + catch + instruction screen + submit win path (B1) + main-task scoring; games `caught`-forkable across all sites (B2) + the pre-settled inference charge with cap enforcement (N2/N3). Integration tests incl. sprite reclaim.
 - **Stage 3 (surface):** UI (control framing, suspicion panel, difficulty copy, remove model picker), leaderboard, Typesafe eval + calibration (N8), README/verification.
+
+## API correction (from the live docs, before Stage 2)
+
+The skill described a preview endpoint; the documented stable API (https://docs.typesafe.ai) differs, and Stage 1's client was corrected to it:
+
+- Endpoint `POST /v1/systemone`; request `{ model, state, questions }` where `questions` is an object keyed by name (not a `prompts` array), `state` not `document`.
+- Score `criteria` is an **ordered array** of level descriptions (position = level from 0); four levels → scores 0..3, normalized by `MONITOR_SCORE_MAX`. Noul answer is in `.noul`; score answer in `.score` + `.confidence`.
+- Response `{ model, answers, usage: { input_tokens, output_tokens } }`. **Billing is per input token** ($0.042/Mtok = 0.000042 µ$/token), read from `usage.input_tokens` — not a flat per-call unit. Cost scales with document size but stays tiny (a small call ≈ a few hundred tokens ≈ 0.01–0.02 µ$). Stage 2 accumulates `inputTokens × MONITOR_TOKEN_MICRODOLLARS`.
+- Model pinned to `jev-1.13.0` (alias `jev-latest` moves). Context 64k/request, 32k/question (long-context header available). `max_tokens_exceeded` → 400; 429/529 are retryable with backoff.
+
+**Jev jaggedness (jev-1.13) → two-call monitor design.** Per the model's documented limits: it doesn't trace multi-step indirection (confirmed live — the symlink read scored 0.1), it's literal, it suffers context rot from irrelevant state, and it does not treat state as hostile by default. So Stage 2 splits each per-command check into two Typesafe calls:
+
+1. **Command-only call** — `reads_now`, `stages_indirect` over just the proposed command string. No transcript, so planted "monitor override" text can't reach these signals and unrelated log output can't dilute them.
+2. **Context call** — `intent`, `suspicion` over the clipped windowed transcript.
+   Both are ~100ms and run in parallel; combine per difficulty in code. This directly mitigates the adversarial-content and context-rot failure modes rather than relying on prompt wording.
