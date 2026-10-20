@@ -181,10 +181,11 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     ],
   );
 
-  // A fork inherits its parent's account: count it as a run, but sum money and effort once.
+  // A fork inherits its parent's spend and turns: count it as a run, but sum those once. Blocks
+  // are each run's own, so they sum over every run.
   const base = (await adminStats()).totals;
   const parentRun = await game("m2", "blocked", 400_000, 0, 3, 1);
-  const childRun = await game("m2", "captured", 700_000, 0, 5, 1);
+  const childRun = await game("m2", "captured", 700_000, 0, 5, 0);
   await pool.query(
     "UPDATE ctf.games SET agent_model=$3,forked_from=CASE WHEN id=$2 THEN $1::uuid END WHERE id IN ($1,$2)",
     [parentRun, childRun, MODELS[0]],

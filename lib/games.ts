@@ -381,7 +381,8 @@ export async function startGame(
         source?.id ?? null,
         JSON.stringify(cut?.messages ?? []),
         source?.turns ?? 0,
-        source?.blocks ?? 0,
+        // A fork is a fresh attempt: it starts with no blocks, while spend and turns carry over.
+        0,
         source?.tokens_used ?? 0,
         source?.spent_microdollars ?? 0,
       ],

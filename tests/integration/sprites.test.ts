@@ -1098,10 +1098,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(lastUser > 1);
       assert.deepEqual(stored.messages, before.messages.slice(0, lastUser));
       assert.ok(!JSON.stringify(stored.messages).includes(dropped));
-      // Spend, tokens, budget, turns and blocks carry over in full.
+      // Spend, tokens, budget and turns carry over in full; the fork starts with no blocks.
+      assert.equal(before.blocks, 1);
+      assert.equal(stored.blocks, 0);
+      assert.equal(child.blocks, 0, "the new run shows no blocked commands");
       for (const key of [
         "turns",
-        "blocks",
         "agent_model",
         "monitor_model",
         "monitor_difficulty",
@@ -1354,7 +1356,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const grandchild = await forkRoute(who, child.id);
     assert.equal(grandchild.status, 200);
     const stored = await row((await grandchild.json()).id);
-    assert.equal(stored.blocks, 2);
+    assert.equal((await row(child.id)).blocks, 1, "each run counts only its own blocks");
+    assert.equal(stored.blocks, 0);
     assert.equal(stored.sprite_name, (await row(parent.id)).sprite_name);
   });
 

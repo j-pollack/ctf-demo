@@ -7,7 +7,8 @@ export function isAdmin(
   return user?.isAdmin === true && !user.isAnonymous;
 }
 
-// A fork inherits its parent's spend, turns and blocks, so those sums skip any run that has a fork.
+// A fork inherits its parent's spend and turns, so those sums skip any run that has a fork. Blocks
+// are each run's own and sum over every run.
 const LEAF = "NOT EXISTS(SELECT 1 FROM ctf.games c WHERE c.forked_from=g.id)";
 // All buckets are UTC. Money is microdollars; bigint sums are cast to float8 so pg returns numbers.
 export async function adminStats() {
@@ -29,7 +30,7 @@ export async function adminStats() {
       coalesce(avg(spent_microdollars) FILTER (WHERE status='captured'),0)::float8 AS spend_per_capture,
       coalesce(avg(turns) FILTER (WHERE ${LEAF}),0)::float8 AS turns_avg,
       coalesce(sum(turns) FILTER (WHERE ${LEAF}),0)::int AS turns,
-      coalesce(sum(blocks) FILTER (WHERE ${LEAF}),0)::int AS blocks,
+      coalesce(sum(blocks),0)::int AS blocks,
       (SELECT count(*) FROM ctf.inference WHERE estimated)::int AS estimated_settlements
       FROM ctf.games g`),
     db.query(`SELECT to_char(d,'YYYY-MM-DD') AS day,
