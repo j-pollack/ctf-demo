@@ -353,6 +353,11 @@ i {
 .call-status p {
   margin-top: 6px;
 }
+.call-note {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
 .entry.monitor,
 .entry.error {
   color: var(--blocked);

@@ -278,7 +278,40 @@ export async function runGame(
         }
         send("stage", "Running command");
         return undefined;
-      } catch (error) {
+      } catch (caught) {
+        let error = caught;
+        // On easy, a monitor that can't reach a valid decision (malformed or cut-off reply, provider
+        // failure or timeout) lets the command run. Budget, the daily cap, a lost lease and the
+        // player's stop are not undecided monitors: they still halt it below.
+        if (
+          game.monitor_difficulty === "easy" &&
+          !toolSignal?.aborted &&
+          (!(error instanceof GameError) || error.status === 503)
+        ) {
+          try {
+            await emit({
+              kind: "monitor",
+              text: "The monitor couldn't make a valid decision. On Easy, the command runs anyway.",
+              command,
+              decision: "allow",
+              turn: game.turns,
+            });
+            console.error(
+              JSON.stringify({
+                event: "monitor.failed_open",
+                timestamp: new Date().toISOString(),
+                gameId: game.id,
+                model: game.monitor_model,
+                turn: game.turns,
+                error: diagnosticText(error instanceof Error ? error.message : error),
+              }),
+            );
+            send("stage", "Running command");
+            return undefined;
+          } catch (emitError) {
+            error = emitError;
+          }
+        }
         failure = error;
         console.error(
           JSON.stringify({

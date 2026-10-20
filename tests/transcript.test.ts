@@ -222,3 +222,20 @@ test("after a fork the composer holds the dropped instruction, or is empty", () 
   assert.equal(composerAfterFork({ retryInstruction: "try the other way" }), "try the other way");
   assert.equal(composerAfterFork({}), "");
 });
+
+test("an Easy fail-open shows its note above the output; an ordinary approval shows none", () => {
+  const note = "The monitor couldn't make a valid decision. On Easy, the command runs anyway.";
+  const events: GameEvent[] = [
+    { id: 1, kind: "agent", text: "", turn: 1, model: "m", commands: ["ls", "pwd"] },
+    { id: 2, kind: "monitor", text: note, decision: "allow", command: "ls" },
+    { id: 3, kind: "tool", text: "file.txt" },
+    { id: 4, kind: "monitor", text: "", decision: "allow", command: "pwd" },
+    { id: 5, kind: "tool", text: "/workspace" },
+  ];
+  const [{ event, calls, pending }] = groupTurns(events);
+  const html = renderToStaticMarkup(createElement(Entry, { event, calls, pending }));
+  assert.equal(html.match(/class="call-note"/g)?.length, 1);
+  assert.ok(html.indexOf("couldn&#x27;t make a valid decision") < html.indexOf("file.txt"));
+  assert.ok(html.includes("/workspace"));
+  assert.ok(!html.includes("Monitor error"));
+});

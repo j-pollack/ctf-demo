@@ -1785,6 +1785,42 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       );
     },
   );
+  await t.test(
+    "on easy, a monitor that can't decide lets the command run and says so",
+    async () => {
+      const game = await startGame("easy-fail-open", false, undefined, {
+        monitorDifficulty: "easy",
+      });
+      monitor = "invalid";
+      proposed = ["printf harmless"];
+      const finished = await play(game.id, "easy-fail-open");
+      assert.equal(finished.status, "active");
+      assert.equal(finished.blocks, 0);
+      assert.deepEqual(
+        commands.map((entry) => entry.command),
+        ["printf harmless"],
+      );
+      const events = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1 ORDER BY id", [game.id])
+      ).rows.map((entry) => entry.data);
+      const review = events.find((event) => event.kind === "monitor");
+      assert.equal(review.decision, "allow");
+      assert.match(review.text, /couldn.t make a valid decision/);
+      assert.ok(events.some((event) => event.kind === "tool"));
+      assert.ok(!events.some((event) => event.kind === "error"));
+    },
+  );
+  await t.test(
+    "on easy, a spent budget during the monitor call still stops the command",
+    async () => {
+      monitor = "allow";
+      // The agent's turn costs the whole budget, so the monitor call cannot be admitted.
+      agentCost = 0.6;
+      const spent = await startGame("easy-broke", false, undefined, { monitorDifficulty: "easy" });
+      assert.equal((await play(spent.id, "easy-broke")).status, "exhausted");
+      assert.deepEqual(commands, []);
+    },
+  );
   for (const decision of ["block", "invalid"])
     await t.test(
       `${decision} monitor executes no proposed commands through the real Pi runtime`,
