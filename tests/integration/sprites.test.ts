@@ -45,6 +45,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "../../db/migrations/007-inference-game-index.sql",
     "../../db/migrations/008-block-ends-run.sql",
     "../../db/migrations/009-monitor-choice.sql",
+    "../../db/migrations/010-control-monitor.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
