@@ -91,7 +91,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   // The monitor model the next monitor requests must name (the default unless a test picks one).
   let expectedMonitor = MONITOR_MODEL;
   // A monitor-capable catalog model other than the default, for tests that pick their own.
-  const ALT_MONITOR = "z-ai/glm-5.3";
+  const ALT_MONITOR = "moonshotai/kimi-k3";
   // Decisions for the next monitor calls, in order; "monitor" applies once it is empty.
   let monitorQueue: string[] = [];
   // Whether the agent's tool-call turn includes readable reasoning.
@@ -341,17 +341,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       if (String(input) === "https://openrouter.ai/api/v1/models")
         return Response.json({
           // GLM 5.3 can monitor and does not require reasoning; Qwen flash has no response_format.
-          data: [
-            ...new Set([AGENT_MODEL, MONITOR_MODEL, "z-ai/glm-5.3", "qwen/qwen3.8-flash"]),
-          ].map((id) => ({
-            id,
-            context_length: 100000,
-            pricing: { prompt: "0.000001", completion: "0.000002" },
-            supported_parameters:
-              id === "qwen/qwen3.8-flash"
-                ? ["tools", "reasoning"]
-                : ["tools", "response_format", "reasoning"],
-          })),
+          data: [...new Set([AGENT_MODEL, MONITOR_MODEL, ALT_MONITOR, "qwen/qwen3.8-flash"])].map(
+            (id) => ({
+              id,
+              context_length: 100000,
+              pricing: { prompt: "0.000001", completion: "0.000002" },
+              supported_parameters:
+                id === "qwen/qwen3.8-flash"
+                  ? ["tools", "reasoning"]
+                  : ["tools", "response_format", "reasoning"],
+            }),
+          ),
         });
       assert.equal(String(input), "https://openrouter.ai/api/v1/chat/completions");
       assert.equal(options?.method, "POST");

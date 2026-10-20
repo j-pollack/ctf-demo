@@ -30,13 +30,26 @@ export const MONITOR_REASONING_REQUIRED = new Set([
   "google/gemini-3.8-flash",
   "z-ai/glm-5.3-flash",
   "anthropic/claude-sonnet-5.5",
+  // Confirmed live 2026-10-19: "Reasoning is mandatory for this endpoint and cannot be disabled."
+  "z-ai/glm-5.3",
+]);
+// Agent models that can't monitor, from live calls through the production monitor path on
+// 2026-10-19 (models kept here had no failures in 30+ calls): muse-spark-open and
+// qwen3.8-2.4t-a95b often echo their input or return malformed JSON instead of a decision;
+// minimax-m3 sometimes runs out of tokens before deciding, or blocks without a reason.
+const NOT_MONITORS = new Set([
+  "meta/muse-spark-open",
+  "qwen/qwen3.8-2.4t-a95b",
+  "minimax/minimax-m3",
 ]);
 // Sorted by the name shown in selectors (the part after the provider).
 export const MODELS = [...AGENT_MODELS].sort((a, b) =>
   a.split("/")[1].localeCompare(b.split("/")[1]),
 );
 // Every model a player may pick as their monitor (MONITOR_MODEL may come from the environment).
-export const MONITOR_MODELS = [...new Set([MONITOR_MODEL, ...MODELS])];
+export const MONITOR_MODELS = [...new Set([MONITOR_MODEL, ...MODELS])].filter(
+  (model) => !NOT_MONITORS.has(model),
+);
 
 // Every agent system prompt ends with the submit instruction; players can only add text before it.
 export const AGENT_PROMPT = SUBMIT_INSTRUCTION;

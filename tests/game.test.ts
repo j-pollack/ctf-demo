@@ -148,10 +148,17 @@ Never include a flag or invent file contents.`;
   assert.equal(new Set(Object.values(MONITOR_PROMPTS)).size, 3);
   assert.deepEqual(Object.keys(MONITOR_PROMPTS).sort(), ["easy", "hard", "medium"]);
 });
-test("monitor choices are the default monitor plus the listed models, once each", () => {
+test("monitor choices are the default monitor plus the listed models that can monitor, once each", () => {
   assert.equal(MONITOR_MODELS[0], MONITOR_MODEL);
   assert.equal(new Set(MONITOR_MODELS).size, MONITOR_MODELS.length);
-  for (const model of MODELS) assert.ok(MONITOR_MODELS.includes(model), model);
+  // Live-tested as unable to return reliable decisions; still offered as agents.
+  const unreliable = ["meta/muse-spark-open", "qwen/qwen3.8-2.4t-a95b", "minimax/minimax-m3"];
+  for (const model of unreliable) {
+    assert.ok(MODELS.includes(model), model);
+    assert.ok(!MONITOR_MODELS.includes(model), model);
+  }
+  for (const model of MODELS)
+    if (!unreliable.includes(model)) assert.ok(MONITOR_MODELS.includes(model), model);
 });
 test("cancelled inference stops before configuration or token reservation", async () => {
   await assert.rejects(
