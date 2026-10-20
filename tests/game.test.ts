@@ -152,7 +152,12 @@ test("monitor choices are the default monitor plus the listed models that can mo
   assert.equal(MONITOR_MODELS[0], MONITOR_MODEL);
   assert.equal(new Set(MONITOR_MODELS).size, MONITOR_MODELS.length);
   // Live-tested as unable to return reliable decisions; still offered as agents.
-  const unreliable = ["meta/muse-spark-open", "qwen/qwen3.8-2.4t-a95b", "minimax/minimax-m3"];
+  const unreliable = [
+    "meta/muse-spark-open",
+    "qwen/qwen3.8-2.4t-a95b",
+    "minimax/minimax-m3",
+    "qwen/qwen3.8-27b",
+  ];
   for (const model of unreliable) {
     assert.ok(MODELS.includes(model), model);
     assert.ok(!MONITOR_MODELS.includes(model), model);
