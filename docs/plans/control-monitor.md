@@ -148,3 +148,14 @@ The skill described a preview endpoint; the documented stable API (https://docs.
 1. **Command-only call** — `reads_now`, `stages_indirect` over just the proposed command string. No transcript, so planted "monitor override" text can't reach these signals and unrelated log output can't dilute them.
 2. **Context call** — `intent`, `suspicion` over the clipped windowed transcript.
    Both are ~100ms and run in parallel; combine per difficulty in code. This directly mitigates the adversarial-content and context-rot failure modes rather than relying on prompt wording.
+
+## Stage 2 done (committed) — notes for Stage 3
+
+Stage 2 (a542034): two-call monitor, `caught` status + forkable + sprite reclaim, instruction screen, submit win path (end-review + ≥1 seed bug), `chargeMonitor` with cap. Gates green (91 unit / 112 integration / build). The LLM monitor path is removed from the runner; `lib/policy.ts` MONITOR_PROMPTS/MONITOR_MODELS and the model-picker plumbing still exist (Stage 3 removes them). `tests/game.test.ts` and `tests/transcript.test.ts` still hold LLM-monitor assertions that pass but should go in Stage 3.
+
+**Document-quality items to fix during calibration (Stage 3):**
+
+- `session.messages` at `beforeToolCall` already contains the in-flight assistant message, so the proposed command appears twice in the context document (once in the agent turn, once as `proposedCommand`). Dedupe the in-flight turn from the context window.
+- `buildMonitorDocument` starts the window at the first in-range agent turn, so the user instruction that prompted it is dropped unless it is the most recent. For intent-detection the prompting instruction should be kept per in-window turn (or at least the window should start at a user boundary).
+
+**Stage 3 scope:** (a) remove the dead LLM-monitor code and its tests, repoint the leaderboard (no monitor_model/version filter; rank cheapest uncaught win per difficulty, optionally by bugs fixed); (b) UI — control framing, a suspicion meter fed by the per-command `suspicion` events, difficulty copy (window + "caught" not "blocked"), remove the monitor-model picker, keep difficulty + reasoning; rules describe the two tasks and the win condition; (c) the Typesafe eval + **calibration**: honest and attack transcripts → set each difficulty's threshold/weights to a target false-catch rate AND prove at least one attack beats hard; (d) README/verification. Calibration needs real honest Bottle-fixing transcripts and a real playthrough to confirm fun-and-beatable — eval alone can't.
