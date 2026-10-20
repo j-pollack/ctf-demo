@@ -3,16 +3,25 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   MONITOR_MODEL,
-  MONITOR_PROMPT,
+  MONITOR_MODELS,
+  MONITOR_PROMPTS,
   MONITOR_REASONING_REQUIRED,
   MONITOR_VERSION,
   parseDecision,
 } from "../lib/policy";
-import { allowCategories, cases, monitorInput, type Category } from "./monitor-eval-cases";
+import { MONITOR_DIFFICULTIES, type MonitorDifficulty } from "../lib/types";
+import {
+  allowCategories,
+  cases,
+  expectedAt,
+  monitorInput,
+  type Category,
+} from "./monitor-eval-cases";
 
 type Model = { id: string; reasoning: boolean; cost: { input: number; output: number } };
 type Options = {
   live?: boolean;
+  difficulty?: MonitorDifficulty;
   repeat?: number;
   key?: string;
   modelId?: string;
@@ -42,19 +51,32 @@ type Status = "unrun" | "pass" | "false_allow" | "false_block" | "format_error" 
 export function parseOptions(args: string[]) {
   let live = false;
   let repeat = 1;
+  let difficulty: MonitorDifficulty = "hard";
+  // --offered scores the monitors players can pick instead of EVAL_MODELS.
+  let offered = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--live" && !live) live = true;
     else if (args[i] === "--repeat" && i + 1 < args.length && /^[1-5]$/.test(args[i + 1]))
       repeat = Number(args[++i]);
-    else throw new Error(`Invalid option: ${args[i]}. Use --live and optional --repeat 1..5.`);
+    else if (
+      args[i] === "--difficulty" &&
+      MONITOR_DIFFICULTIES.some((item) => item === args[i + 1])
+    )
+      difficulty = args[++i] as MonitorDifficulty;
+    else if (args[i] === "--offered" && !offered) offered = true;
+    else
+      throw new Error(
+        `Invalid option: ${args[i]}. Use --live, --repeat 1..5, --difficulty easy|medium|hard and --offered.`,
+      );
   }
-  return { live, repeat };
+  return { live, repeat, difficulty, offered };
 }
 
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 export async function runEvaluation({
   live = false,
+  difficulty = "hard",
   repeat = 1,
   key,
   modelId = MONITOR_MODEL,
@@ -84,10 +106,16 @@ export async function runEvaluation({
     reasoning: string | null;
     retries: number;
   }[] = [];
-  const jobs = Array.from({ length: repeat * cases.length }, (_, index) => ({
+  // Each difficulty scores against its own answers; cases it leaves undecided are skipped.
+  const suite = cases.flatMap((item) => {
+    const expected = expectedAt(item, difficulty);
+    return expected === null ? [] : [{ ...item, expected }];
+  });
+  const prompt = MONITOR_PROMPTS[difficulty];
+  const jobs = Array.from({ length: repeat * suite.length }, (_, index) => ({
     index,
-    run: Math.floor(index / cases.length),
-    item: cases[index % cases.length],
+    run: Math.floor(index / suite.length),
+    item: suite[index % suite.length],
   }));
   let next = 0;
   const worker = async () => {
@@ -111,7 +139,7 @@ export async function runEvaluation({
               body: JSON.stringify({
                 model: model!.id,
                 messages: [
-                  { role: "system", content: MONITOR_PROMPT },
+                  { role: "system", content: prompt },
                   { role: "user", content: JSON.stringify(monitorInput(item)) },
                 ],
                 ...(model!.reasoning
@@ -227,12 +255,13 @@ export async function runEvaluation({
     mode: live ? "live" : "dry-run",
     evaluated: live,
     model: model?.id ?? modelId,
+    difficulty,
     // Where this request differs from the app's monitor request (lib/inference.ts).
     divergence: [],
     monitorVersion: MONITOR_VERSION,
-    promptHash: hash(MONITOR_PROMPT),
+    promptHash: hash(prompt),
     suiteHash: hash(
-      cases.map((item) => ({
+      suite.map((item) => ({
         expected: item.expected,
         category: item.category,
         input: monitorInput(item),
@@ -266,7 +295,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     const options = parseOptions(process.argv.slice(2));
     const key = process.env.OPENROUTER_API_KEY;
     const runs = await Promise.all(
-      EVAL_MODELS.map((modelId) =>
+      (options.offered ? MONITOR_MODELS : EVAL_MODELS).map((modelId) =>
         runEvaluation({
           ...options,
           key,
