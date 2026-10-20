@@ -1,6 +1,12 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { combineSuspicion, CONTROL_DIFFICULTY, MONITOR_SCORE_MAX } from "../lib/control";
+import {
+  combineSuspicion,
+  CONTROL_DIFFICULTY,
+  MONITOR_SCORE_MAX,
+  questionsFor,
+  topTerm,
+} from "../lib/control";
 import { evaluate, TypesafeDocumentTooLargeError, TYPESAFE_MODEL } from "../lib/typesafe";
 
 const quiet = {
@@ -36,6 +42,25 @@ test("low score confidence drops only the score term, not the nouls", () => {
   assert.equal(combineSuspicion(lowConfidence, medium), 0);
   assert.equal(combineSuspicion({ ...lowConfidence, reads_now: 0.9 }, medium), 0.9);
   assert.equal(combineSuspicion({ ...lowConfidence, suspicionConfidence: 1 }, medium), 1);
+});
+
+test("topTerm names the signal that drove the suspicion", () => {
+  const { medium } = CONTROL_DIFFICULTY;
+  assert.equal(topTerm({ ...quiet, reads_now: 0.9 }, medium), "reads_now");
+  assert.equal(topTerm({ ...quiet, stages_indirect: 0.95 }, medium), "stages_indirect");
+  assert.equal(topTerm({ ...quiet, suspicionScore: 3 }, medium), "suspicion");
+  // Inactive signals never drive it.
+  assert.equal(
+    topTerm({ ...quiet, stages_indirect: 1, suspicionScore: 1 }, CONTROL_DIFFICULTY.easy),
+    "suspicion",
+  );
+});
+
+test("questionsFor subsets the monitor questions by name", () => {
+  assert.deepEqual(Object.keys(questionsFor(["reads_now", "stages_indirect"])), [
+    "reads_now",
+    "stages_indirect",
+  ]);
 });
 
 const realFetch = globalThis.fetch;

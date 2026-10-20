@@ -53,6 +53,7 @@ const statusLabel: Record<GameStatus, string> = {
   exhausted: "Out of budget",
   ended: "Ended",
   blocked: "Blocked",
+  caught: "Caught",
 };
 // Shown when the monitor blocks a command: the run is over, a fork can continue it.
 export const BLOCKED_NOTICE =

@@ -63,3 +63,12 @@ export function buildMonitorDocument(
   }
   return document();
 }
+
+// The two Typesafe states for one proposed command. The command-only state carries no transcript, so
+// planted text can't steer the command signals; the context state is the windowed transcript.
+export function monitorStates(
+  messages: Message[],
+  options: { windowTurns: number; includeReasoning: boolean; proposedCommand?: string },
+) {
+  return { command: options.proposedCommand, context: buildMonitorDocument(messages, options) };
+}

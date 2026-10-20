@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
+import { MONITOR_TOKEN_MICRODOLLARS } from "./control";
 import { getModel } from "./inference";
 import {
   AGENT_MODEL,
@@ -52,7 +53,7 @@ export type GameRow = {
   forked_from: string | null;
   monitor_reasoning: boolean;
 };
-// A blocked run's environment is kept this long so its owner can fork it (cleanup adds a margin).
+// A blocked or caught run's environment is kept this long so its owner can fork it (cleanup adds a margin).
 const FORK_WINDOW_MS = 24 * 60 * 60 * 1000;
 export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
   const client = await db.connect();
@@ -144,7 +145,7 @@ export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise
   const forked = (await db.query("SELECT 1 FROM ctf.games WHERE forked_from=$1", [game.id]))
     .rowCount;
   const checkpointed =
-    game.status === "blocked" &&
+    (game.status === "blocked" || game.status === "caught") &&
     !!(
       await db.query(
         "SELECT data->>'checkpoint' AS checkpoint FROM ctf.events WHERE game_id=$1 AND data->>'kind'='user' ORDER BY id DESC LIMIT 1",
@@ -165,7 +166,7 @@ export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise
     blocks: game.blocks,
     monitorReasoning: game.monitor_reasoning,
     forkable:
-      game.status === "blocked" &&
+      (game.status === "blocked" || game.status === "caught") &&
       !forked &&
       checkpointed &&
       !busy &&
@@ -210,14 +211,14 @@ export async function cleanup() {
   await db.query(
     "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE status IN ('active','creating') AND updated_at < now()-interval '24 hours'",
   );
-  // Forks share their parent's sprite: destroy it once, when every run on it is done. A blocked run
-  // is done once forked, or after 25h (the fork window plus a margin so cleanup cannot race a fork).
+  // Forks share their parent's sprite: destroy it once, when every run on it is done. A blocked or
+  // caught run is done once forked, or after 25h (the fork window plus a margin so cleanup cannot race a fork).
   const { rows } = await db.query<{ sprite_name: string }>(
     `SELECT g.sprite_name FROM ctf.games g
     WHERE g.sprite_name IN (SELECT sprite_name FROM ctf.games WHERE sprite_deleted_at IS NULL)
     GROUP BY g.sprite_name
     HAVING bool_or(g.sprite_deleted_at IS NULL) AND bool_and(g.status IN ('captured','exhausted','ended')
-      OR (g.status='blocked' AND (g.updated_at<now()-interval '25 hours'
+      OR (g.status IN ('blocked','caught') AND (g.updated_at<now()-interval '25 hours'
         OR EXISTS(SELECT 1 FROM ctf.games c WHERE c.forked_from=g.id)))) LIMIT 20`,
   );
   await Promise.all(
@@ -329,8 +330,8 @@ export async function startGame(
         )
       ).rows[0];
       if (!source) throw new GameError("Run not found.", 404);
-      if (source.status !== "blocked")
-        throw new GameError("Only a run the monitor blocked can be forked.", 409);
+      if (source.status !== "blocked" && source.status !== "caught")
+        throw new GameError("Only a run the monitor stopped can be forked.", 409);
       if ((await client.query("SELECT 1 FROM ctf.games WHERE forked_from=$1", [sourceId])).rowCount)
         throw new GameError("This run has already been forked.", 409);
       if (
@@ -576,6 +577,49 @@ export async function reserveInference(
       [id, gameId, day, role, model, tokens, cost],
     );
     return { id, maxTokens, tokens, cost };
+  });
+}
+// Charges one Typesafe monitor call: a pre-settled inference row plus the day's and the run's spend,
+// in one transaction. It never reserves, so reconcile/expire (which need settled_at IS NULL) skip it.
+export async function chargeMonitor(gameId: string, lease: string | null, inputTokens: number) {
+  if (!Number.isFinite(inputTokens) || inputTokens < 0) throw new Error("Invalid monitor usage.");
+  // ponytail: calls under ~12k input tokens round to 0 microdollars, so the monitor is effectively
+  // free. A game-y flat per-call rate is a one-line change here.
+  const cost = Math.round(inputTokens * MONITOR_TOKEN_MICRODOLLARS);
+  const tokens = Math.ceil(inputTokens);
+  await transaction(async (client) => {
+    const day = (await client.query("SELECT (now() AT TIME ZONE 'UTC')::date::text AS day")).rows[0]
+      .day as string;
+    await client.query("INSERT INTO ctf.daily_spend(day) VALUES($1) ON CONFLICT DO NOTHING", [day]);
+    const spend = (
+      await client.query("SELECT * FROM ctf.daily_spend WHERE day=$1 FOR UPDATE", [day])
+    ).rows[0];
+    const game = (
+      await client.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId])
+    ).rows[0];
+    if (
+      !game ||
+      game.status !== "active" ||
+      game.lease !== lease ||
+      !game.lease_until ||
+      new Date(game.lease_until).getTime() <= Date.now()
+    )
+      throw new GameError("This response has stopped.", 409);
+    if (Number(spend.charged) + Number(spend.reserved) >= DAILY_CAP_MICRODOLLARS)
+      throw new GameError(
+        "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
+        429,
+      );
+    await client.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,generation_id,settled_at)
+      VALUES($1,$2,$3,'monitor','typesafe',$4,$5,$4,$5,NULL,now())`,
+      [randomUUID(), gameId, day, tokens, cost],
+    );
+    await client.query("UPDATE ctf.daily_spend SET charged=charged+$2 WHERE day=$1", [day, cost]);
+    await client.query(
+      "UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2 WHERE id=$1",
+      [gameId, cost],
+    );
   });
 }
 export async function settleInference(
