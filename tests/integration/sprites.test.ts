@@ -2525,6 +2525,49 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(Number((await row(game.id)).reserved_microdollars) > 0);
     },
   );
+  await t.test(
+    "only a time-limit stop is resumable; a user stop is not, and the run stays open",
+    async () => {
+      for (const [owner, timeout] of [
+        ["stop-timeout", true],
+        ["stop-user", false],
+      ] as const) {
+        const game = await startGame(owner, false);
+        responses = { agent: [{ status: 429 }] };
+        let entered!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        fetchGate = (signal) =>
+          new Promise<Response>((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+            entered();
+          });
+        const controller = new AbortController();
+        const pending = play(
+          game.id,
+          owner,
+          timeout ? AbortSignal.timeout(300) : controller.signal,
+        );
+        if (!timeout) {
+          await ready;
+          controller.abort();
+        }
+        const stopped = await pending;
+        const last = (
+          await pool.query(
+            "SELECT data FROM ctf.events WHERE game_id=$1 ORDER BY id DESC LIMIT 1",
+            [game.id],
+          )
+        ).rows[0]?.data;
+        assert.equal(stopped.status, "active", owner);
+        assert.equal(last?.kind, "error", owner);
+        assert.equal(last?.text, "Response stopped. Your run is still open.", owner);
+        assert.equal(last?.resumable, timeout ? true : undefined, owner);
+        fetchGate = undefined;
+      }
+    },
+  );
   await t.test("lease expiration during backoff blocks retry dispatch", async () => {
     const game = await startGame("expired-retry", false);
     responses = { agent: [{ status: 429 }] };

@@ -17,6 +17,23 @@ import {
   type PublicGame,
 } from "@/lib/types";
 
+// A response cut off at the time limit leaves the run open; the client resumes it, this many times
+// in a row, until a human instruction resets the count.
+export const AUTO_CONTINUE_MAX = 8;
+const AUTO_CONTINUE_TEXT = "Continue.";
+export function shouldAutoContinue(
+  game: PublicGame | null,
+  autoUsed: number,
+  max = AUTO_CONTINUE_MAX,
+) {
+  return (
+    !!game &&
+    game.status === "active" &&
+    autoUsed < max &&
+    game.events.at(-1)?.kind === "error" &&
+    !!game.events.at(-1)?.resumable
+  );
+}
 const label = (model: string) => model.split("/")[1];
 type Choice = { name: string; hint: string };
 const EFFORT_CHOICES: Record<AgentEffort, Choice> = {
@@ -229,6 +246,7 @@ export default function GameUI({
     latestRequest = useRef(0),
     startRequest = useRef(0),
     starting = useRef(false),
+    autoContinues = useRef(0),
     // Armed on arriving at /play and on each Play click; opens setup once if there's no active run.
     setupOnPlay = useRef(true);
   const [modal, setModal] = useState<"setup" | "login" | "fork" | null>(null),
@@ -301,6 +319,7 @@ export default function GameUI({
     setDifficulty(game.monitorDifficulty);
     setMonitorReasoning(game.monitorReasoning);
     setEffort(game.agentEffort);
+    autoContinues.current = 0;
   }, [game?.id]);
   const cancel = useRef<AbortController | null>(null),
     thread = useRef<HTMLDivElement | null>(null),
@@ -689,6 +708,20 @@ export default function GameUI({
     systemBase.current = { id: shownId, value: shownSystemPrompt };
   }, [shownId, shownSystemPrompt]);
   const loading = busy || !!game?.busy || unconfirmed;
+  // Drives the auto-continue chain from settled, idle state; Stop, typing or a finished run ends it.
+  useEffect(() => {
+    if (
+      isExecutionView &&
+      !loading &&
+      !cancel.current &&
+      !pending.current &&
+      !prompt.trim() &&
+      shouldAutoContinue(game, autoContinues.current)
+    ) {
+      autoContinues.current += 1;
+      void send(AUTO_CONTINUE_TEXT);
+    }
+  }, [game, loading]);
   const allowance = displayGame?.budgetMicrodollars ?? (signedIn ? 3_000_000 : 600_000),
     left = Math.max(
       0,
@@ -907,8 +940,10 @@ export default function GameUI({
     }
     if (type === "error") setError(String(data));
   }
-  async function send() {
-    if (!game || !prompt.trim() || loading || cancel.current || pending.current) return;
+  async function send(auto?: string) {
+    if (!game || (!auto && !prompt.trim()) || loading || cancel.current || pending.current) return;
+    const text = auto ?? prompt;
+    if (!auto) autoContinues.current = 0;
     const runId = game.id,
       owner = historyOwner.current,
       epoch = accountEpoch.current,
@@ -921,7 +956,7 @@ export default function GameUI({
       game?.id === runId;
     const submitted = {
       gameId: runId,
-      text: prompt,
+      text,
       afterId: Math.max(0, ...game.events.map((event) => event.id)),
     };
     const generation = ++submissionGeneration.current;
@@ -939,7 +974,7 @@ export default function GameUI({
     const controller = new AbortController();
     setBusy(true);
     setError("");
-    setStage("Agent thinking");
+    setStage(auto ? "Continuing after the time limit (press Stop to pause)" : "Agent thinking");
     cancel.current = controller;
     try {
       const response = await fetch(`/api/games/${game.id}/prompt`, {
@@ -963,7 +998,8 @@ export default function GameUI({
       if (!response.ok) {
         pending.current = null;
         setUnconfirmed(false);
-        setPrompt(submitted.text);
+        if (auto) autoContinues.current = AUTO_CONTINUE_MAX;
+        else setPrompt(submitted.text);
         setGame((previous) =>
           previous?.id === runId
             ? { ...previous, events: previous.events.filter((event) => event.id !== -1) }

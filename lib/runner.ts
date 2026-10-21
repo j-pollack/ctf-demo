@@ -114,6 +114,9 @@ export async function runGame(
   let phase = "";
   // The sprite checkpoint taken for this instruction; the player's fork point.
   let checkpoint: string | undefined;
+  // AbortSignal.timeout aborts with a TimeoutError: the time cap, not a user Stop or a disconnect.
+  const timedOut = () =>
+    signal.reason instanceof DOMException && signal.reason.name === "TimeoutError";
   const emit = async (event: Omit<GameEvent, "id">) => {
     send("event", await record(game.id, event, game.lease));
     // Best effort: the live totals must never turn a recorded event into a failed response.
@@ -496,7 +499,11 @@ export async function runGame(
     }
     if (failure && game.status !== "captured") throw failure;
     if (signal.aborted && game.status === "active")
-      await emit({ kind: "error", text: "Response stopped. Your run is still open." });
+      await emit({
+        kind: "error",
+        text: "Response stopped. Your run is still open.",
+        ...(timedOut() && { resumable: true }),
+      });
   } catch (error) {
     if (game.status === "captured") return;
     console.error(
@@ -518,7 +525,11 @@ export async function runGame(
         : signal.aborted
           ? "Response stopped. Your run is still open."
           : "This response could not finish. Please try again.";
-    await emit({ kind: "error", text });
+    await emit({
+      kind: "error",
+      text,
+      ...(!(error instanceof GameError) && signal.aborted && timedOut() && { resumable: true }),
+    });
   } finally {
     session?.dispose();
     await rm(directory, { recursive: true, force: true });

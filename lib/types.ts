@@ -28,6 +28,8 @@ export type GameEvent = {
   // Set on an agent turn that hit the output token limit while reasoning and stopped before acting.
   // Its reasoning/text is kept, and the transcript marks the cut-off so the next turn continues.
   truncated?: boolean;
+  // Set when the response stopped at its time limit and the run can be resumed.
+  resumable?: boolean;
   turn?: number;
   model?: string;
   // On user events: the id of the sprite checkpoint taken just before the agent ran.
