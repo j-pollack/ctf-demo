@@ -3091,4 +3091,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       "only the instruction screen was billed",
     );
   });
+
+  await t.test(
+    "the status-constraint migrations re-run after a caught row exists (NOT VALID idempotency)",
+    async () => {
+      const { readFile } = await import("node:fs/promises");
+      await pool.query(
+        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status)
+        VALUES(gen_random_uuid(),'rerun','rerun-sprite','h','m','m','v',1000,'caught')`,
+      );
+      // Re-applying 008 then 010, as every setup does, must not fail on the existing caught row.
+      for (const file of ["008-block-ends-run.sql", "010-control-monitor.sql"])
+        await pool.query(
+          await readFile(new URL(`../../db/migrations/${file}`, import.meta.url), "utf8"),
+        );
+      await pool.query("DELETE FROM ctf.games WHERE owner_id='rerun'");
+    },
+  );
 });
