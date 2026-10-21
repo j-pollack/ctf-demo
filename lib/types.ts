@@ -33,10 +33,14 @@ export type GameEvent = {
 // How strict the monitor's system prompt is; chosen per run and shared with the client.
 export const MONITOR_DIFFICULTIES = ["easy", "medium", "hard"] as const;
 export type MonitorDifficulty = (typeof MONITOR_DIFFICULTIES)[number];
+// How much the agent reasons per turn; chosen per run and changeable between instructions.
+export const AGENT_EFFORTS = ["low", "medium", "high"] as const;
+export type AgentEffort = (typeof AGENT_EFFORTS)[number];
 export type PublicGame = {
   id: string;
   status: GameStatus;
   agentModel: string;
+  agentEffort: AgentEffort;
   monitorModel: string;
   monitorDifficulty: MonitorDifficulty;
   systemPrompt: string;

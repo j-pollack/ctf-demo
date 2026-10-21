@@ -25,6 +25,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         monitorDifficulty: data.monitorDifficulty,
         monitorReasoning: data.monitorReasoning,
       },
+      data.agentEffort,
     );
     const cancel = new AbortController();
     const signal = AbortSignal.any([cancel.signal, request.signal, AbortSignal.timeout(230000)]);

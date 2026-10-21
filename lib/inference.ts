@@ -11,6 +11,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { assertLease, reserveInference, settleInference, type GameRow } from "./games";
 import { db } from "./db";
 import { GameError, inputCeiling, MODELS, MONITOR_REASONING_REQUIRED } from "./policy";
+import type { AgentEffort } from "./types";
 
 type CatalogModel = {
   id: string;
@@ -316,16 +317,16 @@ export async function collectStream(
   return data;
 }
 
-// The reasoning parameter sent to OpenRouter. Agents get capped-effort reasoning (high ≈ 80% of
-// max_tokens) so thinking stays generous but can never consume the whole answer budget and leave no
-// room to act or reply — the failure where an agent "thinks" until stopReason=length with no tool
-// call. Monitors reason only when the model rejects reasoning:{enabled:false}, and then at low effort.
+// The reasoning parameter sent to OpenRouter. Agents get capped-effort reasoning at the player's
+// chosen effort (high ≈ 80% of max_tokens) so thinking can never be uncapped and consume the whole
+// answer budget — the failure where an agent "thinks" until stopReason=length with no tool call. Monitors reason only when the model rejects reasoning:{enabled:false}, and then at low effort.
 export function reasoningParam(
   role: "agent" | "monitor",
   model: Pick<Model<"openai-completions">, "id" | "reasoning">,
+  effort: AgentEffort = "medium",
 ) {
   if (!model.reasoning) return undefined;
-  if (role === "agent") return { effort: "high", exclude: false };
+  if (role === "agent") return { effort, exclude: false };
   return MONITOR_REASONING_REQUIRED.has(model.id)
     ? { effort: "low", exclude: false }
     : { enabled: false };
@@ -344,7 +345,7 @@ export async function infer(
 ): Promise<AssistantMessage> {
   signal?.throwIfAborted();
   if (!process.env.OPENROUTER_API_KEY) throw new Error("Inference is not configured.");
-  const reasoning = reasoningParam(role, model);
+  const reasoning = reasoningParam(role, model, game.agent_effort);
   const payload = {
     model: model.id,
     ...providerTranscript(messages, model.id),

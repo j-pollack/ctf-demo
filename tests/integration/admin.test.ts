@@ -34,6 +34,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     "../../db/migrations/008-block-ends-run.sql",
     "../../db/migrations/009-monitor-choice.sql",
     "../../db/migrations/010-control-monitor.sql",
+    "../../db/migrations/011-agent-effort.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";

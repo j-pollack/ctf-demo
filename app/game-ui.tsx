@@ -8,6 +8,7 @@ import SiteHeader from "@/app/site-header";
 import { SEED_BUGS } from "@/lib/seed";
 import {
   MONITOR_DIFFICULTIES,
+  type AgentEffort,
   SUBMIT_INSTRUCTION,
   type GameEvent,
   type GameStatus,
@@ -18,6 +19,14 @@ import {
 
 const label = (model: string) => model.split("/")[1];
 type Choice = { name: string; hint: string };
+const EFFORT_CHOICES: Record<AgentEffort, Choice> = {
+  low: { name: "Low", hint: "Little reasoning per turn: cheapest, and the agent acts sooner." },
+  medium: { name: "Medium", hint: "Balanced reasoning per turn." },
+  high: {
+    name: "High",
+    hint: "Higher effort means more reasoning per turn, which costs more of your budget.",
+  },
+};
 // What each monitor setting means: the select's tooltip, and the line under it in setup.
 const DIFFICULTY_CHOICES: Record<MonitorDifficulty, Choice> = {
   easy: {
@@ -230,6 +239,7 @@ export default function GameUI({
     [email, setEmail] = useState(""),
     [emailSent, setEmailSent] = useState(false);
   const [agent, setAgent] = useState(defaultAgent),
+    [effort, setEffort] = useState<AgentEffort>("medium"),
     [scores, setScores] = useState<Score[]>([]);
   const [boardMonitor, setBoardMonitor] = useState(defaultMonitor),
     [boardDifficulty, setBoardDifficulty] = useState<MonitorDifficulty>("hard"),
@@ -290,6 +300,7 @@ export default function GameUI({
     setMonitor(game.monitorModel);
     setDifficulty(game.monitorDifficulty);
     setMonitorReasoning(game.monitorReasoning);
+    setEffort(game.agentEffort);
   }, [game?.id]);
   const cancel = useRef<AbortController | null>(null),
     thread = useRef<HTMLDivElement | null>(null),
@@ -720,6 +731,7 @@ export default function GameUI({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           agentModel: agent,
+          agentEffort: effort,
           monitorModel: monitor,
           monitorDifficulty: difficulty,
           monitorReasoning,
@@ -936,6 +948,7 @@ export default function GameUI({
         body: JSON.stringify({
           prompt: submitted.text,
           agentModel: agent,
+          agentEffort: effort,
           // Only changed monitor fields, so a run whose stored monitor left the list still starts.
           ...(!runStarted(game) && {
             ...(monitor !== game.monitorModel && { monitorModel: monitor }),
@@ -1143,9 +1156,19 @@ export default function GameUI({
                     displayGame && (
                       <span className="run-model">
                         <span className="eyebrow">MODEL</span>
-                        {label(displayGame.agentModel)}
+                        {label(displayGame.agentModel)} ·{" "}
+                        {EFFORT_CHOICES[displayGame.agentEffort].name}
                       </span>
                     )
+                  )}
+                  {editingSystemPrompt && (
+                    <ChoiceSelect
+                      label="Effort"
+                      choices={EFFORT_CHOICES}
+                      value={effort}
+                      change={setEffort}
+                      disabled={loading}
+                    />
                   )}
                   {editingSystemPrompt && displayGame ? (
                     <>
@@ -1689,6 +1712,13 @@ export default function GameUI({
               <p className="eyebrow">NEW RUN</p>
               <h2>Start a run</h2>
               <ModelSelect models={models} label="Agent model" value={agent} change={setAgent} />
+              <ChoiceSelect
+                label="Agent effort"
+                choices={EFFORT_CHOICES}
+                value={effort}
+                change={setEffort}
+              />
+              <small>{EFFORT_CHOICES[effort].hint}</small>
               <ModelSelect
                 models={monitors}
                 label="Monitor model"

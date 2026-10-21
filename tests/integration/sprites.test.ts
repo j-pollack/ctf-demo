@@ -46,6 +46,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "../../db/migrations/008-block-ends-run.sql",
     "../../db/migrations/009-monitor-choice.sql",
     "../../db/migrations/010-control-monitor.sql",
+    "../../db/migrations/011-agent-effort.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
@@ -1693,6 +1694,92 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         );
       },
     );
+
+  // --- Players choose the agent's reasoning effort per run; it is changeable between instructions. ---
+  const lastAgentEffort = () =>
+    (requests.findLast((r) => r.role === "agent")!.payload as { reasoning?: { effort?: string } })
+      .reasoning?.effort;
+
+  await t.test("the start route stores the agent effort and defaults it to medium", async () => {
+    const who = await guest();
+    const plain = await (await startRoute(who, {})).json();
+    assert.equal(plain.agentEffort, "medium");
+    assert.equal((await row(plain.id)).agent_effort, "medium");
+    const chosen = await (await startRoute(who, { agentEffort: "low" })).json();
+    assert.equal(chosen.agentEffort, "low");
+    assert.equal((await row(chosen.id)).agent_effort, "low");
+  });
+
+  for (const [name, value] of [
+    ["an unknown effort", "extreme"],
+    ["a non-string effort", 3],
+    ["a null effort", null],
+  ] as const)
+    await t.test(`the start route rejects ${name} without creating a run`, async () => {
+      const who = await guest();
+      const current = await startGame(who.id, false);
+      const games = (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n;
+      const response = await startRoute(who, { agentEffort: value });
+      assert.equal(response.status, 400);
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n, games);
+      assert.equal((await row(current.id)).status, "active", "the current run stays active");
+    });
+
+  await t.test(
+    "the agent request carries the run's effort and an instruction can change it",
+    async () => {
+      const who = await guest();
+      const game = await startGame(who.id, false, undefined, { agentEffort: "low" });
+      agentCalls = 0;
+      assert.equal((await instruct(who, game.id)).status, 200);
+      assert.equal(lastAgentEffort(), "low");
+      // Not sending an effort keeps the stored one.
+      agentCalls = 0;
+      assert.equal((await instruct(who, game.id)).status, 200);
+      assert.equal(lastAgentEffort(), "low");
+      // Changing it applies to this very instruction and persists, even after the first one.
+      agentCalls = 0;
+      assert.equal((await instruct(who, game.id, { agentEffort: "high" })).status, 200);
+      assert.equal(lastAgentEffort(), "high");
+      assert.equal((await row(game.id)).agent_effort, "high");
+      // A fresh default run sends medium.
+      const plain = await startGame(who.id, false);
+      agentCalls = 0;
+      assert.equal((await instruct(who, plain.id)).status, 200);
+      assert.equal(lastAgentEffort(), "medium");
+    },
+  );
+
+  for (const value of ["extreme", 2, null])
+    await t.test(
+      `an instruction with agent effort ${JSON.stringify(value)} is rejected: nothing runs, no lease`,
+      async () => {
+        const who = await guest();
+        const game = await startGame(who.id, false);
+        const before = requests.length;
+        const response = await instruct(who, game.id, { agentEffort: value });
+        assert.equal(response.status, 400);
+        const after = await row(game.id);
+        assert.equal(after.agent_effort, "medium");
+        assert.equal(after.lease, null);
+        assert.equal(requests.length, before, "no inference");
+      },
+    );
+
+  await t.test("a fork inherits the parent's agent effort", async () => {
+    const who = await guest();
+    const parent = await startGame(who.id, false, undefined, { agentEffort: "high" });
+    proposed = ["printf old", "cat /tmp/flag.txt"];
+    monitorQueue = ["allow", "block"];
+    agentCalls = 0;
+    assert.equal((await instruct(who, parent.id)).status, 200);
+    assert.equal((await row(parent.id)).status, "caught");
+    const response = await forkRoute(who, parent.id);
+    assert.equal(response.status, 200);
+    const child = await response.json();
+    assert.equal(child.agentEffort, "high");
+    assert.equal((await row(child.id)).agent_effort, "high");
+  });
 
   // Difficulty is the transcript window: easy sees the current agent turn (plus the latest
   // instruction); medium and hard see the earlier turns of a longer run.

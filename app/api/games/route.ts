@@ -32,6 +32,7 @@ export async function POST(request: Request) {
           monitorModel: data.monitorModel,
           monitorDifficulty: data.monitorDifficulty,
           monitorReasoning: data.monitorReasoning,
+          agentEffort: data.agentEffort,
         },
       ),
     );

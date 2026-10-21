@@ -17,7 +17,9 @@ import {
   MONITOR_VERSION,
 } from "./policy";
 import {
+  AGENT_EFFORTS,
   MONITOR_DIFFICULTIES,
+  type AgentEffort,
   type GameEvent,
   type GameStatus,
   type MonitorDifficulty,
@@ -32,6 +34,7 @@ export type GameRow = {
   sprite_name: string;
   secret_hash: string;
   agent_model: string;
+  agent_effort: AgentEffort;
   monitor_model: string;
   monitor_version: string;
   monitor_difficulty: MonitorDifficulty;
@@ -72,12 +75,13 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,monitor_model,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,sprite_deleted_at,updated_at";
+  "id,status,agent_model,agent_effort,monitor_model,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,sprite_deleted_at,updated_at";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
   | "status"
   | "agent_model"
+  | "agent_effort"
   | "monitor_model"
   | "system_prompt"
   | "token_budget"
@@ -157,6 +161,7 @@ export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise
     id: game.id,
     status: game.status,
     agentModel: game.agent_model,
+    agentEffort: game.agent_effort,
     monitorModel: game.monitor_model,
     monitorDifficulty: game.monitor_difficulty,
     systemPrompt: game.system_prompt,
@@ -262,17 +267,24 @@ export async function checkMonitor(options: MonitorOptions) {
     reasoning: reasoning as boolean | undefined,
   };
 }
+// A player's agent effort; undefined stays undefined so each caller applies its own default.
+function checkEffort(effort: unknown) {
+  if (effort !== undefined && !AGENT_EFFORTS.some((item) => item === effort))
+    throw new GameError("Choose an agent effort.", 400);
+  return effort as AgentEffort | undefined;
+}
 export async function startGame(
   ownerId: string,
   signedIn: boolean,
   agentModel: string = AGENT_MODEL,
-  options: MonitorOptions & { sourceId?: string } = {},
+  options: MonitorOptions & { sourceId?: string; agentEffort?: unknown } = {},
 ) {
   const { sourceId } = options;
   if (sourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sourceId))
     throw new GameError("Run not found.", 404);
   if (!MODELS.some((model) => model === agentModel))
     throw new GameError("Unsupported agent model.");
+  const effort = checkEffort(options.agentEffort);
   // Before cleanup and admission: a bad choice must neither create a run nor end the current one.
   const monitor = await checkMonitor(options);
   await cleanup();
@@ -362,8 +374,8 @@ export async function startGame(
     // A fork is born `creating` on its parent's sprite and secret, carrying the parent's whole
     // account; it turns active once the sprite is restored to the dropped instruction's checkpoint.
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
       [
         id,
         ownerId,
@@ -386,6 +398,7 @@ export async function startGame(
         0,
         source?.tokens_used ?? 0,
         source?.spent_microdollars ?? 0,
+        source?.agent_effort ?? effort ?? "medium",
       ],
     );
     // The player-visible history up to the dropped instruction is copied as it was.
@@ -442,7 +455,9 @@ export async function claimGame(
   agentModel?: string,
   systemPrompt?: unknown,
   monitorOptions: MonitorOptions = {},
+  agentEffort?: unknown,
 ) {
+  const effort = checkEffort(agentEffort);
   if (agentModel !== undefined && !MODELS.includes(agentModel))
     throw new GameError("Unsupported agent model.");
   if (
@@ -458,7 +473,7 @@ export async function claimGame(
   const open =
     "NOT EXISTS(SELECT 1 FROM ctf.events e WHERE e.game_id=g.id AND e.data->>'kind'='user')";
   const { rows } = await db.query<GameRow>(
-    `UPDATE ctf.games g SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),agent_model=coalesce($4,agent_model),system_prompt=coalesce($5,system_prompt),
+    `UPDATE ctf.games g SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),agent_model=coalesce($4,agent_model),agent_effort=coalesce($9,agent_effort),system_prompt=coalesce($5,system_prompt),
       monitor_model=CASE WHEN $6::text IS NOT NULL AND ${open} THEN $6 ELSE monitor_model END,
       monitor_difficulty=CASE WHEN $7::text IS NOT NULL AND ${open} THEN $7 ELSE monitor_difficulty END,
       monitor_reasoning=CASE WHEN $8::boolean IS NOT NULL AND ${open} THEN $8 ELSE monitor_reasoning END
@@ -472,6 +487,7 @@ export async function claimGame(
       monitor.model ?? null,
       monitor.difficulty ?? null,
       monitor.reasoning ?? null,
+      effort ?? null,
     ],
   );
   if (!rows[0]) throw new GameError("This run has ended or is already responding.", 409);

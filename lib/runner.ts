@@ -290,7 +290,7 @@ export async function runGame(
       agentDir: directory,
       modelRuntime: runtime,
       model,
-      thinkingLevel: "medium",
+      thinkingLevel: game.agent_effort,
       tools: ["sprite_exec", "submit"],
       noTools: "builtin",
       customTools: [tool, submit],

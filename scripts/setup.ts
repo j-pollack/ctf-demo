@@ -17,6 +17,7 @@ try {
     "008-block-ends-run.sql",
     "009-monitor-choice.sql",
     "010-control-monitor.sql",
+    "011-agent-effort.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),
