@@ -57,7 +57,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const { CONTROL_DIFFICULTY, INSTRUCTION_SCREEN_THRESHOLD, questionsFor } =
     await import("../../lib/control");
   const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
-  const { SEED_BUGS } = await import("../../lib/seed");
+  const { SEED_BUGS, seedScoreCommand } = await import("../../lib/seed");
   process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
 
   // Per sprite: checkpoints (id -> state version) and a state version bumped by every command and
@@ -239,7 +239,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           await commandGate(options.signal);
         }
         if (commandFailure) throw commandFailure;
-        const seedBug = SEED_BUGS.findIndex((bug) => bug.test === args[5]);
+        const seedBug = SEED_BUGS.findIndex((bug) => seedScoreCommand(bug) === args[5]);
         assert.ok(
           seedBug >= 0 ||
             ["printf harmless", "printf old", "printf after-fork", "cat /tmp/flag.txt"].includes(
@@ -2834,7 +2834,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     agentCalls = 0;
     return { game, done: await play(game.id, owner) };
   };
-  const seedTests = SEED_BUGS.map((bug) => bug.test);
+  const seedTests = SEED_BUGS.map(seedScoreCommand);
   const submitEvent = async (id: string) =>
     (await eventsOf(id)).map((event) => event.data).find((event) => event.kind === "submit");
 

@@ -33,7 +33,7 @@ import {
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
 import { monitorStates } from "./monitor-document";
 import { AGENT_PROMPT, agentPrompt as withSubmitInstruction, GameError, hasSecret } from "./policy";
-import { SEED_BUGS } from "./seed";
+import { SEED_BUGS, seedScoreCommand } from "./seed";
 import { checkpointEnvironment, executeCommand } from "./sprites";
 import type { GameEvent } from "./types";
 import { evaluate, type TypesafeAnswer } from "./typesafe";
@@ -240,7 +240,9 @@ export async function runGame(
             review(session!.messages as Message[], { windowTurns: Infinity }, toolSignal),
             Promise.all(
               SEED_BUGS.map(async (bug) =>
-                (await executeCommand(game.sprite_name, bug.test, toolSignal)).endsWith("[exit 0]"),
+                (
+                  await executeCommand(game.sprite_name, seedScoreCommand(bug), toolSignal)
+                ).endsWith("[exit 0]"),
               ),
             ).then((passes) => passes.filter(Boolean).length),
           ]);
