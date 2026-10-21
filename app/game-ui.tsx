@@ -2031,8 +2031,10 @@ export function Entry({
     pending ??
     event.commands ??
     (displayCommand(event.command) ? [displayCommand(event.command)!] : []);
+  // A time-limit stop is a normal, resumable pause — show it as info, not an error.
+  const info = event.kind === "error" && event.resumable;
   return (
-    <article className={`entry ${event.kind}`}>
+    <article className={`entry ${event.kind}${info ? " info" : ""}`}>
       <header>
         <strong className="speaker">
           {event.kind === "user"
@@ -2047,7 +2049,9 @@ export function Entry({
                     ? event.correct
                       ? "SUBMITTED · CORRECT"
                       : "SUBMITTED · WRONG"
-                    : "SYSTEM"}
+                    : info
+                      ? "PAUSED"
+                      : "SYSTEM"}
         </strong>
         {event.kind === "agent" && (
           <span className="turn-label">

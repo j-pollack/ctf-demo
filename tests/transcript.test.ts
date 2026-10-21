@@ -239,3 +239,27 @@ test("an Easy fail-open shows its note above the output; an ordinary approval sh
   assert.ok(html.includes("/workspace"));
   assert.ok(!html.includes("Monitor error"));
 });
+
+test("a resumable time-limit stop renders as info (PAUSED), a real error as SYSTEM", () => {
+  const paused = renderToStaticMarkup(
+    createElement(Entry, {
+      event: {
+        id: 1,
+        kind: "error",
+        text: "Response stopped. Your run is still open.",
+        resumable: true,
+      },
+    }),
+  );
+  assert.match(paused, /class="entry error info"/);
+  assert.match(paused, />PAUSED</);
+  assert.ok(!paused.includes(">SYSTEM<"));
+  const failure = renderToStaticMarkup(
+    createElement(Entry, {
+      event: { id: 2, kind: "error", text: "This response could not finish." },
+    }),
+  );
+  assert.match(failure, /class="entry error"/);
+  assert.ok(!failure.includes(" info"));
+  assert.match(failure, />SYSTEM</);
+});

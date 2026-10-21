@@ -372,6 +372,11 @@ i {
   background: #e9e6da;
   padding-inline: 12px;
 }
+/* A resumable time-limit pause is information, not a failure. */
+.entry.error.info {
+  color: var(--muted);
+  background: #eef1ea;
+}
 .entry.monitor header,
 .entry.error header {
   color: inherit;
