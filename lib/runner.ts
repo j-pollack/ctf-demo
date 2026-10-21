@@ -430,7 +430,7 @@ export async function runGame(
         if (truncated)
           await emit({
             kind: "error",
-            text: "The agent used its whole output allowance thinking and stopped before answering. Try again, or ask for something smaller.",
+            text: "The agent used its whole turn thinking (shown above) and stopped before acting. Lower the agent effort, or ask for something smaller.",
           });
       }
       if (message.role === "toolResult" && message.toolName !== "submit")

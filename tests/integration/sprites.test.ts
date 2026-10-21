@@ -2199,7 +2199,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           ["agent", "Thinking at length."],
           [
             "error",
-            "The agent used its whole output allowance thinking and stopped before answering. Try again, or ask for something smaller.",
+            "The agent used its whole turn thinking (shown above) and stopped before acting. Lower the agent effort, or ask for something smaller.",
           ],
         ],
       );
