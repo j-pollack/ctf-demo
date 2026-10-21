@@ -358,6 +358,14 @@ i {
   color: var(--muted);
   font-size: 11px;
 }
+.truncated-note {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--blocked);
+  background: #e9e6da;
+  color: var(--blocked);
+  font-size: 12px;
+}
 .entry.monitor,
 .entry.error {
   color: var(--blocked);

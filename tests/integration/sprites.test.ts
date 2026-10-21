@@ -2193,16 +2193,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const events = (
         await pool.query("SELECT data FROM ctf.events WHERE game_id=$1 ORDER BY id", [game.id])
       ).rows.map((entry) => entry.data);
-      assert.deepEqual(
-        events.slice(-2).map((event) => [event.kind, event.reasoning ?? event.text]),
-        [
-          ["agent", "Thinking at length."],
-          [
-            "error",
-            "The agent used its whole turn thinking (shown above) and stopped before acting. Lower the agent effort, or ask for something smaller.",
-          ],
-        ],
-      );
+      // The cut-off is marked on the agent turn itself (kept reasoning + truncated flag), not a
+      // separate error card.
+      const last = events.at(-1);
+      assert.equal(last.kind, "agent");
+      assert.equal(last.reasoning, "Thinking at length.");
+      assert.equal(last.truncated, true);
+      assert.ok(!events.some((event) => event.kind === "error"), "no separate error event");
+      // The agent's own transcript is marked so the next turn knows it was cut off.
+      const messages = (await row(game.id)).messages as { role: string; content: unknown }[];
+      const lastAssistant = [...messages].reverse().find((entry) => entry.role === "assistant");
+      assert.match(JSON.stringify(lastAssistant?.content), /reached the output token limit/);
       // A run with too little budget left gets a smaller allowance, never an overspend.
       agentFinish = "stop";
       await pool.query(

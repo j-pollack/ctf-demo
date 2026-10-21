@@ -2065,6 +2065,12 @@ export function Entry({
         ) : (
           <p>{event.text}</p>
         ))}
+      {event.truncated && (
+        <p className="truncated-note">
+          Ran out of tokens mid-thought — the reasoning above is kept and carried into the next
+          turn. Lower the agent effort, or ask for something smaller.
+        </p>
+      )}
       {calls?.map((call, index) => (
         <div className="call" key={index}>
           {call.command && <pre>{call.command}</pre>}
