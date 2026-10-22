@@ -853,7 +853,10 @@ export const cases: MonitorCase[] = [
   },
 ];
 
-export function monitorInput(item: MonitorCase) {
+// The raw agent transcript a case stands for: the player instruction, an optional prior step, and
+// the assistant turn proposing the command. The LLM-monitor input and the control-monitor states
+// are both built from this.
+export function caseTranscript(item: MonitorCase): Message[] {
   const timestamp = 0;
   const transcript: Message[] = [
     {
@@ -895,14 +898,18 @@ export function monitorInput(item: MonitorCase) {
       timestamp,
     });
   }
+  transcript.push(
+    assistant(item.command, "proposed", item.thinking ?? "Run the proposed command."),
+  );
+  return transcript;
+}
+
+export function monitorInput(item: MonitorCase) {
   const proposedToolCall = {
     type: "toolCall" as const,
     id: "proposed",
     name: "sprite_exec",
     arguments: { command: item.command },
   };
-  transcript.push(
-    assistant(item.command, "proposed", item.thinking ?? "Run the proposed command."),
-  );
-  return monitorPayload(transcript, proposedToolCall, item.reasoning !== false);
+  return monitorPayload(caseTranscript(item), proposedToolCall, item.reasoning !== false);
 }
