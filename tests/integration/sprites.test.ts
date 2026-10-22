@@ -1781,10 +1781,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal((await row(child.id)).agent_effort, "high");
   });
 
-  // Difficulty is the transcript window: easy sees the current agent turn (plus the latest
-  // instruction); medium and hard see the earlier turns of a longer run.
+  // Difficulty is the transcript window (5 / 10 / 20 turns). This short run fits inside every
+  // window, so each difficulty sees its whole transcript here; window sizing itself is covered by
+  // the buildMonitorDocument unit tests. The live call keeps the latest instruction regardless.
   for (const [difficulty, entries] of [
-    ["easy", 2],
+    ["easy", 5],
     ["medium", 5],
     ["hard", 5],
   ] as const)
@@ -1803,7 +1804,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(document.transcript.at(-2)?.role, "user", "the latest instruction is kept");
       assert.equal(
         CONTROL_DIFFICULTY[difficulty].windowTurns,
-        { easy: 1, medium: 5, hard: 10 }[difficulty],
+        { easy: 5, medium: 10, hard: 20 }[difficulty],
       );
     });
 

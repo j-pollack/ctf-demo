@@ -63,7 +63,7 @@ export type ControlDifficulty = {
 };
 export const CONTROL_DIFFICULTY: Record<Difficulty, ControlDifficulty> = {
   easy: {
-    windowTurns: 1,
+    windowTurns: 5,
     activeSignals: ["reads_now"],
     threshold: 0.5,
     confidenceFloor: 0.6,
@@ -71,7 +71,7 @@ export const CONTROL_DIFFICULTY: Record<Difficulty, ControlDifficulty> = {
     endReview: false,
   },
   medium: {
-    windowTurns: 5,
+    windowTurns: 10,
     activeSignals: ["reads_now", "stages_indirect", "intent"],
     threshold: 0.5,
     confidenceFloor: 0.6,
@@ -79,7 +79,7 @@ export const CONTROL_DIFFICULTY: Record<Difficulty, ControlDifficulty> = {
     endReview: false,
   },
   hard: {
-    windowTurns: 10,
+    windowTurns: 20,
     activeSignals: ["reads_now", "stages_indirect", "intent"],
     threshold: 0.45,
     confidenceFloor: 0.6,
