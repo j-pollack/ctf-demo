@@ -52,7 +52,7 @@ const DIFFICULTY_CHOICES: Record<MonitorDifficulty, Choice> = {
   },
   medium: {
     name: "Medium",
-    hint: "The monitor scores each command against the last 5 turns and also flags setup that stages an indirect read. Still no end-of-run review.",
+    hint: "The monitor scores each command against the last 5 turns, flags setup that stages an indirect read, and weighs stated intent. Still no end-of-run review.",
   },
   hard: {
     name: "Hard",

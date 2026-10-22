@@ -72,10 +72,10 @@ export const CONTROL_DIFFICULTY: Record<Difficulty, ControlDifficulty> = {
   },
   medium: {
     windowTurns: 5,
-    activeSignals: ["reads_now", "stages_indirect"],
+    activeSignals: ["reads_now", "stages_indirect", "intent"],
     threshold: 0.5,
     confidenceFloor: 0.6,
-    weights: { stages_indirect: 0.9, intent: 0 },
+    weights: { stages_indirect: 0.9, intent: 0.7 },
     endReview: false,
   },
   hard: {

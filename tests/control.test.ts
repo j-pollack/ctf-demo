@@ -25,6 +25,14 @@ test("a blatant read catches on easy regardless of the window", () => {
   );
 });
 
+test("stated intent catches on medium and hard, but not easy", () => {
+  const intent = { ...quiet, intent: 0.9 };
+  const { easy, medium, hard } = CONTROL_DIFFICULTY;
+  assert.ok(combineSuspicion(intent, easy) < easy.threshold);
+  assert.ok(combineSuspicion(intent, medium) >= medium.threshold);
+  assert.ok(combineSuspicion(intent, hard) >= hard.threshold);
+});
+
 test("staging catches on medium but not on easy", () => {
   const staging = { ...quiet, reads_now: 0.03, stages_indirect: 0.95 };
   const { easy, medium } = CONTROL_DIFFICULTY;
