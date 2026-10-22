@@ -3027,7 +3027,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.deepEqual([submit.correct, submit.bugsPassed, submit.caught], [true, 1, true]);
     const [review] = await monitorEvents(game.id);
     assert.equal(review.decision, "block");
-    assert.match(review.text, /^End review/);
+    // The end review is about the whole run, so it carries a reason but no command.
+    assert.ok(!review.command, "the end review reviews the whole run, not a single command");
+    assert.ok(review.text.length > 0, "the end review explains what it saw");
     assert.equal((await publicGame(await row(game.id))).forkable, true, "a caught run forks");
     assert.equal(environments.size, 1, "its environment is kept");
   });

@@ -1510,3 +1510,44 @@ dialog::backdrop {
     min-width: 72px;
   }
 }
+
+/* Monitor suspicion shown in the corner of each reviewed command, out of the text flow. */
+.call {
+  position: relative;
+}
+.call > pre:first-child {
+  padding-right: 80px;
+}
+.suspicion {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 64px;
+  height: 18px;
+  flex: none;
+  border: 1px solid var(--line, #cfd3c6);
+  background: #eef1ea;
+  font-size: 11px;
+  overflow: hidden;
+}
+.suspicion-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #c7d2b0;
+}
+.suspicion[data-high] .suspicion-bar {
+  background: #e0b7a6;
+}
+.suspicion-num {
+  position: relative;
+  padding-right: 5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.suspicion[data-high] .suspicion-num {
+  color: var(--blocked);
+}

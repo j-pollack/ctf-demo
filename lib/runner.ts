@@ -274,7 +274,8 @@ export async function runGame(
           if (end.caught)
             await emit({
               kind: "monitor",
-              text: `End review: ${end.reason}`,
+              // No command: the UI labels this the end review; the reason explains what it saw.
+              text: end.reason,
               decision: "block",
               turn: game.turns,
               suspicion: end.suspicion,

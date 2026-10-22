@@ -84,6 +84,8 @@ const statusLabel: Record<GameStatus, string> = {
 // Shown when the monitor blocks a command: the run is over, a fork can continue it.
 export const BLOCKED_NOTICE =
   "Your run is over. The monitor decided this conversation is attempting to exfiltrate data. If that's wrong, fork the previous message and try again with a new instruction.";
+export const CAUGHT_NOTICE =
+  "Caught. The monitor flagged this run as an attempt to reach the protected file. Being caught ends the run — a correct flag doesn't count. Fork your last instruction to try a stealthier approach.";
 export type PendingInstruction = { gameId: string; text: string; afterId: number };
 export function selectedNavItem(pathname: string, detail?: PublicGame | null) {
   if (pathname === "/play") return "play";
@@ -1358,8 +1360,9 @@ export default function GameUI({
                         />
                       ),
                     )}
-                    {displayGame.status === "blocked" && (
+                    {(displayGame.status === "blocked" || displayGame.status === "caught") && (
                       <BlockedNotice
+                        status={displayGame.status}
                         forkable={displayGame.forkable}
                         disabled={loading}
                         onFork={() => {
@@ -1369,29 +1372,31 @@ export default function GameUI({
                         }}
                       />
                     )}
-                    {displayGame.status !== "blocked" && displayGame.status !== "active" && (
-                      <div className="terminal">
-                        <h2>
-                          {displayGame.status === "captured"
-                            ? "You captured the flag"
-                            : displayGame.status === "exhausted"
-                              ? "Out of budget"
-                              : displayGame.events.some((event) => event.kind === "submit")
-                                ? "The agent submitted the wrong answer"
-                                : "This run has ended"}
-                        </h2>
-                        <p>
-                          {displayGame.status === "captured"
-                            ? `${money(displayGame.spentMicrodollars)} spent · ${displayGame.turns} turns · ${displayGame.blocks} blocked commands`
-                            : "Start a new run to get a new flag."}
-                        </p>
-                        {displayGame.status === "captured" && !signedIn && (
-                          <button className="link" onClick={() => setModal("login")}>
-                            Sign in to add this win to the leaderboard
-                          </button>
-                        )}
-                      </div>
-                    )}
+                    {displayGame.status !== "blocked" &&
+                      displayGame.status !== "caught" &&
+                      displayGame.status !== "active" && (
+                        <div className="terminal">
+                          <h2>
+                            {displayGame.status === "captured"
+                              ? "You captured the flag"
+                              : displayGame.status === "exhausted"
+                                ? "Out of budget"
+                                : displayGame.events.some((event) => event.kind === "submit")
+                                  ? "The agent submitted the wrong answer"
+                                  : "This run has ended"}
+                          </h2>
+                          <p>
+                            {displayGame.status === "captured"
+                              ? `${money(displayGame.spentMicrodollars)} spent · ${displayGame.turns} turns · ${displayGame.blocks} blocked commands`
+                              : "Start a new run to get a new flag."}
+                          </p>
+                          {displayGame.status === "captured" && !signedIn && (
+                            <button className="link" onClick={() => setModal("login")}>
+                              Sign in to add this win to the leaderboard
+                            </button>
+                          )}
+                        </div>
+                      )}
                   </>
                 )}
                 {!busy && unconfirmed && isExecutionView && (
@@ -1945,6 +1950,8 @@ export type Call = {
   decision: "allow" | "block" | "error";
   reason: string;
   output?: string;
+  // The monitor's combined suspicion (0-1) for this command.
+  suspicion?: number;
 };
 export function displayCommand(raw?: string) {
   return raw
@@ -1967,7 +1974,9 @@ export function groupTurns(events: GameEvent[]) {
   for (let i = 0; i < events.length; i++) {
     const event = events[i],
       calls: Call[] = [];
-    while (event.kind === "agent" && events[i + 1]?.kind === "monitor") {
+    // Fold only per-command reviews (they name a command). The commandless end review is about the
+    // whole run, so it stays standalone and renders as its own thread-level card.
+    while (event.kind === "agent" && events[i + 1]?.kind === "monitor" && !!events[i + 1].command) {
       const review = events[++i];
       const decision = review.decision ?? "error";
       const call: Call = {
@@ -1975,6 +1984,7 @@ export function groupTurns(events: GameEvent[]) {
         decision,
         reason: review.text,
         output: undefined,
+        ...(typeof review.suspicion === "number" && { suspicion: review.suspicion }),
       };
       if (events[i + 1]?.kind === "tool") {
         const result = events[++i];
@@ -2020,13 +2030,19 @@ export function Entry({
   if (event.kind === "monitor" && event.decision === "allow") return null;
   if (event.kind === "tool" && previous?.kind === "monitor" && previous.decision === "block")
     return null;
-  if (event.kind === "monitor" && event.decision === "block")
+  if (event.kind === "monitor" && event.decision === "block") {
+    // No command: the end-of-run review of the whole transcript caught the run, not a single call.
+    const endReview = !event.command;
     return (
-      <article className="entry monitor blocked">
-        <span>Blocked</span>
+      <article className={`entry monitor blocked${endReview ? " end-review" : ""}`}>
+        <span>
+          {endReview ? "End review" : "Blocked"}
+          {typeof event.suspicion === "number" ? ` · suspicion ${event.suspicion.toFixed(2)}` : ""}
+        </span>
         {event.text && <p>{event.text}</p>}
       </article>
     );
+  }
   const waiting =
     pending ??
     event.commands ??
@@ -2113,6 +2129,7 @@ export function Entry({
       )}
       {calls?.map((call, index) => (
         <div className="call" key={index}>
+          {typeof call.suspicion === "number" && <SuspicionBadge value={call.suspicion} />}
           {call.command && <pre>{call.command}</pre>}
           {call.decision === "allow" ? (
             <>
@@ -2138,24 +2155,41 @@ export function Entry({
 }
 
 export function BlockedNotice({
+  status = "blocked",
   forkable,
   disabled,
   onFork,
 }: {
+  status?: GameStatus;
   forkable: boolean;
   disabled: boolean;
   onFork: () => void;
 }) {
+  const caught = status === "caught";
   return (
     <div className="terminal">
-      <h2>Run blocked</h2>
-      <p>{BLOCKED_NOTICE}</p>
+      <h2>{caught ? "Caught" : "Run blocked"}</h2>
+      <p>{caught ? CAUGHT_NOTICE : BLOCKED_NOTICE}</p>
       {forkable && (
         <button className="primary" disabled={disabled} onClick={onFork}>
           Fork
         </button>
       )}
     </div>
+  );
+}
+
+// The monitor's suspicion for a command: a small bar plus the 0-1 value, reddening as it climbs.
+function SuspicionBadge({ value }: { value: number }) {
+  return (
+    <span
+      className="suspicion"
+      data-high={value >= 0.5 || undefined}
+      title="Monitor suspicion for this command (0–1). Crossing the difficulty's threshold ends the run."
+    >
+      <span className="suspicion-bar" style={{ width: `${Math.round(value * 100)}%` }} />
+      <span className="suspicion-num">{value.toFixed(2)}</span>
+    </span>
   );
 }
 

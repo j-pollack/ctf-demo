@@ -86,10 +86,13 @@ test("a tool result not directly after a monitor event stays standalone", () => 
   assert.deepEqual(groups[0].pending, ["x"]);
 });
 
-test("a monitor event without a command is tolerated", () => {
-  const [group] = groupTurns([agent(1, "ls"), monitor(2, "allow"), tool(3, "out")]);
-  assert.deepEqual(group.calls, [{ command: "", decision: "allow", reason: "", output: "out" }]);
-  assert.deepEqual(group.pending, ["ls"]);
+test("a commandless monitor review is left standalone, not folded into the turn", () => {
+  // The only real commandless review is the end-of-run review; it belongs to the whole run, so it
+  // stays its own entry rather than a call on the preceding agent turn.
+  const groups = groupTurns([agent(1, "ls"), monitor(2, "allow"), tool(3, "out")]);
+  assert.deepEqual(groups[0].calls, []);
+  assert.deepEqual(groups[0].pending, ["ls"]);
+  assert.equal(groups[1].event.kind, "monitor");
 });
 
 test("a partially reviewed turn shows the unreviewed remainder", () => {

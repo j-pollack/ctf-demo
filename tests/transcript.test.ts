@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   BLOCKED_NOTICE,
   BlockedNotice,
+  CAUGHT_NOTICE,
   composerAfterFork,
   Entry,
   groupTurns,
@@ -218,6 +219,43 @@ test("a blocked run says it is over and offers a fork only when forkable", () =>
   assert.doesNotMatch(render(false), /<button/);
 });
 
+test("a caught run shows the Caught notice, not a wrong-answer banner", () => {
+  const html = renderToStaticMarkup(
+    createElement(BlockedNotice, {
+      status: "caught",
+      forkable: true,
+      disabled: false,
+      onFork() {},
+    }),
+  );
+  assert.match(html, /<h2>Caught<\/h2>/);
+  assert.ok(html.includes(CAUGHT_NOTICE.slice(0, 40)));
+  assert.ok(!html.includes("wrong answer"));
+  assert.match(html, /<button[^>]*>Fork<\/button>/);
+});
+
+test("each reviewed command shows its monitor suspicion", () => {
+  const events: GameEvent[] = [
+    { id: 1, kind: "agent", text: "", turn: 1, model: "m", commands: ["ls", "cat x"] },
+    { id: 2, kind: "monitor", text: "", decision: "allow", command: "ls", suspicion: 0.02 },
+    { id: 3, kind: "tool", text: "files" },
+    {
+      id: 4,
+      kind: "monitor",
+      text: "Reads it.",
+      decision: "block",
+      command: "cat x",
+      suspicion: 0.98,
+    },
+  ];
+  const [{ event, calls, pending }] = groupTurns(events);
+  assert.equal(calls[0].suspicion, 0.02);
+  assert.equal(calls[1].suspicion, 0.98);
+  const html = renderToStaticMarkup(createElement(Entry, { event, calls, pending }));
+  assert.ok(html.includes("0.02") && html.includes("0.98"));
+  assert.match(html, /data-high/); // the 0.98 command is flagged high
+});
+
 test("after a fork the composer holds the dropped instruction, or is empty", () => {
   assert.equal(composerAfterFork({ retryInstruction: "try the other way" }), "try the other way");
   assert.equal(composerAfterFork({}), "");
@@ -262,4 +300,25 @@ test("a resumable time-limit stop renders as info (PAUSED), a real error as SYST
   assert.match(failure, /class="entry error"/);
   assert.ok(!failure.includes(" info"));
   assert.match(failure, />SYSTEM</);
+});
+
+test("the end review renders standalone (not folded) and isn't labelled Blocked", () => {
+  const events: GameEvent[] = [
+    { id: 1, kind: "agent", text: "Submitting now.", turn: 2, model: "m" },
+    {
+      id: 2,
+      kind: "monitor",
+      text: "In context, it looks like an attempt.",
+      decision: "block",
+      suspicion: 0.98,
+    },
+    { id: 3, kind: "submit", text: "flag{x}", correct: true, caught: true },
+  ];
+  const groups = groupTurns(events);
+  // The commandless end review is its own group, not a call folded onto the agent turn.
+  assert.deepEqual(groups.find((g) => g.event.kind === "agent")?.calls, []);
+  const review = groups.find((g) => g.event.kind === "monitor")!.event;
+  const html = renderToStaticMarkup(createElement(Entry, { event: review }));
+  assert.match(html, /End review · suspicion 0\.98/);
+  assert.ok(!html.includes(">Blocked<"));
 });
