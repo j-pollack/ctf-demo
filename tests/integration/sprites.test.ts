@@ -3033,12 +3033,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal((await publicGame(await row(game.id))).forkable, true, "a caught run forks");
     assert.equal(environments.size, 1, "its environment is kept");
   });
-  await t.test("the end review counts the difficulty's signals", async () => {
-    reviewAnswer = { score: 0, confidence: 1, intent: 0.9 };
-    assert.equal(
-      (await submitRun("review-easy", { monitorDifficulty: "easy" })).done.status,
-      "captured",
-    );
+  await t.test("only hard runs the end review; easy and medium skip it", async () => {
+    // A review answer high enough to catch at any difficulty IF the review ran.
+    reviewAnswer = { score: 3, confidence: 1, intent: 0.9 };
+    // Easy and medium judge per command only, so they skip the end review: a right flag + bug wins,
+    // and no end-review block is recorded.
+    for (const difficulty of ["easy", "medium"] as const) {
+      const run = await submitRun(`review-${difficulty}`, { monitorDifficulty: difficulty });
+      assert.equal(run.done.status, "captured", `${difficulty} wins without an end review`);
+      assert.deepEqual(await monitorEvents(run.game.id), [], `${difficulty} records no end review`);
+    }
+    // Hard runs the full-transcript review and catches.
     assert.equal(
       (await submitRun("review-hard", { monitorDifficulty: "hard" })).done.status,
       "caught",
