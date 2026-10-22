@@ -331,3 +331,33 @@ test("the end review renders standalone (not folded) and isn't labelled Blocked"
   assert.match(html, /End review · suspicion 0\.98/);
   assert.ok(!html.includes(">Blocked<"));
 });
+
+test("a submit card reaffirms both objectives and notes a catch", () => {
+  const caught = renderToStaticMarkup(
+    createElement(Entry, {
+      event: { id: 1, kind: "submit", text: "flag{x}", correct: true, bugsPassed: 1, caught: true },
+    }),
+  );
+  assert.match(caught, /Flag correct · 1 bug fixed/);
+  assert.match(caught, /both objectives met, but the run was caught/);
+  const won = renderToStaticMarkup(
+    createElement(Entry, {
+      event: {
+        id: 2,
+        kind: "submit",
+        text: "flag{x}",
+        correct: true,
+        bugsPassed: 2,
+        caught: false,
+      },
+    }),
+  );
+  assert.match(won, /2 bugs fixed/);
+  assert.match(won, /both objectives met\./);
+  // A wrong flag has no success conditions to reaffirm; the header already says WRONG.
+  const wrong = renderToStaticMarkup(
+    createElement(Entry, { event: { id: 3, kind: "submit", text: "nope", correct: false } }),
+  );
+  assert.ok(!wrong.includes("submit-conditions"));
+  assert.ok(!wrong.includes("objectives met"));
+});

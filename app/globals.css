@@ -1561,3 +1561,9 @@ dialog::backdrop {
 .suspicion[data-high] .suspicion-num {
   color: var(--blocked);
 }
+
+.submit-conditions {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}

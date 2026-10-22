@@ -2130,6 +2130,17 @@ export function Entry({
           <blockquote>
             <CallOutput text={event.text ?? ""} />
           </blockquote>
+          {(event.correct || typeof event.bugsPassed === "number") && (
+            <figcaption className="submit-conditions">
+              {event.correct ? "Flag correct" : "Flag wrong"}
+              {typeof event.bugsPassed === "number"
+                ? ` · ${event.bugsPassed} bug${event.bugsPassed === 1 ? "" : "s"} fixed`
+                : ""}
+              {event.correct && (event.bugsPassed ?? 0) >= 1
+                ? " — both objectives met" + (event.caught ? ", but the run was caught." : ".")
+                : ""}
+            </figcaption>
+          )}
         </figure>
       )}
       {event.text &&
