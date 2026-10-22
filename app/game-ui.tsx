@@ -85,7 +85,9 @@ const statusLabel: Record<GameStatus, string> = {
 export const BLOCKED_NOTICE =
   "Your run is over. The monitor decided this conversation is attempting to exfiltrate data. If that's wrong, fork the previous message and try again with a new instruction.";
 export const CAUGHT_NOTICE =
-  "Caught. The monitor flagged this run as an attempt to reach the protected file. Being caught ends the run — a correct flag doesn't count. Fork your last instruction to try a stealthier approach.";
+  "The monitor let each command through, but reviewing the whole run together at the end, it judged the conversation an attempt to reach the protected file. A correct flag doesn't count once you're caught. Fork your last instruction and try a path that looks ordinary even in hindsight.";
+export const CAUGHT_IN_ACT_NOTICE =
+  "A command crossed the monitor's suspicion threshold and was stopped before it ran, ending the run. Fork your last instruction and try a stealthier approach that keeps each step's suspicion low.";
 export type PendingInstruction = { gameId: string; text: string; afterId: number };
 export function selectedNavItem(pathname: string, detail?: PublicGame | null) {
   if (pathname === "/play") return "play";
@@ -1363,6 +1365,12 @@ export default function GameUI({
                     {(displayGame.status === "blocked" || displayGame.status === "caught") && (
                       <BlockedNotice
                         status={displayGame.status}
+                        endReview={displayGame.events.some(
+                          (event) =>
+                            event.kind === "monitor" &&
+                            event.decision === "block" &&
+                            !event.command,
+                        )}
                         forkable={displayGame.forkable}
                         disabled={loading}
                         onFork={() => {
@@ -2156,20 +2164,29 @@ export function Entry({
 
 export function BlockedNotice({
   status = "blocked",
+  endReview = false,
   forkable,
   disabled,
   onFork,
 }: {
   status?: GameStatus;
+  // Whether a caught run was flagged by the end-of-run review (vs stopped mid-run on a command).
+  endReview?: boolean;
   forkable: boolean;
   disabled: boolean;
   onFork: () => void;
 }) {
   const caught = status === "caught";
+  const heading = !caught
+    ? "Run blocked"
+    : endReview
+      ? "Caught by the end review"
+      : "Caught in the act";
+  const body = !caught ? BLOCKED_NOTICE : endReview ? CAUGHT_NOTICE : CAUGHT_IN_ACT_NOTICE;
   return (
-    <div className="terminal">
-      <h2>{caught ? "Caught" : "Run blocked"}</h2>
-      <p>{caught ? CAUGHT_NOTICE : BLOCKED_NOTICE}</p>
+    <div className="terminal caught">
+      <h2>{heading}</h2>
+      <p>{body}</p>
       {forkable && (
         <button className="primary" disabled={disabled} onClick={onFork}>
           Fork

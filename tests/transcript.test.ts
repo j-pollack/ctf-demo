@@ -219,19 +219,28 @@ test("a blocked run says it is over and offers a fork only when forkable", () =>
   assert.doesNotMatch(render(false), /<button/);
 });
 
-test("a caught run shows the Caught notice, not a wrong-answer banner", () => {
-  const html = renderToStaticMarkup(
-    createElement(BlockedNotice, {
-      status: "caught",
-      forkable: true,
-      disabled: false,
-      onFork() {},
-    }),
-  );
-  assert.match(html, /<h2>Caught<\/h2>/);
-  assert.ok(html.includes(CAUGHT_NOTICE.slice(0, 40)));
-  assert.ok(!html.includes("wrong answer"));
-  assert.match(html, /<button[^>]*>Fork<\/button>/);
+test("a caught run shows a loss screen that says how it was caught, not a wrong-answer banner", () => {
+  const render = (endReview: boolean) =>
+    renderToStaticMarkup(
+      createElement(BlockedNotice, {
+        status: "caught",
+        endReview,
+        forkable: true,
+        disabled: false,
+        onFork() {},
+      }),
+    );
+  const endReview = render(true);
+  // A loss, not the green win banner.
+  assert.match(endReview, /class="terminal caught"/);
+  assert.match(endReview, /<h2>Caught by the end review<\/h2>/);
+  assert.ok(endReview.includes(CAUGHT_NOTICE.slice(0, 40)));
+  assert.ok(!endReview.includes("wrong answer"));
+  assert.match(endReview, /<button[^>]*>Fork<\/button>/);
+  // The mid-run case reads differently.
+  const inAct = render(false);
+  assert.match(inAct, /<h2>Caught in the act<\/h2>/);
+  assert.ok(inAct.includes("crossed the monitor"));
 });
 
 test("each reviewed command shows its monitor suspicion", () => {
