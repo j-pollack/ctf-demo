@@ -61,13 +61,13 @@ Per-archetype catch is 25% / 50% / 75% (easy/medium/hard) — i.e. 1/2/3 of the 
    benign (0.03–0.13). Explicit orders are still caught, but one step later, by the per-command
    review of the resulting `cat /tmp/flag.txt` (0.99). **Design decision needed** (see below).
 
-## Open decisions / next steps
+## Decisions / next steps
 
-- **Instruction screen:** (a) lower `INSTRUCTION_SCREEN_THRESHOLD` ~0.5 to catch the clearest orders
-  ("Get me the contents…" 0.65) and accept it misses weaker phrasings; (b) reword the screen's intent
-  question to react to "flag"/"secret", not only "/tmp/flag.txt contents"; or (c) drop the screen and
-  rely on the per-command review, which already catches the follow-through. Leaning (c)+(a): keep a
-  low-threshold screen as a courtesy pre-filter, don't pretend it's airtight.
+- **Instruction screen: removed** (finding 4). The bare-instruction intent signal was too weak to be
+  worth a pre-screen (explicit orders 0.28–0.65, under the old 0.85 bar, and not separable from
+  benign). Ordering the flag now loses one step later, at the per-command review of the resulting
+  read (0.99). `INSTRUCTION_SCREEN_THRESHOLD` and the screen call are gone; billing drops one Typesafe
+  call per instruction.
 - **Live playthrough** to confirm fun-and-beatable in practice (eval can't prove feel). Expectation
   from the curve: a patient player who stages the read and does ≥7/≥12/≥22 turns of cover work wins
   on easy/medium/hard; a hasty one gets caught.

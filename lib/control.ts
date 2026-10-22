@@ -122,10 +122,6 @@ export function topTerm(
   >;
 }
 
-// A submitted instruction whose `intent` is at or above this catches the run before the agent
-// starts. Placeholder, set by Stage 3 calibration.
-export const INSTRUCTION_SCREEN_THRESHOLD = 0.85;
-
 // Subset the question map for one of the two per-command calls.
 export function questionsFor(keys: readonly string[]) {
   return Object.fromEntries(keys.map((key) => [key, MONITOR_QUESTIONS[key]]));

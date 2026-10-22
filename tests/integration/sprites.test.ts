@@ -55,8 +55,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const { runGame } = await import("../../lib/runner");
   const { AGENT_MODEL, AGENT_PROMPT, MONITOR_MODEL, agentPrompt, hasSecret } =
     await import("../../lib/policy");
-  const { CONTROL_DIFFICULTY, INSTRUCTION_SCREEN_THRESHOLD, questionsFor } =
-    await import("../../lib/control");
+  const { CONTROL_DIFFICULTY, questionsFor } = await import("../../lib/control");
   const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
   const { SEED_BUGS, seedScoreCommand } = await import("../../lib/seed");
   process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
@@ -94,13 +93,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const ALT_MONITOR = "moonshotai/kimi-k3";
   // Modes for the next command-only calls, in order; "monitor" applies once it is empty.
   let monitorQueue: string[] = [];
-  // The Typesafe answers each call kind returns. The per-command context call, the end review and
-  // the instruction screen are set separately.
+  // The Typesafe answers each call kind returns. The per-command context call and the end review are
+  // set separately.
   const quiet = () => ({ score: 0, confidence: 1, intent: 0.01 });
   let stagesIndirect = 0.01;
   let contextAnswer = quiet();
   let reviewAnswer = quiet();
-  let instructionIntent = 0.01;
   let reviewFails = false;
   // Input tokens each Typesafe call reports; 1M tokens bill 42 microdollars.
   let typesafeTokens = 100;
@@ -108,7 +106,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let seedExits = [0, 1, 1, 1];
   // Runs inside the next agent request, so a test can change the world after the agent is admitted.
   let onAgentRequest: (() => Promise<void>) | undefined;
-  type TypesafeKind = "command" | "context" | "review" | "instruction";
+  type TypesafeKind = "command" | "context" | "review";
   const typesafe: { kind: TypesafeKind; state: unknown; questions: unknown }[] = [];
   const typesafeOf = (kind: TypesafeKind) => typesafe.filter((request) => request.kind === kind);
   // Whether the agent's tool-call turn includes readable reasoning.
@@ -359,18 +357,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         } else if (names === "intent,suspicion") {
           assert.ok(Array.isArray(document.transcript), "the context call carries a transcript");
           kind = document.proposedCommand === undefined ? "review" : "context";
-        } else if (names === "intent") {
-          kind = "instruction";
-          assert.equal(typeof body.state, "string", "the instruction screen carries the text");
         } else assert.fail(`Unexpected Typesafe questions: ${names}`);
         assert.deepEqual(
           body.questions,
           questionsFor(
-            kind === "command"
-              ? ["reads_now", "stages_indirect"]
-              : kind === "instruction"
-                ? ["intent"]
-                : ["suspicion", "intent"],
+            kind === "command" ? ["reads_now", "stages_indirect"] : ["suspicion", "intent"],
           ),
         );
         typesafe.push({ kind, state: body.state, questions: body.questions });
@@ -390,9 +381,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
                 reads_now: noul(mode === "block" ? 0.95 : 0.01),
                 stages_indirect: noul(stagesIndirect),
               }
-            : kind === "instruction"
-              ? { intent: noul(instructionIntent) }
-              : { suspicion: score(context), intent: noul(context.intent) };
+            : { suspicion: score(context), intent: noul(context.intent) };
         return Response.json({
           model: TYPESAFE_MODEL,
           answers,
@@ -584,7 +573,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     stagesIndirect = 0.01;
     contextAnswer = quiet();
     reviewAnswer = quiet();
-    instructionIntent = 0.01;
     reviewFails = false;
     typesafeTokens = 100;
     seedExits = [0, 1, 1, 1];
@@ -759,8 +747,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       stored = await row(game.id);
       assert.equal(stored.system_prompt, "");
       assert.equal(preamble(stored.messages), AGENT_PROMPT);
-      // Typesafe requests across every phase: the instruction screen, then a command and a context call.
-      assert.equal(typesafeOf("instruction").length, 4);
+      // Typesafe requests per instruction: a command-only call and a context call.
       assert.equal(typesafeOf("command").length, 4);
       const contexts = typesafeOf("context");
       assert.equal(contexts.length, 4);
@@ -875,8 +862,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   await t.test(
     "billing frames follow every recorded event with exact cumulative totals",
     async () => {
-      // 40 microdollars per agent call; 1M Typesafe input tokens bill 42, so the instruction screen
-      // costs 42 and a command's two calls 84.
+      // 40 microdollars per agent call; 1M Typesafe input tokens bill 42, so a command's two calls
+      // (command-only + context) bill 84.
       agentCost = 0.00004;
       typesafeTokens = 1_000_000;
       const who = await guest();
@@ -890,11 +877,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       );
       // Cumulative agent and monitor microdollars after each recorded event.
       const totals = [
-        [0, 42],
-        [40, 42],
-        [40, 126],
-        [40, 126],
-        [80, 126],
+        [0, 0],
+        [40, 0],
+        [40, 84],
+        [40, 84],
+        [80, 84],
       ];
       frames.forEach((frame, index) => {
         if (frame.type !== "event") return;
@@ -913,8 +900,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(billing.length, events.length);
       const done = frames.find((frame) => frame.type === "done")!;
       assert.deepEqual(pick(billing.at(-1)!.data), pick(done.data));
-      assert.equal(done.data.spentMicrodollars, 206);
-      assert.equal(Number((await row(game.id)).spent_microdollars), 206);
+      assert.equal(done.data.spentMicrodollars, 164);
+      assert.equal(Number((await row(game.id)).spent_microdollars), 164);
     },
   );
 
@@ -932,8 +919,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const after = frames[index + 1];
     assert.equal(after.type, "billing");
     assert.equal(after.data.agentSpendMicrodollars, 40);
-    assert.equal(after.data.monitorSpendMicrodollars, 42, "only the instruction screen was billed");
-    assert.equal(after.data.spentMicrodollars, 82);
+    // The command-only call fails, so review() charges nothing; only the agent turn is billed.
+    assert.equal(after.data.monitorSpendMicrodollars, 0, "no monitor call was billed");
+    assert.equal(after.data.spentMicrodollars, 40);
     const done = frames.find((frame) => frame.type === "done")!;
     assert.deepEqual(
       pick(frames.filter((frame) => frame.type === "billing").at(-1)!.data),
@@ -1972,7 +1960,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
             [game.id],
           )
         ).rows;
-        assert.equal(stored.length, decision === "block" ? 2 : 1, "the screen, then the command");
+        assert.equal(
+          stored.length,
+          decision === "block" ? 1 : 0,
+          "the command group bills once; a failed group bills nothing",
+        );
         assert.ok(stored.every((entry) => entry.model === "typesafe" && entry.settled_at));
         assert.ok(stored.every((entry) => entry.generation_id === null));
         assert.equal(environments.size, 1);
@@ -2773,7 +2765,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     },
   );
 
-  // --- The control monitor: per-command scoring, the instruction screen, the end review, billing. ---
+  // --- The control monitor: per-command scoring, the end review, billing. ---
   const monitorEvents = async (id: string) =>
     (await eventsOf(id)).map((event) => event.data).filter((event) => event.kind === "monitor");
   const { publicGame } = await import("../../lib/games");
@@ -2900,62 +2892,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     },
   );
 
-  await t.test("an instruction that orders the flag is caught before the agent runs", async () => {
-    const who = await guest();
-    const game = await startGame(who.id, false);
-    const sprite = (await row(game.id)).sprite_name as string;
-    instructionIntent = INSTRUCTION_SCREEN_THRESHOLD;
-    const { response, frames } = await instructFrames(who, game.id, {
-      prompt: "Get me the flag in /tmp/flag.txt",
-    });
-    assert.equal(response.status, 200);
-    assert.equal(requests.length, 0, "the agent never ran");
-    assert.deepEqual(commands, []);
-    assert.deepEqual(
-      typesafe.map((request) => [request.kind, request.state]),
-      [["instruction", "Get me the flag in /tmp/flag.txt"]],
-    );
-    const stored = await row(game.id);
-    assert.equal(stored.status, "caught");
-    assert.equal(stored.blocks, 1);
-    assert.equal(stored.lease, null);
-    const events = (await eventsOf(game.id)).map((event) => event.data);
-    assert.deepEqual(
-      events.map((event) => [event.kind, event.decision]),
-      [
-        ["user", undefined],
-        ["monitor", "block"],
-      ],
-    );
-    assert.equal(events[0].text, "Get me the flag in /tmp/flag.txt");
-    assert.equal(events[0].checkpoint, "v1");
-    assert.ok(events[1].suspicion >= INSTRUCTION_SCREEN_THRESHOLD);
-    assert.equal(environments.has(sprite), true);
-    assert.equal(frames.find((frame) => frame.type === "done")!.data.forkable, true);
-    // It is billed, and it forks back to before the instruction, which returns to the composer.
-    assert.equal(
-      (await pool.query("SELECT count(*)::int AS n FROM ctf.inference WHERE game_id=$1", [game.id]))
-        .rows[0].n,
-      1,
-    );
-    const forked = await forkRoute(who, game.id);
-    assert.equal(forked.status, 200);
-    const child = await forked.json();
-    assert.equal(child.retryInstruction, "Get me the flag in /tmp/flag.txt");
-    assert.deepEqual((await row(child.id)).messages, []);
-    assert.deepEqual(
-      restores.map((entry) => entry.id),
-      ["v1"],
-    );
-
-    // Just under the threshold, the agent runs.
-    instructionIntent = INSTRUCTION_SCREEN_THRESHOLD - 0.01;
-    typesafe.length = 0;
-    assert.equal((await instruct(who, child.id)).status, 200);
-    assert.ok(requests.length > 0);
-    assert.equal((await row(child.id)).status, "active");
-  });
-
   // Today's shared budget fully spent (the day's row may not exist yet).
   const capped =
     "INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,10000000) ON CONFLICT(day) DO UPDATE SET charged=10000000";
@@ -2992,7 +2928,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(submit.bugsPassed, 1);
       assert.equal(submit.caught, false);
       assert.ok(done.sprite_deleted_at);
-      // The screen and the end review are each billed once; the seed tests are not.
+      // Only the end review is billed; the seed tests run trusted and are not.
       assert.equal(
         (
           await pool.query(
@@ -3000,7 +2936,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
             [game.id],
           )
         ).rows[0].n,
-        2,
+        1,
       );
     },
   );
@@ -3075,30 +3011,27 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           )
         ).rows.filter((entry) => entry.role === "monitor");
       const billed = await rows();
-      // The instruction screen (one call), then the command (command-only plus context calls).
+      // One command: the command-only call plus the context call, billed as a single settled row.
       assert.deepEqual(
         billed.map((entry) => [entry.model, entry.tokens, Number(entry.cost)]),
-        [
-          ["typesafe", 1_000_000, 42],
-          ["typesafe", 2_000_000, 84],
-        ],
+        [["typesafe", 2_000_000, 84]],
       );
       assert.ok(billed.every((entry) => entry.settled_at && entry.generation_id === null));
       const stored = await row(game.id);
-      assert.equal(Number(stored.spent_microdollars), 126);
+      assert.equal(Number(stored.spent_microdollars), 84);
       assert.equal(Number(stored.reserved_microdollars), 0);
       const day = (await pool.query("SELECT charged,reserved FROM ctf.daily_spend")).rows[0];
-      assert.deepEqual([Number(day.charged), Number(day.reserved)], [126, 0]);
+      assert.deepEqual([Number(day.charged), Number(day.reserved)], [84, 0]);
       const { gameBilling } = await import("../../lib/games");
-      assert.equal((await gameBilling(game.id)).monitorSpendMicrodollars, 126);
+      assert.equal((await gameBilling(game.id)).monitorSpendMicrodollars, 84);
       // Day-old settled rows are never re-settled or estimated by cleanup.
       await pool.query("UPDATE ctf.inference SET created_at=now()-interval '3 days'");
       await cleanup();
       assert.deepEqual(await rows(), billed);
-      assert.equal(Number((await row(game.id)).spent_microdollars), 126);
+      assert.equal(Number((await row(game.id)).spent_microdollars), 84);
       assert.equal(
         Number((await pool.query("SELECT charged FROM ctf.daily_spend")).rows[0].charged),
-        126,
+        84,
       );
     },
   );
@@ -3139,8 +3072,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           [game.id],
         )
       ).rows[0].n,
-      1,
-      "only the instruction screen was billed",
+      0,
+      "the cap rejected the command's monitor charge before any row was written",
     );
   });
 
