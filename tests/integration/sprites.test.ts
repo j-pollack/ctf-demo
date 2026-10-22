@@ -1305,6 +1305,52 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     await deny("billing pending", 409, "reserved_microdollars=5", /billing is still settling/i);
   });
 
+  await t.test("forking a run with a stuck billing hold finalizes it and proceeds", async () => {
+    const who = await guest();
+    const { game: parent } = await blockRun(who.id);
+    // A disconnected agent call leaves an unsettled hold with no generation id: reconciliation can
+    // never resolve it, so without finalize-on-fork it would block the fork until the 24h sweep.
+    const day = (await pool.query("SELECT (now() AT TIME ZONE 'UTC')::date::text AS day")).rows[0]
+      .day;
+    await pool.query(
+      "INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling) VALUES(gen_random_uuid(),$1,$2,'agent','stuck',1000,5000)",
+      [parent.id, day],
+    );
+    await pool.query(
+      "INSERT INTO ctf.daily_spend(day,reserved) VALUES($1,5000) ON CONFLICT(day) DO UPDATE SET reserved=ctf.daily_spend.reserved+5000",
+      [day],
+    );
+    await pool.query(
+      "UPDATE ctf.games SET tokens_reserved=1000,reserved_microdollars=5000 WHERE id=$1",
+      [parent.id],
+    );
+    const before = await row(parent.id);
+    const forked = await forkRoute(who, parent.id);
+    assert.equal(forked.status, 200);
+    const after = await row(parent.id);
+    assert.equal(Number(after.reserved_microdollars), 0, "the stuck hold was finalized");
+    assert.equal(
+      Number(after.spent_microdollars),
+      Number(before.spent_microdollars) + 5000,
+      "settled at its ceiling",
+    );
+    const held = (
+      await pool.query(
+        "SELECT settled_at,estimated,cost FROM ctf.inference WHERE game_id=$1 AND model='stuck'",
+        [parent.id],
+      )
+    ).rows[0];
+    assert.ok(held.settled_at, "the hold is now settled");
+    assert.equal(held.estimated, true);
+    assert.equal(Number(held.cost), 5000);
+    // The fork child inherits the finalized spend, not a pre-settlement total.
+    const child = await forked.json();
+    assert.equal(
+      Number((await row(child.id)).spent_microdollars),
+      Number(after.spent_microdollars),
+    );
+  });
+
   await t.test(
     "fork route refuses missing sessions, bad origins and other owners' runs",
     async () => {
@@ -2519,8 +2565,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     },
   );
   await t.test(
-    "only a time-limit stop is resumable; a user stop is not, and the run stays open",
+    "an aborted response leaves the run open and resumable, by time cap or dropped connection",
     async () => {
+      // The server can't tell a time cap, a dropped connection, or a user Stop apart — all abort the
+      // signal — so all are marked resumable. The client suppresses auto-continue only after a Stop.
       for (const [owner, timeout] of [
         ["stop-timeout", true],
         ["stop-user", false],
@@ -2556,7 +2604,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         assert.equal(stopped.status, "active", owner);
         assert.equal(last?.kind, "error", owner);
         assert.equal(last?.text, "Response stopped. Your run is still open.", owner);
-        assert.equal(last?.resumable, timeout ? true : undefined, owner);
+        assert.equal(last?.resumable, true, owner);
         fetchGate = undefined;
       }
     },

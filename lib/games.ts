@@ -288,6 +288,23 @@ export async function startGame(
   // Before cleanup and admission: a bad choice must neither create a run nor end the current one.
   const monitor = await checkMonitor(options);
   await cleanup();
+  // cleanup() reconciles resolvable holds; for a fork, finalize any that remain on the terminal
+  // source run (e.g. a disconnected agent call) so the fork isn't blocked on billing that would
+  // otherwise clear only via the 24h sweep.
+  if (sourceId) {
+    const src = (
+      await db.query<{ owner_id: string; status: string; reserved_microdollars: string }>(
+        "SELECT owner_id,status,reserved_microdollars FROM ctf.games WHERE id=$1",
+        [sourceId],
+      )
+    ).rows[0];
+    if (
+      src?.owner_id === ownerId &&
+      (src.status === "blocked" || src.status === "caught") &&
+      Number(src.reserved_microdollars) > 0
+    )
+      await finalizeHolds(sourceId);
+  }
   const id = randomUUID();
   const { secret, hash } = makeSecret();
   const game = await transaction(async (client) => {
@@ -686,6 +703,28 @@ export async function expireUnverifiableHolds() {
       await client.query(
         "UPDATE ctf.games SET tokens_reserved=tokens_reserved-$2,tokens_used=tokens_used+$2,reserved_microdollars=reserved_microdollars-$3,spent_microdollars=spent_microdollars+$3 WHERE id=$1",
         [call.game_id, call.token_ceiling, call.cost_ceiling],
+      );
+    }
+  });
+}
+// Finalize a terminal (caught/blocked) run's outstanding holds at their ceiling, so forking it isn't
+// blocked waiting for a hold that only the 24h sweep would clear — a dead agent call that disconnected
+// mid-stream leaves exactly such a hold (no generation id, so reconciliation can never resolve it).
+// The run is over, so nothing races this; conservative ceiling settlement never undercounts spend.
+export async function finalizeHolds(gameId: string) {
+  await transaction(async (client) => {
+    const { rows } = await client.query(
+      "UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE game_id=$1 AND settled_at IS NULL RETURNING day,token_ceiling,cost_ceiling",
+      [gameId],
+    );
+    for (const call of rows) {
+      await client.query(
+        "UPDATE ctf.daily_spend SET reserved=reserved-$2,charged=charged+$2 WHERE day=$1",
+        [call.day, call.cost_ceiling],
+      );
+      await client.query(
+        "UPDATE ctf.games SET tokens_reserved=tokens_reserved-$2,tokens_used=tokens_used+$2,reserved_microdollars=reserved_microdollars-$3,spent_microdollars=spent_microdollars+$3 WHERE id=$1",
+        [gameId, call.token_ceiling, call.cost_ceiling],
       );
     }
   });

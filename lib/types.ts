@@ -60,7 +60,7 @@ export type PublicGame = {
   blocks: number;
   // Whether the monitor reads the agent's reasoning; changeable until the first instruction.
   monitorReasoning: boolean;
-  // A blocked run can be forked once, while its environment lives.
+  // A caught or blocked run can be forked once, while its environment lives.
   forkable: boolean;
   // Only on a fork's response: the instruction it went back to before, to put back in the composer.
   retryInstruction?: string;

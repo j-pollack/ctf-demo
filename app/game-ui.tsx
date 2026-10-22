@@ -324,8 +324,12 @@ export default function GameUI({
     setMonitorReasoning(game.monitorReasoning);
     setEffort(game.agentEffort);
     autoContinues.current = 0;
+    userStopped.current = false;
   }, [game?.id]);
   const cancel = useRef<AbortController | null>(null),
+    // A deliberate Stop (not a dropped connection) suppresses auto-continue until the next manual
+    // instruction. The server marks both the same, so this is the only place that knows the difference.
+    userStopped = useRef(false),
     thread = useRef<HTMLDivElement | null>(null),
     atBottom = useRef(true),
     lastScrollTop = useRef(0),
@@ -718,6 +722,7 @@ export default function GameUI({
       isExecutionView &&
       !loading &&
       !cancel.current &&
+      !userStopped.current &&
       !pending.current &&
       !prompt.trim() &&
       shouldAutoContinue(game, autoContinues.current)
@@ -954,7 +959,10 @@ export default function GameUI({
   async function send(auto?: string) {
     if (!game || (!auto && !prompt.trim()) || loading || cancel.current || pending.current) return;
     const text = auto ?? prompt;
-    if (!auto) autoContinues.current = 0;
+    if (!auto) {
+      autoContinues.current = 0;
+      userStopped.current = false;
+    }
     const runId = game.id,
       owner = historyOwner.current,
       epoch = accountEpoch.current,
@@ -1482,7 +1490,13 @@ export default function GameUI({
                     }}
                   />
                   {busy && cancel.current ? (
-                    <button type="button" onClick={() => cancel.current?.abort()}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        userStopped.current = true;
+                        cancel.current?.abort();
+                      }}
+                    >
                       Stop
                     </button>
                   ) : (
@@ -1823,7 +1837,7 @@ export default function GameUI({
                 <p>
                   The new run goes back to before your last instruction and restores the environment
                   to how it was then. That instruction goes back in the box to edit. Your budget and
-                  spend carry over, and a blocked run can be forked once.
+                  spend carry over, and a run can be forked once.
                 </p>
               </aside>
               <div className="fork-actions">

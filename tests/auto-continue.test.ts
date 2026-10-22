@@ -20,7 +20,8 @@ test("auto-continue only follows a resumable stop on an active run under the cap
   assert.equal(shouldAutoContinue(run([user, stopped]), 2, 2), false);
   for (const status of ["captured", "caught", "exhausted"])
     assert.equal(shouldAutoContinue(run([user, stopped], status), 0), false, status);
-  // A user Stop (no resumable), another error, or a newer event ends the chain.
+  // A genuine failure (not resumable), or a newer event after the stop, ends the chain. A deliberate
+  // Stop is resumable here but suppressed separately by the userStopped guard in the effect.
   assert.equal(shouldAutoContinue(run([user, { ...stopped, resumable: undefined }]), 0), false);
   assert.equal(shouldAutoContinue(run([stopped, user]), 0), false);
   assert.equal(shouldAutoContinue(run([]), 0), false);
