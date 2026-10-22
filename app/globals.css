@@ -645,6 +645,19 @@ th {
   color: var(--muted);
   font-weight: 500;
 }
+/* The difficulty comparison on the rules page: cells hold sentences, so let them wrap. */
+.rules-table {
+  max-width: 850px;
+}
+.rules-table td,
+.rules-table th {
+  white-space: normal;
+  vertical-align: top;
+}
+.rules-table tbody th {
+  font-size: 12px;
+  color: inherit;
+}
 .thread .error[role="alert"] {
   max-height: none;
   overflow: visible;
