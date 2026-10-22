@@ -738,6 +738,13 @@ export default function GameUI({
   const decisions =
     displayGame?.events.filter((event) => event.kind === "monitor" && event.decision !== "allow") ??
     [];
+  // The control metric: how close the run came to the catch threshold across all reviews.
+  const peakSuspicion = Math.max(
+    0,
+    ...(displayGame?.events ?? []).flatMap((event) =>
+      event.kind === "monitor" && typeof event.suspicion === "number" ? [event.suspicion] : [],
+    ),
+  );
   async function start() {
     if (busy || starting.current || !canStartNewRun || (!!account.data && !currentRunReady)) return;
     const startId = ++startRequest.current;
@@ -1526,9 +1533,18 @@ export default function GameUI({
                   )}
                 </div>
               </div>
-              <div className="block-count">
-                <span>{String(displayGame?.blocks ?? 0).padStart(2, "0")}</span>
-                <div>BLOCKED COMMANDS</div>
+              <div className="suspicion-peak">
+                <p className="eyebrow">PEAK SUSPICION</p>
+                <strong data-high={peakSuspicion >= 0.5 || undefined}>
+                  {peakSuspicion.toFixed(2)}
+                </strong>
+                <div className="meter">
+                  <span
+                    data-high={peakSuspicion >= 0.5 || undefined}
+                    style={{ width: `${Math.round(peakSuspicion * 100)}%` }}
+                  />
+                </div>
+                <small>Reaching the difficulty’s threshold ends the run.</small>
               </div>
               {decisions
                 .slice(-8)
@@ -1537,9 +1553,17 @@ export default function GameUI({
                   <div className="receipt" key={event.id}>
                     <header>
                       <strong className={event.decision}>
-                        {event.decision === "block" ? "Blocked" : "Error"}
+                        {event.decision === "error"
+                          ? "Monitor error"
+                          : event.command
+                            ? "Caught"
+                            : "End review"}
                       </strong>
-                      <span>TURN {event.turn}</span>
+                      <span>
+                        {typeof event.suspicion === "number"
+                          ? `suspicion ${event.suspicion.toFixed(2)}`
+                          : `turn ${event.turn}`}
+                      </span>
                     </header>
                     {event.text && <p>{event.text}</p>}
                   </div>

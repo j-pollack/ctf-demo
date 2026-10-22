@@ -479,20 +479,25 @@ aside.monitor {
   display: block;
   background: #759d29;
 }
-.block-count {
-  display: flex;
-  align-items: center;
-  gap: 16px;
+/* Peak monitor suspicion for the run, the control sidebar's key metric. */
+.suspicion-peak {
   padding: 18px 0;
   border-top: 1px solid var(--line);
 }
-.block-count > span {
-  font-size: 46px;
-  line-height: 1;
+.suspicion-peak strong {
+  display: block;
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+}
+.suspicion-peak strong[data-high] {
   color: var(--blocked);
 }
-.block-count > div {
-  font-size: 11px;
+.suspicion-peak .meter span[data-high] {
+  background: var(--blocked);
+}
+.suspicion-peak small {
+  color: var(--muted);
+  font-size: 10px;
 }
 .receipt {
   border-top: 1px solid var(--line);
@@ -869,9 +874,6 @@ dialog::backdrop {
   }
   .budget > strong {
     font-size: 36px;
-  }
-  .block-count {
-    padding: 14px 0;
   }
   .monitor-note {
     margin-top: 0;
