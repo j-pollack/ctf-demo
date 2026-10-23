@@ -325,9 +325,13 @@ test("each reviewed command shows its monitor suspicion", () => {
   const [{ event, calls, pending }] = groupTurns(events);
   assert.equal(calls[0].suspicion, 0.02);
   assert.equal(calls[1].suspicion, 0.98);
-  const html = renderToStaticMarkup(createElement(Entry, { event, calls, pending }));
-  assert.ok(html.includes("0.02") && html.includes("0.98"));
-  assert.match(html, /data-high/); // the 0.98 command is flagged high
+  // Shown as a percent of the catch line: 0.02 and 0.98 against a 0.5 threshold are 4% and 196%.
+  const html = renderToStaticMarkup(
+    createElement(Entry, { event, calls, pending, threshold: 0.5 }),
+  );
+  assert.ok(html.includes(">4%<") && html.includes(">196%<"));
+  assert.match(html, /data-high/); // the over-the-line command is flagged high
+  assert.ok(!html.includes(">0.98<"), "the raw score is not the headline number");
 });
 
 test("after a fork the composer holds the dropped instruction, or is empty", () => {
@@ -392,8 +396,9 @@ test("the end review renders standalone (not folded) and isn't labelled Blocked"
   // The commandless end review is its own group, not a call folded onto the agent turn.
   assert.deepEqual(groups.find((g) => g.event.kind === "agent")?.calls, []);
   const review = groups.find((g) => g.event.kind === "monitor")!.event;
-  const html = renderToStaticMarkup(createElement(Entry, { event: review }));
-  assert.match(html, /End review · suspicion 0\.98/);
+  const html = renderToStaticMarkup(createElement(Entry, { event: review, threshold: 0.5 }));
+  // 0.98 against a 0.5 threshold is 196% of the catch line.
+  assert.match(html, /End review · 196% of the catch line/);
   assert.ok(!html.includes(">Blocked<"));
 });
 

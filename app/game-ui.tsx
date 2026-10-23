@@ -57,6 +57,9 @@ export function suspicionSeries(events: GameEvent[], threshold: number) {
       : [],
   );
 }
+// A suspicion score as a percent of the catch line (the difficulty's threshold); 100% ends the run.
+export const catchPercent = (suspicion: number, threshold: number) =>
+  threshold > 0 ? Math.round((suspicion / threshold) * 100) : 0;
 // Suspicion across the run, each action a point, scaled so the dashed catch line sits at 100%. The
 // line reddens once any action reached the threshold (which ends the run).
 export function SuspicionChart({ series }: { series: { suspicion: number; norm: number }[] }) {
@@ -1424,6 +1427,7 @@ export default function GameUI({
                           previous={groups[index - 1]?.event}
                           calls={calls}
                           pending={pending}
+                          threshold={catchThreshold}
                           disabled={loading || displayGame.busy}
                           onCopy={async () => {
                             try {
@@ -1636,7 +1640,7 @@ export default function GameUI({
                       </strong>
                       <span>
                         {typeof event.suspicion === "number"
-                          ? `suspicion ${event.suspicion.toFixed(2)}`
+                          ? `${catchPercent(event.suspicion, catchThreshold)}% of catch line`
                           : `turn ${event.turn}`}
                       </span>
                     </header>
@@ -2177,6 +2181,7 @@ export function Entry({
   previous,
   calls,
   pending,
+  threshold = 0.5,
   disabled = false,
   showActions = true,
   onCopy,
@@ -2185,6 +2190,8 @@ export function Entry({
   previous?: GameEvent;
   calls?: Call[];
   pending?: string[];
+  // The difficulty's catch threshold, so suspicion shows as a percent of the catch line.
+  threshold?: number;
   disabled?: boolean;
   showActions?: boolean;
   onCopy?: () => void;
@@ -2199,7 +2206,9 @@ export function Entry({
       <article className={`entry monitor blocked${endReview ? " end-review" : ""}`}>
         <span>
           {endReview ? "End review" : "Blocked"}
-          {typeof event.suspicion === "number" ? ` · suspicion ${event.suspicion.toFixed(2)}` : ""}
+          {typeof event.suspicion === "number"
+            ? ` · ${catchPercent(event.suspicion, threshold)}% of the catch line`
+            : ""}
         </span>
         {event.text && <p>{event.text}</p>}
       </article>
@@ -2302,7 +2311,9 @@ export function Entry({
       )}
       {calls?.map((call, index) => (
         <div className="call" key={index}>
-          {typeof call.suspicion === "number" && <SuspicionBadge value={call.suspicion} />}
+          {typeof call.suspicion === "number" && (
+            <SuspicionBadge value={call.suspicion} threshold={threshold} />
+          )}
           {call.command && <pre>{call.command}</pre>}
           {call.decision === "allow" ? (
             <>
@@ -2361,16 +2372,18 @@ export function BlockedNotice({
   );
 }
 
-// The monitor's suspicion for a command: a small bar plus the 0-1 value, reddening as it climbs.
-function SuspicionBadge({ value }: { value: number }) {
+// The monitor's suspicion for a command, as a percent of the catch line: a small bar plus the value,
+// reddening as it nears 100% (the difficulty's threshold, which ends the run).
+function SuspicionBadge({ value, threshold }: { value: number; threshold: number }) {
+  const percent = catchPercent(value, threshold);
   return (
     <span
       className="suspicion"
-      data-high={value >= 0.5 || undefined}
-      title="Monitor suspicion for this command (0–1). Crossing the difficulty's threshold ends the run."
+      data-high={percent >= 75 || undefined}
+      title={`Monitor suspicion ${value.toFixed(2)} — ${percent}% of the catch line. 100% ends the run.`}
     >
-      <span className="suspicion-bar" style={{ width: `${Math.round(value * 100)}%` }} />
-      <span className="suspicion-num">{value.toFixed(2)}</span>
+      <span className="suspicion-bar" style={{ width: `${Math.min(100, percent)}%` }} />
+      <span className="suspicion-num">{percent}%</span>
     </span>
   );
 }
