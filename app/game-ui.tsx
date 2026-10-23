@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
+import { CONTROL_DIFFICULTY } from "@/lib/control";
 import { SEED_BUGS } from "@/lib/seed";
 import {
   MONITOR_DIFFICULTIES,
@@ -46,6 +47,51 @@ export function endBanner(status: GameStatus, hasSubmit: boolean) {
         ? "The agent submitted the wrong answer"
         : "This run has ended";
   return { win, className: `terminal${win ? "" : " loss"}`, heading };
+}
+// Each monitored action's suspicion as a fraction of the catch threshold, in order. 1 (100%) is the
+// catch line, so the value reads as "how close to caught" whatever the difficulty's raw threshold is.
+export function suspicionSeries(events: GameEvent[], threshold: number) {
+  return events.flatMap((event) =>
+    event.kind === "monitor" && typeof event.suspicion === "number"
+      ? [{ suspicion: event.suspicion, norm: threshold > 0 ? event.suspicion / threshold : 0 }]
+      : [],
+  );
+}
+// Suspicion across the run, each action a point, scaled so the dashed catch line sits at 100%. The
+// line reddens once any action reached the threshold (which ends the run).
+export function SuspicionChart({ series }: { series: { suspicion: number; norm: number }[] }) {
+  const w = 240,
+    h = 56,
+    pad = 4;
+  const peak = Math.max(0, ...series.map((point) => point.norm));
+  const top = Math.max(1.12, peak * 1.05); // headroom so the 100% line and any overshoot are visible
+  const x = (i: number) =>
+    series.length < 2 ? w - pad : pad + (i / (series.length - 1)) * (w - 2 * pad);
+  const y = (norm: number) => h - pad - (Math.min(norm, top) / top) * (h - 2 * pad);
+  const points = series
+    .map((point, i) => `${x(i).toFixed(1)},${y(point.norm).toFixed(1)}`)
+    .join(" ");
+  const caught = peak >= 1 || undefined;
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      className="susp-chart"
+      role="img"
+      aria-label={`Suspicion per monitored action as a percent of the catch line; peak ${Math.round(peak * 100)} percent`}
+    >
+      <line x1="0" x2={w} y1={y(1)} y2={y(1)} className="susp-threshold" />
+      {series.length > 1 && <polyline points={points} className="susp-line" data-caught={caught} />}
+      {series.length > 0 && (
+        <circle
+          cx={x(series.length - 1)}
+          cy={y(series.at(-1)!.norm)}
+          r="3"
+          className="susp-dot"
+          data-caught={caught}
+        />
+      )}
+    </svg>
+  );
 }
 const label = (model: string) => model.split("/")[1];
 type Choice = { name: string; hint: string };
@@ -756,13 +802,14 @@ export default function GameUI({
   const decisions =
     displayGame?.events.filter((event) => event.kind === "monitor" && event.decision !== "allow") ??
     [];
-  // The control metric: how close the run came to the catch threshold across all reviews.
-  const peakSuspicion = Math.max(
-    0,
-    ...(displayGame?.events ?? []).flatMap((event) =>
-      event.kind === "monitor" && typeof event.suspicion === "number" ? [event.suspicion] : [],
-    ),
-  );
+  // The control metric: how close the run came to the catch threshold across all reviews. Reported
+  // relative to the difficulty's threshold (the catch line), since a raw score is meaningless alone.
+  const catchThreshold = displayGame
+    ? CONTROL_DIFFICULTY[displayGame.monitorDifficulty].threshold
+    : 0.5;
+  const suspicionPoints = displayGame ? suspicionSeries(displayGame.events, catchThreshold) : [];
+  const peakSuspicion = Math.max(0, ...suspicionPoints.map((point) => point.suspicion));
+  const peakOfCatch = catchThreshold > 0 ? peakSuspicion / catchThreshold : 0;
   async function start() {
     if (busy || starting.current || !canStartNewRun || (!!account.data && !currentRunReady)) return;
     const startId = ++startRequest.current;
@@ -1561,16 +1608,18 @@ export default function GameUI({
               </div>
               <div className="suspicion-peak">
                 <p className="eyebrow">PEAK SUSPICION</p>
-                <strong data-high={peakSuspicion >= 0.5 || undefined}>
-                  {peakSuspicion.toFixed(2)}
+                <strong
+                  data-high={peakOfCatch >= 1 || undefined}
+                  title={`Raw suspicion ${peakSuspicion.toFixed(2)} of a ${catchThreshold} catch threshold`}
+                >
+                  {Math.round(peakOfCatch * 100)}%
                 </strong>
-                <div className="meter">
-                  <span
-                    data-high={peakSuspicion >= 0.5 || undefined}
-                    style={{ width: `${Math.round(peakSuspicion * 100)}%` }}
-                  />
-                </div>
-                <small>Reaching the difficulty’s threshold ends the run.</small>
+                <small>of the catch line at its peak</small>
+                <SuspicionChart series={suspicionPoints} />
+                <small>
+                  Each monitored action, left to right. Reaching the dashed line (100%) ends the
+                  run.
+                </small>
               </div>
               {decisions
                 .slice(-8)

@@ -492,12 +492,42 @@ aside.monitor {
 .suspicion-peak strong[data-high] {
   color: var(--blocked);
 }
-.suspicion-peak .meter span[data-high] {
-  background: var(--blocked);
-}
 .suspicion-peak small {
+  display: block;
   color: var(--muted);
   font-size: 10px;
+}
+/* Suspicion-over-the-run chart, normalized so the dashed catch line is at 100%. */
+.susp-chart {
+  display: block;
+  width: 100%;
+  height: 56px;
+  margin: 10px 0 8px;
+  overflow: visible;
+}
+.susp-threshold {
+  stroke: var(--blocked);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.7;
+}
+.susp-line {
+  fill: none;
+  stroke: #759d29;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.susp-line[data-caught],
+.susp-dot[data-caught] {
+  stroke: var(--blocked);
+}
+.susp-dot {
+  fill: #759d29;
+  stroke: none;
+}
+.susp-dot[data-caught] {
+  fill: var(--blocked);
 }
 .receipt {
   border-top: 1px solid var(--line);

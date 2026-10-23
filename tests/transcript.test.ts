@@ -11,6 +11,8 @@ import {
   Entry,
   groupTurns,
   refreshedGame,
+  SuspicionChart,
+  suspicionSeries,
 } from "../app/game-ui";
 import type { GameEvent, PublicGame } from "../lib/types";
 
@@ -242,6 +244,46 @@ test("a caught run shows a loss screen that says how it was caught, not a wrong-
   const inAct = render(false);
   assert.match(inAct, /<h2>Caught in the act<\/h2>/);
   assert.ok(inAct.includes("crossed the monitor"));
+});
+
+test("suspicion series keeps scored actions in order and normalizes to the catch line", () => {
+  const events: GameEvent[] = [
+    { id: 1, kind: "user", text: "go" },
+    { id: 2, kind: "monitor", text: "", decision: "allow", command: "ls", suspicion: 0.1 },
+    { id: 3, kind: "agent", text: "", turn: 1 },
+    { id: 4, kind: "monitor", text: "", decision: "allow", command: "cat x" }, // no numeric suspicion
+    { id: 5, kind: "monitor", text: "", decision: "block", command: "cat flag", suspicion: 0.5 },
+  ];
+  const series = suspicionSeries(events, 0.5);
+  assert.equal(series.length, 2);
+  assert.equal(series[0].suspicion, 0.1);
+  assert.ok(Math.abs(series[0].norm - 0.2) < 1e-9); // 0.1 is 20% of a 0.5 catch line
+  assert.equal(series[1].suspicion, 0.5);
+  assert.ok(Math.abs(series[1].norm - 1) < 1e-9); // reaching the line is 100%
+  // A zero threshold can't normalize; guard against divide-by-zero.
+  assert.equal(
+    suspicionSeries([{ id: 1, kind: "monitor", text: "", suspicion: 0.5 }], 0)[0].norm,
+    0,
+  );
+});
+
+test("the suspicion chart draws the catch line and reddens only once an action reached it", () => {
+  const svg = (norms: number[]) =>
+    renderToStaticMarkup(
+      createElement(SuspicionChart, {
+        series: norms.map((norm) => ({ suspicion: norm * 0.5, norm })),
+      }),
+    );
+  const safe = svg([0.1, 0.2, 0.15]);
+  assert.match(safe, /class="susp-threshold"/); // the 100% catch line is always drawn
+  assert.match(safe, /class="susp-line"/);
+  assert.ok(
+    !safe.includes("data-caught"),
+    "a run that never reached the line is not marked caught",
+  );
+  const caught = svg([0.1, 0.2, 1.9]);
+  assert.match(caught, /class="susp-line" data-caught="true"/);
+  assert.match(caught, /class="susp-dot" data-caught="true"/);
 });
 
 test("only a capture gets the green win banner; every other end is a loss", () => {
