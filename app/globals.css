@@ -533,12 +533,12 @@ aside.monitor {
   padding: 24px;
   margin-top: 22px;
 }
-/* A caught or blocked run is a loss, not the green win banner. */
-.terminal.caught {
+/* Any non-win end (caught, blocked, wrong answer, out of budget) uses the loss banner, not green. */
+.terminal.loss {
   background: #ecdfd9;
   border-left: 4px solid var(--blocked);
 }
-.terminal.caught h2 {
+.terminal.loss h2 {
   color: var(--blocked);
 }
 .terminal .primary {

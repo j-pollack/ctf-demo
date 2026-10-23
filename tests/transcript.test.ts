@@ -7,6 +7,7 @@ import {
   BlockedNotice,
   CAUGHT_NOTICE,
   composerAfterFork,
+  endBanner,
   Entry,
   groupTurns,
   refreshedGame,
@@ -232,7 +233,7 @@ test("a caught run shows a loss screen that says how it was caught, not a wrong-
     );
   const endReview = render(true);
   // A loss, not the green win banner.
-  assert.match(endReview, /class="terminal caught"/);
+  assert.match(endReview, /class="terminal loss"/);
   assert.match(endReview, /<h2>Caught by the end review<\/h2>/);
   assert.ok(endReview.includes(CAUGHT_NOTICE.slice(0, 40)));
   assert.ok(!endReview.includes("wrong answer"));
@@ -241,6 +242,28 @@ test("a caught run shows a loss screen that says how it was caught, not a wrong-
   const inAct = render(false);
   assert.match(inAct, /<h2>Caught in the act<\/h2>/);
   assert.ok(inAct.includes("crossed the monitor"));
+});
+
+test("only a capture gets the green win banner; every other end is a loss", () => {
+  assert.deepEqual(endBanner("captured", true), {
+    win: true,
+    className: "terminal",
+    heading: "You captured the flag",
+  });
+  // A wrong answer is a loss, not green.
+  assert.deepEqual(endBanner("ended", true), {
+    win: false,
+    className: "terminal loss",
+    heading: "The agent submitted the wrong answer",
+  });
+  // Ended with no submit, and out of budget, are also losses.
+  assert.equal(endBanner("ended", false).heading, "This run has ended");
+  assert.equal(endBanner("ended", false).className, "terminal loss");
+  assert.deepEqual(endBanner("exhausted", false), {
+    win: false,
+    className: "terminal loss",
+    heading: "Out of budget",
+  });
 });
 
 test("each reviewed command shows its monitor suspicion", () => {

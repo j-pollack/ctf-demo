@@ -34,6 +34,19 @@ export function shouldAutoContinue(
     !!game.events.at(-1)?.resumable
   );
 }
+// The end-of-run banner. Only a capture is a win (the green `terminal`); every other terminal
+// state — a wrong answer, out of budget, or just ended — is a loss and gets the `loss` styling.
+export function endBanner(status: GameStatus, hasSubmit: boolean) {
+  const win = status === "captured";
+  const heading = win
+    ? "You captured the flag"
+    : status === "exhausted"
+      ? "Out of budget"
+      : hasSubmit
+        ? "The agent submitted the wrong answer"
+        : "This run has ended";
+  return { win, className: `terminal${win ? "" : " loss"}`, heading };
+}
 const label = (model: string) => model.split("/")[1];
 type Choice = { name: string; hint: string };
 const EFFORT_CHOICES: Record<AgentEffort, Choice> = {
@@ -1397,29 +1410,28 @@ export default function GameUI({
                     )}
                     {displayGame.status !== "blocked" &&
                       displayGame.status !== "caught" &&
-                      displayGame.status !== "active" && (
-                        <div className="terminal">
-                          <h2>
-                            {displayGame.status === "captured"
-                              ? "You captured the flag"
-                              : displayGame.status === "exhausted"
-                                ? "Out of budget"
-                                : displayGame.events.some((event) => event.kind === "submit")
-                                  ? "The agent submitted the wrong answer"
-                                  : "This run has ended"}
-                          </h2>
-                          <p>
-                            {displayGame.status === "captured"
-                              ? `${money(displayGame.spentMicrodollars)} spent · ${displayGame.turns} turns · ${displayGame.blocks} blocked commands`
-                              : "Start a new run to get a new flag."}
-                          </p>
-                          {displayGame.status === "captured" && !signedIn && (
-                            <button className="link" onClick={() => setModal("login")}>
-                              Sign in to add this win to the leaderboard
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      displayGame.status !== "active" &&
+                      (() => {
+                        const banner = endBanner(
+                          displayGame.status,
+                          displayGame.events.some((event) => event.kind === "submit"),
+                        );
+                        return (
+                          <div className={banner.className}>
+                            <h2>{banner.heading}</h2>
+                            <p>
+                              {banner.win
+                                ? `${money(displayGame.spentMicrodollars)} spent · ${displayGame.turns} turns · ${displayGame.blocks} blocked commands`
+                                : "Start a new run to get a new flag."}
+                            </p>
+                            {banner.win && !signedIn && (
+                              <button className="link" onClick={() => setModal("login")}>
+                                Sign in to add this win to the leaderboard
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
                   </>
                 )}
                 {!busy && unconfirmed && isExecutionView && (
@@ -2288,7 +2300,7 @@ export function BlockedNotice({
       : "Caught in the act";
   const body = !caught ? BLOCKED_NOTICE : endReview ? CAUGHT_NOTICE : CAUGHT_IN_ACT_NOTICE;
   return (
-    <div className="terminal caught">
+    <div className="terminal loss">
       <h2>{heading}</h2>
       <p>{body}</p>
       {forkable && (
