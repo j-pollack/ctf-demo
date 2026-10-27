@@ -494,7 +494,9 @@ aside.monitor {
   --band: #4d7c0f;
 }
 [data-band="mid"] {
-  --band: #8a6e00;
+  --band: #e0a800;
+  /* Yellow text is unreadable on the light paper; numbers use a darker shade of it. */
+  --band-ink: #8a6e00;
 }
 [data-band="high"] {
   --band: #c2410c;
@@ -503,7 +505,7 @@ aside.monitor {
   --band: #c62828;
 }
 .suspicion-peak strong {
-  color: var(--band);
+  color: var(--band-ink, var(--band));
 }
 .suspicion-peak small {
   display: block;
@@ -524,16 +526,8 @@ aside.monitor {
   stroke-dasharray: 3 3;
   opacity: 0.7;
 }
-.susp-line {
-  fill: none;
-  stroke: var(--band);
-  stroke-width: 1.5;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-.susp-dot {
+.susp-bar {
   fill: var(--band);
-  stroke: none;
 }
 .receipt {
   border-top: 1px solid var(--line);
@@ -1601,7 +1595,7 @@ dialog::backdrop {
 .suspicion-num {
   position: relative;
   padding-right: 5px;
-  color: var(--band);
+  color: var(--band-ink, var(--band));
   font-variant-numeric: tabular-nums;
 }
 

@@ -12,6 +12,8 @@ import {
   groupTurns,
   refreshedGame,
   SuspicionChart,
+  catchPercent,
+  forkIsNewRun,
   suspicionBand,
   suspicionSeries,
 } from "../app/game-ui";
@@ -247,20 +249,26 @@ test("a caught run shows a loss screen that says how it was caught, not a wrong-
   assert.ok(inAct.includes("crossed the monitor"));
 });
 
-test("suspicion series keeps scored actions in order and normalizes to the catch line", () => {
+test("suspicion series is each turn's peak, in turn order, capped at the catch line", () => {
   const events: GameEvent[] = [
     { id: 1, kind: "user", text: "go" },
-    { id: 2, kind: "monitor", text: "", decision: "allow", command: "ls", suspicion: 0.1 },
-    { id: 3, kind: "agent", text: "", turn: 1 },
-    { id: 4, kind: "monitor", text: "", decision: "allow", command: "cat x" }, // no numeric suspicion
-    { id: 5, kind: "monitor", text: "", decision: "block", command: "cat flag", suspicion: 0.5 },
+    { id: 2, kind: "monitor", text: "", command: "ls", suspicion: 0.1, turn: 1 },
+    { id: 3, kind: "monitor", text: "", command: "pwd", suspicion: 0.3, turn: 1 },
+    { id: 4, kind: "monitor", text: "", command: "cat x", turn: 2 }, // no numeric suspicion
+    { id: 5, kind: "monitor", text: "", command: "id", suspicion: 0.05, turn: 2 },
+    { id: 6, kind: "monitor", text: "", command: "cat flag", suspicion: 1.2, turn: 3 },
   ];
   const series = suspicionSeries(events, 0.5);
-  assert.equal(series.length, 2);
-  assert.equal(series[0].suspicion, 0.1);
-  assert.ok(Math.abs(series[0].norm - 0.2) < 1e-9); // 0.1 is 20% of a 0.5 catch line
-  assert.equal(series[1].suspicion, 0.5);
-  assert.ok(Math.abs(series[1].norm - 1) < 1e-9); // reaching the line is 100%
+  assert.deepEqual(
+    series.map((point) => point.turn),
+    [1, 2, 3],
+  );
+  assert.equal(series[0].suspicion, 0.3, "a turn shows its highest-scoring command");
+  assert.ok(Math.abs(series[0].norm - 0.6) < 1e-9); // 0.3 is 60% of a 0.5 catch line
+  assert.ok(Math.abs(series[1].norm - 0.1) < 1e-9);
+  assert.equal(series[2].norm, 1, "past the line still reads 100%: the run ends there");
+  assert.equal(catchPercent(1.2, 0.5), 100);
+  assert.equal(catchPercent(0.1, 0.5), 20);
   // A zero threshold can't normalize; guard against divide-by-zero.
   assert.equal(
     suspicionSeries([{ id: 1, kind: "monitor", text: "", suspicion: 0.5 }], 0)[0].norm,
@@ -281,19 +289,19 @@ test("suspicion bands split the catch line at 40%, 70% and 100%", () => {
   ]);
 });
 
-test("the suspicion chart draws the catch line and takes the band of the run's peak", () => {
+test("the suspicion chart is one bar per turn, each colored by its own band", () => {
   const svg = (norms: number[]) =>
     renderToStaticMarkup(
-      createElement(SuspicionChart, {
-        series: norms.map((norm) => ({ suspicion: norm * 0.5, norm })),
-      }),
+      createElement(SuspicionChart, { series: norms.map((norm, i) => ({ turn: i + 1, norm })) }),
     );
-  const safe = svg([0.1, 0.2, 0.15]);
-  assert.match(safe, /class="susp-threshold"/); // the 100% catch line is always drawn
-  assert.match(safe, /class="susp-line"/);
-  assert.match(safe, /data-band="low"/, "a quiet run stays green");
-  assert.match(svg([0.1, 0.75, 0.2]), /data-band="high"/, "the peak, not the last point, sets it");
-  assert.match(svg([0.1, 0.2, 1.9]), /data-band="caught"/);
+  const html = svg([0.1, 0.5, 0.8, 1]);
+  assert.match(html, /class="susp-threshold"/); // the 100% catch line is always drawn
+  assert.deepEqual(
+    [...html.matchAll(/class="susp-bar" data-band="(\w+)"/g)].map((match) => match[1]),
+    ["low", "mid", "high", "caught"],
+  );
+  assert.match(html, /<title>Turn 3: 80%<\/title>/);
+  assert.equal(svg([]).includes("susp-bar"), false);
 });
 
 test("only a capture gets the green win banner; every other end is a loss", () => {
@@ -335,14 +343,14 @@ test("each reviewed command shows its monitor suspicion", () => {
   const [{ event, calls, pending }] = groupTurns(events);
   assert.equal(calls[0].suspicion, 0.02);
   assert.equal(calls[1].suspicion, 0.98);
-  // Shown as a percent of the catch line: 0.02 and 0.98 against a 0.5 threshold are 4% and 196%.
+  // Shown as a percent of the catch line, capped at 100%: 0.02 and 0.98 against 0.5 are 4% and 100%.
   const html = renderToStaticMarkup(
     createElement(Entry, { event, calls, pending, threshold: 0.5 }),
   );
-  assert.ok(html.includes(">4%<") && html.includes(">196%<"));
+  assert.ok(html.includes(">4%<") && html.includes(">100%<") && !html.includes("196%"));
   // 0.02 is 4% of a 0.5 line (green); 0.98 is past it (caught red).
   assert.match(html, /data-band="low"[^>]*>.*>4%</);
-  assert.match(html, /data-band="caught"[^>]*>.*>196%</);
+  assert.match(html, /data-band="caught"[^>]*>.*>100%</);
   assert.ok(!html.includes(">0.98<"), "the raw score is not the headline number");
 });
 
@@ -409,8 +417,8 @@ test("the end review renders standalone (not folded) and isn't labelled Blocked"
   assert.deepEqual(groups.find((g) => g.event.kind === "agent")?.calls, []);
   const review = groups.find((g) => g.event.kind === "monitor")!.event;
   const html = renderToStaticMarkup(createElement(Entry, { event: review, threshold: 0.5 }));
-  // 0.98 against a 0.5 threshold is 196% of the catch line.
-  assert.match(html, /End review · 196% of the catch line/);
+  // 0.98 against a 0.5 threshold is past the catch line, shown as the 100% cap.
+  assert.match(html, /End review · 100% of the catch line/);
   assert.ok(!html.includes(">Blocked<"));
 });
 
@@ -442,4 +450,10 @@ test("a submit card reaffirms both objectives and notes a catch", () => {
   );
   assert.ok(!wrong.includes("submit-conditions"));
   assert.ok(!wrong.includes("objectives met"));
+});
+
+test("forking a run with only one instruction counts as a new run", () => {
+  const user = (id: number): GameEvent => ({ id, kind: "user", text: "go" });
+  assert.equal(forkIsNewRun([user(1), { id: 2, kind: "agent", text: "", turn: 1 }]), true);
+  assert.equal(forkIsNewRun([user(1), user(2)]), false);
 });

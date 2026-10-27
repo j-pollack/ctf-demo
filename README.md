@@ -91,7 +91,7 @@ The $10/day inference cap is shared across players and resets at midnight UTC. E
 
 Inference emits structured JSON to backend logs (the local development terminal or Vercel function logs). Completed and failed calls include game/request IDs, role, model, HTTP status and duration. Provider failures include selected error metadata, request/rate-limit headers and retry hints; credentials and flags are redacted, and request transcripts are omitted. Game and monitor failures share the game ID. Earlier failures cannot recover response details that were discarded.
 
-Admission allows ten active environments, 100 new games globally per rolling day, and 3 new games per player (`RUNS_PER_DAY`; forks are free). This is an MVP capacity limit, not a Sybil-proof account system.
+Admission allows ten active environments, 100 new games globally per rolling day, and 3 new games per player (`RUNS_PER_DAY`, tracked by `games.new_run`; a fork that keeps an earlier instruction is free, while a fork back to a run's only instruction counts). This is an MVP capacity limit, not a Sybil-proof account system.
 
 ## Vercel
 

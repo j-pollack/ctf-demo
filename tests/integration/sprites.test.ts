@@ -47,6 +47,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "../../db/migrations/009-monitor-choice.sql",
     "../../db/migrations/010-control-monitor.sql",
     "../../db/migrations/011-agent-effort.sql",
+    "../../db/migrations/012-new-run.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const { startGame, getGame, claimGame, cleanup } = await import("../../lib/games");
@@ -1465,29 +1466,52 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal(stored.sprite_name, (await row(parent.id)).sprite_name);
   });
 
-  await t.test("forks take no new-run quota; the daily spend cap still applies", async () => {
-    const who = await member();
-    const { game: first } = await blockRun(who.id);
-    const second = await startGame(who.id);
-    await startGame(who.id);
-    await assert.rejects(() => startGame(who.id), /daily limit of new runs/);
-    // A global start count at 100 stops new runs but not forks.
-    await pool.query(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
-      SELECT gen_random_uuid(),'bulk-'||n,'bulk-'||n,'h','a','m','v',1,'ended',now() FROM generate_series(1,100) n`,
-    );
-    await assert.rejects(() => startGame("someone-else"), /No more new runs/);
-    const creates = createCount();
-    await pool.query(
-      "INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,10000000) ON CONFLICT(day) DO UPDATE SET charged=10000000",
-    );
-    assert.equal((await forkRoute(who, first.id)).status, 429);
-    await pool.query("UPDATE ctf.daily_spend SET charged=0");
-    const forked = await forkRoute(who, first.id);
-    assert.equal(forked.status, 200);
-    assert.equal(createCount(), creates);
-    assert.equal((await row(second.id)).status, "ended", "the fork replaces the owner's open run");
-  });
+  await t.test(
+    "a fork that keeps an earlier instruction is free; a fork back to the start is a new run",
+    async () => {
+      const who = await member();
+      // Two instructions: the fork keeps the first, so it takes no new-run quota.
+      const kept = await startGame(who.id);
+      assert.equal((await instruct(who, kept.id)).status, 200);
+      proposed = ["printf old", "cat /tmp/flag.txt"];
+      monitorQueue = ["allow", "block"];
+      agentCalls = 0;
+      assert.equal((await instruct(who, kept.id, { prompt: "second instruction" })).status, 200);
+      assert.equal((await row(kept.id)).status, "caught");
+      // One instruction: its fork goes back to the very start, so it counts as a new run.
+      const { game: fresh } = await blockRun(who.id);
+      const third = await startGame(who.id);
+      await assert.rejects(() => startGame(who.id), /daily limit of new runs/);
+      const refused = await forkRoute(who, fresh.id);
+      assert.equal(refused.status, 429, "a fork back to the start takes quota");
+      assert.match((await refused.json()).error, /daily limit of new runs/);
+      assert.equal((await row(third.id)).status, "active", "a refused fork ends nothing");
+      // A global start count at 100 stops new runs but not a fork that keeps instructions.
+      await pool.query(
+        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
+        SELECT gen_random_uuid(),'bulk-'||n,'bulk-'||n,'h','a','m','v',1,'ended',now() FROM generate_series(1,100) n`,
+      );
+      await assert.rejects(() => startGame("someone-else"), /No more new runs/);
+      const creates = createCount();
+      await pool.query(
+        "INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,10000000) ON CONFLICT(day) DO UPDATE SET charged=10000000",
+      );
+      assert.equal(
+        (await forkRoute(who, kept.id)).status,
+        429,
+        "the daily spend cap still applies",
+      );
+      await pool.query("UPDATE ctf.daily_spend SET charged=0");
+      const forked = await forkRoute(who, kept.id);
+      assert.equal(forked.status, 200);
+      const child = await row((await forked.json()).id);
+      assert.equal(child.new_run, false);
+      assert.equal(createCount(), creates);
+      assert.equal((await row(third.id)).status, "ended", "the fork replaces the owner's open run");
+      // Forks record whether they took quota; a fresh start always does.
+      assert.equal((await row(fresh.id)).new_run, true);
+    },
+  );
 
   await t.test("cleanup keeps a shared sprite until every run on it is done", async () => {
     const deletes = () => trace.filter((entry) => entry.endsWith(":delete")).length;

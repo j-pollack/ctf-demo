@@ -50,51 +50,67 @@ export function endBanner(status: GameStatus, hasSubmit: boolean) {
         : "This run has ended";
   return { win, className: `terminal${win ? "" : " loss"}`, heading };
 }
-// Each monitored action's suspicion as a fraction of the catch threshold, in order. 1 (100%) is the
-// catch line, so the value reads as "how close to caught" whatever the difficulty's raw threshold is.
+// Each agent turn's highest suspicion as a fraction of the catch threshold, in turn order. 1 (100%)
+// is the catch line and the cap: reaching it ends the run, so nothing reads higher.
 export function suspicionSeries(events: GameEvent[], threshold: number) {
-  return events.flatMap((event) =>
-    event.kind === "monitor" && typeof event.suspicion === "number"
-      ? [{ suspicion: event.suspicion, norm: threshold > 0 ? event.suspicion / threshold : 0 }]
-      : [],
-  );
+  const turns = new Map<number | string, { turn?: number; suspicion: number; norm: number }>();
+  events.forEach((event, i) => {
+    if (event.kind !== "monitor" || typeof event.suspicion !== "number") return;
+    const norm = threshold > 0 ? Math.min(1, event.suspicion / threshold) : 0;
+    const key = event.turn ?? `event-${i}`;
+    if (norm >= (turns.get(key)?.norm ?? -1))
+      turns.set(key, { turn: event.turn, suspicion: event.suspicion, norm });
+  });
+  return [...turns.values()];
 }
-// A suspicion score as a percent of the catch line (the difficulty's threshold); 100% ends the run.
+// Forking goes back to before the last instruction, so forking a run with only one instruction
+// starts over: it counts toward the daily new-run limit like a fresh run.
+export const forkIsNewRun = (events: GameEvent[]) =>
+  events.filter((event) => event.kind === "user").length <= 1;
+// A suspicion score as a percent of the catch line (the difficulty's threshold), capped at 100%:
+// reaching the line ends the run.
 export const catchPercent = (suspicion: number, threshold: number) =>
-  threshold > 0 ? Math.round((suspicion / threshold) * 100) : 0;
+  threshold > 0 ? Math.min(100, Math.round((suspicion / threshold) * 100)) : 0;
 // Color band for suspicion as a fraction of the catch line: under 40% green, under 70% yellow,
-// under 100% dark orange, and at or past the line (caught) red. Uses the unrounded ratio, so a band
+// under 100% dark orange, and at the line (caught) red. Uses the unrounded ratio, so a band
 // matches the catch rule (suspicion >= threshold) even where the shown percent rounds up to 100.
 export function suspicionBand(norm: number) {
   return norm >= 1 ? "caught" : norm >= 0.7 ? "high" : norm >= 0.4 ? "mid" : "low";
 }
-// Suspicion across the run, each action a point, scaled so the dashed catch line sits at 100%. The
-// line takes the band of the run's peak.
-export function SuspicionChart({ series }: { series: { suspicion: number; norm: number }[] }) {
+// One bar per agent turn, its height the turn's peak suspicion and its color that value's band. The
+// dashed catch line at the top is 100%.
+export function SuspicionChart({ series }: { series: { turn?: number; norm: number }[] }) {
   const w = 240,
     h = 56,
-    pad = 4;
+    pad = 2;
+  const slot = (w - 2 * pad) / Math.max(series.length, 1);
+  const gap = Math.min(2, slot * 0.25);
   const peak = Math.max(0, ...series.map((point) => point.norm));
-  const top = Math.max(1.12, peak * 1.05); // headroom so the 100% line and any overshoot are visible
-  const x = (i: number) =>
-    series.length < 2 ? w - pad : pad + (i / (series.length - 1)) * (w - 2 * pad);
-  const y = (norm: number) => h - pad - (Math.min(norm, top) / top) * (h - 2 * pad);
-  const points = series
-    .map((point, i) => `${x(i).toFixed(1)},${y(point.norm).toFixed(1)}`)
-    .join(" ");
   return (
     <svg
       viewBox={`0 0 ${w} ${h}`}
       className="susp-chart"
-      data-band={suspicionBand(peak)}
       role="img"
-      aria-label={`Suspicion per monitored action as a percent of the catch line; peak ${Math.round(peak * 100)} percent`}
+      aria-label={`Peak suspicion per turn as a percent of the catch line; highest ${Math.round(peak * 100)} percent`}
     >
-      <line x1="0" x2={w} y1={y(1)} y2={y(1)} className="susp-threshold" />
-      {series.length > 1 && <polyline points={points} className="susp-line" />}
-      {series.length > 0 && (
-        <circle cx={x(series.length - 1)} cy={y(series.at(-1)!.norm)} r="3" className="susp-dot" />
-      )}
+      <line x1="0" x2={w} y1={pad} y2={pad} className="susp-threshold" />
+      {series.map((point, i) => {
+        // A 1px stub keeps a zero-suspicion turn visible.
+        const height = Math.max(1, point.norm * (h - 2 * pad));
+        return (
+          <rect
+            key={i}
+            className="susp-bar"
+            data-band={suspicionBand(point.norm)}
+            x={(pad + i * slot + gap / 2).toFixed(1)}
+            y={(h - pad - height).toFixed(1)}
+            width={(slot - gap).toFixed(1)}
+            height={height.toFixed(1)}
+          >
+            <title>{`Turn ${point.turn ?? i + 1}: ${Math.round(point.norm * 100)}%`}</title>
+          </rect>
+        );
+      })}
     </svg>
   );
 }
@@ -798,7 +814,7 @@ export default function GameUI({
     : 0.5;
   const suspicionPoints = displayGame ? suspicionSeries(displayGame.events, catchThreshold) : [];
   const peakSuspicion = Math.max(0, ...suspicionPoints.map((point) => point.suspicion));
-  const peakOfCatch = catchThreshold > 0 ? peakSuspicion / catchThreshold : 0;
+  const peakOfCatch = catchThreshold > 0 ? Math.min(1, peakSuspicion / catchThreshold) : 0;
   async function start() {
     if (!member) {
       setModal("login");
@@ -1585,8 +1601,7 @@ export default function GameUI({
                 <small>of the catch line at its peak</small>
                 <SuspicionChart series={suspicionPoints} />
                 <small>
-                  Each monitored action, left to right. Reaching the dashed line (100%) ends the
-                  run.
+                  Each turn’s peak, left to right. Reaching the dashed line (100%) ends the run.
                 </small>
               </div>
               {decisions
@@ -1725,7 +1740,8 @@ export default function GameUI({
             </div>
             <p>
               You need to sign in to play. Starting a new run ends your previous idle run. You can
-              start {RUNS_PER_DAY} new runs a day; forks don’t count. Idle environments expire after
+              start {RUNS_PER_DAY} new runs a day. A fork that keeps an earlier instruction doesn’t
+              count; forking a run back to its only instruction does. Idle environments expire after
               24 hours. A caught or blocked run can be forked for 24 hours.
             </p>
             <p>
@@ -1854,6 +1870,12 @@ export default function GameUI({
                   to how it was then. That instruction goes back in the box to edit. Your budget and
                   spend carry over, and a run can be forked once.
                 </p>
+                {displayGame?.id === forkRunId && forkIsNewRun(displayGame.events) && (
+                  <p>
+                    This run has only one instruction, so the fork starts over and counts as one of
+                    your {RUNS_PER_DAY} new runs today.
+                  </p>
+                )}
               </aside>
               <div className="fork-actions">
                 <button disabled={busy} onClick={closeFork}>

@@ -315,18 +315,6 @@ export async function startGame(
     );
     if (count.rows[0].total >= 10)
       throw new GameError("All environments are busy. Try again in a few minutes.", 429);
-    // A fork reuses its parent's sprite, so it takes no new-run quota.
-    const starts = await client.query(
-      "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND forked_from IS NULL AND created_at > now()-interval '24 hours'",
-      [ownerId],
-    );
-    if (!sourceId && starts.rows[0].total >= RUNS_PER_DAY)
-      throw new GameError("You’ve reached your daily limit of new runs.", 429);
-    const totalStarts = await client.query(
-      "SELECT count(*)::int AS total FROM ctf.games WHERE forked_from IS NULL AND created_at>now()-interval '24 hours'",
-    );
-    if (!sourceId && totalStarts.rows[0].total >= 100)
-      throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
     let source: GameRow | undefined;
     let cut: ReturnType<typeof forkBeforeLastInstruction> | undefined;
     if (sourceId) {
@@ -363,6 +351,22 @@ export async function startGame(
         throw new GameError("This run can’t be safely forked.", 409);
       }
     }
+    // A fresh start takes new-run quota, and so does a fork that keeps no earlier instruction (it
+    // goes back to the run's very start). A fork that keeps some of the run is free.
+    const newRun = !cut || !cut.events.some((event) => event.kind === "user");
+    if (newRun) {
+      const starts = await client.query(
+        "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours'",
+        [ownerId],
+      );
+      if (starts.rows[0].total >= RUNS_PER_DAY)
+        throw new GameError("You’ve reached your daily limit of new runs.", 429);
+      const totalStarts = await client.query(
+        "SELECT count(*)::int AS total FROM ctf.games WHERE new_run AND created_at>now()-interval '24 hours'",
+      );
+      if (totalStarts.rows[0].total >= 100)
+        throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
+    }
     await client.query(
       "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE owner_id=$1 AND status IN ('creating','active')",
       [ownerId],
@@ -370,8 +374,8 @@ export async function startGame(
     // A fork is born `creating` on its parent's sprite and secret, carrying the parent's whole
     // account; it turns active once the sprite is restored to the dropped instruction's checkpoint.
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
       [
         id,
         ownerId,
@@ -394,6 +398,7 @@ export async function startGame(
         source?.tokens_used ?? 0,
         source?.spent_microdollars ?? 0,
         source?.agent_effort ?? effort ?? "medium",
+        newRun,
       ],
     );
     // The player-visible history up to the dropped instruction is copied as it was.
