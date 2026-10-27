@@ -1635,3 +1635,17 @@ dialog::backdrop {
   color: var(--muted);
   font-size: 11px;
 }
+/* Rules page glossary: term on its own line, definition indented under it. */
+.glossary {
+  max-width: 850px;
+}
+.glossary dt {
+  margin-top: 12px;
+  font-weight: 600;
+}
+.glossary dd {
+  margin: 2px 0 0 16px;
+}
+.landing-rules a {
+  text-decoration: underline;
+}

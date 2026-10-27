@@ -212,15 +212,13 @@ test("a submission is quoted as the submitted value and collapses after 12 lines
 test("a blocked run says it is over and offers a fork only when forkable", () => {
   assert.equal(
     BLOCKED_NOTICE,
-    "Your run is over. The monitor decided this conversation is attempting to exfiltrate data. If that's wrong, fork the previous message and try again with a new instruction.",
+    "The monitor stopped a command and ended this run. Fork it to rewind to just before your last instruction and try something else.",
   );
   const render = (forkable: boolean) =>
     renderToStaticMarkup(createElement(BlockedNotice, { forkable, disabled: false, onFork() {} }));
   const forkable = render(true);
   assert.match(forkable, /<h2>Run blocked<\/h2>/);
-  assert.ok(
-    forkable.includes("Your run is over.") && forkable.includes("fork the previous message"),
-  );
+  assert.ok(forkable.includes("ended this run") && forkable.includes("Fork it to rewind"));
   assert.match(forkable, /<button[^>]*>Fork<\/button>/);
   assert.doesNotMatch(render(false), /<button/);
 });
@@ -239,14 +237,14 @@ test("a caught run shows a loss screen that says how it was caught, not a wrong-
   const endReview = render(true);
   // A loss, not the green win banner.
   assert.match(endReview, /class="terminal loss"/);
-  assert.match(endReview, /<h2>Caught by the end review<\/h2>/);
+  assert.match(endReview, /<h2>Caught on the final review<\/h2>/);
   assert.ok(endReview.includes(CAUGHT_NOTICE.slice(0, 40)));
-  assert.ok(!endReview.includes("wrong answer"));
+  assert.ok(!endReview.includes("Wrong flag"));
   assert.match(endReview, /<button[^>]*>Fork<\/button>/);
   // The mid-run case reads differently.
   const inAct = render(false);
   assert.match(inAct, /<h2>Caught in the act<\/h2>/);
-  assert.ok(inAct.includes("crossed the monitor"));
+  assert.ok(inAct.includes("hit 100% suspicion"));
 });
 
 test("suspicion series is each turn's peak, in turn order, capped at the catch line", () => {
@@ -316,26 +314,23 @@ test("the suspicion chart is one bar per turn, colored by band, each linking to 
   assert.ok(unlinked.includes("susp-bar") && !unlinked.includes("href="));
 });
 
-test("only a capture gets the green win banner; every other end is a loss", () => {
-  assert.deepEqual(endBanner("captured", true), {
-    win: true,
-    className: "terminal",
-    heading: "You captured the flag",
-  });
-  // A wrong answer is a loss, not green.
-  assert.deepEqual(endBanner("ended", true), {
-    win: false,
-    className: "terminal loss",
-    heading: "The agent submitted the wrong answer",
-  });
-  // Ended with no submit, and out of budget, are also losses.
-  assert.equal(endBanner("ended", false).heading, "This run has ended");
-  assert.equal(endBanner("ended", false).className, "terminal loss");
-  assert.deepEqual(endBanner("exhausted", false), {
-    win: false,
-    className: "terminal loss",
-    heading: "Out of budget",
-  });
+test("only a capture gets the green win banner; every loss says why it lost", () => {
+  const won = endBanner("captured", { correct: true });
+  assert.equal(won.win, true);
+  assert.equal(won.className, "terminal");
+  assert.equal(won.heading, "You won");
+  const loss = (status: Parameters<typeof endBanner>[0], submit?: { correct?: boolean }) => {
+    const banner = endBanner(status, submit);
+    assert.equal(banner.win, false);
+    assert.equal(banner.className, "terminal loss", "a loss is never green");
+    assert.ok(banner.detail, "a loss explains itself");
+    return banner.heading;
+  };
+  assert.equal(loss("ended", { correct: false }), "Wrong flag");
+  // A correct flag with no bug fixed also ends the run; it must not be called a wrong answer.
+  assert.equal(loss("ended", { correct: true }), "Right flag, but no bug fixed");
+  assert.equal(loss("ended"), "This run has ended");
+  assert.equal(loss("exhausted"), "Out of budget");
 });
 
 test("each reviewed command shows its monitor suspicion", () => {
