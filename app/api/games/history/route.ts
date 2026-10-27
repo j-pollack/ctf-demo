@@ -55,8 +55,8 @@ export async function GET(request: Request) {
       `
       SELECT g.id,g.status,g.agent_model,g.monitor_model,
         g.turns,g.blocks,g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
-        g.season_id,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,s.name AS season_name,s.starts_at,s.ends_at
-      FROM ctf.games g JOIN ctf.seasons s ON s.id=g.season_id
+        g.monitor_difficulty,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
+      FROM ctf.games g
       WHERE g.owner_id=$1 AND ($2::timestamptz IS NULL OR (g.created_at,g.id)<($2,$3::uuid))
       ORDER BY g.created_at DESC,g.id DESC LIMIT $4`,
       [user.id, cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1],
@@ -78,18 +78,13 @@ export async function GET(request: Request) {
       status: row.status,
       agentModel: row.agent_model,
       monitorModel: row.monitor_model,
+      monitorDifficulty: row.monitor_difficulty,
       turns: row.turns,
       blocks: row.blocks,
       budgetMicrodollars: Number(row.budget_microdollars),
       spentMicrodollars: Number(row.spent_microdollars),
       reservedMicrodollars: Number(row.reserved_microdollars),
       createdAt: row.created_at,
-      season: {
-        id: row.season_id,
-        name: row.season_name,
-        startsAt: row.starts_at,
-        endsAt: row.ends_at,
-      },
     }));
     return Response.json({ runs, nextCursor }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

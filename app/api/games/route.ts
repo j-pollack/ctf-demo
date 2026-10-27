@@ -1,7 +1,6 @@
 import { db } from "@/lib/db";
 import { PUBLIC_GAME_COLUMNS, publicGame, startGame, type PublicGameRow } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
-import { GameError } from "@/lib/policy";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export async function GET(request: Request) {
@@ -24,14 +23,17 @@ export async function POST(request: Request) {
     checkOrigin(request);
     const user = await player(request),
       data = await body(request);
-    if (data.monitorReasoning !== undefined && typeof data.monitorReasoning !== "boolean")
-      throw new GameError("monitorReasoning must be true or false.");
     return Response.json(
       await startGame(
         user.id,
         user.signedIn,
         typeof data.agentModel === "string" ? data.agentModel : undefined,
-        { monitorReasoning: data.monitorReasoning },
+        {
+          monitorModel: data.monitorModel,
+          monitorDifficulty: data.monitorDifficulty,
+          monitorReasoning: data.monitorReasoning,
+          agentEffort: data.agentEffort,
+        },
       ),
     );
   } catch (error) {

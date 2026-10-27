@@ -20,6 +20,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       user.id,
       data.agentModel as string | undefined,
       data.systemPrompt,
+      {
+        monitorModel: data.monitorModel,
+        monitorDifficulty: data.monitorDifficulty,
+        monitorReasoning: data.monitorReasoning,
+      },
+      data.agentEffort,
     );
     const cancel = new AbortController();
     const signal = AbortSignal.any([cancel.signal, request.signal, AbortSignal.timeout(230000)]);

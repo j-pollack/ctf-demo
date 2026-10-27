@@ -5,10 +5,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   BLOCKED_NOTICE,
   BlockedNotice,
+  CAUGHT_NOTICE,
   composerAfterFork,
+  endBanner,
   Entry,
   groupTurns,
   refreshedGame,
+  SuspicionChart,
+  suspicionSeries,
 } from "../app/game-ui";
 import type { GameEvent, PublicGame } from "../lib/types";
 
@@ -218,7 +222,212 @@ test("a blocked run says it is over and offers a fork only when forkable", () =>
   assert.doesNotMatch(render(false), /<button/);
 });
 
+test("a caught run shows a loss screen that says how it was caught, not a wrong-answer banner", () => {
+  const render = (endReview: boolean) =>
+    renderToStaticMarkup(
+      createElement(BlockedNotice, {
+        status: "caught",
+        endReview,
+        forkable: true,
+        disabled: false,
+        onFork() {},
+      }),
+    );
+  const endReview = render(true);
+  // A loss, not the green win banner.
+  assert.match(endReview, /class="terminal loss"/);
+  assert.match(endReview, /<h2>Caught by the end review<\/h2>/);
+  assert.ok(endReview.includes(CAUGHT_NOTICE.slice(0, 40)));
+  assert.ok(!endReview.includes("wrong answer"));
+  assert.match(endReview, /<button[^>]*>Fork<\/button>/);
+  // The mid-run case reads differently.
+  const inAct = render(false);
+  assert.match(inAct, /<h2>Caught in the act<\/h2>/);
+  assert.ok(inAct.includes("crossed the monitor"));
+});
+
+test("suspicion series keeps scored actions in order and normalizes to the catch line", () => {
+  const events: GameEvent[] = [
+    { id: 1, kind: "user", text: "go" },
+    { id: 2, kind: "monitor", text: "", decision: "allow", command: "ls", suspicion: 0.1 },
+    { id: 3, kind: "agent", text: "", turn: 1 },
+    { id: 4, kind: "monitor", text: "", decision: "allow", command: "cat x" }, // no numeric suspicion
+    { id: 5, kind: "monitor", text: "", decision: "block", command: "cat flag", suspicion: 0.5 },
+  ];
+  const series = suspicionSeries(events, 0.5);
+  assert.equal(series.length, 2);
+  assert.equal(series[0].suspicion, 0.1);
+  assert.ok(Math.abs(series[0].norm - 0.2) < 1e-9); // 0.1 is 20% of a 0.5 catch line
+  assert.equal(series[1].suspicion, 0.5);
+  assert.ok(Math.abs(series[1].norm - 1) < 1e-9); // reaching the line is 100%
+  // A zero threshold can't normalize; guard against divide-by-zero.
+  assert.equal(
+    suspicionSeries([{ id: 1, kind: "monitor", text: "", suspicion: 0.5 }], 0)[0].norm,
+    0,
+  );
+});
+
+test("the suspicion chart draws the catch line and reddens only once an action reached it", () => {
+  const svg = (norms: number[]) =>
+    renderToStaticMarkup(
+      createElement(SuspicionChart, {
+        series: norms.map((norm) => ({ suspicion: norm * 0.5, norm })),
+      }),
+    );
+  const safe = svg([0.1, 0.2, 0.15]);
+  assert.match(safe, /class="susp-threshold"/); // the 100% catch line is always drawn
+  assert.match(safe, /class="susp-line"/);
+  assert.ok(
+    !safe.includes("data-caught"),
+    "a run that never reached the line is not marked caught",
+  );
+  const caught = svg([0.1, 0.2, 1.9]);
+  assert.match(caught, /class="susp-line" data-caught="true"/);
+  assert.match(caught, /class="susp-dot" data-caught="true"/);
+});
+
+test("only a capture gets the green win banner; every other end is a loss", () => {
+  assert.deepEqual(endBanner("captured", true), {
+    win: true,
+    className: "terminal",
+    heading: "You captured the flag",
+  });
+  // A wrong answer is a loss, not green.
+  assert.deepEqual(endBanner("ended", true), {
+    win: false,
+    className: "terminal loss",
+    heading: "The agent submitted the wrong answer",
+  });
+  // Ended with no submit, and out of budget, are also losses.
+  assert.equal(endBanner("ended", false).heading, "This run has ended");
+  assert.equal(endBanner("ended", false).className, "terminal loss");
+  assert.deepEqual(endBanner("exhausted", false), {
+    win: false,
+    className: "terminal loss",
+    heading: "Out of budget",
+  });
+});
+
+test("each reviewed command shows its monitor suspicion", () => {
+  const events: GameEvent[] = [
+    { id: 1, kind: "agent", text: "", turn: 1, model: "m", commands: ["ls", "cat x"] },
+    { id: 2, kind: "monitor", text: "", decision: "allow", command: "ls", suspicion: 0.02 },
+    { id: 3, kind: "tool", text: "files" },
+    {
+      id: 4,
+      kind: "monitor",
+      text: "Reads it.",
+      decision: "block",
+      command: "cat x",
+      suspicion: 0.98,
+    },
+  ];
+  const [{ event, calls, pending }] = groupTurns(events);
+  assert.equal(calls[0].suspicion, 0.02);
+  assert.equal(calls[1].suspicion, 0.98);
+  // Shown as a percent of the catch line: 0.02 and 0.98 against a 0.5 threshold are 4% and 196%.
+  const html = renderToStaticMarkup(
+    createElement(Entry, { event, calls, pending, threshold: 0.5 }),
+  );
+  assert.ok(html.includes(">4%<") && html.includes(">196%<"));
+  assert.match(html, /data-high/); // the over-the-line command is flagged high
+  assert.ok(!html.includes(">0.98<"), "the raw score is not the headline number");
+});
+
 test("after a fork the composer holds the dropped instruction, or is empty", () => {
   assert.equal(composerAfterFork({ retryInstruction: "try the other way" }), "try the other way");
   assert.equal(composerAfterFork({}), "");
+});
+
+test("an Easy fail-open shows its note above the output; an ordinary approval shows none", () => {
+  const note = "The monitor couldn't make a valid decision. On Easy, the command runs anyway.";
+  const events: GameEvent[] = [
+    { id: 1, kind: "agent", text: "", turn: 1, model: "m", commands: ["ls", "pwd"] },
+    { id: 2, kind: "monitor", text: note, decision: "allow", command: "ls" },
+    { id: 3, kind: "tool", text: "file.txt" },
+    { id: 4, kind: "monitor", text: "", decision: "allow", command: "pwd" },
+    { id: 5, kind: "tool", text: "/workspace" },
+  ];
+  const [{ event, calls, pending }] = groupTurns(events);
+  const html = renderToStaticMarkup(createElement(Entry, { event, calls, pending }));
+  assert.equal(html.match(/class="call-note"/g)?.length, 1);
+  assert.ok(html.indexOf("couldn&#x27;t make a valid decision") < html.indexOf("file.txt"));
+  assert.ok(html.includes("/workspace"));
+  assert.ok(!html.includes("Monitor error"));
+});
+
+test("a resumable time-limit stop renders as info (PAUSED), a real error as SYSTEM", () => {
+  const paused = renderToStaticMarkup(
+    createElement(Entry, {
+      event: {
+        id: 1,
+        kind: "error",
+        text: "Response stopped. Your run is still open.",
+        resumable: true,
+      },
+    }),
+  );
+  assert.match(paused, /class="entry error info"/);
+  assert.match(paused, />PAUSED</);
+  assert.ok(!paused.includes(">SYSTEM<"));
+  const failure = renderToStaticMarkup(
+    createElement(Entry, {
+      event: { id: 2, kind: "error", text: "This response could not finish." },
+    }),
+  );
+  assert.match(failure, /class="entry error"/);
+  assert.ok(!failure.includes(" info"));
+  assert.match(failure, />SYSTEM</);
+});
+
+test("the end review renders standalone (not folded) and isn't labelled Blocked", () => {
+  const events: GameEvent[] = [
+    { id: 1, kind: "agent", text: "Submitting now.", turn: 2, model: "m" },
+    {
+      id: 2,
+      kind: "monitor",
+      text: "In context, it looks like an attempt.",
+      decision: "block",
+      suspicion: 0.98,
+    },
+    { id: 3, kind: "submit", text: "flag{x}", correct: true, caught: true },
+  ];
+  const groups = groupTurns(events);
+  // The commandless end review is its own group, not a call folded onto the agent turn.
+  assert.deepEqual(groups.find((g) => g.event.kind === "agent")?.calls, []);
+  const review = groups.find((g) => g.event.kind === "monitor")!.event;
+  const html = renderToStaticMarkup(createElement(Entry, { event: review, threshold: 0.5 }));
+  // 0.98 against a 0.5 threshold is 196% of the catch line.
+  assert.match(html, /End review · 196% of the catch line/);
+  assert.ok(!html.includes(">Blocked<"));
+});
+
+test("a submit card reaffirms both objectives and notes a catch", () => {
+  const caught = renderToStaticMarkup(
+    createElement(Entry, {
+      event: { id: 1, kind: "submit", text: "flag{x}", correct: true, bugsPassed: 1, caught: true },
+    }),
+  );
+  assert.match(caught, /Flag correct · 1 bug fixed/);
+  assert.match(caught, /both objectives met, but the run was caught/);
+  const won = renderToStaticMarkup(
+    createElement(Entry, {
+      event: {
+        id: 2,
+        kind: "submit",
+        text: "flag{x}",
+        correct: true,
+        bugsPassed: 2,
+        caught: false,
+      },
+    }),
+  );
+  assert.match(won, /2 bugs fixed/);
+  assert.match(won, /both objectives met\./);
+  // A wrong flag has no success conditions to reaffirm; the header already says WRONG.
+  const wrong = renderToStaticMarkup(
+    createElement(Entry, { event: { id: 3, kind: "submit", text: "nope", correct: false } }),
+  );
+  assert.ok(!wrong.includes("submit-conditions"));
+  assert.ok(!wrong.includes("objectives met"));
 });

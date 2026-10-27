@@ -1,10 +1,7 @@
-import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
-import { adminStats, isAdmin, setSeasonMonitor } from "@/lib/admin";
-import { MODELS } from "@/lib/policy";
-import { currentSeason } from "@/lib/seasons";
+import { adminStats, isAdmin } from "@/lib/admin";
 import {
   Area,
   Bars,
@@ -65,17 +62,9 @@ async function requireAdmin() {
   if (!isAdmin(session?.user)) notFound();
 }
 
-async function chooseMonitor(form: FormData) {
-  "use server";
-  await requireAdmin();
-  await setSeasonMonitor(String(form.get("model")));
-  revalidatePath("/", "layout");
-}
-
 export default async function Admin() {
   await requireAdmin();
-  const [{ totals: t, daily, monthly, outcomes, models, seasons, spenders }, season] =
-    await Promise.all([adminStats(), currentSeason()]);
+  const { totals: t, daily, monthly, outcomes, models, monitors, spenders } = await adminStats();
 
   const days = daily.map((d) => day(d.day));
   const runs = daily.map((d) => Number(d.runs)),
@@ -157,23 +146,6 @@ export default async function Admin() {
       </dl>
 
       <div className="cards">
-        <Card title="Site monitor" note={season.name}>
-          <form action={chooseMonitor}>
-            <label className="model-select">
-              MONITOR MODEL
-              <select name="model" defaultValue={season.monitorModel}>
-                {MODELS.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button className="primary">Set monitor</button>
-            <p>New runs this week use it. Runs already started keep their monitor.</p>
-          </form>
-        </Card>
-
         <Card title="Runs per day" note="Last 30 days">
           <Legend
             series={[
@@ -259,12 +231,12 @@ export default async function Admin() {
           />
         </Card>
 
-        <Card title="Capture rate by season" note="How beatable each monitor is">
+        <Card title="Capture rate by monitor" note="How beatable each monitor and difficulty is">
           <Bars
             color={RUNS}
-            rows={seasons.map((s) => ({
-              label: s.name,
-              sub: `${s.monitor_model} · ${count(s.runs)} runs · ${usd(dollars(s.spend))}`,
+            rows={monitors.map((s) => ({
+              label: `${s.monitor_model} · ${s.monitor_difficulty}`,
+              sub: `${count(s.runs)} runs · ${usd(dollars(s.spend))}`,
               value: Number(s.runs) ? Number(s.captures) / Number(s.runs) : 0,
               display: pct(Number(s.captures), Number(s.runs)),
             }))}

@@ -11,8 +11,13 @@ import {
 
 test("agent reasoning is effort-capped so thinking can't eat the whole answer budget", () => {
   const reasoner = { id: "z-ai/glm-5.3-flash", reasoning: true };
-  // Agents always get a bounded effort, never uncapped {enabled:true} that can exhaust max_tokens.
-  assert.deepEqual(reasoningParam("agent", reasoner), { effort: "high", exclude: false });
+  // Agents always get a bounded effort, never uncapped {enabled:true} that can exhaust max_tokens;
+  // medium unless the player chose otherwise.
+  assert.deepEqual(reasoningParam("agent", reasoner), { effort: "medium", exclude: false });
+  assert.deepEqual(reasoningParam("agent", reasoner, "low"), { effort: "low", exclude: false });
+  assert.deepEqual(reasoningParam("agent", reasoner, "high"), { effort: "high", exclude: false });
+  // The monitor's reasoning ignores the agent's effort.
+  assert.deepEqual(reasoningParam("monitor", reasoner, "high"), { effort: "low", exclude: false });
   // A monitor that rejects reasoning:{enabled:false} gets low effort; glm-5.3-flash is one.
   assert.deepEqual(reasoningParam("monitor", reasoner), { effort: "low", exclude: false });
   // Any other monitor turns reasoning off.

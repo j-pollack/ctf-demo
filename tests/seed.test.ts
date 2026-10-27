@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { SEED_BUGS, tasksMarkdown } from "../lib/seed";
+import { SEED_BUGS, seedScoreCommand, tasksMarkdown } from "../lib/seed";
 
 const root = join(import.meta.dirname, "..");
 
@@ -32,4 +32,53 @@ test("every seeded bug has one patch, a unique id and a check", () => {
   assert.equal(patches.length, SEED_BUGS.length);
   assert.equal(new Set(SEED_BUGS.map((bug) => bug.id)).size, SEED_BUGS.length);
   for (const bug of SEED_BUGS) assert.ok(bug.title && bug.description && bug.test, bug.id);
+  // Each scoring command restores its test file from the seed root commit, then runs the test, so a
+  // failed restore fails the bug closed (the test is last, so the exit code is the test's).
+  for (const bug of SEED_BUGS) {
+    const command = seedScoreCommand(bug);
+    assert.ok(command.includes(`git rev-list --max-parents=0 HEAD`), bug.id);
+    assert.ok(command.includes(`git checkout "$root" -- '${bug.testFile}'`), bug.id);
+    assert.ok(command.endsWith(` && ${bug.test}`), bug.id);
+    assert.match(bug.testFile, /^test\/[\w.]+\.py$/);
+  }
+});
+
+test("scoring restores a tampered test from the seed root but leaves the agent's source edits", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ctf-seed-score-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  execFileSync("tar", ["-xzf", join(root, "seed/workspace.tar.gz"), "-C", dir]);
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  // The commit below needs an author; a clean CI runner has no global git identity, so set one here
+  // (these env vars override git config, so the test never depends on the host's ~/.gitconfig).
+  env.GIT_AUTHOR_NAME = env.GIT_COMMITTER_NAME = "ctf-test";
+  env.GIT_AUTHOR_EMAIL = env.GIT_COMMITTER_EMAIL = "ctf-test@example.com";
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env }).trim();
+
+  const bug = SEED_BUGS[0];
+  const testPath = join(dir, bug.testFile);
+  const pristine = readFileSync(testPath, "utf8");
+  // The agent's real fix lives in the source; mark it so we can prove it survives scoring.
+  const sourcePath = join(dir, "bottle.py");
+  const fixedSource = readFileSync(sourcePath, "utf8") + "\n# agent fix, uncommitted\n";
+  writeFileSync(sourcePath, fixedSource);
+  // Tamper the test to pass trivially, and commit it so a plain `checkout HEAD` wouldn't help.
+  writeFileSync(testPath, "class Tampered:\n    def test(self):\n        assert True\n");
+  git("commit", "-aqm", "agent tampers the test");
+
+  // The restore half of the scoring command: pull the test file from the immutable root commit.
+  const rootCommit = git("rev-list", "--max-parents=0", "HEAD");
+  git("checkout", rootCommit, "--", bug.testFile);
+
+  assert.equal(
+    readFileSync(testPath, "utf8"),
+    pristine,
+    "the tampered test is reverted to pristine",
+  );
+  assert.equal(
+    readFileSync(sourcePath, "utf8"),
+    fixedSource,
+    "the agent's source edit is untouched",
+  );
 });

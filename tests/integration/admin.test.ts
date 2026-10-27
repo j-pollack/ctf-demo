@@ -32,6 +32,9 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     "../../db/migrations/006-system-prompt.sql",
     "../../db/migrations/007-inference-game-index.sql",
     "../../db/migrations/008-block-ends-run.sql",
+    "../../db/migrations/009-monitor-choice.sql",
+    "../../db/migrations/010-control-monitor.sql",
+    "../../db/migrations/011-agent-effort.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";
@@ -40,6 +43,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   const { getMigrations } = await import("better-auth/db/migration");
   await (await getMigrations(auth.options)).runMigrations();
   const { adminStats, isAdmin } = await import("../../lib/admin");
+  const { MODELS, MONITOR_MODEL, MONITOR_VERSION } = await import("../../lib/policy");
 
   // The flag is SQL-granted only: real Better Auth handlers must refuse it from users.
   const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });
@@ -79,9 +83,6 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   await user("m1", "one@example.invalid", false, "2026-08-15T00:00:00Z");
   await user("m2", "two@example.invalid", false, "2026-09-02T00:00:00Z");
   await user("g1", "temp@guest.invalid", true, "2026-09-03T00:00:00Z");
-  await pool.query(
-    `INSERT INTO ctf.seasons(id,name,monitor_model,monitor_version) VALUES('s1','Season one','mon/a','v1')`,
-  );
   const game = (
     owner: string,
     status: string,
@@ -89,12 +90,24 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     reserved = 0,
     turns = 4,
     blocks = 1,
+    pick: { monitor?: string; difficulty?: string; version?: string } = {},
   ) =>
     pool
       .query(
-        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,status,token_budget,season_id,spent_microdollars,reserved_microdollars,turns,blocks)
-        VALUES($1::uuid,$2,$1::text,'h','agent/a','mon/a','v1',$3,1000,'s1',$4,$5,$6,$7) RETURNING id`,
-        [randomUUID(), owner, status, spent, reserved, turns, blocks],
+        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,monitor_difficulty,status,token_budget,spent_microdollars,reserved_microdollars,turns,blocks)
+        VALUES($1::uuid,$2,$1::text,'h','agent/a',$8,$9,$10,$3,1000,$4,$5,$6,$7) RETURNING id`,
+        [
+          randomUUID(),
+          owner,
+          status,
+          spent,
+          reserved,
+          turns,
+          blocks,
+          pick.monitor ?? "mon/a",
+          pick.version ?? MONITOR_VERSION,
+          pick.difficulty ?? "hard",
+        ],
       )
       .then((r) => r.rows[0].id as string);
   const captured = await game("m1", "captured", 1_000_000);
@@ -163,10 +176,6 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     ],
   );
   assert.deepEqual(
-    s.seasons.map((x) => [x.id, x.runs, x.captures, x.spend]),
-    [["s1", 3, 1, 4_200_000]],
-  );
-  assert.deepEqual(
     s.spenders.map((x) => [x.who, x.guest, x.runs, x.spend]),
     [
       ["one@example.invalid", false, 2, 4_000_000],
@@ -174,49 +183,11 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     ],
   );
 
-  // Site monitor: only the OpenRouter catalog is faked; any other request fails the test.
-  const { setSeasonMonitor } = await import("../../lib/admin");
-  const { currentSeason } = await import("../../lib/seasons");
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
-    assert.equal(String(input), "https://openrouter.ai/api/v1/models");
-    return Response.json({
-      data: [
-        { id: "z-ai/glm-5.3", supported_parameters: ["response_format", "reasoning"] },
-        { id: "qwen/qwen3.8-flash", supported_parameters: ["tools", "reasoning"] },
-      ].map((m) => ({
-        ...m,
-        context_length: 100000,
-        pricing: { prompt: "0.000001", completion: "0.000002" },
-      })),
-    });
-  });
-  const week = await currentSeason();
-  const monitor = async () =>
-    (await pool.query("SELECT monitor_model FROM ctf.seasons WHERE id=$1", [week.id])).rows[0]
-      .monitor_model;
-  const before = await monitor();
-  await assert.rejects(setSeasonMonitor("evil/model"), /Unsupported monitor model/);
-  await assert.rejects(setSeasonMonitor("qwen/qwen3.8-flash"), /required request format/);
-  assert.equal(await monitor(), before, "rejected choices leave the season untouched");
-  await setSeasonMonitor("z-ai/glm-5.3");
-  assert.equal(await monitor(), "z-ai/glm-5.3");
-  assert.equal((await currentSeason()).monitorModel, "z-ai/glm-5.3");
-  assert.equal(
-    (await pool.query("SELECT monitor_model FROM ctf.seasons WHERE id='s1'")).rows[0].monitor_model,
-    "mon/a",
-    "only the current season changes",
-  );
-  assert.deepEqual(
-    (await pool.query("SELECT DISTINCT monitor_model FROM ctf.games")).rows,
-    [{ monitor_model: "mon/a" }],
-    "started runs keep their monitor",
-  );
-
-  // A fork inherits its parent's account: count it as a run, but sum money and effort once.
+  // A fork inherits its parent's spend and turns: count it as a run, but sum those once. Blocks
+  // are each run's own, so they sum over every run.
   const base = (await adminStats()).totals;
-  const { MODELS } = await import("../../lib/policy");
   const parentRun = await game("m2", "blocked", 400_000, 0, 3, 1);
-  const childRun = await game("m2", "captured", 700_000, 0, 5, 1);
+  const childRun = await game("m2", "captured", 700_000, 0, 5, 0);
   await pool.query(
     "UPDATE ctf.games SET agent_model=$3,forked_from=CASE WHEN id=$2 THEN $1::uuid END WHERE id IN ($1,$2)",
     [parentRun, childRun, MODELS[0]],
@@ -239,18 +210,79 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   );
   assert.equal(forked.outcomes.find((x) => x.status === "blocked")?.spend, 0);
   assert.equal(forked.spenders.find((x) => x.who === "two@example.invalid")?.spend, 700_000);
-  assert.equal(forked.seasons.find((x) => x.id === "s1")?.spend, 4_900_000);
 
-  // The leaderboard's agent filter looks at the whole lineage's inference, not just the last run.
-  const { GET } = await import("../../app/api/leaderboard/route");
-  const board = async (agent = "") =>
-    (await (await GET(new Request(`http://localhost/api/leaderboard?season=s1${agent}`))).json())
-      .entries as { spend: number; monitor_reasoning: boolean }[];
-  const mine = <T extends { spend: number }>(entries: T[]) =>
-    entries.filter((x) => x.spend === 700_000);
-  assert.equal(mine(await board()).length, 1);
-  assert.equal(mine(await board()).at(0)?.monitor_reasoning, true);
-  assert.equal(mine(await board(`&agent=${encodeURIComponent(MODELS[0])}`)).length, 0);
-  await pool.query("UPDATE ctf.inference SET model=$2 WHERE game_id=$1", [parentRun, MODELS[0]]);
-  assert.equal(mine(await board(`&agent=${encodeURIComponent(MODELS[0])}`)).length, 1);
+  await user("m3", "three@example.invalid", false, "2026-09-04T00:00:00Z");
+  // Runs against other monitors and difficulties; one against an old prompt version never ranks.
+  await game("m3", "captured", 500_000, 0, 2, 0, { monitor: "mon/b" });
+  await game("m3", "captured", 400_000, 0, 3, 0, { difficulty: "easy" });
+  await game("m3", "captured", 100_000, 0, 1, 0, { version: "secret-v1" });
+  await game("m3", "captured", 300_000, 0, 5, 0, { monitor: MONITOR_MODEL });
+
+  await t.test("capture rate is grouped by monitor model and difficulty", async () => {
+    const stats = await adminStats();
+    assert.ok(!("seasons" in stats));
+    assert.deepEqual(
+      stats.monitors.map((x) => [
+        x.monitor_model,
+        x.monitor_difficulty,
+        x.runs,
+        x.captures,
+        x.spend,
+      ]),
+      [
+        ["mon/a", "hard", 6, 3, 5_000_000],
+        ["mon/a", "easy", 1, 1, 400_000],
+        ["mon/b", "hard", 1, 1, 500_000],
+        [MONITOR_MODEL, "hard", 1, 1, 300_000],
+      ],
+    );
+  });
+
+  await t.test(
+    "the leaderboard ranks one monitor, difficulty and prompt version at a time",
+    async () => {
+      // The agent filter looks at the whole lineage's inference, not just the last run.
+      const { GET } = await import("../../app/api/leaderboard/route");
+      const get = async (query: string) =>
+        (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()) as {
+          entries: { spend: number; monitor_reasoning: boolean }[];
+        };
+      const spends = async (query: string) => (await get(query)).entries.map((x) => x.spend);
+      const mon = (monitor: string, difficulty = "hard", agent = "") =>
+        `?monitor=${encodeURIComponent(monitor)}&difficulty=${difficulty}${agent}`;
+      assert.deepEqual(await spends(mon("mon/a")), [700_000, 1_000_000]);
+      assert.deepEqual(
+        await spends(mon("mon/a", "hard", "&agent=")),
+        [700_000, 1_000_000],
+        "an empty agent filter, as the board sends for Any, ranks every agent",
+      );
+      assert.deepEqual(await spends(mon("mon/a", "easy")), [400_000]);
+      assert.deepEqual(await spends(mon("mon/b")), [500_000]);
+      assert.deepEqual(await spends(mon("mon/b", "easy")), []);
+      assert.deepEqual(await spends(mon("mon/a", "medium")), []);
+      assert.deepEqual(await spends(""), [300_000], "defaults to the default monitor on hard");
+      assert.deepEqual(await spends(`?difficulty=easy`), [], "default monitor on easy");
+      assert.deepEqual(await spends(mon("nobody/none")), [], "an unknown monitor matches nothing");
+      assert.deepEqual(await spends(mon("mon/a", "extreme")), [], "an unknown difficulty is empty");
+      assert.deepEqual(
+        await spends(mon("mon/a", "hard", "&agent=not%2Fa-model")),
+        [],
+        "an unknown agent is empty",
+      );
+      const body = await get(mon("mon/a"));
+      assert.ok(!("seasons" in body) && !("currentSeasonId" in body));
+      assert.equal(body.entries.find((x) => x.spend === 700_000)?.monitor_reasoning, true);
+      // The agent filter excludes a lineage that used another agent model for any turn.
+      const mine = async (agent: string) =>
+        (await spends(mon("mon/a", "hard", `&agent=${encodeURIComponent(agent)}`))).filter(
+          (x) => x === 700_000,
+        );
+      assert.equal(await mine(MODELS[0]).then((x) => x.length), 0);
+      await pool.query("UPDATE ctf.inference SET model=$2 WHERE game_id=$1", [
+        parentRun,
+        MODELS[0],
+      ]);
+      assert.equal(await mine(MODELS[0]).then((x) => x.length), 1);
+    },
+  );
 });

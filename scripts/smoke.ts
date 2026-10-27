@@ -40,7 +40,6 @@ try {
   const first = await getGame(one.id, owner),
     second = await getGame(two.id, other);
   assert.notEqual(first.secret_hash, second.secret_hash);
-  assert.equal(first.season_id, second.season_id);
   assert.equal(first.monitor_model, second.monitor_model);
   await assert.rejects(() => getGame(one.id, other), /not found/i);
   await executeCommand(first.sprite_name, "printf 'isolated' > /workspace/probe");
