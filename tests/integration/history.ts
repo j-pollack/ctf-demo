@@ -105,7 +105,6 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
         "createdAt",
         "id",
         "monitorDifficulty",
-        "monitorModel",
         "reservedMicrodollars",
         "spentMicrodollars",
         "status",

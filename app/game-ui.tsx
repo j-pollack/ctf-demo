@@ -254,14 +254,10 @@ async function api(url: string, options?: RequestInit) {
 }
 export default function GameUI({
   models,
-  monitors,
   defaultAgent,
-  defaultMonitor,
 }: {
   models: string[];
-  monitors: string[];
   defaultAgent: string;
-  defaultMonitor: string;
 }) {
   const pathname = usePathname(),
     params = useParams<{ id?: string }>(),
@@ -317,7 +313,6 @@ export default function GameUI({
     setupOnPlay = useRef(true);
   const [modal, setModal] = useState<"setup" | "login" | "fork" | null>(null),
     [monitorReasoning, setMonitorReasoning] = useState(true),
-    [monitor, setMonitor] = useState(defaultMonitor),
     [difficulty, setDifficulty] = useState<MonitorDifficulty>("hard"),
     [forkRunId, setForkRunId] = useState<string | null>(null),
     [email, setEmail] = useState(""),
@@ -325,8 +320,7 @@ export default function GameUI({
   const [agent, setAgent] = useState(defaultAgent),
     [effort, setEffort] = useState<AgentEffort>("medium"),
     [scores, setScores] = useState<Score[]>([]);
-  const [boardMonitor, setBoardMonitor] = useState(defaultMonitor),
-    [boardDifficulty, setBoardDifficulty] = useState<MonitorDifficulty>("hard"),
+  const [boardDifficulty, setBoardDifficulty] = useState<MonitorDifficulty>("hard"),
     [boardAgent, setBoardAgent] = useState("");
   const pending = useRef<PendingInstruction | null>(null);
   const submissionGeneration = useRef(0);
@@ -381,7 +375,6 @@ export default function GameUI({
   // the next setup defaults to the last run's choice.
   useEffect(() => {
     if (!game) return;
-    setMonitor(game.monitorModel);
     setDifficulty(game.monitorDifficulty);
     setMonitorReasoning(game.monitorReasoning);
     setEffort(game.agentEffort);
@@ -745,12 +738,10 @@ export default function GameUI({
   useEffect(() => {
     if (panel !== "rank") return;
     setScores([]);
-    api(
-      `/api/leaderboard?monitor=${encodeURIComponent(boardMonitor)}&difficulty=${boardDifficulty}&agent=${encodeURIComponent(boardAgent)}`,
-    )
+    api(`/api/leaderboard?difficulty=${boardDifficulty}&agent=${encodeURIComponent(boardAgent)}`)
       .then((data) => setScores(data.entries))
       .catch((err) => setError(err.message));
-  }, [panel, boardMonitor, boardDifficulty, boardAgent]);
+  }, [panel, boardDifficulty, boardAgent]);
   const displayGame = routeRunId
     ? game?.id === routeRunId
       ? game
@@ -844,7 +835,6 @@ export default function GameUI({
         body: JSON.stringify({
           agentModel: agent,
           agentEffort: effort,
-          monitorModel: monitor,
           monitorDifficulty: difficulty,
           monitorReasoning,
         }),
@@ -1066,9 +1056,8 @@ export default function GameUI({
           prompt: submitted.text,
           agentModel: agent,
           agentEffort: effort,
-          // Only changed monitor fields, so a run whose stored monitor left the list still starts.
+          // Only changed monitor fields: a run's choices lock once its first instruction is recorded.
           ...(!runStarted(game) && {
-            ...(monitor !== game.monitorModel && { monitorModel: monitor }),
             ...(difficulty !== game.monitorDifficulty && { monitorDifficulty: difficulty }),
             ...(monitorReasoning !== game.monitorReasoning && { monitorReasoning }),
           }),
@@ -1214,7 +1203,7 @@ export default function GameUI({
                         {statusLabel[run.status]} · {new Date(run.createdAt).toLocaleString()}
                       </span>
                       <small>
-                        Agent {label(run.agentModel)} · Monitor {label(run.monitorModel)} ·{" "}
+                        Agent {label(run.agentModel)} ·{" "}
                         {DIFFICULTY_CHOICES[run.monitorDifficulty].name} · {run.turns} turns ·{" "}
                         {run.blocks} blocked · {money(run.spentMicrodollars)} spent
                         {run.reservedMicrodollars
@@ -1290,13 +1279,6 @@ export default function GameUI({
                   )}
                   {editingSystemPrompt && displayGame ? (
                     <>
-                      <ModelSelect
-                        models={monitors}
-                        label="Monitor"
-                        value={monitorLocked ? displayGame.monitorModel : monitor}
-                        change={setMonitor}
-                        disabled={loading || monitorLocked}
-                      />
                       <ChoiceSelect
                         label="Difficulty"
                         choices={DIFFICULTY_CHOICES}
@@ -1319,7 +1301,6 @@ export default function GameUI({
                       <>
                         <span className="run-model">
                           <span className="eyebrow">MONITOR</span>
-                          {label(displayGame.monitorModel)} ·{" "}
                           {DIFFICULTY_CHOICES[displayGame.monitorDifficulty].name}
                         </span>
                         <span className="run-model">
@@ -1793,19 +1774,6 @@ export default function GameUI({
             <h2>Leaderboard</h2>
             <div className="filters">
               <label className="model-select">
-                MONITOR MODEL
-                <select
-                  value={boardMonitor}
-                  onChange={(event) => setBoardMonitor(event.target.value)}
-                >
-                  {monitors.map((model) => (
-                    <option key={model} value={model}>
-                      {label(model)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="model-select">
                 DIFFICULTY
                 <select
                   value={boardDifficulty}
@@ -1926,12 +1894,6 @@ export default function GameUI({
                 change={setEffort}
               />
               <small>{EFFORT_CHOICES[effort].hint}</small>
-              <ModelSelect
-                models={monitors}
-                label="Monitor model"
-                value={monitor}
-                change={setMonitor}
-              />
               <ChoiceSelect
                 label="Difficulty"
                 choices={DIFFICULTY_CHOICES}
@@ -1948,7 +1910,7 @@ export default function GameUI({
               <small>{REASONING_CHOICES[reasoningChoice(monitorReasoning)].hint}</small>
               <p>
                 {signedIn ? "$3" : "$0.60"} budget. You can switch agent models between
-                instructions, and change the monitor until you send the first one.
+                instructions, and change the difficulty until you send the first one.
               </p>
               {game?.status === "active" && <p>Starting a new run ends your current one.</p>}
               {!canStartNewRun && (

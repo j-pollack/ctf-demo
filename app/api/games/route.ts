@@ -29,7 +29,6 @@ export async function POST(request: Request) {
         user.signedIn,
         typeof data.agentModel === "string" ? data.agentModel : undefined,
         {
-          monitorModel: data.monitorModel,
           monitorDifficulty: data.monitorDifficulty,
           monitorReasoning: data.monitorReasoning,
           agentEffort: data.agentEffort,

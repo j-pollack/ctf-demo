@@ -10,7 +10,7 @@ import {
 import { setTimeout as sleep } from "node:timers/promises";
 import { assertLease, reserveInference, settleInference, type GameRow } from "./games";
 import { db } from "./db";
-import { GameError, inputCeiling, MODELS, MONITOR_REASONING_REQUIRED } from "./policy";
+import { GameError, inputCeiling, MODELS } from "./policy";
 import type { AgentEffort } from "./types";
 
 type CatalogModel = {
@@ -20,12 +20,8 @@ type CatalogModel = {
   supported_parameters: string[];
 };
 let catalog: { expires: number; models: CatalogModel[] } | undefined;
-export async function getModel(
-  id: string,
-  role: "agent" | "monitor" = "agent",
-): Promise<Model<"openai-completions">> {
-  if (role === "agent" && !MODELS.some((model) => model === id))
-    throw new GameError("Unsupported model.");
+export async function getModel(id: string): Promise<Model<"openai-completions">> {
+  if (!MODELS.some((model) => model === id)) throw new GameError("Unsupported model.");
   if (!catalog || catalog.expires < Date.now()) {
     const response = await fetch("https://openrouter.ai/api/v1/models", {
       signal: AbortSignal.timeout(15000),
@@ -39,14 +35,14 @@ export async function getModel(
   if (!entry || Number(entry.pricing.request ?? 0) !== 0)
     throw new GameError("The selected model is unavailable for this game.", 503);
   const reasoning = entry.supported_parameters.includes("reasoning");
-  if (role === "agent" && !reasoning)
+  if (!reasoning)
     throw new GameError(
       "The selected agent model does not support readable reasoning. Choose a different agent.",
       503,
     );
-  if (!entry.supported_parameters.includes(role === "agent" ? "tools" : "response_format"))
+  if (!entry.supported_parameters.includes("tools"))
     throw new GameError(
-      `The selected ${role} model does not support the required request format.`,
+      "The selected agent model does not support the required request format.",
       503,
     );
   const input = Number(entry.pricing.prompt) * 1e6,
@@ -319,24 +315,18 @@ export async function collectStream(
 
 // The reasoning parameter sent to OpenRouter. Agents get capped-effort reasoning at the player's
 // chosen effort (high ≈ 80% of max_tokens) so thinking can never be uncapped and consume the whole
-// answer budget — the failure where an agent "thinks" until stopReason=length with no tool call. Monitors reason only when the model rejects reasoning:{enabled:false}, and then at low effort.
+// answer budget — the failure where an agent "thinks" until stopReason=length with no tool call.
 export function reasoningParam(
-  role: "agent" | "monitor",
-  model: Pick<Model<"openai-completions">, "id" | "reasoning">,
+  model: Pick<Model<"openai-completions">, "reasoning">,
   effort: AgentEffort = "medium",
 ) {
-  if (!model.reasoning) return undefined;
-  if (role === "agent") return { effort, exclude: false };
-  return MONITOR_REASONING_REQUIRED.has(model.id)
-    ? { effort: "low", exclude: false }
-    : { enabled: false };
+  return model.reasoning ? { effort, exclude: false } : undefined;
 }
 
 // Agent calls stream so the player can watch reasoning arrive; the assembled response is still
 // the one authoritative record for accounting and the transcript.
 export async function infer(
   game: GameRow,
-  role: "agent" | "monitor",
   model: Model<"openai-completions">,
   messages: Message[],
   signal?: AbortSignal,
@@ -345,14 +335,13 @@ export async function infer(
 ): Promise<AssistantMessage> {
   signal?.throwIfAborted();
   if (!process.env.OPENROUTER_API_KEY) throw new Error("Inference is not configured.");
-  const reasoning = reasoningParam(role, model, game.agent_effort);
+  const reasoning = reasoningParam(model, game.agent_effort);
   const payload = {
     model: model.id,
     ...providerTranscript(messages, model.id),
-    session_id: `${game.id}:${role}`,
+    session_id: `${game.id}:agent`,
     ...(reasoning ? { reasoning } : {}),
     provider: { require_parameters: true },
-    ...(role === "monitor" ? { response_format: { type: "json_object" } } : {}),
     ...(onDelta ? { stream: true } : {}),
   };
   const ceiling = inputCeiling(payload);
@@ -364,15 +353,15 @@ export async function infer(
   const reservation = await reserveInference(
     game.id,
     game.lease,
-    role,
+    "agent",
     model.id,
     ceiling,
-    role === "agent" ? Math.min(AGENT_OUTPUT_TOKENS, model.contextWindow - ceiling) : 2048,
+    Math.min(AGENT_OUTPUT_TOKENS, model.contextWindow - ceiling),
     model.cost.input / 1e6,
     model.cost.output / 1e6,
   );
   const started = Date.now(),
-    context = { gameId: game.id, requestId: reservation.id, role, model: model.id };
+    context = { gameId: game.id, requestId: reservation.id, role: "agent", model: model.id };
   let settled = false;
   let knownUnbilled = false;
   let response: Response | undefined,
@@ -417,13 +406,13 @@ export async function infer(
         retryAfter(providerError.headers["retry-after"]),
       );
       onRetry?.(
-        `${role === "agent" ? "Agent" : "Monitor"} rate limited; retrying attempt ${attempt + 1}/5 in ${Math.ceil(delay / 1000)}s`,
+        `Agent rate limited; retrying attempt ${attempt + 1}/5 in ${Math.ceil(delay / 1000)}s`,
       );
       await sleep(Math.min(delay, 2_147_483_647), undefined, {
         signal: requestSignal,
       });
       requestSignal.throwIfAborted();
-      onRetry?.(role === "agent" ? "Agent thinking" : "Monitor reviewing command");
+      onRetry?.("Agent thinking");
     }
     if (!response) throw new Error("Inference service did not respond.");
     const data =
@@ -466,11 +455,6 @@ export async function infer(
     const choice = data.choices?.[0],
       source = choice?.message;
     if (!source) throw new Error("Inference service did not return a response.");
-    if (role === "monitor" && choice.finish_reason === "length")
-      throw new GameError(
-        "The monitor response ended before a decision was complete. The command was not executed.",
-        503,
-      );
     const details = source.reasoning_details ?? [];
     const reasoning =
       source.reasoning ||
@@ -479,12 +463,6 @@ export async function infer(
         .filter((part: { type: string }) => part.type === "reasoning.text")
         .map((part: { text: string }) => part.text)
         .join("\n");
-    // Kept privately for analysis; monitor reasoning never enters game events.
-    if (role === "monitor" && reasoning)
-      await db.query("UPDATE ctf.inference SET reasoning=$2 WHERE id=$1", [
-        reservation.id,
-        reasoning,
-      ]);
     const content: AssistantMessage["content"] = [];
     if (reasoning || details.length)
       content.push({
@@ -576,7 +554,7 @@ export function agentStream(
 ) {
   return (_model: Model<Api>, context: TranscriptContext, options?: { signal?: AbortSignal }) => {
     const stream = createAssistantMessageEventStream();
-    void infer(game, "agent", model, context.messages, options?.signal, onRetry, onDelta)
+    void infer(game, model, context.messages, options?.signal, onRetry, onDelta)
       .then((message) =>
         stream.push({
           type: "done",

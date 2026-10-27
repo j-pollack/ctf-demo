@@ -10,7 +10,9 @@ import {
   settleInference,
   transaction,
 } from "../lib/games";
-import { AGENT_MODEL, makeSecret, MODELS, MONITOR_MODEL, MONITOR_VERSION } from "../lib/policy";
+import { MONITOR_VERSION } from "../lib/control";
+import { AGENT_MODEL, makeSecret, MODELS } from "../lib/policy";
+import { TYPESAFE_MODEL } from "../lib/typesafe";
 
 const id = randomUUID(),
   owner = `budget-check-${id}`;
@@ -19,7 +21,7 @@ try {
   await db.query(
     `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
     VALUES($1,$2,$2,$3,$4,$5,$6,100000,'active',now())`,
-    [id, owner, makeSecret().hash, AGENT_MODEL, MONITOR_MODEL, MONITOR_VERSION],
+    [id, owner, makeSecret().hash, AGENT_MODEL, TYPESAFE_MODEL, MONITOR_VERSION],
   );
   const game = await claimGame(id, owner);
   const attempted = await Promise.allSettled(
@@ -78,7 +80,10 @@ try {
     owner,
     MODELS.find((model) => model !== AGENT_MODEL),
   );
-  assert.equal(switched.monitor_model, MONITOR_MODEL);
+  assert.equal(
+    switched.agent_model,
+    MODELS.find((model) => model !== AGENT_MODEL),
+  );
   await assert.rejects(() => claimGame(id, owner, AGENT_MODEL), /already/);
   console.log("Concurrent dollar admission, actual spend, pending holds and refunds passed.");
 } finally {

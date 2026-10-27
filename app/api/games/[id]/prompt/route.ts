@@ -14,14 +14,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       throw new GameError("Enter an instruction of up to 8,192 characters.");
     if (data.agentModel !== undefined && typeof data.agentModel !== "string")
       throw new GameError("Choose an agent model.");
-    if (typeof data.agentModel === "string") await getModel(data.agentModel, "agent");
+    if (typeof data.agentModel === "string") await getModel(data.agentModel);
     const game = await claimGame(
       (await params).id,
       user.id,
       data.agentModel as string | undefined,
       data.systemPrompt,
       {
-        monitorModel: data.monitorModel,
         monitorDifficulty: data.monitorDifficulty,
         monitorReasoning: data.monitorReasoning,
       },

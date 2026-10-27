@@ -46,7 +46,6 @@ export type PublicGame = {
   status: GameStatus;
   agentModel: string;
   agentEffort: AgentEffort;
-  monitorModel: string;
   monitorDifficulty: MonitorDifficulty;
   systemPrompt: string;
   tokenBudget: number;
@@ -72,7 +71,6 @@ export type GameSummary = Pick<
   | "id"
   | "status"
   | "agentModel"
-  | "monitorModel"
   | "monitorDifficulty"
   | "turns"
   | "blocks"

@@ -53,9 +53,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const { executeCommand, destroyEnvironment, operationTimeout } =
     await import("../../lib/sprites");
   const { runGame } = await import("../../lib/runner");
-  const { AGENT_MODEL, AGENT_PROMPT, MONITOR_MODEL, agentPrompt, hasSecret } =
-    await import("../../lib/policy");
-  const { CONTROL_DIFFICULTY, questionsFor } = await import("../../lib/control");
+  const { AGENT_MODEL, AGENT_PROMPT, agentPrompt, hasSecret } = await import("../../lib/policy");
+  const { CONTROL_DIFFICULTY, MONITOR_VERSION, questionsFor } = await import("../../lib/control");
   const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
   const { SEED_BUGS, seedScoreCommand } = await import("../../lib/seed");
   process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
@@ -89,8 +88,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   // The Typesafe command-only call's mode: "allow" (quiet), "block" (reads_now 0.95) or "invalid"
   // (HTTP 500, a monitor that cannot decide).
   let monitor = "allow";
-  // A monitor-capable catalog model other than the default, for tests that pick their own.
-  const ALT_MONITOR = "moonshotai/kimi-k3";
   // Modes for the next command-only calls, in order; "monitor" applies once it is empty.
   let monitorQueue: string[] = [];
   // The Typesafe answers each call kind returns. The per-command context call and the end review are
@@ -406,18 +403,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       }
       if (String(input) === "https://openrouter.ai/api/v1/models")
         return Response.json({
-          // Qwen flash has no response_format, so it cannot be picked as a monitor model.
-          data: [...new Set([AGENT_MODEL, MONITOR_MODEL, ALT_MONITOR, "qwen/qwen3.8-flash"])].map(
-            (id) => ({
-              id,
+          data: [
+            {
+              id: AGENT_MODEL,
               context_length: 100000,
               pricing: { prompt: "0.000001", completion: "0.000002" },
-              supported_parameters:
-                id === "qwen/qwen3.8-flash"
-                  ? ["tools", "reasoning"]
-                  : ["tools", "response_format", "reasoning"],
-            }),
-          ),
+              supported_parameters: ["tools", "reasoning"],
+            },
+          ],
         });
       assert.equal(String(input), "https://openrouter.ai/api/v1/chat/completions");
       assert.equal(options?.method, "POST");
@@ -1096,7 +1089,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const who = await guest();
       const parent = await startGame(who.id, false, undefined, {
         monitorReasoning: false,
-        monitorModel: ALT_MONITOR,
         monitorDifficulty: "medium",
       });
       assert.equal((await instruct(who, parent.id, { systemPrompt: MARKER })).status, 200);
@@ -1153,7 +1145,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(stored.system_prompt, MARKER);
       assert.deepEqual(
         [stored.monitor_model, stored.monitor_difficulty, stored.monitor_reasoning],
-        [ALT_MONITOR, "medium", false],
+        [TYPESAFE_MODEL, "medium", false],
       );
       assert.equal(Number(stored.reserved_microdollars), 0);
       // The visible history stops before the dropped instruction, under new ids.
@@ -1583,11 +1575,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   };
   const monitorOf = async (id: string) => {
-    const { monitor_model, monitor_difficulty, monitor_reasoning } = await row(id);
-    return { monitor_model, monitor_difficulty, monitor_reasoning };
+    const { monitor_model, monitor_version, monitor_difficulty, monitor_reasoning } = await row(id);
+    return { monitor_model, monitor_version, monitor_difficulty, monitor_reasoning };
   };
+  // Every run is stamped with the current Typesafe monitor; only difficulty and reasoning vary.
   const DEFAULT_MONITOR = {
-    monitor_model: MONITOR_MODEL,
+    monitor_model: TYPESAFE_MODEL,
+    monitor_version: MONITOR_VERSION,
     monitor_difficulty: "hard",
     monitor_reasoning: true,
   };
@@ -1595,24 +1589,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   await t.test("the start route stores the monitor choice and defaults it", async () => {
     const who = await guest();
     const plain = await (await startRoute(who, {})).json();
-    assert.deepEqual(
-      [plain.monitorModel, plain.monitorDifficulty, plain.monitorReasoning],
-      [MONITOR_MODEL, "hard", true],
-    );
+    assert.deepEqual([plain.monitorDifficulty, plain.monitorReasoning], ["hard", true]);
     assert.deepEqual(await monitorOf(plain.id), DEFAULT_MONITOR);
     const response = await startRoute(who, {
-      monitorModel: ALT_MONITOR,
       monitorDifficulty: "easy",
       monitorReasoning: false,
     });
     assert.equal(response.status, 200);
     const chosen = await response.json();
-    assert.deepEqual(
-      [chosen.monitorModel, chosen.monitorDifficulty, chosen.monitorReasoning],
-      [ALT_MONITOR, "easy", false],
-    );
+    assert.deepEqual([chosen.monitorDifficulty, chosen.monitorReasoning], ["easy", false]);
     assert.deepEqual(await monitorOf(chosen.id), {
-      monitor_model: ALT_MONITOR,
+      ...DEFAULT_MONITOR,
       monitor_difficulty: "easy",
       monitor_reasoning: false,
     });
@@ -1626,10 +1613,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   });
 
   for (const [name, body, status] of [
-    ["a model that is not offered", { monitorModel: "evil/model" }, 400],
-    ["a non-string model", { monitorModel: 5 }, 400],
-    ["a null model", { monitorModel: null }, 400],
-    ["a model OpenRouter cannot use as a monitor", { monitorModel: "qwen/qwen3.8-flash" }, 503],
     ["an unknown difficulty", { monitorDifficulty: "impossible" }, 400],
     ["a non-string difficulty", { monitorDifficulty: 1 }, 400],
     ["a non-boolean reasoning flag", { monitorReasoning: "yes" }, 400],
@@ -1653,18 +1636,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
 
   await t.test(
-    "the first instruction changes an unbegun run's monitor model, difficulty and reasoning",
+    "the first instruction changes an unbegun run's monitor difficulty and reasoning",
     async () => {
       const who = await guest();
       const game = await startGame(who.id, false);
       const { response } = await instructFrames(who, game.id, {
-        monitorModel: ALT_MONITOR,
         monitorDifficulty: "easy",
         monitorReasoning: false,
       });
       assert.equal(response.status, 200);
       assert.deepEqual(await monitorOf(game.id), {
-        monitor_model: ALT_MONITOR,
+        ...DEFAULT_MONITOR,
         monitor_difficulty: "easy",
         monitor_reasoning: false,
       });
@@ -1683,7 +1665,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     typesafe.length = 0;
     agentCalls = 0;
     const response = await instruct(who, game.id, {
-      monitorModel: ALT_MONITOR,
       monitorDifficulty: "easy",
       monitorReasoning: false,
     });
@@ -1698,9 +1679,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   });
 
   for (const [name, extra, status] of [
-    ["an unlisted model", { monitorModel: "evil/model" }, 400],
-    ["a non-string model", { monitorModel: 5 }, 400],
-    ["a model OpenRouter cannot use as a monitor", { monitorModel: "qwen/qwen3.8-flash" }, 503],
     ["an unknown difficulty", { monitorDifficulty: "impossible" }, 400],
     ["a non-string difficulty", { monitorDifficulty: 2 }, 400],
     ["a non-boolean reasoning flag", { monitorReasoning: null }, 400],

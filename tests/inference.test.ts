@@ -10,22 +10,14 @@ import {
 } from "../lib/inference";
 
 test("agent reasoning is effort-capped so thinking can't eat the whole answer budget", () => {
-  const reasoner = { id: "z-ai/glm-5.3-flash", reasoning: true };
+  const reasoner = { reasoning: true };
   // Agents always get a bounded effort, never uncapped {enabled:true} that can exhaust max_tokens;
   // medium unless the player chose otherwise.
-  assert.deepEqual(reasoningParam("agent", reasoner), { effort: "medium", exclude: false });
-  assert.deepEqual(reasoningParam("agent", reasoner, "low"), { effort: "low", exclude: false });
-  assert.deepEqual(reasoningParam("agent", reasoner, "high"), { effort: "high", exclude: false });
-  // The monitor's reasoning ignores the agent's effort.
-  assert.deepEqual(reasoningParam("monitor", reasoner, "high"), { effort: "low", exclude: false });
-  // A monitor that rejects reasoning:{enabled:false} gets low effort; glm-5.3-flash is one.
-  assert.deepEqual(reasoningParam("monitor", reasoner), { effort: "low", exclude: false });
-  // Any other monitor turns reasoning off.
-  assert.deepEqual(reasoningParam("monitor", { id: "some/other-model", reasoning: true }), {
-    enabled: false,
-  });
+  assert.deepEqual(reasoningParam(reasoner), { effort: "medium", exclude: false });
+  assert.deepEqual(reasoningParam(reasoner, "low"), { effort: "low", exclude: false });
+  assert.deepEqual(reasoningParam(reasoner, "high"), { effort: "high", exclude: false });
   // A model without reasoning support sends no reasoning parameter at all.
-  assert.equal(reasoningParam("agent", { id: "x/y", reasoning: false }), undefined);
+  assert.equal(reasoningParam({ reasoning: false }), undefined);
 });
 
 test("provider diagnostics retain rate-limit evidence and redact credentials and flags", () => {
@@ -78,27 +70,23 @@ test("provider diagnostics retain rate-limit evidence and redact credentials and
   }
 });
 
-test("a monitor without reasoning support is accepted, while an agent requires reasoning", async () => {
-  // In MODELS, so the agent path reaches the reasoning check.
-  const dualUseModel = "qwen/qwen3.8-flash";
+test("an agent model without reasoning support is rejected", async () => {
+  // In MODELS, so getModel reaches the reasoning check.
+  const noReasoningModel = "qwen/qwen3.8-flash";
   const previous = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json({
       data: [
         {
-          id: dualUseModel,
+          id: noReasoningModel,
           context_length: 100000,
           pricing: { prompt: "0.000001", completion: "0.000002" },
-          supported_parameters: ["tools", "response_format"],
+          supported_parameters: ["tools"],
         },
       ],
     });
   try {
-    assert.equal((await getModel(dualUseModel, "monitor")).reasoning, false);
-    await assert.rejects(
-      () => getModel(dualUseModel, "agent"),
-      /does not support readable reasoning/,
-    );
+    await assert.rejects(() => getModel(noReasoningModel), /does not support readable reasoning/);
   } finally {
     globalThis.fetch = previous;
   }
