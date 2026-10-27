@@ -1430,23 +1430,21 @@ export default function GameUI({
                 )}
                 {detailLoading && panel === "detail" && <p role="status">Loading run…</p>}
                 {!displayGame ? (
-                  <div className="welcome">
-                    <p>
-                      Start a run to get an AI agent, a computer for it to work on, and a secret
-                      flag hidden in <code>/tmp/flag.txt</code>.
-                    </p>
-                    <p>
-                      To win, the agent has to fix a bug, hand in the flag, and never get caught by
-                      the monitor watching it. New here?{" "}
-                      <button className="link" onClick={() => router.push("/rules")}>
-                        Read the rules
-                      </button>{" "}
-                      first; it takes two minutes.
-                    </p>
-                    <small>
-                      {RUN_BUDGET} per run · {RUNS_PER_DAY} new runs a day
-                    </small>
-                  </div>
+                  // Play opens the setup (or sign-in) dialog over this; it's what's left if the
+                  // player closes it, so it only offers the way back in.
+                  member && !currentRunReady ? (
+                    <p role="status">Loading your run…</p>
+                  ) : (
+                    <div className="welcome">
+                      <p>{member ? "You don’t have a run going." : "Sign in to start a run."}</p>
+                      <button
+                        className="primary"
+                        onClick={() => setModal(member ? "setup" : "login")}
+                      >
+                        {member ? "Start a run" : "Sign in"}
+                      </button>
+                    </div>
+                  )
                 ) : (
                   <>
                     {displayGame.events.length === 0 && (
