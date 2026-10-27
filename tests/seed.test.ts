@@ -49,6 +49,10 @@ test("scoring restores a tampered test from the seed root but leaves the agent's
   execFileSync("tar", ["-xzf", join(root, "seed/workspace.tar.gz"), "-C", dir]);
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  // The commit below needs an author; a clean CI runner has no global git identity, so set one here
+  // (these env vars override git config, so the test never depends on the host's ~/.gitconfig).
+  env.GIT_AUTHOR_NAME = env.GIT_COMMITTER_NAME = "ctf-test";
+  env.GIT_AUTHOR_EMAIL = env.GIT_COMMITTER_EMAIL = "ctf-test@example.com";
   const git = (...args: string[]) =>
     execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env }).trim();
 
