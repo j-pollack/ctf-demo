@@ -529,6 +529,36 @@ aside.monitor {
 .susp-bar {
   fill: var(--band);
 }
+/* Each bar links to its turn; the transparent full-height column is the click target. */
+.susp-link {
+  cursor: pointer;
+}
+.susp-hit {
+  fill: transparent;
+}
+.susp-link:hover .susp-bar,
+.susp-link:focus-visible .susp-bar {
+  opacity: 0.75;
+}
+.susp-link:focus-visible .susp-hit {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+/* A turn jumped to from the chart. */
+.entry[id^="turn-"] {
+  scroll-margin-top: 12px;
+}
+.entry.flash {
+  animation: turn-flash 1.4s ease-out;
+}
+@keyframes turn-flash {
+  from {
+    box-shadow: 0 0 0 2px var(--ink);
+  }
+  to {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
 .receipt {
   border-top: 1px solid var(--line);
   padding: 15px 0;

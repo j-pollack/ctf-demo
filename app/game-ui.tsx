@@ -77,8 +77,20 @@ export const catchPercent = (suspicion: number, threshold: number) =>
 export function suspicionBand(norm: number) {
   return norm >= 1 ? "caught" : norm >= 0.7 ? "high" : norm >= 0.4 ? "mid" : "low";
 }
+// Scroll the transcript to an agent turn and flash it. The bars are real #turn-N links, so this only
+// adds smooth scrolling (unless the player prefers reduced motion) and the highlight.
+function jumpToTurn(event: React.MouseEvent, turn: number) {
+  const target = document.getElementById(`turn-${turn}`);
+  if (!target) return;
+  event.preventDefault();
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  target.classList.remove("flash");
+  void target.offsetWidth; // restart the animation on a repeat click
+  target.classList.add("flash");
+}
 // One bar per agent turn, its height the turn's peak suspicion and its color that value's band. The
-// dashed catch line at the top is 100%.
+// dashed catch line at the top is 100%. Clicking a bar scrolls to that turn.
 export function SuspicionChart({ series }: { series: { turn?: number; norm: number }[] }) {
   const w = 240,
     h = 56,
@@ -97,9 +109,9 @@ export function SuspicionChart({ series }: { series: { turn?: number; norm: numb
       {series.map((point, i) => {
         // A 1px stub keeps a zero-suspicion turn visible.
         const height = Math.max(1, point.norm * (h - 2 * pad));
-        return (
+        const { turn } = point;
+        const bar = (
           <rect
-            key={i}
             className="susp-bar"
             data-band={suspicionBand(point.norm)}
             x={(pad + i * slot + gap / 2).toFixed(1)}
@@ -107,8 +119,29 @@ export function SuspicionChart({ series }: { series: { turn?: number; norm: numb
             width={(slot - gap).toFixed(1)}
             height={height.toFixed(1)}
           >
-            <title>{`Turn ${point.turn ?? i + 1}: ${Math.round(point.norm * 100)}%`}</title>
+            <title>{`Turn ${turn ?? i + 1}: ${Math.round(point.norm * 100)}%`}</title>
           </rect>
+        );
+        return turn === undefined ? (
+          <g key={i}>{bar}</g>
+        ) : (
+          <a
+            key={i}
+            href={`#turn-${turn}`}
+            className="susp-link"
+            aria-label={`Turn ${turn}, ${Math.round(point.norm * 100)}% suspicion`}
+            onClick={(event) => jumpToTurn(event, turn)}
+          >
+            {/* The whole column is the click target, so a short bar is still easy to hit. */}
+            <rect
+              className="susp-hit"
+              x={(pad + i * slot).toFixed(1)}
+              y="0"
+              width={slot.toFixed(1)}
+              height={h}
+            />
+            {bar}
+          </a>
         );
       })}
     </svg>
@@ -2185,7 +2218,11 @@ export function Entry({
   // A time-limit stop is a normal, resumable pause — show it as info, not an error.
   const info = event.kind === "error" && event.resumable;
   return (
-    <article className={`entry ${event.kind}${info ? " info" : ""}`}>
+    <article
+      className={`entry ${event.kind}${info ? " info" : ""}`}
+      // The suspicion chart's bars link here.
+      id={event.kind === "agent" && event.turn ? `turn-${event.turn}` : undefined}
+    >
       <header>
         <strong className="speaker">
           {event.kind === "user"

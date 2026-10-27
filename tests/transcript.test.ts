@@ -289,7 +289,7 @@ test("suspicion bands split the catch line at 40%, 70% and 100%", () => {
   ]);
 });
 
-test("the suspicion chart is one bar per turn, each colored by its own band", () => {
+test("the suspicion chart is one bar per turn, colored by band, each linking to its turn", () => {
   const svg = (norms: number[]) =>
     renderToStaticMarkup(
       createElement(SuspicionChart, { series: norms.map((norm, i) => ({ turn: i + 1, norm })) }),
@@ -302,6 +302,18 @@ test("the suspicion chart is one bar per turn, each colored by its own band", ()
   );
   assert.match(html, /<title>Turn 3: 80%<\/title>/);
   assert.equal(svg([]).includes("susp-bar"), false);
+  // Each bar links to its turn's agent message, which carries the matching id.
+  assert.deepEqual(
+    [...html.matchAll(/href="#(turn-\d+)"/g)].map((match) => match[1]),
+    ["turn-1", "turn-2", "turn-3", "turn-4"],
+  );
+  const agent = renderToStaticMarkup(
+    createElement(Entry, { event: { id: 9, kind: "agent", text: "hi", turn: 3, model: "m" } }),
+  );
+  assert.match(agent, /<article class="entry agent" id="turn-3">/);
+  // A point without a turn (older events) is drawn but not linked.
+  const unlinked = renderToStaticMarkup(createElement(SuspicionChart, { series: [{ norm: 0.2 }] }));
+  assert.ok(unlinked.includes("susp-bar") && !unlinked.includes("href="));
 });
 
 test("only a capture gets the green win banner; every other end is a loss", () => {
