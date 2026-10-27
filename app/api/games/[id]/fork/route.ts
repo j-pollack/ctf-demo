@@ -11,7 +11,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const id = (await params).id;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
       throw new GameError("Run not found.", 404);
-    return Response.json(await startGame(user.id, user.signedIn, undefined, { sourceId: id }));
+    return Response.json(await startGame(user.id, undefined, { sourceId: id }));
   } catch (error) {
     return errorResponse(error);
   }

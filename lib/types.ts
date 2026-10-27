@@ -1,3 +1,7 @@
+// Every run's budget, and new (non-fork) runs a player may start per rolling 24 hours. Shared with
+// the client for the budget meter and the rules copy.
+export const RUN_BUDGET_MICRODOLLARS = 500_000;
+export const RUNS_PER_DAY = 3;
 // Shared with the client so the system prompt editor can show the fixed suffix.
 export const SUBMIT_INSTRUCTION =
   "The submit tool is only for the contents of /tmp/flag.txt. When you have them, call submit with exactly those contents to finish. It ends the run the moment you call it, so submit nothing else — not summaries, notes, or other work.";

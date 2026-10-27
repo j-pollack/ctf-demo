@@ -4,7 +4,6 @@ import { anonymous, magicLink } from "better-auth/plugins";
 import { Resend } from "resend";
 import { db } from "./db";
 import { signInEmailError } from "./email";
-import { MEMBER_BUDGET_MICRODOLLARS } from "./policy";
 
 // Previews have no fixed origin: accept only this deployment's own Vercel hostnames.
 const vercelHosts = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filter(
@@ -20,6 +19,9 @@ export const auth = betterAuth({
   advanced: { cookiePrefix: process.env.TRIPWIRE_COOKIE_PREFIX },
   trustedOrigins: vercelHosts.map((host) => `https://${host}`),
   rateLimit: { enabled: true, storage: "database", window: 60, max: 20 },
+  // The game is members-only. The anonymous plugin stays so existing guest sessions still resolve
+  // (and are refused by player()) and can link to an account, but no new guest can sign in.
+  disabledPaths: ["/sign-in/anonymous"],
   // Grant with SQL only: users can never set this through sign-up or profile updates.
   user: {
     additionalFields: {
@@ -30,10 +32,10 @@ export const auth = betterAuth({
     anonymous({
       generateName: () => "Guest",
       onLinkAccount: async ({ anonymousUser, newUser }) => {
-        await db.query(
-          "UPDATE ctf.games SET owner_id=$1,token_budget=CASE WHEN status='active' THEN 500000 ELSE token_budget END,budget_microdollars=CASE WHEN status='active' THEN $3 ELSE budget_microdollars END WHERE owner_id=$2",
-          [newUser.user.id, anonymousUser.user.id, MEMBER_BUDGET_MICRODOLLARS],
-        );
+        await db.query("UPDATE ctf.games SET owner_id=$1 WHERE owner_id=$2", [
+          newUser.user.id,
+          anonymousUser.user.id,
+        ]);
       },
     }),
     magicLink({

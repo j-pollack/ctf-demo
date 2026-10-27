@@ -2,8 +2,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { SUBMIT_INSTRUCTION } from "./types";
 
 export const DAILY_CAP_MICRODOLLARS = 10_000_000;
-export const MEMBER_BUDGET_MICRODOLLARS = 3_000_000;
-export const GUEST_BUDGET_MICRODOLLARS = 600_000;
 const AGENT_MODELS = [
   "meta/muse-spark-open",
   "qwen/qwen3.8-2.4t-a95b",

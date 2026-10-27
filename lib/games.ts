@@ -3,19 +3,13 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { MONITOR_TOKEN_MICRODOLLARS, MONITOR_VERSION } from "./control";
-import {
-  AGENT_MODEL,
-  MODELS,
-  DAILY_CAP_MICRODOLLARS,
-  GUEST_BUDGET_MICRODOLLARS,
-  MEMBER_BUDGET_MICRODOLLARS,
-  GameError,
-  makeSecret,
-} from "./policy";
+import { AGENT_MODEL, MODELS, DAILY_CAP_MICRODOLLARS, GameError, makeSecret } from "./policy";
 import { TYPESAFE_MODEL } from "./typesafe";
 import {
   AGENT_EFFORTS,
   MONITOR_DIFFICULTIES,
+  RUN_BUDGET_MICRODOLLARS,
+  RUNS_PER_DAY,
   type AgentEffort,
   type GameEvent,
   type GameStatus,
@@ -261,7 +255,6 @@ function checkEffort(effort: unknown) {
 }
 export async function startGame(
   ownerId: string,
-  signedIn: boolean,
   agentModel: string = AGENT_MODEL,
   options: MonitorOptions & { sourceId?: string; agentEffort?: unknown } = {},
 ) {
@@ -327,7 +320,7 @@ export async function startGame(
       "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND forked_from IS NULL AND created_at > now()-interval '24 hours'",
       [ownerId],
     );
-    if (!sourceId && starts.rows[0].total >= (signedIn ? 20 : 3))
+    if (!sourceId && starts.rows[0].total >= RUNS_PER_DAY)
       throw new GameError("You’ve reached your daily limit of new runs.", 429);
     const totalStarts = await client.query(
       "SELECT count(*)::int AS total FROM ctf.games WHERE forked_from IS NULL AND created_at>now()-interval '24 hours'",
@@ -388,9 +381,8 @@ export async function startGame(
         TYPESAFE_MODEL,
         source?.monitor_difficulty ?? monitor.difficulty ?? "hard",
         MONITOR_VERSION,
-        source?.token_budget ?? (signedIn ? 500000 : 100000),
-        source?.budget_microdollars ??
-          (signedIn ? MEMBER_BUDGET_MICRODOLLARS : GUEST_BUDGET_MICRODOLLARS),
+        source?.token_budget ?? 500000,
+        source?.budget_microdollars ?? RUN_BUDGET_MICRODOLLARS,
         source?.system_prompt ?? "",
         source?.monitor_reasoning ?? monitor.reasoning ?? true,
         "creating",

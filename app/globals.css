@@ -489,8 +489,21 @@ aside.monitor {
   font-size: 28px;
   font-variant-numeric: tabular-nums;
 }
-.suspicion-peak strong[data-high] {
-  color: var(--blocked);
+/* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 dark orange, caught red. */
+[data-band="low"] {
+  --band: #4d7c0f;
+}
+[data-band="mid"] {
+  --band: #8a6e00;
+}
+[data-band="high"] {
+  --band: #c2410c;
+}
+[data-band="caught"] {
+  --band: #c62828;
+}
+.suspicion-peak strong {
+  color: var(--band);
 }
 .suspicion-peak small {
   display: block;
@@ -513,21 +526,14 @@ aside.monitor {
 }
 .susp-line {
   fill: none;
-  stroke: #759d29;
+  stroke: var(--band);
   stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
-.susp-line[data-caught],
-.susp-dot[data-caught] {
-  stroke: var(--blocked);
-}
 .susp-dot {
-  fill: #759d29;
+  fill: var(--band);
   stroke: none;
-}
-.susp-dot[data-caught] {
-  fill: var(--blocked);
 }
 .receipt {
   border-top: 1px solid var(--line);
@@ -1590,19 +1596,13 @@ dialog::backdrop {
 .suspicion-bar {
   position: absolute;
   inset: 0 auto 0 0;
-  background: #c7d2b0;
-}
-.suspicion[data-high] .suspicion-bar {
-  background: #e0b7a6;
+  background: color-mix(in srgb, var(--band) 30%, transparent);
 }
 .suspicion-num {
   position: relative;
   padding-right: 5px;
-  color: var(--muted);
+  color: var(--band);
   font-variant-numeric: tabular-nums;
-}
-.suspicion[data-high] .suspicion-num {
-  color: var(--blocked);
 }
 
 .submit-conditions {

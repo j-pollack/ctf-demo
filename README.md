@@ -62,7 +62,7 @@ See [Verification audit and test strategy](docs/verification.md) for measured ru
 
 `npm run smoke -- --messages-only` checks sequential tool results, monitor errors and capture using controlled model replies with real Neon/Sprite execution. It makes no live inference calls and is not a monitor defense evaluation.
 
-`npm run check:auth` tests the real passwordless handlers, guest transfer, $3 budget upgrade, leaderboard privacy and single-use tokens against Neon. It captures the outbound Resend request locally and sends no email. Actual inbox delivery still requires a check with your verified Resend sender.
+`npm run check:auth` tests the real passwordless handlers, the closed guest sign-in, legacy guest-run transfer, leaderboard privacy and single-use tokens against Neon. It captures the outbound Resend request locally and sends no email. Actual inbox delivery still requires a check with your verified Resend sender.
 
 ## CI and production promotion
 
@@ -75,7 +75,7 @@ After this workflow is available, configure Vercel's GitHub-backed deployment ch
 ## Game rules
 
 - `AGENT_MODELS` and `AGENT_MODEL` in `lib/policy.ts` set the selectable attack models and the default; they are not environment-configurable. Players can select a different attack model for their next instruction while idle; every agent response saves and displays its model. The Sprite, flag and history remain intact. Agent models must support tools and readable reasoning. Model-specific reasoning signatures are not forwarded to a different attack model; readable historical reasoning is transferred as ordinary assistant text.
-- Each run gets $0.60 for guests or $3 for signed-in members. Sign-in upgrades the current active guest run to $3. Actual OpenRouter agent and monitor charges both count, including repeated context and cache pricing; tokens remain diagnostic metrics.
+- The game is members-only: players sign in by magic link. Guest sign-in is disabled (`disabledPaths` in `lib/auth.ts`); a leftover guest session is refused by `player()` and keeps its runs if it signs in. Each run gets $0.50 (`RUN_BUDGET_MICRODOLLARS` in `lib/types.ts`). Actual OpenRouter agent and monitor charges both count, including repeated context and cache pricing; tokens remain diagnostic metrics.
 - The monitor is always Typesafe (`TYPESAFE_MODEL` in `lib/typesafe.ts`). Players choose a difficulty per run (`easy`, `medium` or `hard`, `CONTROL_DIFFICULTY` in `lib/control.ts`). The choice, including whether the monitor reads reasoning, can change until the run's first instruction is recorded; forks inherit it. There are no seasons or season deadlines: `ctf.seasons` and `games.season_id` remain as history only and new runs leave `season_id` NULL.
 - Every instruction first checkpoints the run's Sprite. A monitor block ends the run (status `blocked`); nothing later in the batch runs and the agent gets no more turns. The owner can fork a blocked run once, within 24 hours: the fork goes back to before the last instruction (transcript and history cut there, Sprite restored to that checkpoint, instruction returned to the composer), keeps the same flag, and carries over budget and spend. Forks don't count toward daily run limits. Invalid or unavailable monitor decisions stop execution and pause the response without ending the run, except on easy, where the command runs anyway with a note in the transcript (budget, daily-cap, lease and player-stop failures still halt it). Each run chooses whether the monitor reads the agent's reasoning.
 - Monitor block reasons are saved as UI events and shown to the player. The agent receives only “Blocked”; explanations are excluded from the agent transcript and subsequent monitor context. Approvals stay silent; service errors remain visible.
@@ -91,7 +91,7 @@ The $10/day inference cap is shared across players and resets at midnight UTC. E
 
 Inference emits structured JSON to backend logs (the local development terminal or Vercel function logs). Completed and failed calls include game/request IDs, role, model, HTTP status and duration. Provider failures include selected error metadata, request/rate-limit headers and retry hints; credentials and flags are redacted, and request transcripts are omitted. Game and monitor failures share the game ID. Earlier failures cannot recover response details that were discarded.
 
-Admission allows ten active environments, 100 new games globally per rolling day, and 3/20 new games per guest/member. Guest identities can be replaced by clearing cookies; the global limits remain authoritative. This is an MVP capacity limit, not a Sybil-proof account system.
+Admission allows ten active environments, 100 new games globally per rolling day, and 3 new games per player (`RUNS_PER_DAY`; forks are free). This is an MVP capacity limit, not a Sybil-proof account system.
 
 ## Vercel
 

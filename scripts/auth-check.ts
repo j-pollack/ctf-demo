@@ -31,20 +31,27 @@ const cookies = (response: Response) =>
     .map((cookie) => cookie.split(";")[0])
     .join("; ");
 try {
-  const guestResponse = await auth.handler(
+  // Guests can't sign in over HTTP any more; a pre-existing guest session is made server-side.
+  const closed = await auth.handler(
     new Request(`${origin}/api/auth/sign-in/anonymous`, {
       method: "POST",
       headers: { origin, "Content-Type": "application/json" },
       body: "{}",
     }),
   );
-  assert.equal(guestResponse.status, 200);
-  const guest = await guestResponse.json();
+  assert.equal(closed.status, 404);
+  const { headers: guestHeaders, response: guestResponse } = await auth.api.signInAnonymous({
+    returnHeaders: true,
+  });
+  const guest = guestResponse!;
   userIds.push(guest.user.id);
-  const guestCookie = cookies(guestResponse);
-  assert.equal(
-    (await player(new Request(origin, { headers: { cookie: guestCookie } }))).signedIn,
-    false,
+  const guestCookie = guestHeaders
+    .getSetCookie()
+    .map((cookie) => cookie.split(";")[0])
+    .join("; ");
+  await assert.rejects(
+    () => player(new Request(origin, { headers: { cookie: guestCookie } })),
+    /Sign in to play/,
   );
   await db.query(
     `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
@@ -70,16 +77,11 @@ try {
   assert.ok(link.startsWith(origin), "sign-in link must use the configured origin");
   const verified = await auth.handler(new Request(link, { headers: { cookie: guestCookie } }));
   assert.equal(verified.status, 302);
+  // Linking keeps the guest's runs on the new account, and the account can play.
   const member = await player(new Request(origin, { headers: { cookie: cookies(verified) } }));
-  assert.equal(member.signedIn, true);
   userIds.push(member.id);
-  const game = await db.query(
-    "SELECT owner_id,token_budget,budget_microdollars FROM ctf.games WHERE id=$1",
-    [id],
-  );
+  const game = await db.query("SELECT owner_id FROM ctf.games WHERE id=$1", [id]);
   assert.equal(game.rows[0].owner_id, member.id);
-  assert.equal(game.rows[0].token_budget, 500000);
-  assert.equal(Number(game.rows[0].budget_microdollars), 3000000);
   await db.query(
     "UPDATE ctf.games SET status='captured',turns=2,tokens_used=100,blocks=1,spent_microdollars=2000 WHERE id=$1",
     [id],

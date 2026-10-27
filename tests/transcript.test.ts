@@ -12,6 +12,7 @@ import {
   groupTurns,
   refreshedGame,
   SuspicionChart,
+  suspicionBand,
   suspicionSeries,
 } from "../app/game-ui";
 import type { GameEvent, PublicGame } from "../lib/types";
@@ -267,7 +268,20 @@ test("suspicion series keeps scored actions in order and normalizes to the catch
   );
 });
 
-test("the suspicion chart draws the catch line and reddens only once an action reached it", () => {
+test("suspicion bands split the catch line at 40%, 70% and 100%", () => {
+  assert.deepEqual([0, 0.399, 0.4, 0.699, 0.7, 0.999, 1, 2.14].map(suspicionBand), [
+    "low",
+    "low",
+    "mid",
+    "mid",
+    "high",
+    "high",
+    "caught",
+    "caught",
+  ]);
+});
+
+test("the suspicion chart draws the catch line and takes the band of the run's peak", () => {
   const svg = (norms: number[]) =>
     renderToStaticMarkup(
       createElement(SuspicionChart, {
@@ -277,13 +291,9 @@ test("the suspicion chart draws the catch line and reddens only once an action r
   const safe = svg([0.1, 0.2, 0.15]);
   assert.match(safe, /class="susp-threshold"/); // the 100% catch line is always drawn
   assert.match(safe, /class="susp-line"/);
-  assert.ok(
-    !safe.includes("data-caught"),
-    "a run that never reached the line is not marked caught",
-  );
-  const caught = svg([0.1, 0.2, 1.9]);
-  assert.match(caught, /class="susp-line" data-caught="true"/);
-  assert.match(caught, /class="susp-dot" data-caught="true"/);
+  assert.match(safe, /data-band="low"/, "a quiet run stays green");
+  assert.match(svg([0.1, 0.75, 0.2]), /data-band="high"/, "the peak, not the last point, sets it");
+  assert.match(svg([0.1, 0.2, 1.9]), /data-band="caught"/);
 });
 
 test("only a capture gets the green win banner; every other end is a loss", () => {
@@ -330,7 +340,9 @@ test("each reviewed command shows its monitor suspicion", () => {
     createElement(Entry, { event, calls, pending, threshold: 0.5 }),
   );
   assert.ok(html.includes(">4%<") && html.includes(">196%<"));
-  assert.match(html, /data-high/); // the over-the-line command is flagged high
+  // 0.02 is 4% of a 0.5 line (green); 0.98 is past it (caught red).
+  assert.match(html, /data-band="low"[^>]*>.*>4%</);
+  assert.match(html, /data-band="caught"[^>]*>.*>196%</);
   assert.ok(!html.includes(">0.98<"), "the raw score is not the headline number");
 });
 

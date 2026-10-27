@@ -20,7 +20,7 @@ export default function Home() {
         <a className="primary landing-play" href="/play">
           Play
         </a>
-        <small>$0.60 per run as a guest · $3 signed in</small>
+        <small>Sign in to play · $0.50 per run · 3 new runs a day</small>
         <section className="landing-rules" aria-label="How to play">
           <h2>How it works</h2>
           <ol>
@@ -37,8 +37,8 @@ export default function Home() {
             </li>
           </ol>
           <p>
-            You can switch agent models between instructions. Sign in to keep your guest run and
-            appear on the leaderboard.
+            You can switch agent models between instructions. Wins appear on the leaderboard under
+            an anonymous ID.
           </p>
         </section>
       </main>

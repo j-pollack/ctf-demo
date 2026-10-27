@@ -9,6 +9,8 @@ import { CONTROL_DIFFICULTY } from "@/lib/control";
 import { SEED_BUGS } from "@/lib/seed";
 import {
   MONITOR_DIFFICULTIES,
+  RUN_BUDGET_MICRODOLLARS,
+  RUNS_PER_DAY,
   type AgentEffort,
   SUBMIT_INSTRUCTION,
   type GameEvent,
@@ -60,8 +62,14 @@ export function suspicionSeries(events: GameEvent[], threshold: number) {
 // A suspicion score as a percent of the catch line (the difficulty's threshold); 100% ends the run.
 export const catchPercent = (suspicion: number, threshold: number) =>
   threshold > 0 ? Math.round((suspicion / threshold) * 100) : 0;
+// Color band for suspicion as a fraction of the catch line: under 40% green, under 70% yellow,
+// under 100% dark orange, and at or past the line (caught) red. Uses the unrounded ratio, so a band
+// matches the catch rule (suspicion >= threshold) even where the shown percent rounds up to 100.
+export function suspicionBand(norm: number) {
+  return norm >= 1 ? "caught" : norm >= 0.7 ? "high" : norm >= 0.4 ? "mid" : "low";
+}
 // Suspicion across the run, each action a point, scaled so the dashed catch line sits at 100%. The
-// line reddens once any action reached the threshold (which ends the run).
+// line takes the band of the run's peak.
 export function SuspicionChart({ series }: { series: { suspicion: number; norm: number }[] }) {
   const w = 240,
     h = 56,
@@ -74,24 +82,18 @@ export function SuspicionChart({ series }: { series: { suspicion: number; norm: 
   const points = series
     .map((point, i) => `${x(i).toFixed(1)},${y(point.norm).toFixed(1)}`)
     .join(" ");
-  const caught = peak >= 1 || undefined;
   return (
     <svg
       viewBox={`0 0 ${w} ${h}`}
       className="susp-chart"
+      data-band={suspicionBand(peak)}
       role="img"
       aria-label={`Suspicion per monitored action as a percent of the catch line; peak ${Math.round(peak * 100)} percent`}
     >
       <line x1="0" x2={w} y1={y(1)} y2={y(1)} className="susp-threshold" />
-      {series.length > 1 && <polyline points={points} className="susp-line" data-caught={caught} />}
+      {series.length > 1 && <polyline points={points} className="susp-line" />}
       {series.length > 0 && (
-        <circle
-          cx={x(series.length - 1)}
-          cy={y(series.at(-1)!.norm)}
-          r="3"
-          className="susp-dot"
-          data-caught={caught}
-        />
+        <circle cx={x(series.length - 1)} cy={y(series.at(-1)!.norm)} r="3" className="susp-dot" />
       )}
     </svg>
   );
@@ -134,6 +136,7 @@ const REASONING_CHOICES = {
 const reasoningChoice = (visible: boolean) => (visible ? "visible" : "hidden");
 const number = (value: number) => value.toLocaleString("en-US");
 const money = (value: number) => `$${(value / 1_000_000).toFixed(4)}`;
+const RUN_BUDGET = `$${(RUN_BUDGET_MICRODOLLARS / 1_000_000).toFixed(2)}`;
 const statusLabel: Record<GameStatus, string> = {
   creating: "Starting",
   active: "In progress",
@@ -275,6 +278,8 @@ export default function GameUI({
             : "play";
   const account = authClient.useSession();
   const signedIn = !!account.data && !account.data.user.isAnonymous;
+  // The game is members-only: a leftover guest session counts as signed out.
+  const member = signedIn ? account.data : null;
   const [game, setGame] = useState<PublicGame | null>(null),
     latestGame = useRef<PublicGame | null>(null),
     [prompt, setPrompt] = useState(""),
@@ -397,29 +402,26 @@ export default function GameUI({
       setForkRunId(null);
       setError("");
     }
-  }, [pathname, account.data?.user.id]);
+  }, [pathname, member?.user.id]);
   useEffect(() => {
     playRequest.current++;
     setPlayError("");
-  }, [pathname, account.data?.user.id, rememberedPlayId]);
+  }, [pathname, member?.user.id, rememberedPlayId]);
   useEffect(() => {
-    const owner = account.data?.user.id;
+    const owner = member?.user.id;
     if (historyOwner.current !== owner) {
       setCurrentRunReady(owner === undefined);
       const hadOwner = historyOwner.current !== undefined;
-      const adoptingGuestForStart = !hadOwner && owner !== undefined && starting.current;
       historyOwner.current = owner;
-      if (!adoptingGuestForStart) {
-        pending.current = null;
-        setUnconfirmed(false);
-        submissionGeneration.current++;
-        accountEpoch.current++;
-        liveRequest.current++;
-        playRequest.current++;
-        forkRequest.current++;
-        latestRequest.current++;
-        startRequest.current++;
-      }
+      pending.current = null;
+      setUnconfirmed(false);
+      submissionGeneration.current++;
+      accountEpoch.current++;
+      liveRequest.current++;
+      playRequest.current++;
+      forkRequest.current++;
+      latestRequest.current++;
+      startRequest.current++;
       historyRequest.current++;
       setHistory([]);
       setHistoryCursor(null);
@@ -443,11 +445,11 @@ export default function GameUI({
         setError("");
       }
     }
-  }, [account.data?.user.id]);
+  }, [member?.user.id]);
   useEffect(() => {
-    if (panel !== "history" || !account.data) return;
+    if (panel !== "history" || !member) return;
     const request = ++historyRequest.current,
-      owner = account.data?.user.id;
+      owner = member?.user.id;
     setHistory([]);
     setHistoryCursor(null);
     setHistorySelected(null);
@@ -472,9 +474,9 @@ export default function GameUI({
       historyRequest.current++;
       setHistoryLoading(false);
     };
-  }, [panel, account.data?.user.id, historyReload]);
+  }, [panel, member?.user.id, historyReload]);
   useEffect(() => {
-    if (!routeRunId || !account.data || game?.id === routeRunId) {
+    if (!routeRunId || !member || game?.id === routeRunId) {
       detailRequest.current++;
       setHistorySelected(null);
       setDetailLoading(false);
@@ -482,7 +484,7 @@ export default function GameUI({
       return;
     }
     const request = ++detailRequest.current,
-      owner = account.data.user.id;
+      owner = member.user.id;
     setHistorySelected(null);
     setDetailLoading(true);
     setDetailError("");
@@ -502,12 +504,12 @@ export default function GameUI({
     return () => {
       detailRequest.current++;
     };
-  }, [routeRunId, account.data?.user.id, game?.id, detailReload]);
+  }, [routeRunId, member?.user.id, game?.id, detailReload]);
   async function continueHistoryRun() {
     const id = routeRunId;
     if (!id || busy || game?.busy || pending.current) return;
     const request = ++detailRequest.current,
-      owner = account.data?.user.id,
+      owner = member?.user.id,
       path = routeRef.current;
     setDetailLoading(true);
     setDetailError("");
@@ -546,7 +548,7 @@ export default function GameUI({
   }
   async function loadMoreHistory() {
     if (!historyCursor || historyLoading) return;
-    const owner = account.data?.user.id,
+    const owner = member?.user.id,
       cursor = historyCursor,
       request = ++historyRequest.current;
     setHistoryLoading(true);
@@ -621,19 +623,11 @@ export default function GameUI({
       active = false;
       playRequest.current++;
     };
-  }, [
-    pathname,
-    rememberedPlayId,
-    account.data?.user.id,
-    busy,
-    game?.busy,
-    unconfirmed,
-    playReload,
-  ]);
+  }, [pathname, rememberedPlayId, member?.user.id, busy, game?.busy, unconfirmed, playReload]);
   useEffect(() => {
-    if (!account.data) return;
+    if (!member) return;
     if (starting.current) return;
-    const owner = account.data.user.id,
+    const owner = member.user.id,
       request = ++liveRequest.current,
       latest = ++latestRequest.current,
       epoch = accountEpoch.current;
@@ -663,7 +657,7 @@ export default function GameUI({
           setError(err.message);
         }
       });
-  }, [account.data?.user.id]);
+  }, [member?.user.id]);
   useEffect(() => {
     if (pathname !== "/play") setupOnPlay.current = true;
     else if (
@@ -671,13 +665,14 @@ export default function GameUI({
       !modal &&
       !busy &&
       !account.isPending &&
-      (!account.data || currentRunReady) &&
+      (!member || currentRunReady) &&
       new URLSearchParams(window.location.search).get("signin") !== "1"
     ) {
       setupOnPlay.current = false;
-      if (!hasActiveRun(game)) setModal("setup");
+      if (!member) setModal("login");
+      else if (!hasActiveRun(game)) setModal("setup");
     }
-  }, [pathname, playReload, account.isPending, account.data, currentRunReady, game, modal, busy]);
+  }, [pathname, playReload, account.isPending, member, currentRunReady, game, modal, busy]);
   useEffect(() => {
     if (modal) {
       dialog.current?.showModal();
@@ -752,7 +747,7 @@ export default function GameUI({
       ? null
       : game;
   const canStartNewRun =
-    canCreateNewRun(game, currentRunReady || !account.data) && canCreateNewRun(displayGame);
+    canCreateNewRun(game, currentRunReady || !member) && canCreateNewRun(displayGame);
   const isExecutionView = !!displayGame && displayGame.id === game?.id;
   const systemBase = useRef<{ id?: string; value: string }>({ value: "" });
   const shownId = displayGame?.id,
@@ -784,7 +779,7 @@ export default function GameUI({
       void send(AUTO_CONTINUE_TEXT);
     }
   }, [game, loading]);
-  const allowance = displayGame?.budgetMicrodollars ?? (signedIn ? 3_000_000 : 600_000),
+  const allowance = displayGame?.budgetMicrodollars ?? RUN_BUDGET_MICRODOLLARS,
     left = Math.max(
       0,
       allowance - (displayGame?.spentMicrodollars ?? 0) - (displayGame?.reservedMicrodollars ?? 0),
@@ -805,7 +800,11 @@ export default function GameUI({
   const peakSuspicion = Math.max(0, ...suspicionPoints.map((point) => point.suspicion));
   const peakOfCatch = catchThreshold > 0 ? peakSuspicion / catchThreshold : 0;
   async function start() {
-    if (busy || starting.current || !canStartNewRun || (!!account.data && !currentRunReady)) return;
+    if (!member) {
+      setModal("login");
+      return;
+    }
+    if (busy || starting.current || !canStartNewRun || !currentRunReady) return;
     const startId = ++startRequest.current;
     starting.current = true;
     let startEpoch = accountEpoch.current;
@@ -813,11 +812,6 @@ export default function GameUI({
     setError("");
     setStage("Setting up your environment");
     try {
-      if (!account.data) {
-        const result = await authClient.signIn.anonymous();
-        if (result.error)
-          throw new Error(result.error.message ?? "Could not start a guest session.");
-      }
       startEpoch = accountEpoch.current;
       const latest = await api("/api/games");
       if (startEpoch !== accountEpoch.current || startId !== startRequest.current) return;
@@ -1163,15 +1157,9 @@ export default function GameUI({
           <main className="info run-history">
             <p className="eyebrow">PRIVATE TO YOUR ACCOUNT</p>
             <h2>My runs</h2>
-            {!account.data ? (
-              <p className="empty">Sign in or start a guest run to see your runs here.</p>
-            ) : (
-              <p className="empty">
-                {signedIn
-                  ? "Your runs are saved to your account."
-                  : "Guest runs only last as long as this browser session. Sign in to keep them."}
-              </p>
-            )}
+            <p className="empty">
+              {member ? "Your runs are saved to your account." : "Sign in to see your runs here."}
+            </p>
             {historyError && (
               <div role="alert" className="error">
                 {historyError}
@@ -1189,7 +1177,7 @@ export default function GameUI({
             {historyLoading && <p role="status">Loading runs…</p>}
             {!historyLoading &&
               !historyError &&
-              account.data &&
+              member &&
               (history.length ? (
                 <div className="run-list">
                   {history.map((run) => (
@@ -1227,7 +1215,7 @@ export default function GameUI({
             <button className="link" onClick={() => router.push("/runs")}>
               ← All runs
             </button>
-            {!account.data ? (
+            {!member ? (
               <p className="empty">This run is private. Sign in to view it.</p>
             ) : detailLoading ? (
               <p role="status">Loading run…</p>
@@ -1391,7 +1379,9 @@ export default function GameUI({
                       Get the agent to submit the flag before your budget runs out. Any other
                       submission ends the run.
                     </p>
-                    <small>$0.60 per run as a guest · $3 signed in</small>
+                    <small>
+                      {RUN_BUDGET} per run · {RUNS_PER_DAY} new runs a day
+                    </small>
                   </div>
                 ) : (
                   <>
@@ -1456,11 +1446,6 @@ export default function GameUI({
                                 ? `${money(displayGame.spentMicrodollars)} spent · ${displayGame.turns} turns · ${displayGame.blocks} blocked commands`
                                 : "Start a new run to get a new flag."}
                             </p>
-                            {banner.win && !signedIn && (
-                              <button className="link" onClick={() => setModal("login")}>
-                                Sign in to add this win to the leaderboard
-                              </button>
-                            )}
                           </div>
                         );
                       })()}
@@ -1571,9 +1556,7 @@ export default function GameUI({
                 <div className="meter">
                   <span style={{ width: `${(left / allowance) * 100}%` }} />
                 </div>
-                <small>
-                  of {money(allowance)} · {signedIn ? "signed in" : "guest"}
-                </small>
+                <small>of {money(allowance)}</small>
                 <div className="spend-breakdown">
                   <p>
                     Spent <strong>{money(displayGame?.spentMicrodollars ?? 0)}</strong>
@@ -1594,7 +1577,7 @@ export default function GameUI({
               <div className="suspicion-peak">
                 <p className="eyebrow">PEAK SUSPICION</p>
                 <strong
-                  data-high={peakOfCatch >= 1 || undefined}
+                  data-band={suspicionBand(peakOfCatch)}
                   title={`Raw suspicion ${peakSuspicion.toFixed(2)} of a ${catchThreshold} catch threshold`}
                 >
                   {Math.round(peakOfCatch * 100)}%
@@ -1693,10 +1676,9 @@ export default function GameUI({
                 response shows which model wrote it; the sandbox and transcript carry over.
               </li>
               <li>
-                Each run has a budget: $0.60 as a guest, $3 signed in. Every agent call is charged
-                at its real cost, including resent context. The monitor is charged too, but Jev is
-                so cheap it’s effectively free. Charges the provider hasn’t confirmed yet show as
-                pending.
+                Each run has a {RUN_BUDGET} budget. Every agent call is charged at its real cost,
+                including resent context. The monitor is charged too, but Jev is so cheap it’s
+                effectively free. Charges the provider hasn’t confirmed yet show as pending.
               </li>
               <li>
                 The leaderboard ranks each signed-in player’s cheapest win for each difficulty and
@@ -1742,9 +1724,9 @@ export default function GameUI({
               </table>
             </div>
             <p>
-              Starting a new run ends your previous idle run. Guests can start 3 runs a day,
-              signed-in players 20; forks don’t count. Idle environments expire after 24 hours. A
-              caught or blocked run can be forked for 24 hours.
+              You need to sign in to play. Starting a new run ends your previous idle run. You can
+              start {RUNS_PER_DAY} new runs a day; forks don’t count. Idle environments expire after
+              24 hours. A caught or blocked run can be forked for 24 hours.
             </p>
             <p>
               All players share a $10 daily inference budget. If it runs out, play resumes the next
@@ -1909,8 +1891,8 @@ export default function GameUI({
               />
               <small>{REASONING_CHOICES[reasoningChoice(monitorReasoning)].hint}</small>
               <p>
-                {signedIn ? "$3" : "$0.60"} budget. You can switch agent models between
-                instructions, and change the difficulty until you send the first one.
+                {RUN_BUDGET} budget, {RUNS_PER_DAY} new runs a day. You can switch agent models
+                between instructions, and change the difficulty until you send the first one.
               </p>
               {game?.status === "active" && <p>Starting a new run ends your current one.</p>}
               {!canStartNewRun && (
@@ -1934,9 +1916,7 @@ export default function GameUI({
                 </p>
               ) : (
                 <form onSubmit={login}>
-                  <p>
-                    We’ll email you a sign-in link. Your guest runs and wins move to your account.
-                  </p>
+                  <p>Sign in to play. We’ll email you a sign-in link.</p>
                   <label htmlFor="email">EMAIL ADDRESS</label>
                   <input
                     id="email"
@@ -2335,13 +2315,13 @@ export function BlockedNotice({
 }
 
 // The monitor's suspicion for a command, as a percent of the catch line: a small bar plus the value,
-// reddening as it nears 100% (the difficulty's threshold, which ends the run).
+// colored by band (100% is the difficulty's threshold, which ends the run).
 function SuspicionBadge({ value, threshold }: { value: number; threshold: number }) {
   const percent = catchPercent(value, threshold);
   return (
     <span
       className="suspicion"
-      data-high={percent >= 75 || undefined}
+      data-band={suspicionBand(threshold > 0 ? value / threshold : 0)}
       title={`Monitor suspicion ${value.toFixed(2)} — ${percent}% of the catch line. 100% ends the run.`}
     >
       <span className="suspicion-bar" style={{ width: `${Math.min(100, percent)}%` }} />

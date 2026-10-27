@@ -27,7 +27,7 @@ test("public landing renders without database access and does not offer sign-in 
   assert.doesNotMatch(html, /href="\/play\?signin=1"/);
   assert.match(html, /\/tmp\/flag\.txt/);
   assert.match(html, /If the monitor blocks a command the run is over/);
-  assert.match(html, /\$0\.60 per run/);
+  assert.match(html, /Sign in to play · \$0\.50 per run · 3 new runs a day/);
   assert.doesNotMatch(html, /Tripwire|tripwire|<textarea/);
 });
 

@@ -34,22 +34,18 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
         return Response.json({ id: "synthetic-resend-id" });
       },
     );
-    const login = await auth.handler(
-      new Request("http://localhost/api/auth/sign-in/anonymous", {
-        method: "POST",
-        headers: { origin: "http://localhost", "Content-Type": "application/json" },
-        body: "{}",
-      }),
-    );
-    assert.equal(login.status, 200);
-    const cookie = login.headers
+    // A guest session from before sign-in was required (HTTP guest sign-in is now closed). It owns
+    // the runs below but can't read them until it signs in, which moves them to the account.
+    const login = await auth.api.signInAnonymous({ returnHeaders: true });
+    const guestCookie = login.headers
       .getSetCookie()
       .map((item) => item.split(";")[0])
       .join("; ");
-    assert.ok(cookie);
-    const session = await auth.api.getSession({ headers: new Headers({ cookie }) });
+    assert.ok(guestCookie);
+    const session = await auth.api.getSession({ headers: new Headers({ cookie: guestCookie }) });
     assert.ok(session);
     const { GET } = await import("../../app/api/games/history/route");
+    let cookie = guestCookie;
     const request = (query = "") =>
       new Request(`http://localhost/api/games/history${query}`, { headers: { cookie } });
     const beforeAnonymousRequest = (await pool.query("SELECT count(*) FROM ctf.games")).rows[0]
@@ -83,6 +79,31 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       VALUES($1,'other-owner',$2,'other-secret','agent','monitor','v1',100)`,
       [foreignId, `other-${foreignId}`],
     );
+    assert.equal((await GET(request())).status, 401, "a guest session can't list runs");
+    const sendLink = async (sessionCookie: string) => {
+      const sent = await auth.handler(
+        new Request("http://localhost/api/auth/sign-in/magic-link", {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            cookie: sessionCookie,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ email, callbackURL: "/" }),
+        }),
+      );
+      assert.equal(sent.status, 200);
+      assert.ok(magicLink);
+      return auth.handler(new Request(magicLink, { headers: { cookie: sessionCookie } }));
+    };
+    const verified = await sendLink(guestCookie);
+    assert.equal(verified.status, 302);
+    const memberCookie = verified.headers
+      .getSetCookie()
+      .map((item) => item.split(";")[0])
+      .join("; ");
+    assert.ok(memberCookie);
+    cookie = memberCookie;
     const first = await GET(request("?limit=2"));
     assert.equal(first.status, 200);
     const firstBody = await first.json();
@@ -221,29 +242,6 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       "latest endpoint retains its one-game response contract",
     );
 
-    const sendLink = async (sessionCookie: string) => {
-      const sent = await auth.handler(
-        new Request("http://localhost/api/auth/sign-in/magic-link", {
-          method: "POST",
-          headers: {
-            origin: "http://localhost",
-            cookie: sessionCookie,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ email, callbackURL: "/" }),
-        }),
-      );
-      assert.equal(sent.status, 200);
-      assert.ok(magicLink);
-      return auth.handler(new Request(magicLink, { headers: { cookie: sessionCookie } }));
-    };
-    const verified = await sendLink(cookie);
-    assert.equal(verified.status, 302);
-    const memberCookie = verified.headers
-      .getSetCookie()
-      .map((item) => item.split(";")[0])
-      .join("; ");
-    assert.ok(memberCookie);
     const memberList = await GET(
       new Request("http://localhost/api/games/history?limit=50", {
         headers: { cookie: memberCookie },

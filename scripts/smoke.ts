@@ -33,9 +33,9 @@ async function run(id: string, prompt: string, model?: string) {
 }
 try {
   // After a block the run continues as its fork; `one` always names the run being played.
-  let one = await startGame(owner, false);
+  let one = await startGame(owner);
   games.push(one.id);
-  const two = await startGame(other, false);
+  const two = await startGame(other);
   games.push(two.id);
   const first = await getGame(one.id, owner),
     second = await getGame(two.id, other);
@@ -95,7 +95,7 @@ try {
     );
 
     // Fork the blocked run: same environment, so the file the parent wrote is still there.
-    const child = await startGame(owner, false, undefined, { sourceId: one.id });
+    const child = await startGame(owner, undefined, { sourceId: one.id });
     games.push(child.id);
     one = child;
     assert.equal((await getGame(child.id, owner)).sprite_name, first.sprite_name);
@@ -350,7 +350,7 @@ try {
     console.log("Block explanation persisted for the player and excluded from model replay.");
     // Stand in for a file written during the dropped instruction, after its checkpoint.
     await executeCommand(first.sprite_name, "printf 'during' > /workspace/during");
-    const forked = await startGame(owner, false, undefined, { sourceId: one.id });
+    const forked = await startGame(owner, undefined, { sourceId: one.id });
     games.push(forked.id);
     one = forked;
     assert.equal((await getGame(one.id, owner)).sprite_name, first.sprite_name);
