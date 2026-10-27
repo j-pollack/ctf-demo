@@ -72,7 +72,7 @@ export const forkIsNewRun = (events: GameEvent[]) =>
 export const catchPercent = (suspicion: number, threshold: number) =>
   threshold > 0 ? Math.min(100, Math.round((suspicion / threshold) * 100)) : 0;
 // Color band for suspicion as a fraction of the catch line: under 40% green, under 70% yellow,
-// under 100% dark orange, and at the line (caught) red. Uses the unrounded ratio, so a band
+// under 100% orange, and at the line (caught) red. Uses the unrounded ratio, so a band
 // matches the catch rule (suspicion >= threshold) even where the shown percent rounds up to 100.
 export function suspicionBand(norm: number) {
   return norm >= 1 ? "caught" : norm >= 0.7 ? "high" : norm >= 0.4 ? "mid" : "low";

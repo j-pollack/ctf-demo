@@ -489,17 +489,18 @@ aside.monitor {
   font-size: 28px;
   font-variant-numeric: tabular-nums;
 }
-/* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 dark orange, caught red. */
+/* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 orange, caught red. */
 [data-band="low"] {
   --band: #4d7c0f;
 }
 [data-band="mid"] {
   --band: #e0a800;
-  /* Yellow text is unreadable on the light paper; numbers use a darker shade of it. */
+  /* Yellow and orange text are unreadable on the light paper; numbers use a darker shade. */
   --band-ink: #8a6e00;
 }
 [data-band="high"] {
-  --band: #c2410c;
+  --band: #f97316;
+  --band-ink: #c2410c;
 }
 [data-band="caught"] {
   --band: #c62828;
