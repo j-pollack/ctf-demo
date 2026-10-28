@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { db } from "../lib/db";
 import { auth } from "../lib/auth";
-import { makeSecret, AGENT_MODEL, MODELS, MONITOR_MODEL, MONITOR_VERSION } from "../lib/policy";
+import { MONITOR_VERSION } from "../lib/control";
+import { makeSecret, AGENT_MODEL, MODELS } from "../lib/policy";
+import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { player } from "../lib/http";
 import { GET as leaderboard } from "../app/api/leaderboard/route";
 
@@ -22,27 +24,34 @@ const origin = process.env.BETTER_AUTH_URL!,
   email = `ctf-auth-${id}@example.invalid`;
 const userIds: string[] = [];
 const gameIds = [id],
-  otherMonitor = `auth-check/${id}`;
+  oldVersion = `auth-check/${id}`;
 const cookies = (response: Response) =>
   response.headers
     .getSetCookie()
     .map((cookie) => cookie.split(";")[0])
     .join("; ");
 try {
-  const guestResponse = await auth.handler(
+  // Guests can't sign in over HTTP any more; a pre-existing guest session is made server-side.
+  const closed = await auth.handler(
     new Request(`${origin}/api/auth/sign-in/anonymous`, {
       method: "POST",
       headers: { origin, "Content-Type": "application/json" },
       body: "{}",
     }),
   );
-  assert.equal(guestResponse.status, 200);
-  const guest = await guestResponse.json();
+  assert.equal(closed.status, 404);
+  const { headers: guestHeaders, response: guestResponse } = await auth.api.signInAnonymous({
+    returnHeaders: true,
+  });
+  const guest = guestResponse!;
   userIds.push(guest.user.id);
-  const guestCookie = cookies(guestResponse);
-  assert.equal(
-    (await player(new Request(origin, { headers: { cookie: guestCookie } }))).signedIn,
-    false,
+  const guestCookie = guestHeaders
+    .getSetCookie()
+    .map((cookie) => cookie.split(";")[0])
+    .join("; ");
+  await assert.rejects(
+    () => player(new Request(origin, { headers: { cookie: guestCookie } })),
+    /Sign in to play/,
   );
   await db.query(
     `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
@@ -53,7 +62,7 @@ try {
       `auth-check-${id}`,
       makeSecret().hash,
       AGENT_MODEL,
-      MONITOR_MODEL,
+      TYPESAFE_MODEL,
       MONITOR_VERSION,
     ],
   );
@@ -68,16 +77,11 @@ try {
   assert.ok(link.startsWith(origin), "sign-in link must use the configured origin");
   const verified = await auth.handler(new Request(link, { headers: { cookie: guestCookie } }));
   assert.equal(verified.status, 302);
+  // Linking keeps the guest's runs on the new account, and the account can play.
   const member = await player(new Request(origin, { headers: { cookie: cookies(verified) } }));
-  assert.equal(member.signedIn, true);
   userIds.push(member.id);
-  const game = await db.query(
-    "SELECT owner_id,token_budget,budget_microdollars FROM ctf.games WHERE id=$1",
-    [id],
-  );
+  const game = await db.query("SELECT owner_id FROM ctf.games WHERE id=$1", [id]);
   assert.equal(game.rows[0].owner_id, member.id);
-  assert.equal(game.rows[0].token_budget, 500000);
-  assert.equal(Number(game.rows[0].budget_microdollars), 3000000);
   await db.query(
     "UPDATE ctf.games SET status='captured',turns=2,tokens_used=100,blocks=1,spent_microdollars=2000 WHERE id=$1",
     [id],
@@ -93,10 +97,10 @@ try {
     pending = randomUUID(),
     archived = randomUUID();
   gameIds.push(cheaper, pending, archived);
-  for (const [gameId, monitor, turns, spend, reserved] of [
-    [cheaper, MONITOR_MODEL, 8, 1000, 0],
-    [pending, MONITOR_MODEL, 1, 0, 100],
-    [archived, otherMonitor, 99, 500, 0],
+  for (const [gameId, version, turns, spend, reserved] of [
+    [cheaper, MONITOR_VERSION, 8, 1000, 0],
+    [pending, MONITOR_VERSION, 1, 0, 100],
+    [archived, oldVersion, 99, 500, 0],
   ] as const) {
     await db.query(
       `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,turns,spent_microdollars,reserved_microdollars)
@@ -107,8 +111,8 @@ try {
         `auth-check-${gameId}`,
         makeSecret().hash,
         AGENT_MODEL,
-        monitor,
-        MONITOR_VERSION,
+        TYPESAFE_MODEL,
+        version,
         turns,
         spend,
         reserved,
@@ -116,25 +120,11 @@ try {
     );
   }
   const operator = `Operator ${createHash("sha256").update(member.id).digest("hex").slice(0, 6)}`;
-  const ranked = await (
-    await leaderboard(
-      new Request(`${origin}/api/leaderboard?monitor=${encodeURIComponent(MONITOR_MODEL)}`),
-    )
-  ).json();
+  const ranked = await (await leaderboard(new Request(`${origin}/api/leaderboard`))).json();
   assert.equal(
     ranked.entries.find((entry: { name: string }) => entry.name === operator)?.turns,
     8,
-    "cheapest settled capture wins, not the pending or fastest capture",
-  );
-  const archive = await (
-    await leaderboard(
-      new Request(`${origin}/api/leaderboard?monitor=${encodeURIComponent(otherMonitor)}`),
-    )
-  ).json();
-  assert.equal(
-    archive.entries.find((entry: { name: string }) => entry.name === operator)?.turns,
-    99,
-    "each monitor has its own board",
+    "cheapest settled capture wins, not the pending, fastest or old-monitor capture",
   );
   await db.query(
     "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
@@ -146,9 +136,7 @@ try {
   );
   const fixed = await (
     await leaderboard(
-      new Request(
-        `${origin}/api/leaderboard?monitor=${encodeURIComponent(MONITOR_MODEL)}&agent=${encodeURIComponent(AGENT_MODEL)}`,
-      ),
+      new Request(`${origin}/api/leaderboard?agent=${encodeURIComponent(AGENT_MODEL)}`),
     )
   ).json();
   assert.equal(

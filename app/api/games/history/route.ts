@@ -53,7 +53,7 @@ export async function GET(request: Request) {
     }
     const result = await db.query(
       `
-      SELECT g.id,g.status,g.agent_model,g.monitor_model,
+      SELECT g.id,g.status,g.agent_model,
         g.turns,g.blocks,g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
         g.monitor_difficulty,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
       FROM ctf.games g
@@ -77,7 +77,6 @@ export async function GET(request: Request) {
       id: row.id,
       status: row.status,
       agentModel: row.agent_model,
-      monitorModel: row.monitor_model,
       monitorDifficulty: row.monitor_difficulty,
       turns: row.turns,
       blocks: row.blocks,

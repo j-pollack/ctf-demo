@@ -33,7 +33,7 @@ export function signInEmailError(error: {
   if (CONFIGURATION.has(error.name ?? "") || error.statusCode === 401 || error.statusCode === 403)
     return {
       status: "SERVICE_UNAVAILABLE",
-      message: "Email sign-in is temporarily unavailable. Continue as a guest for now.",
+      message: "Email sign-in is temporarily unavailable. Try again in a few minutes.",
     } as const;
   // Quota names also arrive as 429, so they are matched above.
   if (error.name === "rate_limit_exceeded" || error.statusCode === 429)

@@ -24,17 +24,11 @@ export async function POST(request: Request) {
     const user = await player(request),
       data = await body(request);
     return Response.json(
-      await startGame(
-        user.id,
-        user.signedIn,
-        typeof data.agentModel === "string" ? data.agentModel : undefined,
-        {
-          monitorModel: data.monitorModel,
-          monitorDifficulty: data.monitorDifficulty,
-          monitorReasoning: data.monitorReasoning,
-          agentEffort: data.agentEffort,
-        },
-      ),
+      await startGame(user.id, typeof data.agentModel === "string" ? data.agentModel : undefined, {
+        monitorDifficulty: data.monitorDifficulty,
+        monitorReasoning: data.monitorReasoning,
+        agentEffort: data.agentEffort,
+      }),
     );
   } catch (error) {
     return errorResponse(error);

@@ -35,6 +35,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     "../../db/migrations/009-monitor-choice.sql",
     "../../db/migrations/010-control-monitor.sql",
     "../../db/migrations/011-agent-effort.sql",
+    "../../db/migrations/012-new-run.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";
@@ -43,7 +44,8 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   const { getMigrations } = await import("better-auth/db/migration");
   await (await getMigrations(auth.options)).runMigrations();
   const { adminStats, isAdmin } = await import("../../lib/admin");
-  const { MODELS, MONITOR_MODEL, MONITOR_VERSION } = await import("../../lib/policy");
+  const { MODELS } = await import("../../lib/policy");
+  const { MONITOR_VERSION } = await import("../../lib/control");
 
   // The flag is SQL-granted only: real Better Auth handlers must refuse it from users.
   const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });
@@ -212,11 +214,11 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   assert.equal(forked.spenders.find((x) => x.who === "two@example.invalid")?.spend, 700_000);
 
   await user("m3", "three@example.invalid", false, "2026-09-04T00:00:00Z");
-  // Runs against other monitors and difficulties; one against an old prompt version never ranks.
+  // Runs against another monitor model and difficulty; one against an old monitor version never ranks.
   await game("m3", "captured", 500_000, 0, 2, 0, { monitor: "mon/b" });
   await game("m3", "captured", 400_000, 0, 3, 0, { difficulty: "easy" });
   await game("m3", "captured", 100_000, 0, 1, 0, { version: "secret-v1" });
-  await game("m3", "captured", 300_000, 0, 5, 0, { monitor: MONITOR_MODEL });
+  await game("m3", "captured", 300_000, 0, 5, 0, { monitor: "mon/c" });
 
   await t.test("capture rate is grouped by monitor model and difficulty", async () => {
     const stats = await adminStats();
@@ -233,56 +235,38 @@ await test("admin stats aggregate real persisted rows", async (t) => {
         ["mon/a", "hard", 6, 3, 5_000_000],
         ["mon/a", "easy", 1, 1, 400_000],
         ["mon/b", "hard", 1, 1, 500_000],
-        [MONITOR_MODEL, "hard", 1, 1, 300_000],
+        ["mon/c", "hard", 1, 1, 300_000],
       ],
     );
   });
 
-  await t.test(
-    "the leaderboard ranks one monitor, difficulty and prompt version at a time",
-    async () => {
-      // The agent filter looks at the whole lineage's inference, not just the last run.
-      const { GET } = await import("../../app/api/leaderboard/route");
-      const get = async (query: string) =>
-        (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()) as {
-          entries: { spend: number; monitor_reasoning: boolean }[];
-        };
-      const spends = async (query: string) => (await get(query)).entries.map((x) => x.spend);
-      const mon = (monitor: string, difficulty = "hard", agent = "") =>
-        `?monitor=${encodeURIComponent(monitor)}&difficulty=${difficulty}${agent}`;
-      assert.deepEqual(await spends(mon("mon/a")), [700_000, 1_000_000]);
-      assert.deepEqual(
-        await spends(mon("mon/a", "hard", "&agent=")),
-        [700_000, 1_000_000],
-        "an empty agent filter, as the board sends for Any, ranks every agent",
-      );
-      assert.deepEqual(await spends(mon("mon/a", "easy")), [400_000]);
-      assert.deepEqual(await spends(mon("mon/b")), [500_000]);
-      assert.deepEqual(await spends(mon("mon/b", "easy")), []);
-      assert.deepEqual(await spends(mon("mon/a", "medium")), []);
-      assert.deepEqual(await spends(""), [300_000], "defaults to the default monitor on hard");
-      assert.deepEqual(await spends(`?difficulty=easy`), [], "default monitor on easy");
-      assert.deepEqual(await spends(mon("nobody/none")), [], "an unknown monitor matches nothing");
-      assert.deepEqual(await spends(mon("mon/a", "extreme")), [], "an unknown difficulty is empty");
-      assert.deepEqual(
-        await spends(mon("mon/a", "hard", "&agent=not%2Fa-model")),
-        [],
-        "an unknown agent is empty",
-      );
-      const body = await get(mon("mon/a"));
-      assert.ok(!("seasons" in body) && !("currentSeasonId" in body));
-      assert.equal(body.entries.find((x) => x.spend === 700_000)?.monitor_reasoning, true);
-      // The agent filter excludes a lineage that used another agent model for any turn.
-      const mine = async (agent: string) =>
-        (await spends(mon("mon/a", "hard", `&agent=${encodeURIComponent(agent)}`))).filter(
-          (x) => x === 700_000,
-        );
-      assert.equal(await mine(MODELS[0]).then((x) => x.length), 0);
-      await pool.query("UPDATE ctf.inference SET model=$2 WHERE game_id=$1", [
-        parentRun,
-        MODELS[0],
-      ]);
-      assert.equal(await mine(MODELS[0]).then((x) => x.length), 1);
-    },
-  );
+  await t.test("the leaderboard ranks one difficulty at a time, current monitor only", async () => {
+    // The agent filter looks at the whole lineage's inference, not just the last run.
+    const { GET } = await import("../../app/api/leaderboard/route");
+    const get = async (query: string) =>
+      (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()) as {
+        entries: { spend: number; monitor_reasoning: boolean }[];
+      };
+    const spends = async (query: string) => (await get(query)).entries.map((x) => x.spend);
+    // Each player's cheapest capture; m3's cheaper old-version capture (100_000) never ranks.
+    assert.deepEqual(await spends(""), [300_000, 700_000, 1_000_000], "defaults to hard");
+    assert.deepEqual(
+      await spends("?difficulty=hard&agent="),
+      [300_000, 700_000, 1_000_000],
+      "an empty agent filter, as the board sends for Any, ranks every agent",
+    );
+    assert.deepEqual(await spends("?difficulty=easy"), [400_000]);
+    assert.deepEqual(await spends("?difficulty=medium"), []);
+    assert.deepEqual(await spends("?difficulty=extreme"), [], "an unknown difficulty is empty");
+    assert.deepEqual(await spends("?agent=not%2Fa-model"), [], "an unknown agent is empty");
+    const body = await get("");
+    assert.ok(!("seasons" in body) && !("currentSeasonId" in body));
+    assert.equal(body.entries.find((x) => x.spend === 700_000)?.monitor_reasoning, true);
+    // The agent filter excludes a lineage that used another agent model for any turn.
+    const mine = async (agent: string) =>
+      (await spends(`?agent=${encodeURIComponent(agent)}`)).filter((x) => x === 700_000);
+    assert.equal(await mine(MODELS[0]).then((x) => x.length), 0);
+    await pool.query("UPDATE ctf.inference SET model=$2 WHERE game_id=$1", [parentRun, MODELS[0]]);
+    assert.equal(await mine(MODELS[0]).then((x) => x.length), 1);
+  });
 });

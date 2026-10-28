@@ -171,7 +171,7 @@ export async function runGame(
     };
   };
   try {
-    const model = await getModel(game.agent_model, "agent");
+    const model = await getModel(game.agent_model);
     const settings = SettingsManager.inMemory({
       compaction: { enabled: false },
       retry: { enabled: false },

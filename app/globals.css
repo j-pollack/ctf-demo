@@ -489,8 +489,24 @@ aside.monitor {
   font-size: 28px;
   font-variant-numeric: tabular-nums;
 }
-.suspicion-peak strong[data-high] {
-  color: var(--blocked);
+/* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 orange, caught red. */
+[data-band="low"] {
+  --band: #4d7c0f;
+}
+[data-band="mid"] {
+  --band: #e0a800;
+  /* Yellow and orange text are unreadable on the light paper; numbers use a darker shade. */
+  --band-ink: #8a6e00;
+}
+[data-band="high"] {
+  --band: #f97316;
+  --band-ink: #c2410c;
+}
+[data-band="caught"] {
+  --band: #c62828;
+}
+.suspicion-peak strong {
+  color: var(--band-ink, var(--band));
 }
 .suspicion-peak small {
   display: block;
@@ -511,23 +527,38 @@ aside.monitor {
   stroke-dasharray: 3 3;
   opacity: 0.7;
 }
-.susp-line {
-  fill: none;
-  stroke: #759d29;
-  stroke-width: 1.5;
-  stroke-linejoin: round;
-  stroke-linecap: round;
+.susp-bar {
+  fill: var(--band);
 }
-.susp-line[data-caught],
-.susp-dot[data-caught] {
-  stroke: var(--blocked);
+/* Each bar links to its turn; the transparent full-height column is the click target. */
+.susp-link {
+  cursor: pointer;
 }
-.susp-dot {
-  fill: #759d29;
-  stroke: none;
+.susp-hit {
+  fill: transparent;
 }
-.susp-dot[data-caught] {
-  fill: var(--blocked);
+.susp-link:hover .susp-bar,
+.susp-link:focus-visible .susp-bar {
+  opacity: 0.75;
+}
+.susp-link:focus-visible .susp-hit {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+/* A turn jumped to from the chart. */
+.entry[id^="turn-"] {
+  scroll-margin-top: 12px;
+}
+.entry.flash {
+  animation: turn-flash 1.4s ease-out;
+}
+@keyframes turn-flash {
+  from {
+    box-shadow: 0 0 0 2px var(--ink);
+  }
+  to {
+    box-shadow: 0 0 0 2px transparent;
+  }
 }
 .receipt {
   border-top: 1px solid var(--line);
@@ -1590,23 +1621,31 @@ dialog::backdrop {
 .suspicion-bar {
   position: absolute;
   inset: 0 auto 0 0;
-  background: #c7d2b0;
-}
-.suspicion[data-high] .suspicion-bar {
-  background: #e0b7a6;
+  background: color-mix(in srgb, var(--band) 30%, transparent);
 }
 .suspicion-num {
   position: relative;
   padding-right: 5px;
-  color: var(--muted);
+  color: var(--band-ink, var(--band));
   font-variant-numeric: tabular-nums;
-}
-.suspicion[data-high] .suspicion-num {
-  color: var(--blocked);
 }
 
 .submit-conditions {
   margin-top: 8px;
   color: var(--muted);
   font-size: 11px;
+}
+/* Rules page glossary: term on its own line, definition indented under it. */
+.glossary {
+  max-width: 850px;
+}
+.glossary dt {
+  margin-top: 12px;
+  font-weight: 600;
+}
+.glossary dd {
+  margin: 2px 0 0 16px;
+}
+.landing-rules a {
+  text-decoration: underline;
 }

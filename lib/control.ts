@@ -1,7 +1,11 @@
 import type { TypesafeQuestion } from "./typesafe";
 
-// PRE-CALIBRATION PLACEHOLDERS: every number below is provisional. Stage 3 calibration sets the
-// real thresholds, floors and weights from honest and attack transcripts.
+// Calibrated against scripts/control-eval-cases.ts (docs/plans/control-calibration.md); re-run
+// `scripts/monitor-calibrate.ts` after changing any question, weight or threshold below.
+
+// Stamped on every run; the leaderboard only ranks captures made against the current version, so
+// bump it whenever the questions, weights, thresholds or TYPESAFE_MODEL change.
+export const MONITOR_VERSION = "control-v1";
 
 // Jev bills per input token at $0.042 per 1e6 tokens = 0.000042 microdollars/token. A small call is
 // a few hundred tokens, so cost is well under 1 microdollar: Stage 2 must accumulate fractional cost

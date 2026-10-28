@@ -2,23 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
-import { MONITOR_TOKEN_MICRODOLLARS } from "./control";
-import { getModel } from "./inference";
-import {
-  AGENT_MODEL,
-  MODELS,
-  DAILY_CAP_MICRODOLLARS,
-  GUEST_BUDGET_MICRODOLLARS,
-  MEMBER_BUDGET_MICRODOLLARS,
-  GameError,
-  makeSecret,
-  MONITOR_MODEL,
-  MONITOR_MODELS,
-  MONITOR_VERSION,
-} from "./policy";
+import { MONITOR_TOKEN_MICRODOLLARS, MONITOR_VERSION } from "./control";
+import { AGENT_MODEL, MODELS, DAILY_CAP_MICRODOLLARS, GameError, makeSecret } from "./policy";
+import { TYPESAFE_MODEL } from "./typesafe";
 import {
   AGENT_EFFORTS,
   MONITOR_DIFFICULTIES,
+  RUN_BUDGET_MICRODOLLARS,
+  RUNS_PER_DAY,
   type AgentEffort,
   type GameEvent,
   type GameStatus,
@@ -75,14 +66,13 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,agent_effort,monitor_model,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,sprite_deleted_at,updated_at";
+  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,sprite_deleted_at,updated_at";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
   | "status"
   | "agent_model"
   | "agent_effort"
-  | "monitor_model"
   | "system_prompt"
   | "token_budget"
   | "tokens_used"
@@ -162,7 +152,6 @@ export async function publicGame(game: PublicGameRow, afterEventId = 0): Promise
     status: game.status,
     agentModel: game.agent_model,
     agentEffort: game.agent_effort,
-    monitorModel: game.monitor_model,
     monitorDifficulty: game.monitor_difficulty,
     systemPrompt: game.system_prompt,
     tokenBudget: game.token_budget,
@@ -241,28 +230,19 @@ export async function cleanup() {
   );
 }
 export type MonitorOptions = {
-  monitorModel?: unknown;
   monitorDifficulty?: unknown;
   monitorReasoning?: unknown;
 };
 // The one validator for a player's monitor choice (new run and first instruction). Fields the
 // player did not send stay undefined so each caller can apply its own default. Nothing here touches
 // the database, so a rejection never takes a lease or creates a run.
-export async function checkMonitor(options: MonitorOptions) {
-  const {
-    monitorModel: model,
-    monitorDifficulty: difficulty,
-    monitorReasoning: reasoning,
-  } = options;
-  if (model !== undefined && (typeof model !== "string" || !MONITOR_MODELS.includes(model)))
-    throw new GameError("Unsupported monitor model.");
+export function checkMonitor(options: MonitorOptions) {
+  const { monitorDifficulty: difficulty, monitorReasoning: reasoning } = options;
   if (difficulty !== undefined && !MONITOR_DIFFICULTIES.some((item) => item === difficulty))
     throw new GameError("Choose a monitor difficulty: easy, medium or hard.");
   if (reasoning !== undefined && typeof reasoning !== "boolean")
     throw new GameError("monitorReasoning must be true or false.");
-  if (typeof model === "string") await getModel(model, "monitor"); // 503 when OpenRouter can't serve it.
   return {
-    model: model as string | undefined,
     difficulty: difficulty as MonitorDifficulty | undefined,
     reasoning: reasoning as boolean | undefined,
   };
@@ -275,7 +255,6 @@ function checkEffort(effort: unknown) {
 }
 export async function startGame(
   ownerId: string,
-  signedIn: boolean,
   agentModel: string = AGENT_MODEL,
   options: MonitorOptions & { sourceId?: string; agentEffort?: unknown } = {},
 ) {
@@ -286,7 +265,7 @@ export async function startGame(
     throw new GameError("Unsupported agent model.");
   const effort = checkEffort(options.agentEffort);
   // Before cleanup and admission: a bad choice must neither create a run nor end the current one.
-  const monitor = await checkMonitor(options);
+  const monitor = checkMonitor(options);
   await cleanup();
   // cleanup() reconciles resolvable holds; for a fork, finalize any that remain on the terminal
   // source run (e.g. a disconnected agent call) so the fork isn't blocked on billing that would
@@ -336,18 +315,6 @@ export async function startGame(
     );
     if (count.rows[0].total >= 10)
       throw new GameError("All environments are busy. Try again in a few minutes.", 429);
-    // A fork reuses its parent's sprite, so it takes no new-run quota.
-    const starts = await client.query(
-      "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND forked_from IS NULL AND created_at > now()-interval '24 hours'",
-      [ownerId],
-    );
-    if (!sourceId && starts.rows[0].total >= (signedIn ? 20 : 3))
-      throw new GameError("You’ve reached your daily limit of new runs.", 429);
-    const totalStarts = await client.query(
-      "SELECT count(*)::int AS total FROM ctf.games WHERE forked_from IS NULL AND created_at>now()-interval '24 hours'",
-    );
-    if (!sourceId && totalStarts.rows[0].total >= 100)
-      throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
     let source: GameRow | undefined;
     let cut: ReturnType<typeof forkBeforeLastInstruction> | undefined;
     if (sourceId) {
@@ -384,6 +351,22 @@ export async function startGame(
         throw new GameError("This run can’t be safely forked.", 409);
       }
     }
+    // A fresh start takes new-run quota, and so does a fork that keeps no earlier instruction (it
+    // goes back to the run's very start). A fork that keeps some of the run is free.
+    const newRun = !cut || !cut.events.some((event) => event.kind === "user");
+    if (newRun) {
+      const starts = await client.query(
+        "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours'",
+        [ownerId],
+      );
+      if (starts.rows[0].total >= RUNS_PER_DAY)
+        throw new GameError("You’ve reached your daily limit of new runs.", 429);
+      const totalStarts = await client.query(
+        "SELECT count(*)::int AS total FROM ctf.games WHERE new_run AND created_at>now()-interval '24 hours'",
+      );
+      if (totalStarts.rows[0].total >= 100)
+        throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
+    }
     await client.query(
       "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE owner_id=$1 AND status IN ('creating','active')",
       [ownerId],
@@ -391,20 +374,19 @@ export async function startGame(
     // A fork is born `creating` on its parent's sprite and secret, carrying the parent's whole
     // account; it turns active once the sprite is restored to the dropped instruction's checkpoint.
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
       [
         id,
         ownerId,
         source?.sprite_name ?? `ctf-${id}`,
         source?.secret_hash ?? hash,
         source?.agent_model ?? agentModel,
-        source?.monitor_model ?? monitor.model ?? MONITOR_MODEL,
+        TYPESAFE_MODEL,
         source?.monitor_difficulty ?? monitor.difficulty ?? "hard",
-        source?.monitor_version ?? MONITOR_VERSION,
-        source?.token_budget ?? (signedIn ? 500000 : 100000),
-        source?.budget_microdollars ??
-          (signedIn ? MEMBER_BUDGET_MICRODOLLARS : GUEST_BUDGET_MICRODOLLARS),
+        MONITOR_VERSION,
+        source?.token_budget ?? 500000,
+        source?.budget_microdollars ?? RUN_BUDGET_MICRODOLLARS,
         source?.system_prompt ?? "",
         source?.monitor_reasoning ?? monitor.reasoning ?? true,
         "creating",
@@ -416,6 +398,7 @@ export async function startGame(
         source?.tokens_used ?? 0,
         source?.spent_microdollars ?? 0,
         source?.agent_effort ?? effort ?? "medium",
+        newRun,
       ],
     );
     // The player-visible history up to the dropped instruction is copied as it was.
@@ -482,7 +465,7 @@ export async function claimGame(
     (typeof systemPrompt !== "string" || systemPrompt.length > 8192)
   )
     throw new GameError("Enter a system prompt of up to 8,192 characters.");
-  const monitor = await checkMonitor(monitorOptions);
+  const monitor = checkMonitor(monitorOptions);
   await getGame(id, ownerId);
   const lease = randomUUID();
   // The monitor choice only applies until the run's first instruction was recorded; afterwards the
@@ -490,10 +473,9 @@ export async function claimGame(
   const open =
     "NOT EXISTS(SELECT 1 FROM ctf.events e WHERE e.game_id=g.id AND e.data->>'kind'='user')";
   const { rows } = await db.query<GameRow>(
-    `UPDATE ctf.games g SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),agent_model=coalesce($4,agent_model),agent_effort=coalesce($9,agent_effort),system_prompt=coalesce($5,system_prompt),
-      monitor_model=CASE WHEN $6::text IS NOT NULL AND ${open} THEN $6 ELSE monitor_model END,
-      monitor_difficulty=CASE WHEN $7::text IS NOT NULL AND ${open} THEN $7 ELSE monitor_difficulty END,
-      monitor_reasoning=CASE WHEN $8::boolean IS NOT NULL AND ${open} THEN $8 ELSE monitor_reasoning END
+    `UPDATE ctf.games g SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),agent_model=coalesce($4,agent_model),agent_effort=coalesce($8,agent_effort),system_prompt=coalesce($5,system_prompt),
+      monitor_difficulty=CASE WHEN $6::text IS NOT NULL AND ${open} THEN $6 ELSE monitor_difficulty END,
+      monitor_reasoning=CASE WHEN $7::boolean IS NOT NULL AND ${open} THEN $7 ELSE monitor_reasoning END
     WHERE g.id=$1 AND owner_id=$2 AND status='active' AND (lease_until IS NULL OR lease_until<now()) RETURNING g.*`,
     [
       id,
@@ -501,7 +483,6 @@ export async function claimGame(
       lease,
       agentModel ?? null,
       systemPrompt === undefined ? null : systemPrompt.trim() ? systemPrompt : "",
-      monitor.model ?? null,
       monitor.difficulty ?? null,
       monitor.reasoning ?? null,
       effort ?? null,
