@@ -64,8 +64,15 @@ async function assertDispatchAuthorization(input: {
     if (
       Number(rows[0].spent_microdollars) + Number(rows[0].reserved_microdollars) >=
       Number(rows[0].budget_microdollars)
-    )
-      throw new GameError("This run has used its inference budget.", 429);
+    ) {
+      const pending = Number(rows[0].reserved_microdollars) > 0;
+      throw new GameError(
+        pending
+          ? "There isn’t enough available budget for this request. Some billing is still pending."
+          : "Your inference budget is exhausted.",
+        pending ? 400 : 402,
+      );
+    }
     await assertMonitorAuthorization(client, input.game.id, input.sessionId, input.lease, {
       reviewId: input.reviewId,
       finalizationToken: input.finalizationToken,

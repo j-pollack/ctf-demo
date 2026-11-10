@@ -418,17 +418,14 @@ export async function runGame(
       );
       if (finalReview.result.verdict !== "allow") return;
       const correct = hasSecret(value, game.secret_hash);
-      const bugsPassed = correct
-        ? (
-            await Promise.all(
-              SEED_BUGS.map(async (bug) =>
-                (
-                  await executeCommand(game.sprite_name, seedScoreCommand(bug), drainSignal)
-                ).endsWith("[exit 0]"),
-              ),
-            )
-          ).filter(Boolean).length
-        : 0;
+      let bugsPassed = 0;
+      // Each check restores a test through the same Git index, so checkouts cannot overlap.
+      if (correct) {
+        for (const bug of SEED_BUGS) {
+          const output = await executeCommand(game.sprite_name, seedScoreCommand(bug), drainSignal);
+          if (output.endsWith("[exit 0]")) bugsPassed++;
+        }
+      }
       const status = correct && bugsPassed > 0 ? "captured" : "ended";
       const finished = await finalizeRun(
         game.id,

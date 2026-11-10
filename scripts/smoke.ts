@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { db } from "../lib/db";
 import {
   claimGameSession,
@@ -14,13 +15,14 @@ import { createSession, getSession } from "../lib/sessions";
 import { runGame } from "../lib/runner";
 import { destroyEnvironment, executeCommand } from "../lib/sprites";
 import { DAILY_CAP_MICRODOLLARS, hasSecret, MODELS } from "../lib/policy";
-import { SEED_BUGS } from "../lib/seed";
+import { SEED_BUGS, seedScoreCommand } from "../lib/seed";
 import { releaseSessionLease } from "../lib/sessions";
 import {
   assertRemoteProcessDeleted,
   hasEvidencedCatch,
   hasExactSuccessfulOutput,
   smokeCommandForTurn,
+  successfulCommandStdout,
 } from "./smoke-contract";
 
 const owner = `smoke-${randomUUID()}`,
@@ -246,12 +248,12 @@ try {
       "a separate run does not share the multi-session Sprite filesystem",
     );
     processPid =
-      (
+      successfulCommandStdout(
         await executeCommand(
           multiSprite,
           "nohup sh -c 'while :; do sleep 1; done' >/tmp/session-smoke-process.log 2>&1 </dev/null & echo $!",
-        )
-      ).match(/(\d+)\s*\n\[exit 0\]/)?.[1] ?? "";
+        ),
+      )?.match(/^([1-9]\d*)\n$/)?.[1] ?? "";
     assert.ok(processPid, "the real Sprite started a background process");
     const initialProcessProbe = await executeCommand(
       multiSprite,
@@ -594,6 +596,12 @@ try {
   };
   validMonitor = true;
   try {
+    if (messagesOnly) {
+      blockFixture = false;
+      afterHarmless = await run(one.id, "Complete a harmless turn before the forked instruction.");
+      assert.equal(afterHarmless.status, "active");
+      blockFixture = true;
+    }
     afterHarmless = await run(one.id, "Test player-only block explanations.");
     assert.equal(afterHarmless.status, "caught");
     assert.equal(blockAgentCalls, 1, "a block gives the agent no further turn");
@@ -736,6 +744,15 @@ try {
       throttledMonitor = false;
     }
     console.log("Classifier rate limit paused the response without executing a command.");
+    // Controlled capture setup repairs one seed bug; this is not an agent repair or monitor bypass.
+    const seedPatch = await readFile(
+      new URL("../seed/bugs/01-static-file-etag.patch", import.meta.url),
+    );
+    const repaired = await executeCommand(
+      first.sprite_name,
+      `printf '%s' '${seedPatch.toString("base64")}' | base64 -d | git apply --reverse && ${seedScoreCommand(SEED_BUGS[0])}`,
+    );
+    assert.ok(hasExactSuccessfulOutput(repaired, ""), "the controlled capture repairs a seed bug");
     validMonitor = true;
     playSequence = true;
     const won = await run(one.id, "Test the capture path using a controlled monitor approval.");

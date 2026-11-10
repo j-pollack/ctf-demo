@@ -178,6 +178,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let typesafeTokens = 100;
   // Exit code of each SEED_BUGS test in the sprite; one fixed bug by default.
   let seedExits = [0, 1, 1, 1];
+  let simulateSeedIndexLock = false;
+  const seedIndexLocks = new Set<string>();
   // Runs inside the next agent request, so a test can change the world after the agent is admitted.
   let onAgentRequest: (() => Promise<void>) | undefined;
   let beforeInvestigatorResponse:
@@ -327,7 +329,23 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
               args[5] === "printf shared-session-file > /workspace/shared-session-file"),
           "Unexpected fixture command",
         );
-        if (seedBug >= 0) return { stdout: "", stderr: "", exitCode: seedExits[seedBug] };
+        if (seedBug >= 0) {
+          if (simulateSeedIndexLock) {
+            if (seedIndexLocks.has(this.name))
+              return {
+                stdout: "",
+                stderr: "fatal: Unable to create .git/index.lock: File exists",
+                exitCode: 128,
+              };
+            seedIndexLocks.add(this.name);
+            try {
+              await new Promise<void>((resolve) => setImmediate(resolve));
+            } finally {
+              seedIndexLocks.delete(this.name);
+            }
+          }
+          return { stdout: "", stderr: "", exitCode: seedExits[seedBug] };
+        }
         if (
           smokeTurnFixture &&
           args[5] === "printf shared-session-file > /workspace/shared-session-file"
@@ -745,6 +763,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     smokeTurnFixture = false;
     typesafeTokens = 100;
     seedExits = [0, 1, 1, 1];
+    simulateSeedIndexLock = false;
+    seedIndexLocks.clear();
     onAgentRequest = undefined;
     beforeInvestigatorResponse = undefined;
     beforeTypesafeResponse = undefined;
@@ -4352,6 +4372,23 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       );
     },
   );
+  await t.test("seed scoring avoids shared Git index lock contention", async () => {
+    simulateSeedIndexLock = true;
+    seedExits = [1, 0, 1, 1];
+    const { game, done } = await submitRun("seed-index-lock");
+    assert.equal(
+      done.status,
+      "captured",
+      "a repaired bug must not be skipped by a concurrent checkout",
+    );
+    assert.deepEqual(
+      commands.map(({ command }) => command),
+      seedTests,
+    );
+    const submit = await submitEvent(game.id);
+    assert.equal(submit.correct, true);
+    assert.equal(submit.bugsPassed, 1);
+  });
   await t.test("every fixed bug counts", async () => {
     seedExits = [0, 0, 0, 0];
     const { game, done } = await submitRun("all-bugs");
@@ -4514,12 +4551,51 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       );
     },
   );
+  for (const billing of ["settled", "pending"] as const) {
+    await t.test(`classifier admission distinguishes ${billing} run budget`, async () => {
+      const owner = `classifier-budget-${billing}`;
+      const game = await startGame(owner);
+      const leased = await claimGame(game.id, owner);
+      const held = await reserveInference(
+        game.id,
+        leased.lease,
+        "agent",
+        leased.agent_model,
+        100,
+        64,
+        0.000001,
+        0.000001,
+        { sessionId: game.id },
+      );
+      if (billing === "settled")
+        await settleInference(held.id, { tokens: 164, cost: held.cost / 1_000_000 });
+      await pool.query(
+        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+reserved_microdollars WHERE id=$1",
+        [game.id],
+      );
+      await releaseSessionLease(game.id, game.id, leased.lease!);
+      const finished = await play(game.id, owner);
+      assert.equal(finished.status, billing === "settled" ? "exhausted" : "active");
+      assert.equal(Boolean(finished.sprite_deleted_at), billing === "settled");
+      assert.equal(environments.has(finished.sprite_name), billing === "pending");
+      assert.equal(requests.length, 0, "no model inference was dispatched");
+      assert.equal(typesafe.length, 0, "no classifier request was dispatched");
+      assert.deepEqual(commands, []);
+      assert.equal(Number(finished.reserved_microdollars), billing === "pending" ? held.cost : 0);
+      const error = (await eventsOf(game.id)).map((event) => event.data).at(-1);
+      assert.equal(error.kind, "error");
+      assert.match(error.text, billing === "pending" ? /billing is still pending/ : /exhausted/);
+    });
+  }
   await t.test("the daily cap stops the monitor before any command or agent turn", async () => {
     const game = await startGame("cap-first");
     await pool.query(capped);
     const finished = await play(game.id, "cap-first");
     assert.equal(finished.status, "active");
-    assert.equal(requests.length, 0, "no agent turn");
+    assert.equal(finished.sprite_deleted_at, null);
+    assert.ok(environments.has(finished.sprite_name));
+    assert.equal(requests.length, 0, "no model inference was dispatched");
+    assert.equal(typesafe.length, 0, "no classifier request was dispatched");
     assert.deepEqual(commands, []);
     const events = (await eventsOf(game.id)).map((event) => event.data);
     assert.match(events.at(-1).text, /shared inference budget/);

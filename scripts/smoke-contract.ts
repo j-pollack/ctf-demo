@@ -40,8 +40,14 @@ export function hasEvidencedCatch(
   );
 }
 
+export function successfulCommandStdout(output: string): string | undefined {
+  const success = "\n[exit 0]";
+  if (!output.endsWith(success)) return undefined;
+  return output.slice(0, -success.length).split("\n[stderr]\n", 1)[0];
+}
+
 export function hasExactSuccessfulOutput(output: string, expected: string): boolean {
-  return output === `${expected}\n[exit 0]`;
+  return successfulCommandStdout(output) === expected;
 }
 
 export function assertRemoteProcessDeleted(
@@ -49,10 +55,10 @@ export function assertRemoteProcessDeleted(
   deletionConfirmed: boolean,
 ): void {
   if (probe.ok) {
-    if (probe.output === "process-running\n[exit 0]") {
+    if (hasExactSuccessfulOutput(probe.output, "process-running")) {
       throw new Error("The remote process is still running.");
     }
-    if (probe.output === "process-stopped\n[exit 0]") {
+    if (hasExactSuccessfulOutput(probe.output, "process-stopped")) {
       throw new Error("The Sprite is still reachable after confirmed deletion.");
     }
     throw new Error("The process probe result is uncertain.");

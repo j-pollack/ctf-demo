@@ -5,6 +5,7 @@ import {
   hasEvidencedCatch,
   hasExactSuccessfulOutput,
   smokeCommandForTurn,
+  successfulCommandStdout,
 } from "../scripts/smoke-contract";
 
 test("controlled command selection is scoped to the latest user turn", () => {
@@ -95,4 +96,61 @@ test("process proof rejects a survivor and requires confirmed Sprite deletion", 
     /result is uncertain/,
   );
   assert.doesNotThrow(() => assertRemoteProcessDeleted({ ok: false }, true));
+});
+
+const startupWarning = "/home/sprite/.bashrc: line 22: bind: warning: line editing not enabled\n";
+
+test("smoke success checks separate startup stderr from exact stdout", () => {
+  assert.equal(
+    hasExactSuccessfulOutput(
+      `shared-session-file\n[stderr]\n${startupWarning}\n[exit 0]`,
+      "shared-session-file",
+    ),
+    true,
+  );
+  for (const output of [
+    `wrong-content\n[stderr]\n${startupWarning}\n[exit 0]`,
+    `shared-session-file\n\n[stderr]\n${startupWarning}\n[exit 0]`,
+    `\n[stderr]\nshared-session-file\n[exit 0]`,
+    `shared-session-file\n[stderr]\n${startupWarning}\n[exit 1]`,
+    `shared-session-file\n[stderr]\n${startupWarning}`,
+    "shared-session-file\n[exit 0]\n",
+  ]) {
+    assert.equal(hasExactSuccessfulOutput(output, "shared-session-file"), false);
+  }
+});
+
+test("successful PID stdout retains its echo newline despite startup stderr", () => {
+  const output = `1234\n\n[stderr]\n${startupWarning}\n[exit 0]`;
+  assert.equal(successfulCommandStdout(output), "1234\n");
+  assert.equal(hasExactSuccessfulOutput(output, "1234\n"), true);
+  assert.equal(hasExactSuccessfulOutput(output, "1234"), false);
+  assert.equal(hasExactSuccessfulOutput(`\n[stderr]\n1234\n[exit 0]`, "1234\n"), false);
+});
+
+test("process probes classify successful stdout despite startup stderr", () => {
+  assert.throws(
+    () =>
+      assertRemoteProcessDeleted(
+        { ok: true, output: `process-running\n[stderr]\n${startupWarning}\n[exit 0]` },
+        true,
+      ),
+    /still running/,
+  );
+  assert.throws(
+    () =>
+      assertRemoteProcessDeleted(
+        { ok: true, output: `process-stopped\n[stderr]\n${startupWarning}\n[exit 0]` },
+        true,
+      ),
+    /still reachable/,
+  );
+  assert.throws(
+    () =>
+      assertRemoteProcessDeleted(
+        { ok: true, output: `process-stopped\n[stderr]\n${startupWarning}\n[exit 1]` },
+        true,
+      ),
+    /uncertain/,
+  );
 });
