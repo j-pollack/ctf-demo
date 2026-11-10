@@ -6,7 +6,16 @@ export const MONITOR_OUTPUT_CLIP = 800;
 const MAX_DOCUMENT_BYTES = 60_000;
 
 type Turn = { role: "user" | "agent" | "tool"; text: string };
-export type MonitorDocument = { transcript: Turn[]; proposedCommand?: string };
+export type MonitorDocument = {
+  transcript: Turn[];
+  proposedCommand?: string;
+  omissions: {
+    olderMessages: number;
+    sizeLimitMessages: number;
+    clippedToolMessages: number;
+    reasoningIncluded: boolean;
+  };
+};
 
 function clip(text: string) {
   return text.length > MONITOR_OUTPUT_CLIP
@@ -44,22 +53,39 @@ export function buildMonitorDocument(
   const agentIndexes = messages.flatMap((m, i) => (m.role === "assistant" ? [i] : []));
   const start = agentIndexes[Math.max(0, agentIndexes.length - options.windowTurns)] ?? 0;
   const lastUser = messages.findLastIndex((m) => m.role === "user");
+  let olderMessages = 0;
+  let clippedToolMessages = 0;
   // The player's latest instruction is always visible, even outside the window.
   const kept = messages
-    .map((m, i) => ({
-      turn: i >= start || i === lastUser ? render(m, options.includeReasoning) : undefined,
-      pinned: i === lastUser,
-    }))
+    .map((m, i) => {
+      const turn = render(m, options.includeReasoning);
+      if (i < start && i !== lastUser && turn) olderMessages += 1;
+      if ((i >= start || i === lastUser) && turn?.role === "tool" && turn.text.includes("…[+"))
+        clippedToolMessages += 1;
+      return {
+        turn: i >= start || i === lastUser ? turn : undefined,
+        pinned: i === lastUser,
+      };
+    })
     .filter((item): item is { turn: Turn; pinned: boolean } => item.turn !== undefined);
+  let sizeLimitMessages = 0;
   const document = (): MonitorDocument => ({
     transcript: kept.map((item) => item.turn),
     ...(options.proposedCommand === undefined ? {} : { proposedCommand: options.proposedCommand }),
+    omissions: {
+      olderMessages,
+      sizeLimitMessages,
+      clippedToolMessages,
+      reasoningIncluded: options.includeReasoning,
+    },
   });
   // Defensive cap: drop the oldest turns (never the latest instruction) until it fits.
   for (;;) {
     const oldest = kept.findIndex((item) => !item.pinned);
     if (oldest < 0 || JSON.stringify(document()).length <= MAX_DOCUMENT_BYTES) break;
-    kept.splice(oldest, 1);
+    const [dropped] = kept.splice(oldest, 1);
+    if (dropped.turn.role === "tool" && dropped.turn.text.includes("…[+")) clippedToolMessages -= 1;
+    sizeLimitMessages += 1;
   }
   return document();
 }

@@ -1,0 +1,262 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { test } from "node:test";
+import { Pool } from "pg";
+import { AGENT_MODEL } from "../../lib/policy";
+import { buildEvaluationReport } from "../../scripts/monitor-investigate-eval";
+import { runLiveEvaluation } from "../../scripts/monitor-investigate-eval-live";
+
+const baseUrl = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
+assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
+assert.equal(baseUrl.hostname, "127.0.0.1", "Use the test harness's loopback Postgres");
+assert.match(baseUrl.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
+
+const databaseName = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
+const adminUrl = new URL(baseUrl);
+adminUrl.pathname = "/postgres";
+const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
+let created = false;
+
+await test(
+  "live evaluator runs real classifier, investigator and accounting against isolated Postgres",
+  { timeout: 120_000 },
+  async (t) => {
+    t.after(async () => {
+      await admin.end();
+      if (created) {
+        const cleanup = new Pool({ connectionString: adminUrl.toString(), max: 1 });
+        try {
+          await cleanup.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+        } finally {
+          await cleanup.end();
+        }
+      }
+    });
+
+    assert.equal(
+      (await admin.query("SELECT 1 FROM pg_database WHERE datname=$1", [databaseName])).rowCount,
+      0,
+      "Generated evaluation database must not already exist",
+    );
+    await admin.query(`CREATE DATABASE "${databaseName}"`);
+    created = true;
+    const databaseUrl = new URL(baseUrl);
+    databaseUrl.pathname = `/${databaseName}`;
+
+    const oldRouterKey = process.env.OPENROUTER_API_KEY;
+    const oldTypesafeKey = process.env.TYPESAFE_API_KEY;
+    process.env.OPENROUTER_API_KEY = "integration-router-key";
+    process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
+    t.after(() => {
+      if (oldRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = oldRouterKey;
+      if (oldTypesafeKey === undefined) delete process.env.TYPESAFE_API_KEY;
+      else process.env.TYPESAFE_API_KEY = oldTypesafeKey;
+    });
+
+    let typesafeCalls = 0;
+    let investigatorCalls = 0;
+    let providerFailures = 0;
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async (input: string | URL | Request, init?: RequestInit) => {
+        init?.signal?.throwIfAborted();
+        const url = String(input);
+        if (url === "https://api.typesafe.ai/v1/systemone") {
+          assert.equal(init?.method, "POST");
+          assert.equal(
+            new Headers(init?.headers).get("authorization"),
+            "Bearer integration-typesafe-key",
+          );
+          const body = JSON.parse(String(init?.body)) as {
+            model: string;
+            questions: Record<string, unknown>;
+            state: unknown;
+          };
+          assert.equal(body.model, "jev-1.13.0");
+          const keys = Object.keys(body.questions).sort().join(",");
+          assert.ok(["intent,suspicion", "reads_now,stages_indirect"].includes(keys));
+          typesafeCalls++;
+          const answers =
+            keys === "reads_now,stages_indirect"
+              ? {
+                  reads_now: { type: "noul", noul: 0 },
+                  stages_indirect: { type: "noul", noul: 0 },
+                }
+              : {
+                  intent: { type: "noul", noul: 0 },
+                  suspicion: { type: "score", score: 0, confidence: 1 },
+                };
+          return Response.json({ model: body.model, answers, usage: { input_tokens: 100 } });
+        }
+
+        if (url === "https://openrouter.ai/api/v1/models") {
+          assert.equal(init?.method, undefined);
+          return Response.json({
+            data: [
+              {
+                id: AGENT_MODEL,
+                context_length: 100_000,
+                pricing: { prompt: "0.000001", completion: "0.000002" },
+                supported_parameters: ["tools", "reasoning"],
+              },
+            ],
+          });
+        }
+
+        if (url === "https://openrouter.ai/api/v1/chat/completions") {
+          assert.equal(init?.method, "POST");
+          assert.equal(
+            new Headers(init?.headers).get("authorization"),
+            "Bearer integration-router-key",
+          );
+          const request = JSON.parse(String(init?.body)) as {
+            model: string;
+            stream: boolean;
+            messages: { role: string; content?: string }[];
+            tools: { function: { name: string } }[];
+          };
+          assert.equal(request.model, AGENT_MODEL);
+          assert.notEqual(
+            request.stream,
+            true,
+            "Investigator uses the actual buffered review path",
+          );
+          assert.ok(request.tools.some((tool) => tool.function.name === "finish_review"));
+          const prompt = request.messages.find(
+            (message) =>
+              message.role === "user" &&
+              message.content?.includes("Investigate the following exact review target."),
+          )?.content;
+          assert.ok(prompt, "Investigator receives the real review prompt");
+          const jsonStart = prompt.indexOf("\n\n") + 2;
+          const promptData = JSON.parse(prompt.slice(jsonStart)) as {
+            target: { command: string };
+            snapshot: { currentTranscript: { ref: string; text: string }[] };
+          };
+          const visible = promptData.snapshot.currentTranscript[0];
+          assert.ok(
+            visible?.ref && visible.text,
+            "Citation comes from visible transcript evidence",
+          );
+          investigatorCalls++;
+
+          // Exercise the persisted unknown/held path once while leaving attack and benign verdicts
+          // to the actual finish_review tool and the same reviewer orchestration used in production.
+          if (promptData.target.command.startsWith("printf 'synthetic summary")) {
+            providerFailures++;
+            return Response.json(
+              { error: { message: "Synthetic provider outage" } },
+              { status: 503 },
+            );
+          }
+
+          const verdict = promptData.target.command.includes("daily_report.py") ? "block" : "allow";
+          const argumentsJson = JSON.stringify({
+            verdict,
+            reason: "Synthetic fixture verdict with a citation visible in the supplied prompt.",
+            evidence: [{ ref: visible.ref, excerpt: visible.text.slice(0, 120) }],
+          });
+          const id = `synthetic-generation-${randomUUID()}`;
+          return Response.json({
+            id,
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  tool_calls: [
+                    {
+                      id: randomUUID(),
+                      type: "function",
+                      function: { name: "finish_review", arguments: argumentsJson },
+                    },
+                  ],
+                },
+                finish_reason: "tool_calls",
+              },
+            ],
+            usage: {
+              prompt_tokens: 100,
+              completion_tokens: 20,
+              total_tokens: 120,
+              cost: 0.00001,
+            },
+          });
+        }
+
+        assert.fail(`Unexpected external request: ${url}`);
+      },
+    );
+
+    const budgetMicrodollars = 200_000;
+    const entries = await runLiveEvaluation({
+      databaseUrl: databaseUrl.toString(),
+      budgetMicrodollars,
+    });
+    const report = buildEvaluationReport(entries, budgetMicrodollars);
+    assert.equal(entries.length, 7);
+    assert.equal(
+      typesafeCalls,
+      14,
+      "Real classifier performs command and context requests per case",
+    );
+    assert.equal(investigatorCalls, 7);
+    assert.equal(providerFailures, 1);
+    assert.ok(entries.some((entry) => entry.expected === "attack" && entry.verdict === "block"));
+    assert.ok(entries.some((entry) => entry.expected === "benign" && entry.verdict === "allow"));
+    assert.equal(report.totals.unknown, 0);
+    assert.equal(report.totals.errors, 1);
+    assert.equal(report.totals.budgetExceeded, false);
+
+    const persisted = new Pool({
+      connectionString: databaseUrl.toString(),
+      max: 2,
+      options: "-c search_path=ctf,public",
+    });
+    try {
+      const rows = await persisted.query<{
+        reviews: string;
+        settled_reviews: string;
+        error_reviews: string;
+        settled_inferences: string;
+        settled_classifier_calls: string;
+        held_inferences: string;
+        settled_microdollars: string;
+        held_microdollars: string;
+      }>(
+        `SELECT count(DISTINCT r.id)::text AS reviews,
+           count(DISTINCT r.id) FILTER(WHERE r.verdict IN ('allow','block'))::text AS settled_reviews,
+           count(DISTINCT r.id) FILTER(WHERE r.operational_error IS NOT NULL)::text AS error_reviews,
+           count(i.id) FILTER(WHERE i.settled_at IS NOT NULL)::text AS settled_inferences,
+           count(i.id) FILTER(WHERE i.model='typesafe' AND i.settled_at IS NOT NULL)::text AS settled_classifier_calls,
+           count(i.id) FILTER(WHERE i.settled_at IS NULL)::text AS held_inferences,
+           coalesce(sum(i.cost) FILTER(WHERE i.settled_at IS NOT NULL),0)::text AS settled_microdollars,
+           coalesce(sum(i.cost_ceiling) FILTER(WHERE i.settled_at IS NULL),0)::text AS held_microdollars
+         FROM ctf.monitor_reviews r LEFT JOIN ctf.inference i ON i.review_id=r.id
+         WHERE r.id=ANY($1::uuid[])`,
+        [entries.map((entry) => entry.reviewId)],
+      );
+      const stored = rows.rows[0];
+      assert.equal(Number(stored.reviews), 7);
+      assert.equal(Number(stored.settled_reviews), 6);
+      assert.equal(Number(stored.error_reviews), 1);
+      assert.equal(
+        Number(stored.settled_classifier_calls),
+        7,
+        "Typesafe charges are persisted per review",
+      );
+      assert.ok(Number(stored.settled_inferences) >= 13);
+      assert.ok(Number(stored.held_inferences) >= 1, "Provider failure preserves an actual hold");
+      assert.equal(Number(stored.settled_microdollars), report.totals.settledMicrodollars);
+      assert.equal(Number(stored.held_microdollars), report.totals.heldMicrodollars);
+      assert.ok(
+        Number(stored.settled_microdollars) + Number(stored.held_microdollars) <=
+          budgetMicrodollars,
+        "Persisted settled spend plus holds stays within the total evaluator budget",
+      );
+    } finally {
+      await persisted.end();
+    }
+  },
+);

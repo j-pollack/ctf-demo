@@ -6,6 +6,17 @@ import { setTimeout } from "node:timers/promises";
 
 const name = `ctf-integration-${randomUUID()}`;
 const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
+const integrationFiles = readdirSync("tests/integration")
+  .filter((file) => file.endsWith(".test.ts"))
+  .map((file) => `tests/integration/${file}`);
+const requestedFiles = process.argv.slice(2);
+if (requestedFiles.some((file) => !integrationFiles.includes(file)))
+  throw new Error(
+    `Integration test selection must use an existing tests/integration/*.test.ts path: ${requestedFiles.find((file) => !integrationFiles.includes(file))}`,
+  );
+if (new Set(requestedFiles).size !== requestedFiles.length)
+  throw new Error("Integration test selection cannot contain duplicates.");
+const selectedFiles = requestedFiles.length ? requestedFiles : integrationFiles;
 const docker = (...args: string[]) =>
   execFileSync("docker", args, { encoding: "utf8", timeout: 30_000 }).trim();
 let created = false;
@@ -61,27 +72,16 @@ try {
       ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SystemRoot", "NODE_V8_COVERAGE"].includes(key),
     ),
   );
-  child = spawn(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      "--test",
-      ...readdirSync("tests/integration")
-        .filter((file) => file.endsWith(".test.ts"))
-        .map((file) => `tests/integration/${file}`),
-    ],
-    {
-      stdio: "inherit",
-      env: {
-        ...env,
-        NODE_ENV: "test",
-        SPRITE_TOKEN: "integration-sprite-token",
-        OPENROUTER_API_KEY: "integration-router-key",
-        CTF_INTEGRATION_DATABASE_URL: `postgresql://postgres@127.0.0.1:${port}/${database}`,
-      },
+  child = spawn(process.execPath, ["--import", "tsx", "--test", ...selectedFiles], {
+    stdio: "inherit",
+    env: {
+      ...env,
+      NODE_ENV: "test",
+      SPRITE_TOKEN: "integration-sprite-token",
+      OPENROUTER_API_KEY: "integration-router-key",
+      CTF_INTEGRATION_DATABASE_URL: `postgresql://postgres@127.0.0.1:${port}/${database}`,
     },
-  );
+  });
   const [code] = await once(child, "exit");
   process.exitCode = stopped ? process.exitCode : (code ?? 1);
 } catch (error) {

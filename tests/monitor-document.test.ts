@@ -44,6 +44,12 @@ test("the window keeps the last N agent turns and the latest instruction stays o
   );
   assert.deepEqual(texts(messages), ["fix bugs", "[sprite_exec] b", "2", "[sprite_exec] c", "3"]);
   assert.equal(doc.proposedCommand, "d");
+  assert.deepEqual(doc.omissions, {
+    olderMessages: 2,
+    sizeLimitMessages: 0,
+    clippedToolMessages: 0,
+    reasoningIncluded: true,
+  });
 });
 
 test("only the most recent user message is pinned outside the window", () => {
@@ -56,6 +62,7 @@ test("tool output is clipped but commands and reasoning are not", () => {
   const doc = buildMonitorDocument([agent(long, long), tool(long)], options);
   assert.equal(doc.transcript[0].text, `${long}\n[sprite_exec] ${long}`);
   assert.equal(doc.transcript[1].text, `${"x".repeat(MONITOR_OUTPUT_CLIP)}\n…[+50 chars]`);
+  assert.equal(doc.omissions.clippedToolMessages, 1);
 });
 
 test("reasoning is excluded unless included, and system messages never appear", () => {
@@ -85,4 +92,6 @@ test("the size cap drops the oldest turns but keeps the latest instruction and p
   assert.equal(doc.transcript.at(-1)?.text, "[sprite_exec] d");
   assert.ok(!doc.transcript.some((turn) => turn.text.startsWith("[sprite_exec] a")));
   assert.equal(doc.proposedCommand, "next");
+  assert.ok(doc.omissions.sizeLimitMessages > 0);
+  assert.ok(doc.omissions.olderMessages === 0);
 });

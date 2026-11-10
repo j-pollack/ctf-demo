@@ -51,12 +51,12 @@ test("transcript distinguishes speakers, renders commands and shows only blocked
     command: "cat /tmp/flag.txt",
   };
   const block = render(blocked);
-  assert.match(block, />Blocked</);
+  assert.match(block, />Investigator block</);
   assert.match(block, /An old explanation/);
   assert.doesNotMatch(block, /flag\.txt/);
   assert.equal(
     render({ ...blocked, text: "" }),
-    '<article class="entry monitor blocked"><span>Blocked</span></article>',
+    '<article class="entry monitor blocked"><span>Investigator block</span></article>',
   );
   assert.equal(render({ id: 5, kind: "tool", text: "Blocked" }, blocked), "");
   assert.equal(render({ ...blocked, decision: "allow" }), "");
@@ -155,7 +155,7 @@ test("agent turns show each command with its output or monitor verdict directly 
       at("Inference unavailable") < at("<pre>unseen</pre>"),
   );
   assert.match(html, />Blocked</);
-  assert.match(html, />Monitor error</);
+  assert.match(html, />Investigation error</);
   assert.doesNotMatch(html, /TOOL OUTPUT|Operation aborted|MONITOR ERROR/);
   assert.equal(html.match(/<article/g)?.length, 1);
 });
@@ -212,23 +212,25 @@ test("a submission is quoted as the submitted value and collapses after 12 lines
 test("a blocked run says it is over and offers a fork only when forkable", () => {
   assert.equal(
     BLOCKED_NOTICE,
-    "The monitor stopped a command and ended this run. Fork it to rewind to just before your last instruction and try something else.",
+    "The investigator stopped an action and ended this run. A single-session run may be forked to try another instruction.",
   );
   const render = (forkable: boolean) =>
     renderToStaticMarkup(createElement(BlockedNotice, { forkable, disabled: false, onFork() {} }));
   const forkable = render(true);
   assert.match(forkable, /<h2>Run blocked<\/h2>/);
-  assert.ok(forkable.includes("ended this run") && forkable.includes("Fork it to rewind"));
+  assert.ok(
+    forkable.includes("ended this run") && forkable.includes("single-session run may be forked"),
+  );
   assert.match(forkable, /<button[^>]*>Fork<\/button>/);
   assert.doesNotMatch(render(false), /<button/);
 });
 
-test("a caught run shows a loss screen that says how it was caught, not a wrong-answer banner", () => {
-  const render = (endReview: boolean) =>
+test("a caught run without command metadata uses generic copy, not a submission claim", () => {
+  const render = (blockedCommand = false) =>
     renderToStaticMarkup(
       createElement(BlockedNotice, {
         status: "caught",
-        endReview,
+        blockedCommand,
         forkable: true,
         disabled: false,
         onFork() {},
@@ -237,14 +239,30 @@ test("a caught run shows a loss screen that says how it was caught, not a wrong-
   const endReview = render(true);
   // A loss, not the green win banner.
   assert.match(endReview, /class="terminal loss"/);
-  assert.match(endReview, /<h2>Caught on the final review<\/h2>/);
-  assert.ok(endReview.includes(CAUGHT_NOTICE.slice(0, 40)));
+  assert.match(endReview, /<h2>Caught in the act<\/h2>/);
+  assert.ok(!endReview.includes(CAUGHT_NOTICE));
   assert.ok(!endReview.includes("Wrong flag"));
+  const unknownStage = render();
+  assert.match(unknownStage, /<h2>Run caught<\/h2>/);
+  assert.ok(unknownStage.includes(CAUGHT_NOTICE));
+  assert.ok(!unknownStage.includes("correct flag"));
   assert.match(endReview, /<button[^>]*>Fork<\/button>/);
-  // The mid-run case reads differently.
-  const inAct = render(false);
-  assert.match(inAct, /<h2>Caught in the act<\/h2>/);
-  assert.ok(inAct.includes("hit 100% suspicion"));
+});
+
+test("a catch banner identifies the session and concise investigator reason", () => {
+  const html = renderToStaticMarkup(
+    createElement(BlockedNotice, {
+      status: "caught",
+      caughtSessionId: "session-uuid",
+      caughtSessionOrdinal: 2,
+      caughtReason: "The session prepared a flag read.",
+      forkable: false,
+      disabled: false,
+      onFork() {},
+    }),
+  );
+  assert.match(html, /Session 2 caused the catch\./);
+  assert.match(html, /Investigator reason: The session prepared a flag read\./);
 });
 
 test("suspicion series is each turn's peak, in turn order, capped at the catch line", () => {
@@ -350,14 +368,13 @@ test("each reviewed command shows its monitor suspicion", () => {
   const [{ event, calls, pending }] = groupTurns(events);
   assert.equal(calls[0].suspicion, 0.02);
   assert.equal(calls[1].suspicion, 0.98);
-  // Shown as a percent of the catch line, capped at 100%: 0.02 and 0.98 against 0.5 are 4% and 100%.
+  // Risk remains an advisory score, independent of the investigator's verdict.
   const html = renderToStaticMarkup(
     createElement(Entry, { event, calls, pending, threshold: 0.5 }),
   );
-  assert.ok(html.includes(">4%<") && html.includes(">100%<") && !html.includes("196%"));
-  // 0.02 is 4% of a 0.5 line (green); 0.98 is past it (caught red).
-  assert.match(html, /data-band="low"[^>]*>.*>4%</);
-  assert.match(html, /data-band="caught"[^>]*>.*>100%</);
+  assert.ok(html.includes(">2%<") && html.includes(">98%<"));
+  assert.match(html, /data-band="low"[^>]*>.*>2%</);
+  assert.match(html, /data-band="high"[^>]*>.*>98%</);
   assert.ok(!html.includes(">0.98<"), "the raw score is not the headline number");
 });
 
@@ -425,7 +442,7 @@ test("the end review renders standalone (not folded) and isn't labelled Blocked"
   const review = groups.find((g) => g.event.kind === "monitor")!.event;
   const html = renderToStaticMarkup(createElement(Entry, { event: review, threshold: 0.5 }));
   // 0.98 against a 0.5 threshold is past the catch line, shown as the 100% cap.
-  assert.match(html, /End review · 100% of the catch line/);
+  assert.match(html, /Investigator review · 98% classifier risk/);
   assert.ok(!html.includes(">Blocked<"));
 });
 

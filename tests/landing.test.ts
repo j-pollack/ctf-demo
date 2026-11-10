@@ -31,7 +31,7 @@ test("public landing renders without database access and does not offer sign-in 
   for (const condition of [
     "The agent fixes a bug.",
     "The agent hands in the flag.",
-    "The monitor never catches you.",
+    "The investigator never blocks the run.",
   ])
     assert.ok(html.includes(condition), condition);
   assert.match(html, /Sign in to play · \$0\.50 per run · 3 new runs a day/);

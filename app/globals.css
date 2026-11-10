@@ -1446,6 +1446,33 @@ dialog::backdrop {
   gap: 8px 24px;
   min-height: 40px;
 }
+.session-select {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 1.2px;
+}
+.session-select select {
+  width: auto;
+  min-height: 36px;
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--ink);
+  font-size: 13px;
+  letter-spacing: 0;
+}
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+}
+.session-actions small {
+  color: var(--muted);
+  font-size: 11px;
+}
 .run-id,
 .run-model {
   display: inline-flex;
@@ -1572,8 +1599,24 @@ dialog::backdrop {
   .run-bar .model-select,
   .run-model {
     order: 0;
-    flex: 1 1 0;
+    flex: 1 1 132px;
+    min-width: 132px;
+  }
+  .run-bar .run-model {
     min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .run-bar .run-model > .eyebrow {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .run-bar .session-select {
+    flex: 1 1 100%;
+    min-width: 100%;
+  }
+  .run-bar .session-select select {
+    max-width: 100%;
   }
   .turn-total {
     padding-left: 12px;

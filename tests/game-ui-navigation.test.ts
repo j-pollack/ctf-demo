@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   canCreateNewRun,
+  modelLabel,
   hasActiveRun,
   lastEventId,
   runStarted,
@@ -40,6 +41,11 @@ test("navigation selection follows canonical route and whether a detail can cont
     assert.equal(selectedNavItem(path, detail), expected, `${path} with ${detail?.status}`);
 });
 
+test("history model labels preserve the mixed-model sentinel", () => {
+  assert.equal(modelLabel(null), "Mixed models");
+  assert.equal(modelLabel("provider/model"), "model");
+});
+
 test("a run has started once it has a recorded instruction", () => {
   assert.equal(runStarted(game()), false);
   assert.equal(runStarted(game({ events: [{ id: 3, kind: "agent", text: "hi" }] })), false);
@@ -57,6 +63,11 @@ test("an empty current run cannot be replaced, but a used or ended run can", () 
     true,
   );
   assert.equal(
+    canCreateNewRun(game({ events: [{ id: 1, kind: "user", text: "go" }], busy: true }), true),
+    false,
+    "a run with any busy session cannot be replaced",
+  );
+  assert.equal(
     canCreateNewRun(game({ events: [{ id: -1, kind: "user", text: "optimistic" }] })),
     false,
   );
@@ -72,6 +83,7 @@ test("polling follows live work, not pending billing", () => {
     false,
   );
   assert.equal(shouldPoll(game({ busy: true }), false, false), true);
+  assert.equal(shouldPoll(game({ status: "finalizing" }), false, false), true);
   assert.equal(shouldPoll(game(), false, true), true);
   // The prompt stream already delivers updates while this tab drives the turn.
   assert.equal(shouldPoll(game({ busy: true }), true, true), false);
