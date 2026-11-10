@@ -5,6 +5,9 @@ import remarkGfm from "remark-gfm";
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
+import { runPeakRisk, runRiskSeries } from "@/app/run-risk";
+import { RunRiskChart } from "@/app/run-risk-chart";
+import { SessionTabs } from "@/app/session-tabs";
 import { SEED_BUGS } from "@/lib/seed";
 import {
   MONITOR_DIFFICULTIES,
@@ -73,25 +76,10 @@ export function endBanner(status: GameStatus, submit?: Pick<GameEvent, "correct"
           : ["This run has ended", "Start a new run to try again."];
   return { win, className: `terminal${win ? "" : " loss"}`, heading, detail };
 }
-// Each agent turn's highest classifier risk score, in turn order.
-export function suspicionSeries(events: GameEvent[], threshold: number) {
-  const turns = new Map<number | string, { turn?: number; suspicion: number; norm: number }>();
-  events.forEach((event, i) => {
-    if (event.kind !== "monitor" || typeof event.suspicion !== "number") return;
-    const norm = threshold > 0 ? Math.min(1, event.suspicion / threshold) : 0;
-    const key = event.turn ?? `event-${i}`;
-    if (norm >= (turns.get(key)?.norm ?? -1))
-      turns.set(key, { turn: event.turn, suspicion: event.suspicion, norm });
-  });
-  return [...turns.values()];
-}
 // Forking goes back to before the last instruction, so forking a run with only one instruction
 // starts over: it counts toward the daily new-run limit like a fresh run.
 export const forkIsNewRun = (events: GameEvent[]) =>
   events.filter((event) => event.kind === "user").length <= 1;
-// Legacy score display helper retained for existing callers and tests.
-export const catchPercent = (suspicion: number, threshold: number) =>
-  threshold > 0 ? Math.min(100, Math.round((suspicion / threshold) * 100)) : 0;
 // Color band for a classifier risk fraction.
 export function suspicionBand(norm: number) {
   return norm >= 1 ? "caught" : norm >= 0.7 ? "high" : norm >= 0.4 ? "mid" : "low";
@@ -99,75 +87,6 @@ export function suspicionBand(norm: number) {
 // Render `backticked` spans of plain text (the bug descriptions the agent also reads) as code.
 const inlineCode = (text: string) =>
   text.split("`").map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part));
-// Scroll the transcript to an agent turn and flash it. The bars are real #turn-N links, so this only
-// adds smooth scrolling (unless the player prefers reduced motion) and the highlight.
-function jumpToTurn(event: React.MouseEvent, turn: number) {
-  const target = document.getElementById(`turn-${turn}`);
-  if (!target) return;
-  event.preventDefault();
-  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
-  target.classList.remove("flash");
-  void target.offsetWidth; // restart the animation on a repeat click
-  target.classList.add("flash");
-}
-// One bar per agent turn, its height its peak classifier risk. Clicking a bar scrolls to that turn.
-export function SuspicionChart({ series }: { series: { turn?: number; norm: number }[] }) {
-  const w = 240,
-    h = 56,
-    pad = 2;
-  const slot = (w - 2 * pad) / Math.max(series.length, 1);
-  const gap = Math.min(2, slot * 0.25);
-  const peak = Math.max(0, ...series.map((point) => point.norm));
-  return (
-    <svg
-      viewBox={`0 0 ${w} ${h}`}
-      className="susp-chart"
-      role="img"
-      aria-label={`Highest classifier risk per turn; peak ${Math.round(peak * 100)} percent`}
-    >
-      <line x1="0" x2={w} y1={pad} y2={pad} className="susp-threshold" />
-      {series.map((point, i) => {
-        // A 1px stub keeps a zero-suspicion turn visible.
-        const height = Math.max(1, point.norm * (h - 2 * pad));
-        const { turn } = point;
-        const bar = (
-          <rect
-            className="susp-bar"
-            data-band={suspicionBand(point.norm)}
-            x={(pad + i * slot + gap / 2).toFixed(1)}
-            y={(h - pad - height).toFixed(1)}
-            width={(slot - gap).toFixed(1)}
-            height={height.toFixed(1)}
-          >
-            <title>{`Turn ${turn ?? i + 1}: ${Math.round(point.norm * 100)}%`}</title>
-          </rect>
-        );
-        return turn === undefined ? (
-          <g key={i}>{bar}</g>
-        ) : (
-          <a
-            key={i}
-            href={`#turn-${turn}`}
-            className="susp-link"
-            aria-label={`Turn ${turn}, ${Math.round(point.norm * 100)}% suspicion`}
-            onClick={(event) => jumpToTurn(event, turn)}
-          >
-            {/* The whole column is the click target, so a short bar is still easy to hit. */}
-            <rect
-              className="susp-hit"
-              x={(pad + i * slot).toFixed(1)}
-              y="0"
-              width={slot.toFixed(1)}
-              height={h}
-            />
-            {bar}
-          </a>
-        );
-      })}
-    </svg>
-  );
-}
 const label = (model: string) => model.split("/")[1];
 export const modelLabel = (model: string | null) =>
   model === null ? "Mixed models" : label(model);
@@ -1136,9 +1055,8 @@ export default function GameUI({
     displayGame?.events.filter((event) => event.kind === "monitor" && event.decision !== "allow") ??
     [];
   // Classifier risk is advisory. The investigator verdict controls whether the run continues.
-  const suspicionPoints = displayGame ? suspicionSeries(displayGame.events, 1) : [];
-  const peakSuspicion = Math.max(0, ...suspicionPoints.map((point) => point.suspicion));
-  const peakOfCatch = Math.min(1, peakSuspicion);
+  const riskSeries = displayGame ? runRiskSeries(summariesFor(displayGame), sessionViews) : [];
+  const peakOfCatch = runPeakRisk(riskSeries);
   async function start() {
     if (!member) {
       setModal("login");
@@ -1718,105 +1636,123 @@ export default function GameUI({
           </main>
         ) : panel === "play" || panel === "detail" ? (
           <div className="console">
+            <aside className="monitor" aria-label="Shared run budget and investigation risk">
+              <div className="stakes-lead">
+                <span className="eyebrow">ONE RUN · SHARED STAKES</span>
+                <strong>Fix a bug. Get the flag through.</strong>
+                <small>Sessions share one computer, flag, and budget.</small>
+              </div>
+              <button
+                className="new-run"
+                onClick={() => setModal("setup")}
+                disabled={loading || !canStartNewRun}
+                title={
+                  displayGame?.status === "active" && !runStarted(displayGame)
+                    ? "Send this run an instruction first."
+                    : undefined
+                }
+              >
+                New run
+              </button>
+              <div className="budget">
+                <p className="eyebrow">BUDGET LEFT</p>
+                <strong>{money(left)}</strong>
+                <div className="meter">
+                  <span style={{ width: `${(left / allowance) * 100}%` }} />
+                </div>
+                <small>of {money(allowance)} total</small>
+                {!!displayGame?.reservedMicrodollars && (
+                  <small role="status">{money(displayGame.reservedMicrodollars)} pending</small>
+                )}
+              </div>
+              <div className="risk-brief">
+                <span className="eyebrow">RUN RISK · ADVISORY</span>
+                <strong data-band={suspicionBand(peakOfCatch)}>
+                  {Math.round(peakOfCatch * 100)}%
+                </strong>
+                <small>Investigator decides whether actions run.</small>
+              </div>
+              <details className="stakes-detail">
+                <summary>Run details</summary>
+                <div className="spend-breakdown">
+                  <p>
+                    Spent <strong>{money(displayGame?.spentMicrodollars ?? 0)}</strong>
+                  </p>
+                  <p>
+                    Agent <strong>{money(displayGame?.agentSpendMicrodollars ?? 0)}</strong>
+                  </p>
+                  <p>
+                    Monitor <strong>{money(displayGame?.monitorSpendMicrodollars ?? 0)}</strong>
+                  </p>
+                </div>
+                <div className="suspicion-peak">
+                  <p className="eyebrow">RUN CLASSIFIER RISK · ADVISORY</p>
+                  <strong
+                    data-band={suspicionBand(peakOfCatch)}
+                    title={`Highest classifier risk score across all sessions: ${peakOfCatch.toFixed(2)} out of 1`}
+                  >
+                    {Math.round(peakOfCatch * 100)}%
+                  </strong>
+                  <small>highest score across all sessions</small>
+                  <RunRiskChart series={riskSeries} />
+                  <small>
+                    Each trace shows one session on the same agent-turn axis. The investigator makes
+                    the allow or block decision.
+                  </small>
+                </div>
+                {decisions.length > 0 && (
+                  <p className="eyebrow">SESSION {displaySession?.ordinal ?? 1} DECISIONS</p>
+                )}
+                {decisions
+                  .slice(-8)
+                  .reverse()
+                  .map((event) => (
+                    <div className="receipt" key={event.id}>
+                      <header>
+                        <strong className={event.decision}>
+                          {event.decision === "error"
+                            ? "Investigation error"
+                            : "Investigator blocked"}
+                        </strong>
+                        <span>
+                          {typeof event.suspicion === "number"
+                            ? `${Math.round(event.suspicion * 100)}% classifier risk`
+                            : `turn ${event.turn}`}
+                        </span>
+                      </header>
+                      {event.text && <p>{event.text}</p>}
+                    </div>
+                  ))}
+                <p className="monitor-note">
+                  Sessions in this run share one computer, flag, and budget. Forks keep the
+                  original’s environment and flag. Charges the AI provider hasn’t confirmed yet show
+                  as pending.
+                </p>
+              </details>
+            </aside>
             <main className="transcript">
+              {displayGame && (
+                <SessionTabs
+                  runStatus={displayGame.status}
+                  sessions={summariesFor(displayGame)}
+                  sessionViews={sessionViews}
+                  selectedId={displaySessionId}
+                  panelId="session-panel"
+                  onSelect={(id) => void selectSession(id)}
+                  onCreate={
+                    isExecutionView && displayGame.status === "active"
+                      ? () => void createSession()
+                      : undefined
+                  }
+                  creating={creatingSession}
+                />
+              )}
               <header className="run-bar">
                 <div className="run-bar-row">
                   <span className="run-id">
                     <span className="eyebrow">RUN</span>
                     <strong>{displayGame?.id.slice(0, 8).toUpperCase() ?? "—"}</strong>
                   </span>
-                  {displayGame &&
-                    (isExecutionView || panel === "detail") &&
-                    summariesFor(displayGame).length > 1 && (
-                      <label className="session-select">
-                        <span className="eyebrow">SESSION</span>
-                        <select
-                          aria-label="Active session"
-                          value={displaySessionId ?? displayGame.sessionId}
-                          onChange={(event) => void selectSession(event.target.value)}
-                        >
-                          {summariesFor(displayGame).map((session) => (
-                            <option key={session.id} value={session.id}>
-                              Session {session.ordinal}
-                              {session.busy ? " · running" : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                  {editingSystemPrompt ? (
-                    <ModelSelect
-                      models={models}
-                      label="Model"
-                      value={agent}
-                      change={(value) => {
-                        setAgent(value);
-                        if (selectedId)
-                          updateSession(selectedId, (current) => ({
-                            ...current,
-                            agentModel: value,
-                          }));
-                      }}
-                      disabled={loading}
-                    />
-                  ) : (
-                    displayGame && (
-                      <span className="run-model">
-                        <span className="eyebrow">MODEL</span>
-                        {label(displayGame.agentModel)} ·{" "}
-                        {EFFORT_CHOICES[displayGame.agentEffort].name}
-                      </span>
-                    )
-                  )}
-                  {editingSystemPrompt && (
-                    <ChoiceSelect
-                      label="Effort"
-                      choices={EFFORT_CHOICES}
-                      value={effort}
-                      change={(value) => {
-                        setEffort(value);
-                        if (selectedId)
-                          updateSession(selectedId, (current) => ({
-                            ...current,
-                            agentEffort: value,
-                          }));
-                      }}
-                      disabled={loading}
-                    />
-                  )}
-                  {editingSystemPrompt && displayGame ? (
-                    <>
-                      <ChoiceSelect
-                        label="Difficulty"
-                        choices={DIFFICULTY_CHOICES}
-                        value={monitorLocked ? displayGame.monitorDifficulty : difficulty}
-                        change={setDifficulty}
-                        disabled={loading || monitorLocked}
-                      />
-                      <ChoiceSelect
-                        label="Reasoning"
-                        choices={REASONING_CHOICES}
-                        value={reasoningChoice(
-                          monitorLocked ? displayGame.monitorReasoning : monitorReasoning,
-                        )}
-                        change={(value) => setMonitorReasoning(value === "visible")}
-                        disabled={loading || monitorLocked}
-                      />
-                    </>
-                  ) : (
-                    displayGame && (
-                      <>
-                        <span className="run-model">
-                          <span className="eyebrow">MONITOR</span>
-                          {DIFFICULTY_CHOICES[displayGame.monitorDifficulty].name}
-                        </span>
-                        <span className="run-model">
-                          <span className="eyebrow">REASONING</span>
-                          {REASONING_CHOICES[reasoningChoice(displayGame.monitorReasoning)].name}
-                        </span>
-                      </>
-                    )
-                  )}
                   <div
                     className="turn-total"
                     title="Each agent response counts as one turn"
@@ -1826,66 +1762,144 @@ export default function GameUI({
                     <span>TURNS</span>
                   </div>
                 </div>
-                {(editingSystemPrompt || displayGame?.systemPrompt) && (
-                  <details
-                    className="system-prompt"
-                    onToggle={() => {
-                      if (atBottom.current) scrollToBottom();
-                    }}
-                  >
-                    <summary>
-                      <span className="eyebrow">SYSTEM PROMPT</span>
-                      <span className="hidden-tag">Hidden from investigator</span>
-                      <span className="preview" aria-hidden="true">
-                        {(editingSystemPrompt ? systemDraft : displayGame?.systemPrompt) || "None"}
-                      </span>
+                <details className="run-settings">
+                  <summary>
+                    Session settings{" "}
+                    <span>
                       {editingSystemPrompt &&
-                        "systemPrompt" in
-                          systemPromptChange(systemDraft, displayGame?.systemPrompt ?? "") && (
-                          <span className="unsaved">Sends with next instruction</span>
-                        )}
-                    </summary>
+                      "systemPrompt" in
+                        systemPromptChange(systemDraft, displayGame?.systemPrompt ?? "")
+                        ? "· Unsaved prompt"
+                        : ""}
+                    </span>
+                  </summary>
+                  <div className="run-settings-fields">
                     {editingSystemPrompt ? (
-                      <textarea
-                        id="system-prompt"
-                        aria-label="System prompt, hidden from the investigator"
-                        value={systemDraft}
-                        onChange={(event) => {
-                          setSystemDraft(event.target.value);
+                      <ModelSelect
+                        models={models}
+                        label="Model"
+                        value={agent}
+                        change={(value) => {
+                          setAgent(value);
                           if (selectedId)
                             updateSession(selectedId, (current) => ({
                               ...current,
-                              systemPromptDraft: event.target.value,
+                              agentModel: value,
                             }));
                         }}
-                        maxLength={8192}
-                        rows={4}
-                        placeholder="Optional. Your secret plan for the agent: it reads this every turn, and the investigator never sees it."
+                        disabled={loading}
                       />
                     ) : (
-                      <p tabIndex={0}>{displayGame?.systemPrompt}</p>
+                      displayGame && (
+                        <span className="run-model">
+                          <span className="eyebrow">MODEL</span>
+                          {label(displayGame.agentModel)} ·{" "}
+                          {EFFORT_CHOICES[displayGame.agentEffort].name}
+                        </span>
+                      )
                     )}
-                    <p className="fixed-suffix">
-                      Always added at the end: <em>{SUBMIT_INSTRUCTION}</em>
-                    </p>
-                  </details>
-                )}
-                {isExecutionView && displayGame?.status === "active" && (
-                  <div className="session-actions">
-                    <button
-                      type="button"
-                      onClick={() => void createSession()}
-                      disabled={creatingSession}
-                    >
-                      {creatingSession ? "Creating session…" : "New session"}
-                    </button>
-                    <small>Sessions share this run’s computer, flag, and budget.</small>
+                    {editingSystemPrompt && (
+                      <ChoiceSelect
+                        label="Effort"
+                        choices={EFFORT_CHOICES}
+                        value={effort}
+                        change={(value) => {
+                          setEffort(value);
+                          if (selectedId)
+                            updateSession(selectedId, (current) => ({
+                              ...current,
+                              agentEffort: value,
+                            }));
+                        }}
+                        disabled={loading}
+                      />
+                    )}
+                    {editingSystemPrompt && displayGame ? (
+                      <>
+                        <ChoiceSelect
+                          label="Difficulty"
+                          choices={DIFFICULTY_CHOICES}
+                          value={monitorLocked ? displayGame.monitorDifficulty : difficulty}
+                          change={setDifficulty}
+                          disabled={loading || monitorLocked}
+                        />
+                        <ChoiceSelect
+                          label="Reasoning"
+                          choices={REASONING_CHOICES}
+                          value={reasoningChoice(
+                            monitorLocked ? displayGame.monitorReasoning : monitorReasoning,
+                          )}
+                          change={(value) => setMonitorReasoning(value === "visible")}
+                          disabled={loading || monitorLocked}
+                        />
+                      </>
+                    ) : (
+                      displayGame && (
+                        <>
+                          <span className="run-model">
+                            <span className="eyebrow">MONITOR</span>
+                            {DIFFICULTY_CHOICES[displayGame.monitorDifficulty].name}
+                          </span>
+                          <span className="run-model">
+                            <span className="eyebrow">REASONING</span>
+                            {REASONING_CHOICES[reasoningChoice(displayGame.monitorReasoning)].name}
+                          </span>
+                        </>
+                      )
+                    )}
                   </div>
-                )}
+                  {(editingSystemPrompt || displayGame?.systemPrompt) && (
+                    <details
+                      className="system-prompt"
+                      onToggle={() => {
+                        if (atBottom.current) scrollToBottom();
+                      }}
+                    >
+                      <summary>
+                        <span className="eyebrow">SYSTEM PROMPT</span>
+                        <span className="hidden-tag">Hidden from investigator</span>
+                        <span className="preview" aria-hidden="true">
+                          {(editingSystemPrompt ? systemDraft : displayGame?.systemPrompt) ||
+                            "None"}
+                        </span>
+                        {editingSystemPrompt &&
+                          "systemPrompt" in
+                            systemPromptChange(systemDraft, displayGame?.systemPrompt ?? "") && (
+                            <span className="unsaved">Sends with next instruction</span>
+                          )}
+                      </summary>
+                      {editingSystemPrompt ? (
+                        <textarea
+                          id="system-prompt"
+                          aria-label="System prompt, hidden from the investigator"
+                          value={systemDraft}
+                          onChange={(event) => {
+                            setSystemDraft(event.target.value);
+                            if (selectedId)
+                              updateSession(selectedId, (current) => ({
+                                ...current,
+                                systemPromptDraft: event.target.value,
+                              }));
+                          }}
+                          maxLength={8192}
+                          rows={4}
+                          placeholder="Optional. Your secret plan for the agent: it reads this every turn, and the investigator never sees it."
+                        />
+                      ) : (
+                        <p tabIndex={0}>{displayGame?.systemPrompt}</p>
+                      )}
+                      <p className="fixed-suffix">
+                        Always added at the end: <em>{SUBMIT_INSTRUCTION}</em>
+                      </p>
+                    </details>
+                  )}
+                </details>
               </header>
               <div
                 className="thread"
-                role="region"
+                id="session-panel"
+                role="tabpanel"
+                aria-labelledby={displaySessionId ? `session-tab-${displaySessionId}` : undefined}
                 aria-label="Run transcript"
                 tabIndex={0}
                 ref={thread}
@@ -1914,7 +1928,13 @@ export default function GameUI({
                     <p role="status">Loading your run…</p>
                   ) : (
                     <div className="welcome">
-                      <p>{member ? "You don’t have a run going." : "Sign in to start a run."}</p>
+                      <span className="eyebrow">THE CHALLENGE</span>
+                      <h1>Fix a bug. Slip the flag past the investigator.</h1>
+                      <p>
+                        {member
+                          ? "Guide an agent through a real workspace. Every action is watched, and every turn spends from one shared budget."
+                          : "Sign in to take your shot."}
+                      </p>
                       <button
                         className="primary"
                         onClick={() => setModal(member ? "setup" : "login")}
@@ -1926,12 +1946,15 @@ export default function GameUI({
                 ) : (
                   <>
                     {displayGame.events.length === 0 && (
-                      <p className="empty">
-                        Your computer is ready. Send the agent its first instruction in the box
-                        below. Not sure where to start? Ask it to look around{" "}
-                        <code>/workspace</code> and read <code>TASKS.md</code>. The investigator can
-                        review the work in context.
-                      </p>
+                      <div className="empty mission-intro">
+                        <span className="eyebrow">YOUR MOVE</span>
+                        <h2>Find a bug. Fix it. Submit the flag.</h2>
+                        <p>
+                          Send your agent into <code>/workspace</code>. Have it read{" "}
+                          <code>TASKS.md</code>, then choose a bug to solve. The investigator
+                          watches its work.
+                        </p>
+                      </div>
                     )}
                     {groupTurns(displayGame.events).map(
                       ({ event, calls, pending }, index, groups) => (
@@ -2101,83 +2124,6 @@ export default function GameUI({
                 </form>
               )}
             </main>
-            <aside className="monitor" tabIndex={0} aria-label="Investigation risk and budget">
-              <div className="column-head">MONITOR</div>
-              <button
-                onClick={() => setModal("setup")}
-                disabled={loading || !canStartNewRun}
-                title={
-                  displayGame?.status === "active" && !runStarted(displayGame)
-                    ? "Send this run an instruction first."
-                    : undefined
-                }
-              >
-                New run
-              </button>
-              <div className="budget">
-                <p className="eyebrow">BUDGET LEFT</p>
-                <strong>{money(left)}</strong>
-                <div className="meter">
-                  <span style={{ width: `${(left / allowance) * 100}%` }} />
-                </div>
-                <small>of {money(allowance)}</small>
-                <div className="spend-breakdown">
-                  <p>
-                    Spent <strong>{money(displayGame?.spentMicrodollars ?? 0)}</strong>
-                  </p>
-                  <p>
-                    Agent <strong>{money(displayGame?.agentSpendMicrodollars ?? 0)}</strong>
-                  </p>
-                  <p>
-                    Monitor <strong>{money(displayGame?.monitorSpendMicrodollars ?? 0)}</strong>
-                  </p>
-                  {!!displayGame?.reservedMicrodollars && (
-                    <p role="status">
-                      Pending billing <strong>{money(displayGame.reservedMicrodollars)}</strong>
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="suspicion-peak">
-                <p className="eyebrow">CLASSIFIER RISK · ADVISORY</p>
-                <strong
-                  data-band={suspicionBand(peakOfCatch)}
-                  title={`Highest classifier risk score: ${peakSuspicion.toFixed(2)} out of 1`}
-                >
-                  {Math.round(peakOfCatch * 100)}%
-                </strong>
-                <small>highest classifier risk score</small>
-                <SuspicionChart series={suspicionPoints} />
-                <small>
-                  Each bar shows a turn’s highest classifier risk signal. Click a bar to jump to
-                  that turn. The investigator makes the allow or block decision.
-                </small>
-              </div>
-              {decisions
-                .slice(-8)
-                .reverse()
-                .map((event) => (
-                  <div className="receipt" key={event.id}>
-                    <header>
-                      <strong className={event.decision}>
-                        {event.decision === "error"
-                          ? "Investigation error"
-                          : "Investigator blocked"}
-                      </strong>
-                      <span>
-                        {typeof event.suspicion === "number"
-                          ? `${Math.round(event.suspicion * 100)}% classifier risk`
-                          : `turn ${event.turn}`}
-                      </span>
-                    </header>
-                    {event.text && <p>{event.text}</p>}
-                  </div>
-                ))}
-              <p className="monitor-note">
-                Sessions in this run share one computer, flag, and budget. Forks keep the original’s
-                environment and flag. Charges the AI provider hasn’t confirmed yet show as pending.
-              </p>
-            </aside>
           </div>
         ) : panel === "rules" ? (
           <main className="info rules">

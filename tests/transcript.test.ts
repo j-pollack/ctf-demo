@@ -11,11 +11,8 @@ import {
   Entry,
   groupTurns,
   refreshedGame,
-  SuspicionChart,
-  catchPercent,
   forkIsNewRun,
   suspicionBand,
-  suspicionSeries,
 } from "../app/game-ui";
 import type { GameEvent, PublicGame } from "../lib/types";
 
@@ -265,33 +262,6 @@ test("a catch banner identifies the session and concise investigator reason", ()
   assert.match(html, /Investigator reason: The session prepared a flag read\./);
 });
 
-test("suspicion series is each turn's peak, in turn order, capped at the catch line", () => {
-  const events: GameEvent[] = [
-    { id: 1, kind: "user", text: "go" },
-    { id: 2, kind: "monitor", text: "", command: "ls", suspicion: 0.1, turn: 1 },
-    { id: 3, kind: "monitor", text: "", command: "pwd", suspicion: 0.3, turn: 1 },
-    { id: 4, kind: "monitor", text: "", command: "cat x", turn: 2 }, // no numeric suspicion
-    { id: 5, kind: "monitor", text: "", command: "id", suspicion: 0.05, turn: 2 },
-    { id: 6, kind: "monitor", text: "", command: "cat flag", suspicion: 1.2, turn: 3 },
-  ];
-  const series = suspicionSeries(events, 0.5);
-  assert.deepEqual(
-    series.map((point) => point.turn),
-    [1, 2, 3],
-  );
-  assert.equal(series[0].suspicion, 0.3, "a turn shows its highest-scoring command");
-  assert.ok(Math.abs(series[0].norm - 0.6) < 1e-9); // 0.3 is 60% of a 0.5 catch line
-  assert.ok(Math.abs(series[1].norm - 0.1) < 1e-9);
-  assert.equal(series[2].norm, 1, "past the line still reads 100%: the run ends there");
-  assert.equal(catchPercent(1.2, 0.5), 100);
-  assert.equal(catchPercent(0.1, 0.5), 20);
-  // A zero threshold can't normalize; guard against divide-by-zero.
-  assert.equal(
-    suspicionSeries([{ id: 1, kind: "monitor", text: "", suspicion: 0.5 }], 0)[0].norm,
-    0,
-  );
-});
-
 test("suspicion bands split the catch line at 40%, 70% and 100%", () => {
   assert.deepEqual([0, 0.399, 0.4, 0.699, 0.7, 0.999, 1, 2.14].map(suspicionBand), [
     "low",
@@ -303,33 +273,6 @@ test("suspicion bands split the catch line at 40%, 70% and 100%", () => {
     "caught",
     "caught",
   ]);
-});
-
-test("the suspicion chart is one bar per turn, colored by band, each linking to its turn", () => {
-  const svg = (norms: number[]) =>
-    renderToStaticMarkup(
-      createElement(SuspicionChart, { series: norms.map((norm, i) => ({ turn: i + 1, norm })) }),
-    );
-  const html = svg([0.1, 0.5, 0.8, 1]);
-  assert.match(html, /class="susp-threshold"/); // the 100% catch line is always drawn
-  assert.deepEqual(
-    [...html.matchAll(/class="susp-bar" data-band="(\w+)"/g)].map((match) => match[1]),
-    ["low", "mid", "high", "caught"],
-  );
-  assert.match(html, /<title>Turn 3: 80%<\/title>/);
-  assert.equal(svg([]).includes("susp-bar"), false);
-  // Each bar links to its turn's agent message, which carries the matching id.
-  assert.deepEqual(
-    [...html.matchAll(/href="#(turn-\d+)"/g)].map((match) => match[1]),
-    ["turn-1", "turn-2", "turn-3", "turn-4"],
-  );
-  const agent = renderToStaticMarkup(
-    createElement(Entry, { event: { id: 9, kind: "agent", text: "hi", turn: 3, model: "m" } }),
-  );
-  assert.match(agent, /<article class="entry agent" id="turn-3">/);
-  // A point without a turn (older events) is drawn but not linked.
-  const unlinked = renderToStaticMarkup(createElement(SuspicionChart, { series: [{ norm: 0.2 }] }));
-  assert.ok(unlinked.includes("susp-bar") && !unlinked.includes("href="));
 });
 
 test("only a capture gets the green win banner; every loss says why it lost", () => {

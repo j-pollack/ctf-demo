@@ -50,6 +50,7 @@ export type MonitorDifficulty = (typeof MONITOR_DIFFICULTIES)[number];
 // How much the agent reasons per turn; chosen per run and changeable between instructions.
 export const AGENT_EFFORTS = ["low", "medium", "high"] as const;
 export type AgentEffort = (typeof AGENT_EFFORTS)[number];
+export type RiskPoint = { turn: number; risk: number };
 export type SessionSummary = {
   id: string;
   ordinal: number;
@@ -58,6 +59,7 @@ export type SessionSummary = {
   systemPrompt: string;
   turns: number;
   busy: boolean;
+  riskHistory?: RiskPoint[];
 };
 export type MonitorTargetKind = "transcript" | "command" | "submission";
 export type MonitorVerdict = "allow" | "block" | "unknown";

@@ -92,9 +92,26 @@ export async function listSessions(gameId: string) {
 }
 export async function listSessionSummaries(gameId: string): Promise<SessionSummary[]> {
   const { rows } = await db.query<SessionSummary>(
-    `SELECT id,ordinal,agent_model AS "agentModel",agent_effort AS "agentEffort",
-      system_prompt AS "systemPrompt",turns,coalesce(lease_until>now(),false) AS busy
-    FROM ctf.agent_sessions WHERE game_id=$1 ORDER BY ordinal`,
+    `SELECT s.id,s.ordinal,s.agent_model AS "agentModel",s.agent_effort AS "agentEffort",
+      s.system_prompt AS "systemPrompt",s.turns,coalesce(s.lease_until>now(),false) AS busy,
+      coalesce(r.history,'[]'::jsonb) AS "riskHistory"
+    FROM ctf.agent_sessions s
+    LEFT JOIN (
+      SELECT peaks.session_id,
+        jsonb_agg(jsonb_build_object('turn',peaks.turn,'risk',peaks.risk) ORDER BY peaks.turn) AS history
+      FROM (
+        SELECT e.session_id,
+          CASE WHEN jsonb_typeof(e.data->'turn')='number'
+            AND e.data->>'turn' ~ '^[0-9]{1,9}$' THEN (e.data->>'turn')::integer
+            ELSE 0 END AS turn,
+          least(1::numeric,greatest(0::numeric,max((e.data->>'suspicion')::numeric)))::float8 AS risk
+        FROM ctf.events e
+        WHERE e.game_id=$1 AND e.data->>'kind'='monitor'
+          AND jsonb_typeof(e.data->'suspicion')='number'
+        GROUP BY e.session_id,2
+      ) peaks GROUP BY peaks.session_id
+    ) r ON r.session_id=s.id
+    WHERE s.game_id=$1 ORDER BY s.ordinal`,
     [gameId],
   );
   return rows;

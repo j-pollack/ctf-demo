@@ -203,18 +203,22 @@ i {
   font-size: 11px;
 }
 .console {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 290px;
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 .transcript {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  padding: 0 32px 16px;
+  width: min(100%, 1120px);
   min-width: 0;
   min-height: 0;
+  padding: 0 28px 16px;
+  margin: 0 auto;
 }
 .column-head {
   padding: 18px 0;
@@ -446,48 +450,109 @@ form label {
     opacity: 0.2;
   }
 }
-.monitor {
-  padding: 0 24px 24px;
-  border-left: 1px solid var(--line);
-  background: var(--panel);
-  min-width: 0;
-  min-height: 0;
-}
 aside.monitor {
-  overflow: auto;
-  overscroll-behavior: contain;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  flex: none;
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  padding: 12px max(28px, calc((100vw - 1064px) / 2));
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
 }
-.monitor > button {
-  margin-block: 10px 14px;
+.stakes-lead,
+.budget,
+.risk-brief {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+.stakes-lead {
+  flex: 1 1 240px;
+}
+.stakes-lead > strong {
+  font-size: 14px;
+  line-height: 1.3;
 }
 .budget {
-  padding: 22px 0;
+  flex: 0 1 170px;
 }
-.budget > strong {
-  font-size: 40px;
-  letter-spacing: -2px;
-  font-weight: 500;
+.budget > strong,
+.risk-brief > strong {
+  font-size: 24px;
+  line-height: 1.2;
   font-variant-numeric: tabular-nums;
 }
-.meter {
-  height: 5px;
+.budget .meter {
+  height: 4px;
   background: var(--line);
-  margin: 10px 0;
+  margin: 5px 0;
 }
-.meter span {
-  height: 100%;
+.budget .meter span {
   display: block;
+  height: 100%;
   background: #759d29;
 }
-/* Peak monitor suspicion for the run, the control sidebar's key metric. */
+.risk-brief {
+  flex: 0 1 170px;
+}
+.risk-brief > strong {
+  color: var(--band-ink, var(--band));
+}
+.monitor .new-run {
+  order: 4;
+  white-space: nowrap;
+}
+.stakes-detail {
+  position: relative;
+  order: 5;
+}
+.stakes-detail > summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+.stakes-detail[open] {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% - 8px);
+  right: max(28px, calc((100vw - 1064px) / 2));
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(70dvh, 640px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  box-shadow: 0 12px 32px #20281f22;
+}
+.spend-breakdown {
+  font-size: 11px;
+}
+.spend-breakdown p {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.spend-breakdown p + p {
+  margin-top: 6px;
+}
 .suspicion-peak {
-  padding: 18px 0;
+  padding: 16px 0;
   border-top: 1px solid var(--line);
 }
 .suspicion-peak strong {
   display: block;
   font-size: 28px;
   font-variant-numeric: tabular-nums;
+  color: var(--band-ink, var(--band));
+}
+.suspicion-peak small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
 }
 /* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 orange, caught red. */
 [data-band="low"] {
@@ -505,60 +570,53 @@ aside.monitor {
 [data-band="caught"] {
   --band: #c62828;
 }
-.suspicion-peak strong {
-  color: var(--band-ink, var(--band));
-}
-.suspicion-peak small {
+/* Shared turn axis for the session risk traces. */
+.run-risk-chart svg {
   display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 12px;
+  overflow: visible;
+}
+.risk-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.risk-axis {
+  fill: var(--muted);
+  font-size: 10px;
+}
+.risk-trace {
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.risk-point {
+  stroke: var(--paper);
+  stroke-width: 1.5;
+}
+.risk-axis-title {
+  margin-top: -8px;
+  text-align: center;
   color: var(--muted);
   font-size: 10px;
 }
-/* Suspicion-over-the-run chart, normalized so the dashed catch line is at 100%. */
-.susp-chart {
-  display: block;
-  width: 100%;
-  height: 56px;
-  margin: 10px 0 8px;
-  overflow: visible;
+.risk-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin-top: 8px;
+  font-size: 10px;
 }
-.susp-threshold {
-  stroke: var(--blocked);
-  stroke-width: 1;
-  stroke-dasharray: 3 3;
-  opacity: 0.7;
+.risk-legend span {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink);
 }
-.susp-bar {
-  fill: var(--band);
-}
-/* Each bar links to its turn; the transparent full-height column is the click target. */
-.susp-link {
-  cursor: pointer;
-}
-.susp-hit {
-  fill: transparent;
-}
-.susp-link:hover .susp-bar,
-.susp-link:focus-visible .susp-bar {
-  opacity: 0.75;
-}
-.susp-link:focus-visible .susp-hit {
-  stroke: var(--ink);
-  stroke-width: 1;
-}
-/* A turn jumped to from the chart. */
-.entry[id^="turn-"] {
-  scroll-margin-top: 12px;
-}
-.entry.flash {
-  animation: turn-flash 1.4s ease-out;
-}
-@keyframes turn-flash {
-  from {
-    box-shadow: 0 0 0 2px var(--ink);
-  }
-  to {
-    box-shadow: 0 0 0 2px transparent;
-  }
+.risk-legend svg {
+  width: 28px;
+  height: 12px;
+  margin-right: 5px;
 }
 .receipt {
   border-top: 1px solid var(--line);
@@ -864,29 +922,6 @@ dialog::backdrop {
   background: #efe3d9;
   font-weight: 600;
 }
-@media (min-width: 1400px) {
-  .console {
-    grid-template-columns: minmax(0, 1fr) 330px;
-  }
-}
-@media (max-width: 1000px) {
-  .console {
-    grid-template-columns: minmax(0, 1fr) 235px;
-  }
-  .top,
-  .info {
-    padding-inline: 24px;
-  }
-  .transcript {
-    padding-inline: 24px;
-  }
-  .monitor {
-    padding-inline: 18px;
-  }
-  .budget > strong {
-    font-size: 32px;
-  }
-}
 @media (max-width: 720px) {
   .top {
     gap: 4px;
@@ -922,39 +957,37 @@ dialog::backdrop {
     content: "…";
     font-size: 16px;
   }
-  .console {
-    display: flex;
-    flex-direction: column;
-  }
   .transcript {
-    flex: 1;
-    padding: 0 20px 8px;
+    padding: 0 16px 8px;
   }
-  .monitor {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-    flex: none;
-    height: 84px;
-    padding: 0 20px 12px;
+  aside.monitor {
+    gap: 8px 14px;
+    padding: 8px 16px;
   }
-  .monitor:has(> button) {
-    height: 128px;
+  .stakes-lead {
+    display: none;
   }
-  .monitor > button {
-    margin: 0;
+  .budget,
+  .risk-brief {
+    flex: 1 1 100px;
   }
-  .budget {
-    padding: 14px 0;
+  .budget > strong,
+  .risk-brief > strong {
+    font-size: 19px;
   }
-  .budget > strong {
-    font-size: 36px;
+  .risk-brief > small {
+    display: none;
   }
-  .monitor-note {
-    margin-top: 0;
-    padding-top: 14px;
+  .monitor .new-run {
+    min-height: 36px;
+    padding: 6px 9px;
   }
-  .column-head {
-    font-size: 9px;
+  .stakes-detail {
+    order: 5;
+  }
+  .stakes-detail[open] {
+    top: calc(100% - 8px);
+    right: 16px;
   }
   .welcome {
     padding: 30px 0;
@@ -977,6 +1010,9 @@ dialog::backdrop {
   }
   .error[role="alert"] {
     padding: 12px 20px;
+  }
+  .entry.user {
+    margin-left: 20px;
   }
 }
 @media (max-width: 360px) {
@@ -1063,21 +1099,6 @@ dialog::backdrop {
 .entry header {
   flex-wrap: wrap;
 }
-.spend-breakdown {
-  margin-top: 16px;
-  font-size: 11px;
-}
-.spend-breakdown p {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-}
-.spend-breakdown p + p {
-  margin-top: 6px;
-}
-.budget > strong {
-  font-size: 32px;
-}
 .markdown p {
   white-space: normal;
 }
@@ -1144,14 +1165,7 @@ dialog::backdrop {
   border-top: 1px solid var(--line);
   margin: 16px 0;
 }
-@media (max-width: 720px) {
-  .entry.user {
-    margin-left: 20px;
-  }
-}
-
-.thread:focus-visible,
-.monitor:focus-visible {
+.thread:focus-visible {
   outline: 2px solid #557b1d;
   outline-offset: -2px;
 }
@@ -1203,30 +1217,6 @@ dialog::backdrop {
     padding: 48px 20px;
   }
 }
-@media (max-width: 720px) {
-  .monitor .column-head {
-    display: none;
-  }
-  .monitor .budget {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    padding-block: 8px;
-  }
-  .monitor .budget > strong {
-    font-size: 24px;
-    letter-spacing: -1px;
-  }
-  .monitor .meter,
-  .monitor .budget > small,
-  .monitor .spend-breakdown {
-    grid-column: 1 / -1;
-  }
-  .monitor .meter {
-    margin-block: 4px;
-  }
-}
-
 .admin {
   --series-1: #2a78d6;
   --series-2: #eb6834;
@@ -1435,43 +1425,15 @@ dialog::backdrop {
 }
 
 .run-bar {
-  flex-shrink: 0;
-  padding: 12px 0;
+  flex: none;
+  padding: 8px 0;
   border-bottom: 1px solid var(--line);
 }
 .run-bar-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px 24px;
-  min-height: 40px;
-}
-.session-select {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 2px;
-  color: var(--muted);
-  font-size: 10px;
-  letter-spacing: 1.2px;
-}
-.session-select select {
-  width: auto;
-  min-height: 36px;
-  margin: 0;
-  padding: 6px 10px;
-  color: var(--ink);
-  font-size: 13px;
-  letter-spacing: 0;
-}
-.session-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: 8px;
-}
-.session-actions small {
-  color: var(--muted);
-  font-size: 11px;
+  justify-content: space-between;
+  min-height: 32px;
 }
 .run-id,
 .run-model {
@@ -1481,23 +1443,125 @@ dialog::backdrop {
   white-space: nowrap;
 }
 .run-id strong {
-  font-size: 14px;
+  font-size: 13px;
   letter-spacing: 0.5px;
 }
-.run-bar .model-select {
+.run-settings {
+  margin-top: 2px;
+}
+.run-settings[open] {
+  max-height: min(36dvh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.run-settings > summary {
+  width: fit-content;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+}
+.run-settings[open] > summary {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  width: 100%;
+  padding: 4px 0;
+  background: var(--paper);
+}
+.run-settings > summary span {
+  color: #426f30;
+}
+.run-settings-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  padding: 14px 0 4px;
+}
+.run-settings .model-select {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   color: var(--muted);
   letter-spacing: 1.4px;
 }
-.run-bar .model-select select {
+.run-settings .model-select select {
   width: auto;
   min-height: 36px;
   margin: 0;
   padding: 6px 10px;
   color: var(--ink);
   letter-spacing: 0;
+}
+.session-strip {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+}
+.session-tabs {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.session-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 8px 18px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.session-tab[aria-selected="true"] {
+  border-bottom-color: #557b1d;
+  color: var(--ink);
+  background: #f7f9f3;
+  font-weight: 700;
+}
+.session-tab-status {
+  color: #426f30;
+  font-size: 10px;
+  font-weight: 500;
+}
+.session-tab-status i {
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  animation: pulse 1.2s infinite;
+}
+.session-new {
+  flex: none;
+  align-self: center;
+  min-height: 36px;
+  border-color: #9ab760;
+  color: #304a13;
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .session-new {
+    padding: 6px 10px;
+  }
+  .session-tab {
+    min-height: 48px;
+    padding-inline: 12px;
+  }
+}
+@media (max-width: 360px) {
+  .session-tab-status {
+    font-size: 0;
+  }
+  .session-tab-status i {
+    margin: 0;
+  }
 }
 .system-prompt {
   margin-top: 10px;
@@ -1575,54 +1639,21 @@ dialog::backdrop {
   white-space: pre-wrap;
 }
 @media (max-width: 720px) {
-  .run-bar {
-    padding-block: 8px;
-  }
-  .run-bar-row {
-    gap: 8px 16px;
-  }
-  .run-bar .model-select select {
-    flex: 1;
-    min-width: 0;
-  }
   .run-id {
     display: none;
   }
-  .run-bar .model-caption {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
+  .run-settings[open] {
+    max-height: min(22dvh, 220px);
   }
-  .run-bar .model-select,
-  .run-model {
-    order: 0;
-    flex: 1 1 132px;
-    min-width: 132px;
+  .run-settings-fields {
+    flex-direction: column;
+    align-items: stretch;
   }
-  .run-bar .run-model {
-    min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
+  .run-settings .model-select {
+    justify-content: space-between;
   }
-  .run-bar .run-model > .eyebrow {
-    flex: 0 0 auto;
-    white-space: nowrap;
-  }
-  .run-bar .session-select {
-    flex: 1 1 100%;
-    min-width: 100%;
-  }
-  .run-bar .session-select select {
-    max-width: 100%;
-  }
-  .turn-total {
-    padding-left: 12px;
-  }
-  .turn-total > span {
-    font-size: 9px;
+  .run-settings .model-select select {
+    max-width: 65%;
   }
   .system-prompt summary {
     flex-wrap: wrap;
@@ -1691,4 +1722,50 @@ dialog::backdrop {
 }
 .landing-rules a {
   text-decoration: underline;
+}
+
+.mission-intro {
+  max-width: 720px;
+  padding: 34px 0;
+}
+.mission-intro h2,
+.welcome h1 {
+  margin: 8px 0 12px;
+  font:
+    800 clamp(25px, 3vw, 39px)/1.12 Impact,
+    "Arial Narrow",
+    Arial,
+    sans-serif;
+  letter-spacing: -0.6px;
+  color: var(--ink);
+}
+.mission-intro p {
+  max-width: 620px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.welcome h1 {
+  font-size: clamp(34px, 5vw, 58px);
+}
+.composer {
+  background: var(--paper);
+  padding: 14px 0 4px;
+}
+.composer textarea {
+  min-height: 78px;
+  height: 78px;
+  background: #f7f9f3;
+  border-color: #aebda0;
+}
+.composer .primary {
+  min-width: 110px;
+}
+@media (max-width: 720px) and (max-height: 500px) {
+  .run-settings[open] {
+    max-height: 18dvh;
+  }
+  .composer textarea {
+    height: 56px;
+    min-height: 56px;
+  }
 }

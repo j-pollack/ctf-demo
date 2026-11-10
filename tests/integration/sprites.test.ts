@@ -815,6 +815,41 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(rows[0].agent_model, game.agentModel);
     },
   );
+  await t.test("run responses include scoped risk history for every session", async () => {
+    const game = await startGame("risk-owner");
+    const sibling = await createSession(game.id, "risk-owner");
+    const empty = await createSession(game.id, "risk-owner");
+    const unrelated = await startGame("other-risk-owner");
+    await record(game.id, { kind: "monitor", text: "", turn: 1, suspicion: 0.2 }, null, game.id);
+    await record(
+      game.id,
+      { kind: "monitor", text: "", turn: 2, suspicion: 0.85 },
+      null,
+      sibling.id,
+    );
+    await record(game.id, { kind: "monitor", text: "", turn: 2, suspicion: 0.5 }, null, sibling.id);
+    await record(game.id, { kind: "monitor", text: "", suspicion: 0.4 }, null, sibling.id);
+    await record(
+      unrelated.id,
+      { kind: "monitor", text: "", turn: 2, suspicion: 1 },
+      null,
+      unrelated.id,
+    );
+    const response = await projectGame(await row(game.id), 1_000_000, game.id);
+    assert.deepEqual(response.events, [], "the selected transcript honors after");
+    assert.deepEqual(
+      response.sessions.map((session) => session.riskHistory),
+      [
+        [{ turn: 1, risk: 0.2 }],
+        [
+          { turn: 0, risk: 0.4 },
+          { turn: 2, risk: 0.85 },
+        ],
+        [],
+      ],
+    );
+    assert.equal(response.sessions[2].id, empty.id);
+  });
   await t.test("starting another owner's run preserves the first active Sprite", async () => {
     const first = await startGame("owner-isolation-a");
     const firstName = (await row(first.id)).sprite_name;
