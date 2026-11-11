@@ -503,13 +503,23 @@ aside.monitor {
 .risk-brief > strong {
   color: var(--band-ink, var(--band));
 }
+.monitor-progress {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  gap: 2px;
+  order: 5;
+}
+.monitor-progress > small {
+  color: var(--muted);
+}
 .monitor .new-run {
   order: 4;
   white-space: nowrap;
 }
 .stakes-detail {
   position: relative;
-  order: 5;
+  order: 6;
 }
 .stakes-detail > summary {
   cursor: pointer;

@@ -94,8 +94,19 @@ export type MonitorReviewRecord = {
   completed_at: Date | null;
 };
 export type MonitorSnapshot = {
+  snapshotId: string;
   gameId: string;
+  userId: string;
+  targetSessionId: string;
   revision: number;
+  omittedSessions: number;
+  searchableHistorySessions?: number;
+  evidenceManifest?: readonly {
+    sessionId: string;
+    version: number;
+    reasoningVisible: boolean;
+    observedAt: string;
+  }[];
   sessions: readonly {
     id: string;
     ordinal: number;
@@ -103,6 +114,7 @@ export type MonitorSnapshot = {
     agentEffort: AgentEffort;
     turns: number;
     busy: boolean;
+    reasoningVisible: boolean;
     readonly messages: readonly Message[];
   }[];
   commands: readonly {
@@ -118,6 +130,17 @@ export type MonitorSnapshot = {
 export type PublicGame = {
   id: string;
   status: GameStatus;
+  monitorMode: "legacy" | "async";
+  stateRevision: string;
+  monitor?: {
+    status: "queued" | "reviewing" | "caught-up" | "unresolved" | "caught";
+    pendingSessions: number;
+    reviewedUpdates: number;
+    totalUpdates: number;
+    lastReviewedAt: string | null;
+    hasPendingReview?: boolean;
+    reason?: string;
+  };
   agentModel: string;
   agentEffort: AgentEffort;
   monitorDifficulty: MonitorDifficulty;

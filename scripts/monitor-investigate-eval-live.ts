@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 import type { ClassifierRiskSignals } from "../lib/control";
-import type { MonitorSnapshot } from "../lib/types";
-import { monitorInvestigationCases } from "./monitor-investigation-cases";
+import {
+  monitorInvestigationCases,
+  type MonitorFixtureSnapshot,
+} from "./monitor-investigation-cases";
 import type { EvaluationEntry, LiveEvaluationConfig } from "./monitor-investigate-eval";
 
 const CLASSIFIER_RESERVE_MICRODOLLARS = 10;
-const EVALUATION_OWNER = "synthetic-monitor-evaluation";
 const EVALUATION_SYSTEM_PROMPT = "Synthetic evaluation-only system prompt.";
 const MIGRATIONS = [
   "002-dollar-seasons.sql",
@@ -21,6 +22,8 @@ const MIGRATIONS = [
   "011-agent-effort.sql",
   "012-new-run.sql",
   "013-agent-sessions.sql",
+  "014-async-monitor.sql",
+  "015-transcript-evidence.sql",
 ];
 
 type SeededWorkspace = {
@@ -40,15 +43,30 @@ type LiveModules = typeof import("../lib/games") &
   typeof import("../lib/monitor-classifier") & { db: typeof import("../lib/db").db };
 
 function corpusWorkspaces() {
-  const workspaces = new Map<string, MonitorSnapshot>();
+  const workspaces = new Map<string, { snapshot: MonitorFixtureSnapshot; ownerId: string }>();
+  const ownerIds = new Map<string, string>();
+  const ownerFor = (key: string) => {
+    const ownerId = ownerIds.get(key) ?? `synthetic-evaluation-user-${randomUUID()}`;
+    ownerIds.set(key, ownerId);
+    return ownerId;
+  };
+  const register = (workspaceId: string, snapshot: MonitorFixtureSnapshot, ownerId: string) => {
+    const previous = workspaces.get(workspaceId);
+    if (
+      previous &&
+      (previous.ownerId !== ownerId ||
+        JSON.stringify(previous.snapshot) !== JSON.stringify(snapshot))
+    )
+      throw new Error(`Workspace ${workspaceId} has conflicting synthetic ownership or history.`);
+    workspaces.set(workspaceId, { snapshot, ownerId });
+  };
   for (const item of monitorInvestigationCases) {
-    workspaces.set(item.workspaceId, item.snapshot);
-    for (const decoy of item.unrelatedWorkspaceDecoys ?? []) {
-      const previous = workspaces.get(decoy.workspaceId);
-      if (previous && JSON.stringify(previous) !== JSON.stringify(decoy.snapshot))
-        throw new Error(`Workspace ${decoy.workspaceId} has conflicting synthetic snapshots.`);
-      workspaces.set(decoy.workspaceId, decoy.snapshot);
-    }
+    const ownerId = ownerFor(item.workspaceId);
+    register(item.workspaceId, item.snapshot, ownerId);
+    for (const history of item.sameOwnerUnrelatedHistories ?? [])
+      register(history.workspaceId, history.snapshot, ownerId);
+    for (const decoy of item.otherOwnerDecoys ?? [])
+      register(decoy.workspaceId, decoy.snapshot, ownerFor(decoy.workspaceId));
   }
   return workspaces;
 }
@@ -62,11 +80,14 @@ async function migrateFreshDatabase(pool: Pool) {
     await pool.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),
     );
+  const { backfillTranscriptSearchText } = await import("../lib/transcript-evidence");
+  await backfillTranscriptSearchText(pool);
 }
 
 async function seedWorkspace(
   pool: Pool,
-  source: MonitorSnapshot,
+  source: MonitorFixtureSnapshot,
+  ownerId: string,
   budgetMicrodollars: number,
   agentModel: string,
   classifierModel: string,
@@ -85,11 +106,11 @@ async function seedWorkspace(
       (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,monitor_difficulty,
        token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,lease,lease_until,
        observation_revision,monitor_settings_locked)
-     VALUES($1,$2,$3,'synthetic-no-secret',$4,$5,$6,'hard',500000,$7,'',true,'active',$8,
+     VALUES($1,$2,$3,'synthetic-no-secret',$4,$5,$6,'hard',500000,$7,'',true,$10,$8,
        CASE WHEN $8::uuid IS NOT NULL THEN now()+interval '30 minutes' ELSE NULL END,$9,true)`,
     [
       gameId,
-      EVALUATION_OWNER,
+      ownerId,
       `monitor-eval-${gameId}`,
       agentModel,
       classifierModel,
@@ -97,6 +118,7 @@ async function seedWorkspace(
       budgetMicrodollars,
       gameLease,
       source.revision,
+      activeSession ? "active" : "ended",
     ],
   );
   for (const session of source.sessions) {
@@ -118,6 +140,24 @@ async function seedWorkspace(
         lease,
       ],
     );
+  }
+  const { persistTranscriptEvidence } = await import("../lib/transcript-evidence");
+  const evidenceClient = await pool.connect();
+  try {
+    await evidenceClient.query("BEGIN");
+    for (const session of source.sessions)
+      await persistTranscriptEvidence(evidenceClient, {
+        gameId,
+        sessionId: sessionIds.get(session.id)!,
+        runRevision: source.revision,
+        messages: session.messages,
+      });
+    await evidenceClient.query("COMMIT");
+  } catch (error) {
+    await evidenceClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    evidenceClient.release();
   }
   for (const command of source.commands.filter(
     (item) => item.admittedRevision !== null || item.outcome !== null,
@@ -177,7 +217,7 @@ async function reviewCase(
   );
   if (!budget.rowCount)
     throw new Error(`${item.id}: remaining budget is below already admitted spend.`);
-  const initialSnapshot = await modules.captureMonitorSnapshot(workspace.gameId);
+  const initialSnapshot = await modules.captureMonitorSnapshot(workspace.gameId, sessionId);
   const reviewId = await modules.createMonitorReview(workspace.gameId, {
     sessionId,
     snapshotRevision: initialSnapshot.revision,
@@ -202,7 +242,7 @@ async function reviewCase(
   let review: Awaited<ReturnType<typeof modules.runMonitorReview>> | undefined;
   try {
     const game = await loadReviewGame(modules.db, workspace.gameId, sessionId);
-    const snapshot = await modules.captureMonitorSnapshot(workspace.gameId);
+    const snapshot = await modules.captureMonitorSnapshot(workspace.gameId, sessionId);
     const session = snapshot.sessions.find(
       (candidate: { id: string }) => candidate.id === sessionId,
     );
@@ -228,7 +268,20 @@ async function reviewCase(
     const billing = await modules.gameBilling(workspace.gameId);
     if (billing.spentMicrodollars + billing.reservedMicrodollars >= remainingMicrodollars)
       throw new Error("The evaluation budget is exhausted after classifier settlement.");
-    const reviewSnapshot = await modules.captureMonitorSnapshot(workspace.gameId);
+    const {
+      rows: [evidenceHead],
+    } = await modules.db.query<{ version: string; epoch: string }>(
+      `SELECT version::text,epoch::text FROM ctf.transcript_observations o
+       WHERE session_id=$1 ORDER BY o.version DESC LIMIT 1`,
+      [sessionId],
+    );
+    if (!evidenceHead) throw new Error("Synthetic evaluation evidence is unavailable.");
+    const reviewSnapshot = await modules.captureCommittedMonitorSnapshot({
+      gameId: workspace.gameId,
+      sessionId,
+      epoch: Number(evidenceHead.epoch),
+      targetVersion: Number(evidenceHead.version),
+    });
     reviewStarted = true;
     review = await modules.runMonitorReview({
       game,
@@ -366,12 +419,13 @@ export async function runLiveEvaluation(config: LiveEvaluationConfig): Promise<E
       db: dbModule.db,
     };
     const workspaces = new Map<string, SeededWorkspace>();
-    for (const [workspaceId, snapshot] of corpusWorkspaces())
+    for (const [workspaceId, { snapshot, ownerId }] of corpusWorkspaces())
       workspaces.set(
         workspaceId,
         await seedWorkspace(
           pool,
           snapshot,
+          ownerId,
           config.budgetMicrodollars,
           modules.AGENT_MODEL,
           modules.TYPESAFE_MODEL,

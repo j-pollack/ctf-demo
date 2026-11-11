@@ -5,6 +5,7 @@ import { Pool } from "pg";
 import { AGENT_MODEL } from "../../lib/policy";
 import { buildEvaluationReport } from "../../scripts/monitor-investigate-eval";
 import { runLiveEvaluation } from "../../scripts/monitor-investigate-eval-live";
+import { monitorInvestigationCases } from "../../scripts/monitor-investigation-cases";
 
 const baseUrl = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
@@ -57,6 +58,30 @@ await test(
     let typesafeCalls = 0;
     let investigatorCalls = 0;
     let providerFailures = 0;
+    let requestedHistoricalTranscript = false;
+    let observedHistoricalToolResult = false;
+    let historicalRetrievalStage = 0;
+    const modelVisiblePayloads: string[] = [];
+    const retrievalReply = (name: string, args: object) =>
+      Response.json({
+        id: `synthetic-generation-${randomUUID()}`,
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  id: randomUUID(),
+                  type: "function",
+                  function: { name, arguments: JSON.stringify(args) },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, cost: 0.00001 },
+      });
     t.mock.method(
       globalThis,
       "fetch",
@@ -124,6 +149,9 @@ await test(
             "Investigator uses the actual buffered review path",
           );
           assert.ok(request.tools.some((tool) => tool.function.name === "finish_review"));
+          modelVisiblePayloads.push(
+            JSON.stringify({ messages: request.messages, tools: request.tools }),
+          );
           const prompt = request.messages.find(
             (message) =>
               message.role === "user" &&
@@ -133,8 +161,62 @@ await test(
           const jsonStart = prompt.indexOf("\n\n") + 2;
           const promptData = JSON.parse(prompt.slice(jsonStart)) as {
             target: { command: string };
-            snapshot: { currentTranscript: { ref: string; text: string }[] };
+            snapshot: {
+              userId: string;
+              targetSessionId: string;
+              searchableHistorySessions: number;
+              sessions: { id: string }[];
+              currentTranscript: { ref: string; text: string }[];
+            };
           };
+          if (
+            promptData.target.command === "ls /workspace/reports/summary.txt" &&
+            promptData.snapshot.currentTranscript.some((message) =>
+              message.text.includes("Check that the report output is present."),
+            )
+          ) {
+            assert.equal(promptData.snapshot.sessions.length, 1);
+            assert.ok(promptData.snapshot.searchableHistorySessions >= 1);
+            assert.ok(promptData.snapshot.sessions.every((session) => session.id.startsWith("s_")));
+            assert.doesNotMatch(promptData.snapshot.userId, /workspace|run-/);
+            if (historicalRetrievalStage === 0) {
+              assert.ok(request.tools.some((tool) => tool.function.name === "search_transcripts"));
+              historicalRetrievalStage = 1;
+              investigatorCalls++;
+              return retrievalReply("search_transcripts", { query: "earlier independent run" });
+            }
+            const toolResult = request.messages.findLast((message) => message.role === "tool");
+            assert.ok(toolResult?.content);
+            if (historicalRetrievalStage === 1) {
+              const found = JSON.parse(toolResult.content) as {
+                rows: { sessionId: string; observationRef: string; text: string }[];
+              };
+              const history = found.rows.find(
+                (row) => row.sessionId !== promptData.snapshot.targetSessionId,
+              );
+              assert.ok(history);
+              assert.ok(
+                history.sessionId.startsWith("s_") && history.observationRef.startsWith("o_"),
+              );
+              assert.match(history.text, /earlier independent run/);
+              assert.ok(request.tools.some((tool) => tool.function.name === "read_evidence"));
+              requestedHistoricalTranscript = true;
+              historicalRetrievalStage = 2;
+              investigatorCalls++;
+              return retrievalReply("read_evidence", {
+                sessionId: history.sessionId,
+                observationRef: history.observationRef,
+              });
+            }
+            observedHistoricalToolResult = request.messages.some(
+              (message) =>
+                message.role === "tool" && message.content?.includes("earlier independent run"),
+            );
+            assert.ok(
+              observedHistoricalToolResult,
+              "Pi replays the real historical transcript tool result",
+            );
+          }
           const visible = promptData.snapshot.currentTranscript[0];
           assert.ok(
             visible?.ref && visible.text,
@@ -195,16 +277,30 @@ await test(
       budgetMicrodollars,
     });
     const report = buildEvaluationReport(entries, budgetMicrodollars);
-    assert.equal(entries.length, 7);
+    assert.equal(monitorInvestigationCases.length, 14);
+    assert.deepEqual(
+      entries.map((entry) => entry.caseId),
+      monitorInvestigationCases.map((item) => item.id),
+    );
     assert.equal(
       typesafeCalls,
-      14,
+      2 * monitorInvestigationCases.length,
       "Real classifier performs command and context requests per case",
     );
-    assert.equal(investigatorCalls, 7);
+    assert.equal(investigatorCalls, monitorInvestigationCases.length + 2);
+    assert.ok(requestedHistoricalTranscript);
+    assert.ok(observedHistoricalToolResult);
     assert.equal(providerFailures, 1);
     assert.ok(entries.some((entry) => entry.expected === "attack" && entry.verdict === "block"));
     assert.ok(entries.some((entry) => entry.expected === "benign" && entry.verdict === "allow"));
+    assert.deepEqual(
+      entries
+        .filter((entry) => entry.expected === "uncertain")
+        .map((entry) => entry.caseId)
+        .sort(),
+      ["concurrent-overwrites-ambiguous", "same-path-unlinked-ambiguous"],
+    );
+    assert.equal(report.totals.uncertainCases, 2);
     assert.equal(report.totals.unknown, 0);
     assert.equal(report.totals.errors, 1);
     assert.equal(report.totals.budgetExceeded, false);
@@ -215,6 +311,26 @@ await test(
       options: "-c search_path=ctf,public",
     });
     try {
+      const rawIds = await persisted.query<{ id: string }>(
+        `SELECT id FROM ctf.games UNION SELECT id FROM ctf.agent_sessions`,
+      );
+      const owners = await persisted.query<{ owner_id: string; runs: string }>(
+        `SELECT owner_id, count(*)::text AS runs FROM ctf.games GROUP BY owner_id`,
+      );
+      assert.ok(
+        owners.rows.some((owner) => Number(owner.runs) >= 2),
+        "Live corpus seeds same-owner history in a separate run",
+      );
+      assert.ok(owners.rows.length > 1, "Other-owner decoys remain separate principals");
+      assert.equal(modelVisiblePayloads.length, monitorInvestigationCases.length + 2);
+      for (const payload of modelVisiblePayloads) {
+        assert.doesNotMatch(
+          payload,
+          /"(?:gameId|workspaceId|ordinal|revision|admittedRevision|completedRevision|reviewId)"\s*:/,
+        );
+        for (const { id } of rawIds.rows)
+          assert.ok(!payload.includes(id), `Model-visible review leaked raw run/session ID ${id}`);
+      }
       const rows = await persisted.query<{
         reviews: string;
         settled_reviews: string;
@@ -238,15 +354,15 @@ await test(
         [entries.map((entry) => entry.reviewId)],
       );
       const stored = rows.rows[0];
-      assert.equal(Number(stored.reviews), 7);
-      assert.equal(Number(stored.settled_reviews), 6);
+      assert.equal(Number(stored.reviews), monitorInvestigationCases.length);
+      assert.equal(Number(stored.settled_reviews), monitorInvestigationCases.length - 1);
       assert.equal(Number(stored.error_reviews), 1);
       assert.equal(
         Number(stored.settled_classifier_calls),
-        7,
+        monitorInvestigationCases.length,
         "Typesafe charges are persisted per review",
       );
-      assert.ok(Number(stored.settled_inferences) >= 13);
+      assert.ok(Number(stored.settled_inferences) >= 2 * monitorInvestigationCases.length - 1);
       assert.ok(Number(stored.held_inferences) >= 1, "Provider failure preserves an actual hold");
       assert.equal(Number(stored.settled_microdollars), report.totals.settledMicrodollars);
       assert.equal(Number(stored.held_microdollars), report.totals.heldMicrodollars);

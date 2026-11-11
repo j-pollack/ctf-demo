@@ -88,6 +88,30 @@ test("a delayed same-run snapshot cannot reject or erase a newer optimistic subm
   assert.equal(refreshedGame(optimistic, current, nextPending, 1, 2), optimistic);
 });
 
+test("an older async progress snapshot cannot rewind review or reopen submitted play", () => {
+  const ahead = {
+    ...current,
+    status: "finalizing" as const,
+    monitorMode: "async" as const,
+    stateRevision: "12",
+    monitor: {
+      status: "reviewing" as const,
+      pendingSessions: 1,
+      reviewedUpdates: 2,
+      totalUpdates: 3,
+      lastReviewedAt: "2026-11-10T00:00:00.000Z",
+    },
+  };
+  const behind = {
+    ...ahead,
+    status: "active" as const,
+    stateRevision: "11",
+    monitor: { ...ahead.monitor, status: "queued" as const, reviewedUpdates: 1 },
+  };
+  assert.equal(refreshedGame(ahead, behind), ahead);
+  assert.equal(refreshedGame(ahead, { ...ahead, stateRevision: "13" })?.stateRevision, "13");
+});
+
 test("a held stale session fetch cannot reopen a caught run or enable the composer", async () => {
   const active = { ...current, status: "active" } as PublicGame;
   for (const staleStatus of ["active", "finalizing", "creating"] as const) {

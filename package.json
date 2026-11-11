@@ -9,6 +9,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "setup": "node --env-file=.env.local --import tsx scripts/setup.ts",
+    "monitor:worker": "node --env-file=.env.local --import tsx scripts/monitor-worker.ts",
     "smoke": "node --env-file=.env.local --import tsx scripts/smoke.ts",
     "check:auth": "node --env-file=.env.local --import tsx scripts/auth-check.ts",
     "check:budget": "node --env-file=.env.local --import tsx scripts/budget-check.ts",

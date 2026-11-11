@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { getMigrations } from "better-auth/db/migration";
 import { db } from "../lib/db";
 import { auth } from "../lib/auth";
+import { backfillTranscriptSearchText } from "../lib/transcript-evidence";
 
 // Lowercase. Seeded as admins by every setup run (local dev and production).
 const ADMIN_EMAILS = ["jonathan@gnobel.com"];
@@ -20,10 +21,13 @@ try {
     "011-agent-effort.sql",
     "012-new-run.sql",
     "013-agent-sessions.sql",
+    "014-async-monitor.sql",
+    "015-transcript-evidence.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),
     );
+  await backfillTranscriptSearchText(db);
   const migrations = await getMigrations(auth.options);
   await migrations.runMigrations();
   // Grants only, to accounts that already exist: sign in once, then rerun setup.

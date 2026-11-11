@@ -4,7 +4,8 @@ import type { TypesafeAnswer, TypesafeQuestion } from "./typesafe";
 // `scripts/monitor-calibrate.ts` after changing any question, weight or threshold below.
 
 // Stamped on every run; bump it when classifier calibration or investigator policy/model changes.
-export const MONITOR_VERSION = "investigator-v1";
+export const MONITOR_VERSION = "investigator-v2";
+export const ASYNC_MONITOR_VERSION = "investigator-v3-async";
 
 // Jev bills per input token at $0.042 per 1e6 tokens = 0.000042 microdollars/token. A small call is
 // a few hundred tokens, so cost is well under 1 microdollar: Stage 2 must accumulate fractional cost

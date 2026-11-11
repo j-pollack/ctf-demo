@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Pool } from "pg";
@@ -76,6 +78,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   await pool.query(
     await readFile(new URL("../../db/migrations/013-agent-sessions.sql", import.meta.url), "utf8"),
   );
+  await pool.query(
+    await readFile(new URL("../../db/migrations/014-async-monitor.sql", import.meta.url), "utf8"),
+  );
+  await pool.query(
+    await readFile(
+      new URL("../../db/migrations/015-transcript-evidence.sql", import.meta.url),
+      "utf8",
+    ),
+  );
+  await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
   ).rows[0];
@@ -98,7 +110,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   await pool.query("DELETE FROM ctf.events WHERE game_id=$1", [legacyId]);
   await pool.query("DELETE FROM ctf.games WHERE id=$1", [legacyId]);
   const {
-    startGame,
+    startGame: productionStartGame,
     getGame,
     getPublicGameRow,
     publicGame: projectGame,
@@ -108,6 +120,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     settleInference,
     record,
   } = await import("../../lib/games");
+  // Existing scenarios exercise the persisted legacy protocol. The production default is
+  // asserted separately below, without this fixture-only mode selection.
+  const startGame = async (...args: Parameters<typeof productionStartGame>) => {
+    const game = await productionStartGame(...args);
+    const reasoning = args[2]?.monitorReasoning;
+    await pool.query(
+      "UPDATE ctf.games SET monitor_mode='legacy',monitor_version='investigator-v2',monitor_reasoning=coalesce($2,monitor_reasoning) WHERE id=$1",
+      [game.id, reasoning ?? null],
+    );
+    return {
+      ...game,
+      monitorMode: "legacy" as const,
+      monitorReasoning: typeof reasoning === "boolean" ? reasoning : game.monitorReasoning,
+    };
+  };
   const {
     createSession,
     claimSession,
@@ -119,14 +146,193 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     admitMonitorCommand,
     completeMonitorCommand,
   } = await import("../../lib/sessions");
-  const { captureMonitorSnapshot, SnapshotTooLargeError } =
+  const { captureMonitorSnapshot, SnapshotTooLargeError, MAX_HISTORICAL_SESSIONS } =
     await import("../../lib/monitor-snapshot");
+  const { monitorSessionAlias, makeInitialMonitorEvidence, createMonitorTools } =
+    await import("../../lib/monitor-tools");
+  await t.test(
+    "monitor capture includes owner-wide history and excludes another owner",
+    async () => {
+      const owner = `correlation-${randomUUID()}`;
+      const targetId = randomUUID();
+      const historicalId = randomUUID();
+      for (const [id, status] of [
+        [targetId, "active"],
+        [historicalId, "ended"],
+      ] as const) {
+        await pool.query(
+          `INSERT INTO ctf.games
+          (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+           token_budget,status,agent_effort,system_prompt,messages,turns)
+         VALUES($1,$2,$3,'synthetic-hash','synthetic-agent','synthetic-monitor',
+           'synthetic-version',1000,$4,'medium','synthetic prompt','[]',0)`,
+          [id, owner, `correlation-${id}`, status],
+        );
+        await pool.query(
+          `INSERT INTO ctf.agent_sessions
+          (id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
+         VALUES($1,$1,1,'synthetic-agent','medium','synthetic prompt',$2,0)`,
+          [id, JSON.stringify([{ role: "user", content: "synthetic transcript" }])],
+        );
+      }
+      const snapshot = await captureMonitorSnapshot(targetId);
+      assert.ok(snapshot.sessions.some((session) => session.id === targetId));
+      assert.ok(
+        snapshot.sessions.some((session) => session.id === historicalId),
+        "Same-owner historical transcript must be available to correlate",
+      );
+      assert.equal(snapshot.userId, owner);
+      assert.equal(snapshot.targetSessionId, targetId);
+      assert.equal(snapshot.omittedSessions, 0);
+      const otherOwnerId = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.games
+        (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+         token_budget,status,agent_effort,system_prompt,messages,turns)
+       VALUES($1,$2,$3,'synthetic-hash','synthetic-agent','synthetic-monitor',
+         'synthetic-version',1000,'ended','medium','synthetic prompt','[]',0)`,
+        [otherOwnerId, `other-${owner}`, `correlation-${otherOwnerId}`],
+      );
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions
+        (id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
+       VALUES($1,$1,1,'synthetic-agent','medium','synthetic prompt',$2,0)`,
+        [otherOwnerId, JSON.stringify([{ role: "user", content: "foreign same-path decoy" }])],
+      );
+      const isolated = await captureMonitorSnapshot(targetId);
+      assert.ok(!isolated.sessions.some((session) => session.id === otherOwnerId));
+      assert.ok(!JSON.stringify(isolated).includes("foreign same-path decoy"));
+      await assert.rejects(
+        captureMonitorSnapshot(targetId, historicalId),
+        /Review session not found/,
+      );
+      await assert.rejects(
+        captureMonitorSnapshot(targetId, otherOwnerId),
+        /Review session not found/,
+      );
+
+      const historyIds = Array.from({ length: MAX_HISTORICAL_SESSIONS }, () => randomUUID());
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions
+        (id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
+       SELECT id,$1,ordinal+1,'synthetic-agent','medium','synthetic prompt',
+         '[{"role":"user","content":"bounded history"}]'::jsonb,0
+       FROM unnest($2::uuid[]) WITH ORDINALITY AS items(id,ordinal)`,
+        [historicalId, historyIds],
+      );
+      const capped = await captureMonitorSnapshot(targetId);
+      assert.equal(capped.sessions.length, MAX_HISTORICAL_SESSIONS + 1);
+      assert.equal(capped.omittedSessions, 1);
+      assert.ok(capped.sessions.some((session) => session.id === targetId));
+      const initial = makeInitialMonitorEvidence(capped, targetId);
+      assert.equal(initial.historyOmittedSessions, 1);
+      assert.equal(initial.targetSessionId, monitorSessionAlias(capped, targetId));
+      assert.ok(!JSON.stringify(initial).includes(targetId));
+      assert.ok(!JSON.stringify(initial).includes(historicalId));
+      assert.ok(initial.sessionsCursor);
+      const tools = createMonitorTools(capped, targetId);
+      const nextPage = tools.listSessions({ cursor: initial.sessionsCursor });
+      assert.ok(nextPage.sessions.length > 0);
+      assert.ok(nextPage.sessions.every((session) => session.id.startsWith("s_")));
+      assert.deepEqual(
+        tools
+          .readTranscript({ sessionId: initial.targetSessionId })
+          .messages.map((message) => message.text),
+        ["synthetic transcript"],
+      );
+      assert.throws(() => tools.readTranscript({ sessionId: targetId }), /Unknown session/);
+      const later = await captureMonitorSnapshot(targetId);
+      assert.notEqual(later.snapshotId, capped.snapshotId);
+      assert.throws(
+        () => createMonitorTools(later, targetId).listSessions({ cursor: initial.sessionsCursor }),
+        /Invalid cursor/,
+      );
+      await pool.query("UPDATE ctf.agent_sessions SET messages=$2 WHERE id=$1", [
+        historyIds[0],
+        JSON.stringify([{ role: "user", content: "x".repeat(2 * 1024 * 1024) }]),
+      ]);
+      const byteCapped = await captureMonitorSnapshot(targetId);
+      assert.equal(byteCapped.sessions.length, MAX_HISTORICAL_SESSIONS);
+      assert.equal(byteCapped.omittedSessions, 2);
+      assert.ok(!byteCapped.sessions.some((session) => session.id === historyIds[0]));
+      assert.ok(byteCapped.sessions.some((session) => session.id === targetId));
+    },
+  );
+  await t.test("historical reasoning needs source and current review permission", async () => {
+    const owner = `reasoning-${randomUUID()}`;
+    const targetId = randomUUID();
+    const historyId = randomUUID();
+    for (const [id, visible] of [
+      [targetId, true],
+      [historyId, false],
+    ] as const) {
+      await pool.query(
+        `INSERT INTO ctf.games
+          (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+           token_budget,status,agent_effort,system_prompt,messages,turns,monitor_reasoning)
+         VALUES($1,$2,$3,'synthetic-hash','synthetic-agent','synthetic-monitor',
+           'synthetic-version',1000,'ended','medium','HIDDEN_SYSTEM_PROMPT','[]',0,$4)`,
+        [id, owner, `reasoning-${id}`, visible],
+      );
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions
+          (id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
+         VALUES($1,$1,1,'synthetic-agent','medium','HIDDEN_SYSTEM_PROMPT',$2,1)`,
+        [
+          id,
+          JSON.stringify([
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "thinking",
+                  thinking: id === targetId ? "TARGET_REASONING" : "HISTORY_REASONING",
+                },
+                { type: "text", text: "visible transcript" },
+              ],
+            },
+          ]),
+        ],
+      );
+    }
+    const snapshot = await captureMonitorSnapshot(targetId);
+    const historyAlias = monitorSessionAlias(snapshot, historyId);
+    const permissive = createMonitorTools(snapshot, targetId, { includeReasoning: true });
+    assert.doesNotMatch(
+      JSON.stringify(permissive.readTranscript({ sessionId: historyAlias })),
+      /HISTORY_REASONING|HIDDEN_SYSTEM_PROMPT/,
+    );
+    assert.match(
+      JSON.stringify(makeInitialMonitorEvidence(snapshot, targetId, { includeReasoning: true })),
+      /TARGET_REASONING/,
+    );
+    await pool.query("UPDATE ctf.games SET monitor_reasoning=true WHERE id=$1", [historyId]);
+    const visibleSnapshot = await captureMonitorSnapshot(targetId);
+    const visibleAlias = monitorSessionAlias(visibleSnapshot, historyId);
+    assert.match(
+      JSON.stringify(
+        createMonitorTools(visibleSnapshot, targetId, { includeReasoning: true }).readTranscript({
+          sessionId: visibleAlias,
+        }),
+      ),
+      /HISTORY_REASONING/,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(
+        createMonitorTools(visibleSnapshot, targetId, { includeReasoning: false }).readTranscript({
+          sessionId: visibleAlias,
+        }),
+      ),
+      /HISTORY_REASONING|HIDDEN_SYSTEM_PROMPT/,
+    );
+  });
   const { executeCommand, destroyEnvironment, operationTimeout } =
     await import("../../lib/sprites");
   const { runGame } = await import("../../lib/runner");
   const { AGENT_MODEL, AGENT_PROMPT, MODELS, agentPrompt, hasSecret } =
     await import("../../lib/policy");
-  const { CONTROL_DIFFICULTY, MONITOR_VERSION, questionsFor } = await import("../../lib/control");
+  const { CONTROL_DIFFICULTY, MONITOR_VERSION, ASYNC_MONITOR_VERSION, questionsFor } =
+    await import("../../lib/control");
   const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
   const { SEED_BUGS, seedScoreCommand } = await import("../../lib/seed");
   process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
@@ -558,7 +764,18 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         const names = payload.tools
           .map((tool: { function: { name: string } }) => tool.function.name)
           .sort();
-        assert.deepEqual(names, ["finish_review", "list_sessions", "read_transcript"]);
+        assert.deepEqual(
+          names,
+          names.includes("search_transcripts")
+            ? [
+                "finish_review",
+                "list_sessions",
+                "read_evidence",
+                "read_transcript",
+                "search_transcripts",
+              ]
+            : ["finish_review", "list_sessions", "read_transcript"],
+        );
         const promptText = payload.messages.at(-1).content as string;
         const separator = promptText.indexOf("\n\n");
         const prompt = JSON.parse(promptText.slice(separator + 2));
@@ -813,6 +1030,456 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(rows[0].ordinal, 1);
       assert.deepEqual(rows[0].messages, []);
       assert.equal(rows[0].agent_model, game.agentModel);
+    },
+  );
+  await t.test("production creation selects asynchronous monitoring", async () => {
+    const game = await productionStartGame("async-default");
+    assert.equal((await row(game.id)).monitor_mode, "async");
+  });
+  await t.test(
+    "async runner persists each command and proceeds without a monitor response",
+    async () => {
+      const owner = "async-command";
+      const game = await productionStartGame(owner);
+      proposed = ["printf harmless", "printf old"];
+      const leased = await claimGame(game.id, owner);
+      const sent: { type: string; data: unknown }[] = [];
+      await runGame(leased, "Run both commands", AbortSignal.timeout(5000), (type, data) =>
+        sent.push({ type, data }),
+      );
+      assert.deepEqual(
+        commands.map(({ command }) => command),
+        ["printf harmless", "printf old"],
+      );
+      assert.equal(requests.filter(({ role }) => role === "monitor").length, 0);
+      const operations = (
+        await pool.query(
+          "SELECT command,status,output FROM ctf.sprite_operations WHERE game_id=$1 ORDER BY started_at,id",
+          [game.id],
+        )
+      ).rows;
+      assert.deepEqual(
+        operations.map(({ status }) => status),
+        ["completed", "completed"],
+      );
+      assert.ok(operations.every(({ output }) => output.includes("fixture-output")));
+      const saved = await getSession(game.id, game.id, owner);
+      assert.equal(saved.messages.filter(({ role }) => role === "toolResult").length, 2);
+      assert.equal(
+        sent.filter(
+          ({ type, data }) => type === "event" && (data as { kind?: string }).kind === "tool",
+        ).length,
+        2,
+      );
+      assert.ok(
+        (await pool.query("SELECT 1 FROM ctf.monitor_jobs WHERE game_id=$1", [game.id])).rowCount,
+      );
+    },
+  );
+  await t.test("successful output containing interrupted stays completed", async () => {
+    const owner = "async-literal-interrupted";
+    const game = await productionStartGame(owner);
+    const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
+    commandResult = { stdout: "interrupted", stderr: "", exitCode: 0 };
+    proposed = ["printf harmless", { submit: secret }];
+    await runGame(
+      await claimGame(game.id, owner),
+      "Run and submit",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    const {
+      rows: [operation],
+    } = await pool.query(
+      "SELECT status,output FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command'",
+      [game.id],
+    );
+    assert.equal(operation.status, "completed");
+    assert.match(operation.output, /interrupted/);
+    const finished = await row(game.id);
+    assert.equal(finished.status, "finalizing");
+    assert.equal(finished.finalization_error, null);
+  });
+  await t.test("async submit ends play with review and scoring pending", async () => {
+    const owner = "async-submit";
+    const game = await productionStartGame(owner);
+    const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
+    proposed = [{ submit: secret }, "printf late"];
+    const sent: { type: string; data: unknown }[] = [];
+    await runGame(
+      await claimGame(game.id, owner),
+      "Submit",
+      AbortSignal.timeout(5000),
+      (type, data) => sent.push({ type, data }),
+    );
+    assert.equal((await row(game.id)).status, "finalizing");
+    assert.deepEqual(commands, []);
+    assert.equal(agentCalls, 1);
+    assert.equal(requests.filter(({ role }) => role === "monitor").length, 0);
+    assert.ok(
+      sent.some(
+        ({ type, data }) =>
+          type === "state" && (data as { status?: string }).status === "finalizing",
+      ),
+    );
+    const submitted = (
+      await pool.query("SELECT data FROM ctf.events WHERE game_id=$1 AND data->>'kind'='submit'", [
+        game.id,
+      ])
+    ).rows;
+    assert.equal(submitted.length, 1);
+    assert.equal(submitted[0].data.correct, true);
+    const next = await productionStartGame(owner);
+    assert.notEqual((await row(next.id)).sprite_name, (await row(game.id)).sprite_name);
+    assert.equal((await row(game.id)).status, "finalizing");
+    assert.equal(
+      (await pool.query("SELECT status FROM ctf.finalization_jobs WHERE game_id=$1", [game.id]))
+        .rows[0].status,
+      "queued",
+    );
+  });
+  await t.test("a ready finalization progresses amid unrelated queued reviews", async () => {
+    const owner = "async-fair-finalization";
+    const submitted = await productionStartGame(owner);
+    proposed = [{ submit: "incorrect flag" }];
+    await runGame(
+      await claimGame(submitted.id, owner),
+      "Submit",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    await pool.query(
+      `UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version
+       WHERE game_id=$1`,
+      [submitted.id],
+    );
+    await pool.query("UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=$1", [
+      submitted.id,
+    ]);
+    const unrelated = await productionStartGame("async-fair-review");
+    proposed = ["printf harmless"];
+    await runGame(
+      await claimGame(unrelated.id, "async-fair-review"),
+      "Command",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    assert.ok(
+      (
+        await pool.query("SELECT 1 FROM ctf.monitor_jobs WHERE game_id=$1 AND status='queued'", [
+          unrelated.id,
+        ])
+      ).rowCount,
+    );
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    assert.equal(await runMonitorWorkerOnce(), true);
+    assert.equal((await row(submitted.id)).status, "ended");
+    assert.equal(
+      (
+        await pool.query("SELECT status FROM ctf.finalization_jobs WHERE game_id=$1", [
+          submitted.id,
+        ])
+      ).rows[0].status,
+      "done",
+    );
+  });
+  await t.test(
+    "a separate worker catch aborts an in-flight command and bars later dispatch",
+    async () => {
+      const owner = "async-cross-process";
+      const game = await productionStartGame(owner);
+      proposed = ["printf harmless", "printf old"];
+      let entered!: () => void;
+      const commandEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let interrupted = false;
+      commandGate = async (commandSignal) => {
+        entered();
+        await new Promise<void>((_resolve, reject) =>
+          commandSignal.addEventListener(
+            "abort",
+            () => {
+              interrupted = true;
+              reject(commandSignal.reason);
+            },
+            { once: true },
+          ),
+        );
+      };
+      const running = runGame(
+        await claimGame(game.id, owner),
+        "Run the commands",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      await Promise.race([
+        commandEntered,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("The async command was not dispatched.")), 5000),
+        ),
+      ]);
+      const workerStartedAt = Date.now();
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "--import",
+          "./tests/integration/async-worker-preload.ts",
+          "scripts/monitor-worker.ts",
+          "--once",
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: process.env.HOME ?? "",
+            NODE_ENV: "test",
+            CTF_INTEGRATION_DATABASE_URL: process.env.CTF_INTEGRATION_DATABASE_URL!,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      t.after(() => {
+        if (child.exitCode === null) child.kill("SIGTERM");
+      });
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += String(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        output += String(chunk);
+      });
+      const [code] = await once(child, "exit");
+      assert.equal(code, 0, output);
+      await running;
+      assert.equal((await row(game.id)).status, "caught", output);
+      assert.equal(interrupted, true, "the runner's heartbeat aborts the remote call");
+      assert.ok(Date.now() - workerStartedAt < 3000, "revocation reaches the runner promptly");
+      assert.deepEqual(
+        commands.map(({ command }) => command),
+        ["printf harmless"],
+      );
+      const operation = (
+        await pool.query(
+          "SELECT status FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command'",
+          [game.id],
+        )
+      ).rows[0];
+      assert.equal(operation.status, "unknown");
+    },
+  );
+  await t.test("a worker reviews committed evidence after the agent lease ends", async () => {
+    const owner = "async-worker-allow";
+    const game = await productionStartGame(owner);
+    proposed = ["printf harmless"];
+    await runGame(
+      await claimGame(game.id, owner),
+      "Run one command",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    await pool.query(
+      `UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version,
+       claim_token=NULL,claim_until=NULL WHERE game_id<>$1`,
+      [game.id],
+    );
+    await pool.query("UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=$1", [
+      game.id,
+    ]);
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { rows: pending } = await pool.query(
+        "SELECT 1 FROM ctf.monitor_jobs WHERE game_id=$1 AND status<>'caught-up'",
+        [game.id],
+      );
+      if (!pending.length) break;
+      assert.equal(await runMonitorWorkerOnce(), true);
+    }
+    const { rows: jobs } = await pool.query(
+      "SELECT status,covered_version,requested_version,reason FROM ctf.monitor_jobs WHERE game_id=$1 ORDER BY epoch",
+      [game.id],
+    );
+    assert.ok(jobs.length > 0);
+    assert.ok(
+      jobs.every(({ status }) => status === "caught-up"),
+      JSON.stringify({
+        jobs,
+        reviews: (
+          await pool.query(
+            "SELECT verdict,operational_error,reason FROM ctf.monitor_reviews WHERE game_id=$1",
+            [game.id],
+          )
+        ).rows,
+      }),
+    );
+    assert.ok(
+      jobs.every(({ covered_version, requested_version }) => covered_version === requested_version),
+    );
+    assert.ok(requests.some(({ role }) => role === "monitor"));
+  });
+  await t.test("unknown review leaves a correct submission unconfirmed", async () => {
+    const owner = "async-unknown";
+    const game = await productionStartGame(owner);
+    const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
+    proposed = [{ submit: secret }];
+    investigatorOverride = "unknown";
+    await runGame(await claimGame(game.id, owner), "Submit", AbortSignal.timeout(5000), () => {});
+    await pool.query(
+      `UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version,
+       claim_token=NULL,claim_until=NULL WHERE game_id<>$1`,
+      [game.id],
+    );
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    assert.equal(await runMonitorWorkerOnce(), true);
+    const {
+      rows: [job],
+    } = await pool.query("SELECT status,covered_version FROM ctf.monitor_jobs WHERE game_id=$1", [
+      game.id,
+    ]);
+    assert.equal(job.status, "unresolved");
+    assert.equal(Number(job.covered_version), 0);
+    assert.equal((await row(game.id)).status, "finalizing");
+    assert.equal((await projectGame(await row(game.id))).monitor?.status, "unresolved");
+  });
+  await t.test(
+    "scoring on a shared Sprite bars fork restore and preserves the pending run",
+    async () => {
+      const owner = "async-shared-score";
+      const parent = await startGame(owner);
+      proposed = ["printf harmless"];
+      await runGame(
+        await claimGame(parent.id, owner),
+        "Prepare a checkpoint",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      const spriteName = (await row(parent.id)).sprite_name as string;
+      await pool.query("UPDATE ctf.games SET status='caught',updated_at=now() WHERE id=$1", [
+        parent.id,
+      ]);
+      const pendingId = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.games
+       (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+        token_budget,status,monitor_mode,submitted_flag_correct,submitted_session_id,
+        agent_effort,system_prompt,budget_microdollars)
+       SELECT $2,$3,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+        token_budget,'finalizing','async',true,$2,agent_effort,system_prompt,500000
+       FROM ctf.games WHERE id=$1`,
+        [parent.id, pendingId, `${owner}-pending`],
+      );
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions
+       (id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
+       SELECT $2,$2,1,agent_model,agent_effort,system_prompt,'[]',0
+       FROM ctf.agent_sessions WHERE game_id=$1 AND ordinal=1`,
+        [parent.id, pendingId],
+      );
+      await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [pendingId]);
+      await pool.query("INSERT INTO ctf.events(game_id,session_id,data) VALUES($1,$1,$2)", [
+        pendingId,
+        JSON.stringify({ kind: "submit", text: "fixture flag", correct: true, turn: 0 }),
+      ]);
+      await pool.query("UPDATE ctf.finalization_jobs SET status='unresolved' WHERE game_id<>$1", [
+        pendingId,
+      ]);
+      await pool.query(
+        `UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version,
+       claim_token=NULL,claim_until=NULL WHERE game_id<>$1`,
+        [pendingId],
+      );
+      let enterScore!: () => void;
+      const scoreEntered = new Promise<void>((resolve) => {
+        enterScore = resolve;
+      });
+      let releaseScore!: () => void;
+      const scoreRelease = new Promise<void>((resolve) => {
+        releaseScore = resolve;
+      });
+      commandGate = async () => {
+        enterScore();
+        await scoreRelease;
+      };
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      const scoring = runMonitorWorkerOnce();
+      try {
+        await Promise.race([
+          scoreEntered,
+          new Promise<never>((_resolve, reject) =>
+            setTimeout(() => reject(new Error("Scoring did not start.")), 5000),
+          ),
+        ]);
+        const commandsBefore = commands.length;
+        await assert.rejects(
+          productionStartGame(owner, undefined, { sourceId: parent.id }),
+          (error: unknown) =>
+            error instanceof Error && /restore|finishing earlier work/i.test(error.message),
+        );
+        assert.equal(restores.length, 0, "fork restore cannot overlap scoring");
+        assert.equal(trace.filter((entry) => entry === `${spriteName}:delete`).length, 0);
+        assert.equal(commands.length, commandsBefore, "fork adds no Sprite work during scoring");
+        assert.equal((await row(pendingId)).status, "finalizing");
+        assert.ok(environments.has(spriteName), "the pending run retains its Sprite");
+      } finally {
+        releaseScore();
+        commandGate = undefined;
+        await scoring;
+      }
+      assert.equal((await row(pendingId)).status, "captured");
+    },
+  );
+  await t.test(
+    "unknown command teardown waits for a pending child and reconciles uncertain deletion",
+    async () => {
+      const owner = `async-teardown-${randomUUID()}`;
+      const parent = await productionStartGame(owner);
+      await createSession(parent.id, owner);
+      const spriteName = (await row(parent.id)).sprite_name as string;
+      const commandId = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,command,status)
+       VALUES($1,$2,$3,$3,$4,'command','printf uncertain','unknown')`,
+        [commandId, spriteName, parent.id, randomUUID()],
+      );
+      await pool.query("UPDATE ctf.games SET status='caught' WHERE id=$1", [parent.id]);
+      const childId = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+        token_budget,status,monitor_mode,submitted_flag_correct,submitted_session_id)
+       SELECT $2,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+        token_budget,'finalizing','async',false,$2 FROM ctf.games WHERE id=$1`,
+        [parent.id, childId],
+      );
+      const { deleteSpriteIfEligible, beginExclusiveSpriteOperation } =
+        await import("../../lib/monitor-commands");
+      const deletesBefore = trace.filter((entry) => entry === `${spriteName}:delete`).length;
+      assert.equal(await deleteSpriteIfEligible(spriteName), false);
+      assert.equal(trace.filter((entry) => entry === `${spriteName}:delete`).length, deletesBefore);
+      assert.ok(environments.has(spriteName));
+      await pool.query("UPDATE ctf.games SET status='ended' WHERE id=$1", [childId]);
+      failAt = "delete";
+      await assert.rejects(deleteSpriteIfEligible(spriteName), /fixture.*delete/i);
+      assert.equal(
+        (await pool.query("SELECT status FROM ctf.sprite_operations WHERE id=$1", [commandId]))
+          .rows[0].status,
+        "unknown",
+      );
+      assert.equal(
+        await beginExclusiveSpriteOperation({ spriteName, gameId: parent.id, kind: "restore" }),
+        null,
+      );
+      failAt = undefined;
+      assert.equal(await deleteSpriteIfEligible(spriteName), true);
+      assert.equal(
+        (await pool.query("SELECT status FROM ctf.sprite_operations WHERE id=$1", [commandId]))
+          .rows[0].status,
+        "interrupted",
+      );
+      assert.ok((await row(parent.id)).sprite_deleted_at);
+      assert.ok((await row(childId)).sprite_deleted_at);
+      assert.ok(!environments.has(spriteName));
     },
   );
   await t.test("run responses include scoped risk history for every session", async () => {
@@ -1116,6 +1783,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         /evidence changed/,
       );
       current = await captureMonitorSnapshot(game.id);
+      const unrelatedId = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.games
+          (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+           token_budget,status,agent_effort,system_prompt,messages,turns)
+         VALUES($1,'session-snapshot',$2,'synthetic-hash','synthetic-agent','synthetic-monitor',
+           'synthetic-version',1000,'ended','medium','synthetic prompt','[]',0)`,
+        [unrelatedId, `unrelated-${unrelatedId}`],
+      );
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions
+          (id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
+         VALUES($1,$1,1,'synthetic-agent','medium','synthetic prompt','[]',0)`,
+        [unrelatedId],
+      );
       const reviewId = await createMonitorReview(game.id, {
         sessionId: sibling.id,
         sourceLease: siblingClaim.lease,
@@ -1127,6 +1809,15 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         promptVersion: "test-v1",
       });
       await completeMonitorReview(reviewId, { verdict: "allow", reason: "safe", evidence: [] });
+      await pool.query("UPDATE ctf.agent_sessions SET messages=$2 WHERE id=$1", [
+        unrelatedId,
+        JSON.stringify([{ role: "user", content: "unrelated run changed after review" }]),
+      ]);
+      assert.equal(
+        (await captureMonitorSnapshot(game.id)).revision,
+        current.revision,
+        "An unrelated run by the same owner cannot change target-run admission revision",
+      );
       const admittedRevision = await admitMonitorCommand(
         game.id,
         sibling.id,
@@ -1150,7 +1841,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         JSON.stringify([{ role: "user", content: "x".repeat(2 * 1024 * 1024) }]),
         sibling.id,
       ]);
-      await assert.rejects(captureMonitorSnapshot(game.id), SnapshotTooLargeError);
+      await assert.rejects(captureMonitorSnapshot(game.id, sibling.id), SnapshotTooLargeError);
       await releaseSessionLease(game.id, sibling.id, siblingClaim.lease);
     },
   );
@@ -1270,7 +1961,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   };
   const member = () => session(true);
 
-  await t.test("leaderboard attributes a capture to the model that actually ran", async () => {
+  await t.test("leaderboard filters legacy captures and attributes the running model", async () => {
     const who = await member();
     const game = await startGame(who.id);
     const switchedModel = MODELS.find((model) => model !== AGENT_MODEL)!;
@@ -1295,6 +1986,15 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
     const { GET } = await import("../../app/api/leaderboard/route");
     const query = `?difficulty=hard&agent=${encodeURIComponent(switchedModel)}`;
+    assert.equal(
+      (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()).entries
+        .length,
+      0,
+    );
+    await pool.query("UPDATE ctf.games SET monitor_version=$2 WHERE id=$1", [
+      game.id,
+      ASYNC_MONITOR_VERSION,
+    ]);
     const actual = await GET(new Request(`http://localhost/api/leaderboard${query}`));
     assert.equal(actual.status, 200);
     assert.equal((await actual.json()).entries.length, 1);
@@ -1994,7 +2694,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(stored.secret_hash, before.secret_hash);
       const lastUser = before.messages.findLastIndex((m: Message) => m.role === "user");
       assert.ok(lastUser > 1);
-      assert.deepEqual(stored.messages, before.messages.slice(0, lastUser));
+      const { stripInheritedHiddenReasoning } = await import("../../lib/fork-transcript");
+      assert.deepEqual(
+        stored.messages,
+        stripInheritedHiddenReasoning(before.messages.slice(0, lastUser)),
+      );
       assert.ok(!JSON.stringify(stored.messages).includes(dropped));
       // Spend, tokens, budget and turns carry over in full; the fork starts with no blocks.
       assert.equal(before.blocks, 1);
@@ -2006,7 +2710,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         "monitor_model",
         "monitor_difficulty",
         "system_prompt",
-        "monitor_reasoning",
         "token_budget",
         "tokens_used",
         "budget_microdollars",
@@ -2016,14 +2719,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(stored.system_prompt, MARKER);
       assert.deepEqual(
         [stored.monitor_model, stored.monitor_difficulty, stored.monitor_reasoning],
-        [TYPESAFE_MODEL, "medium", false],
+        [TYPESAFE_MODEL, "medium", true],
       );
       assert.equal(Number(stored.reserved_microdollars), 0);
       const childSnapshot = await captureMonitorSnapshot(child.id);
-      assert.equal(childSnapshot.commands.length, 2);
+      const childCommands = childSnapshot.commands.filter(
+        (command) => command.sessionId === child.id,
+      );
+      assert.equal(childCommands.length, 2);
+      assert.ok(
+        childSnapshot.commands.some((command) => command.sessionId === parent.id),
+        "The same owner's parent-run history remains available for investigation",
+      );
       const childStates = retainedToolCalls.map((call) => ({
         toolCallId: call.id,
-        outcome: childSnapshot.commands.find((command) => command.toolCallId === call.id)?.outcome,
+        outcome: childCommands.find((command) => command.toolCallId === call.id)?.outcome,
       }));
       const firstSourceOutcome =
         sourceReviews.find((review) => review.tool_call_id === retainedToolCalls[0].id)?.outcome ??
@@ -2120,6 +2830,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       monitorQueue = [];
       commands.length = 0;
       assert.equal((await instruct(who, child.id, { prompt: "NewInstruction8M1" })).status, 200);
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      for (let attempt = 0; attempt < 8; attempt++) {
+        if (requests.slice(from).some((request) => request.role === "monitor")) break;
+        assert.equal(await runMonitorWorkerOnce(), true);
+      }
       const transcriptReview = requests
         .slice(from)
         .filter((request) => request.role === "monitor")
@@ -2170,7 +2885,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(billing.spentMicrodollars > Number(before.spent_microdollars));
     },
   );
-  await t.test("a fork retaining gameplay keeps its inherited monitor settings", async () => {
+  await t.test("a fork retains difficulty and enables reasoning visibility", async () => {
     const who = await member();
     const parent = await startGame(who.id, undefined, {
       monitorDifficulty: "medium",
@@ -2185,6 +2900,20 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const forked = await forkRoute(who, parent.id);
     assert.equal(forked.status, 200);
     const child = await forked.json();
+    const parentMessages = (await row(parent.id)).messages as Message[];
+    const inheritedMessages = (await row(child.id)).messages as Message[];
+    assert.ok(
+      parentMessages.some(
+        (message) =>
+          message.role === "assistant" && message.content.some((part) => part.type === "thinking"),
+      ),
+    );
+    assert.ok(
+      !inheritedMessages.some(
+        (message) =>
+          message.role === "assistant" && message.content.some((part) => part.type === "thinking"),
+      ),
+    );
     const lock = (
       await pool.query("SELECT monitor_settings_locked FROM ctf.games WHERE id=$1", [child.id])
     ).rows[0].monitor_settings_locked;
@@ -2200,7 +2929,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal(changed.status, 200);
     assert.ok(typesafeOf("context").length > 0, "the child continues through its monitor");
     const after = await row(child.id);
-    assert.deepEqual([after.monitor_difficulty, after.monitor_reasoning], ["medium", false]);
+    assert.deepEqual([after.monitor_difficulty, after.monitor_reasoning], ["medium", true]);
+    assert.ok(
+      (after.messages as Message[]).some(
+        (message) =>
+          message.role === "assistant" && message.content.some((part) => part.type === "thinking"),
+      ),
+      "new child reasoning remains visible",
+    );
   });
   await t.test(
     "an empty-history fork can choose monitor settings on its first prompt",
@@ -2233,13 +2969,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       });
       assert.equal(response.status, 200);
       const after = await row(child.id);
-      assert.deepEqual([after.monitor_difficulty, after.monitor_reasoning], ["easy", false]);
+      assert.deepEqual([after.monitor_difficulty, after.monitor_reasoning], ["easy", true]);
     },
   );
 
   for (const mode of ["reject", "error", "truncated", "hang", "no-complete"] as const)
     await t.test(
-      `a restore that ${mode === "hang" ? "times out" : `fails (${mode})`} deletes the child and leaves the parent forkable`,
+      `a restore that ${mode === "hang" ? "times out" : `fails (${mode})`} leaves an unresolved operation and prevents unsafe retry`,
       async () => {
         const who = await member();
         const { game: parent } = await blockRun(who.id);
@@ -2260,11 +2996,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         assert.deepEqual(await row(parent.id), before);
         assert.deepEqual(await eventsOf(parent.id), eventsBefore);
         const { publicGame } = await import("../../lib/games");
-        assert.equal((await publicGame(before)).forkable, true);
-        // Nothing is stuck: the same fork works once restores do.
+        assert.equal((await publicGame(before)).forkable, false);
+        // A remote restore may have changed the Sprite despite an error response.
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT status FROM ctf.sprite_operations WHERE game_id=$1 AND kind='restore'",
+              [parent.id],
+            )
+          ).rows.at(-1)?.status,
+          "unknown",
+        );
         restoreMode = "ok";
         operationTimeout.ms = 30_000;
-        assert.equal((await forkRoute(who, parent.id)).status, 200);
+        assert.equal((await forkRoute(who, parent.id)).status, 503);
+        assert.equal(restores.length, 1);
       },
     );
 
@@ -2655,8 +3401,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const off = await start({ monitorReasoning: false });
     assert.equal(off.status, 200);
     const created = await off.json();
-    assert.equal(created.monitorReasoning, false);
-    assert.equal((await row(created.id)).monitor_reasoning, false);
+    assert.equal(created.monitorReasoning, true);
+    assert.equal((await row(created.id)).monitor_reasoning, true);
     const on = await (await start({})).json();
     assert.equal(on.monitorReasoning, true);
     assert.equal((await row(on.id)).monitor_reasoning, true);
@@ -2680,10 +3426,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   // Every run is stamped with the current Typesafe monitor; only difficulty and reasoning vary.
   const DEFAULT_MONITOR = {
     monitor_model: TYPESAFE_MODEL,
-    monitor_version: MONITOR_VERSION,
+    monitor_version: ASYNC_MONITOR_VERSION,
     monitor_difficulty: "hard",
     monitor_reasoning: true,
   };
+  const LEGACY_MONITOR = { ...DEFAULT_MONITOR, monitor_version: MONITOR_VERSION };
 
   await t.test("the start route stores the monitor choice and defaults it", async () => {
     const who = await member();
@@ -2696,11 +3443,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     });
     assert.equal(response.status, 200);
     const chosen = await response.json();
-    assert.deepEqual([chosen.monitorDifficulty, chosen.monitorReasoning], ["easy", false]);
+    assert.deepEqual([chosen.monitorDifficulty, chosen.monitorReasoning], ["easy", true]);
     assert.deepEqual(await monitorOf(chosen.id), {
       ...DEFAULT_MONITOR,
       monitor_difficulty: "easy",
-      monitor_reasoning: false,
+      monitor_reasoning: true,
     });
     assert.equal((await row(chosen.id)).season_id, null, "runs no longer belong to a season");
     // The same fields come back from the stored row on a later read.
@@ -2745,7 +3492,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       });
       assert.equal(response.status, 200);
       assert.deepEqual(await monitorOf(game.id), {
-        ...DEFAULT_MONITOR,
+        ...LEGACY_MONITOR,
         monitor_difficulty: "easy",
         monitor_reasoning: false,
       });
@@ -2768,7 +3515,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       monitorReasoning: false,
     });
     assert.equal(response.status, 200);
-    assert.deepEqual(await monitorOf(game.id), DEFAULT_MONITOR);
+    assert.deepEqual(await monitorOf(game.id), LEGACY_MONITOR);
     const monitored = typesafeOf("context");
     assert.equal(monitored.length, 1);
     assert.ok(
@@ -2790,7 +3537,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         const before = await row(game.id);
         const response = await instruct(who, game.id, extra);
         assert.equal(response.status, status);
-        assert.deepEqual(await monitorOf(game.id), DEFAULT_MONITOR);
+        assert.deepEqual(await monitorOf(game.id), LEGACY_MONITOR);
         const after = await row(game.id);
         assert.equal(after.lease, null);
         assert.equal(after.lease_until, null);

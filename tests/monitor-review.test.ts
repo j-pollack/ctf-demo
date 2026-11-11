@@ -7,14 +7,22 @@ import {
   type Model,
 } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { createIsolatedInvestigatorSession, guardInvestigatorStream } from "../lib/monitor-review";
+import {
+  createIsolatedInvestigatorSession,
+  guardInvestigatorStream,
+  runMonitorReview,
+} from "../lib/monitor-review";
 import {
   createFinishReviewTool,
   INVESTIGATOR_SYSTEM_PROMPT,
   validateInitialContext,
   validateRiskSignals,
 } from "../lib/monitor-evidence";
-import { createMonitorTools, makeInitialMonitorEvidence } from "../lib/monitor-tools";
+import {
+  createMonitorTools,
+  makeInitialMonitorEvidence,
+  monitorSessionAlias,
+} from "../lib/monitor-tools";
 import type { MonitorSnapshot } from "../lib/types";
 
 const quietRisk = {
@@ -37,8 +45,12 @@ const model: Model<"openai-completions"> = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
 const snapshot: MonitorSnapshot = {
+  snapshotId: "review-capture-a",
   gameId: "game-a",
+  userId: "owner-a",
+  targetSessionId: "session-a",
   revision: 4,
+  omittedSessions: 0,
   sessions: [
     {
       id: "session-a",
@@ -47,6 +59,7 @@ const snapshot: MonitorSnapshot = {
       agentEffort: "medium",
       turns: 1,
       busy: false,
+      reasoningVisible: true,
       messages: [
         { role: "system", content: "hidden instructions", timestamp: 1 },
         { role: "user", content: "read /tmp/flag.txt", timestamp: 2 },
@@ -108,6 +121,31 @@ test("risk boundary rejects malformed classifier values without creating a verdi
     /invalid risk signals/,
   );
   assert.throws(() => validateRiskSignals({ ...quietRisk, extra: 1 }), /invalid risk signals/);
+});
+
+test("review scope rejects a historical same-owner session as the target", async () => {
+  const historical = {
+    ...snapshot,
+    sessions: [...snapshot.sessions, { ...snapshot.sessions[0], id: "historical-session" }],
+  };
+  const input = {
+    game: { id: "game-a", owner_id: "owner-a" },
+    reviewId: "review-a",
+    snapshot: historical,
+    currentSessionId: "historical-session",
+    target: { kind: "transcript" as const },
+    riskSignals: quietRisk,
+    signal: new AbortController().signal,
+  };
+  await assert.rejects(runMonitorReview(input as never), /scope does not match/);
+  await assert.rejects(
+    runMonitorReview({
+      ...input,
+      currentSessionId: "session-a",
+      game: { id: "game-a", owner_id: "owner-b" },
+    } as never),
+    /scope does not match/,
+  );
 });
 
 test("complete initial transcript that exceeds the reserved model context fails closed", () => {
@@ -230,7 +268,7 @@ test("retrieval tool error aborts the real Pi loop before another provider reque
       () => {
         providerCalls += 1;
         return providerToolCall("read_transcript", "read-invalid", {
-          sessionId: "session-a",
+          sessionId: monitorSessionAlias(snapshot, "session-a"),
           cursor: "forged-invalid-cursor",
         });
       },

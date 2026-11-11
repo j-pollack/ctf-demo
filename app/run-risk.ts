@@ -43,3 +43,7 @@ export function runPeakRisk(series: SessionRiskSeries[]) {
     0,
   );
 }
+
+export function hasRiskObservations(series: SessionRiskSeries[]) {
+  return series.some((session) => session.points.length > 0);
+}

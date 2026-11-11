@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { MONITOR_VERSION } from "@/lib/control";
+import { ASYNC_MONITOR_VERSION } from "@/lib/control";
 import { MODELS } from "@/lib/policy";
 import { MONITOR_DIFFICULTIES } from "@/lib/types";
 import { errorResponse } from "@/lib/http";
@@ -35,7 +35,7 @@ export async function GET(request: Request) {
           ) AND i.role='agent' AND i.model<>$1)
         ))
       ORDER BY g.owner_id,g.spent_microdollars,g.turns,g.updated_at) SELECT * FROM best ORDER BY spend,turns,captured_at LIMIT 50`,
-      [agent, difficulty, MONITOR_VERSION],
+      [agent, difficulty, ASYNC_MONITOR_VERSION],
     );
     // Anonymous identity never exposes an email address on the public board.
     return Response.json(

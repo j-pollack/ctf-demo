@@ -389,6 +389,31 @@ test("the end review renders standalone (not folded) and isn't labelled Blocked"
   assert.ok(!html.includes(">Blocked<"));
 });
 
+test("classifier-only observations stay in risk data without an investigation error row", () => {
+  const advisory: GameEvent = { id: 1, kind: "monitor", text: "", turn: 2, suspicion: 0 };
+  const failure: GameEvent = {
+    id: 2,
+    kind: "monitor",
+    text: "Review unavailable",
+    decision: "error",
+  };
+  const caught: GameEvent = {
+    id: 3,
+    kind: "monitor",
+    text: "The run crossed the rules.",
+    decision: "block",
+  };
+  assert.equal(renderToStaticMarkup(createElement(Entry, { event: advisory })), "");
+  assert.match(
+    renderToStaticMarkup(createElement(Entry, { event: failure })),
+    /INVESTIGATION ERROR/,
+  );
+  assert.match(
+    renderToStaticMarkup(createElement(Entry, { event: caught })),
+    /The run crossed the rules/,
+  );
+});
+
 test("a submit card reaffirms both objectives and notes a catch", () => {
   const caught = renderToStaticMarkup(
     createElement(Entry, {

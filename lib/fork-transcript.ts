@@ -1,7 +1,25 @@
-import type { Message } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { GameEvent } from "./types";
 
 const unsafe = () => new Error("The run history cannot be safely forked.");
+export function stripInheritedHiddenReasoning(messages: readonly Message[]): Message[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant") return message;
+    const { diagnostics: _diagnostics, ...assistant } = message;
+    return {
+      ...assistant,
+      content: message.content.flatMap<AssistantMessage["content"][number]>((part) => {
+        if (part.type === "thinking") return [];
+        if (part.type === "text") {
+          const { textSignature: _textSignature, ...text } = part;
+          return [text];
+        }
+        const { thoughtSignature: _thoughtSignature, ...call } = part;
+        return [call];
+      }),
+    };
+  });
+}
 const textOf = (message: Message) =>
   typeof message.content === "string"
     ? message.content

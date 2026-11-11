@@ -1,0 +1,110 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { Pool } from "pg";
+import { AGENT_MODEL, MODELS } from "../../lib/policy";
+import { TYPESAFE_MODEL } from "../../lib/typesafe";
+
+const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
+assert.equal(connection.hostname, "127.0.0.1");
+assert.match(connection.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
+(globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = new Pool({
+  connectionString: connection.toString(),
+  options: "-c search_path=ctf,public",
+});
+process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
+process.env.OPENROUTER_API_KEY = "integration-router-key";
+
+globalThis.WebSocket = class {
+  constructor() {
+    throw new Error("Unexpected worker WebSocket connection.");
+  }
+} as unknown as typeof WebSocket;
+
+globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) => {
+  options?.signal?.throwIfAborted();
+  const url = String(input);
+  if (url === "https://api.typesafe.ai/v1/systemone") {
+    assert.equal(options?.method, "POST");
+    assert.equal(
+      new Headers(options.headers).get("authorization"),
+      "Bearer integration-typesafe-key",
+    );
+    const body = JSON.parse(String(options.body));
+    assert.equal(body.model, TYPESAFE_MODEL);
+    assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
+    assert.ok(Array.isArray(body.state.transcript));
+    return Response.json({
+      model: TYPESAFE_MODEL,
+      answers: {
+        intent: { type: "noul", noul: 0.95 },
+        suspicion: { type: "score", score: 3, confidence: 1 },
+      },
+      usage: { input_tokens: 100, output_tokens: 1 },
+    });
+  }
+  if (url === "https://openrouter.ai/api/v1/models")
+    return Response.json({
+      data: MODELS.map((id) => ({
+        id,
+        context_length: 100000,
+        pricing: { prompt: "0.000001", completion: "0.000002" },
+        supported_parameters: ["tools", "reasoning"],
+      })),
+    });
+  if (url.startsWith("https://openrouter.ai/api/v1/generation?id=")) {
+    assert.equal(
+      new Headers(options?.headers).get("authorization"),
+      "Bearer integration-router-key",
+    );
+    return Response.json({
+      data: {
+        finish_reason: "stop",
+        native_tokens_prompt: 3,
+        native_tokens_completion: 4,
+        total_cost: 0,
+      },
+    });
+  }
+  assert.equal(url, "https://openrouter.ai/api/v1/chat/completions");
+  assert.equal(options?.method, "POST");
+  assert.equal(new Headers(options.headers).get("authorization"), "Bearer integration-router-key");
+  const payload = JSON.parse(String(options.body));
+  assert.equal(payload.model, AGENT_MODEL);
+  assert.equal(payload.stream, undefined);
+  const names = payload.tools
+    .map((tool: { function: { name: string } }) => tool.function.name)
+    .sort();
+  assert.deepEqual(names, [
+    "finish_review",
+    "list_sessions",
+    "read_evidence",
+    "read_transcript",
+    "search_transcripts",
+  ]);
+  const prompt = String(payload.messages.at(-1).content);
+  const evidence = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2));
+  assert.equal(evidence.target.kind, "transcript");
+  const item = evidence.snapshot.currentTranscript[0];
+  assert.ok(item?.ref && item?.text);
+  const message = {
+    tool_calls: [
+      {
+        id: randomUUID(),
+        type: "function",
+        function: {
+          name: "finish_review",
+          arguments: JSON.stringify({
+            verdict: "block",
+            reason: "Controlled cross-process catch.",
+            evidence: [{ ref: item.ref, excerpt: item.text.slice(0, 60) }],
+          }),
+        },
+      },
+    ],
+  };
+  return Response.json({
+    id: `worker-${randomUUID()}`,
+    choices: [{ message, finish_reason: "tool_calls" }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },
+  });
+};

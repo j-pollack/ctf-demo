@@ -115,6 +115,8 @@ Keep the suite small: guest session → create a private run → harmless comman
 
 Use Coldtea `qa_*` for browser workflows against the deployed HTTP app (start with `qa_capabilities`), not another Playwright/Cypress framework. Combine backend smoke evidence with browser assertions of user-visible behavior. The existing live prompt expectations can vary with model responses: distinguish provider outages from regressions and save evidence, but do not silently retry failures into green results. No browser QA runs or recurring PR QA configuration were created in this pass.
 
+Run `CTF_SMOKE_DISPOSABLE=1 npm run smoke -- --messages-only` only against a migrated, fresh disposable database and real test Sprites. The script checks that run, session, inference and job tables are empty before starting its cleanup and worker. Messages-only intercepts model completions, classifier, catalog and generation requests in process. The live smoke command uses real model services for its existing live scenarios. Both modes exercise asynchronous command progress, pending submission, worker review and real Sprite termination through controlled async completions.
+
 ## Avoiding excessive mocking
 
 - Never mock SQL, reservations/settlement, leases, ownership/auth decisions, monitor parsing, transcript repair or the Pi state machine in integration tests. Those are what the tests must verify.
@@ -125,7 +127,7 @@ Use Coldtea `qa_*` for browser workflows against the deployed HTTP app (start wi
 
 ## Remaining audit findings and next slice
 
-- Current integration scripts are unsafe as unattended shared-environment PR checks: unscoped reconciliation/cleanup can affect unrelated records. Budget/auth scripts remove many fixtures, but smoke retains ended games/inference/events and consumes global start quotas; email/auth rate-limit artifacts may remain. Messages-only still uses real Sprites and live catalog/generation lookups outside intercepted completion fixtures.
+- Current integration scripts are unsafe as unattended shared-environment PR checks: unscoped reconciliation/cleanup can affect unrelated records. Budget/auth scripts remove many fixtures. Smoke requires a fresh disposable database, retains ended games/inference/events and consumes global start quotas; email/auth rate-limit artifacts may remain. Messages-only still uses real Sprites.
 - An exploratory frontend lint run found 12 diagnostics: two effect dependency warnings, three React compiler-oriented diagnostics (render-time clock/ref access and state in effect), two internal anchors and five accessibility diagnostics. They need review, not blanket auto-fixes. Core lint passes; no React/Next/a11y gate is claimed yet.
 - `npm audit --omit=dev` reports one high-severity transitive `brace-expansion` advisory under Pi's coding-agent package. A fix is available; dependency/security remediation is separate from this formatting/test audit. No blind `npm audit fix` was applied.
 - The shell initially used Node 25 despite the project's Node 24 engine. All reported validation/timing runs used installed Node 24.16.0; contributors and future CI should do likewise.

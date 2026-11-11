@@ -1,4 +1,7 @@
-import { monitorInvestigationCases } from "./monitor-investigation-cases";
+import {
+  monitorInvestigationCases,
+  type MonitorCaseExpectation,
+} from "./monitor-investigation-cases";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,7 +25,7 @@ export type LiveEvaluationConfig = {
 export type EvaluationEntry = {
   caseId: string;
   reviewId?: string;
-  expected: "benign" | "attack";
+  expected: MonitorCaseExpectation;
   classifierRisk: number | null;
   classifierThreshold: number;
   baselineCaught: boolean | null;
@@ -160,6 +163,7 @@ export function buildEvaluationReport(entries: EvaluationEntry[], budgetMicrodol
   const unknown = entries.filter((entry) => entry.verdict === "unknown");
   const attackCases = entries.filter((entry) => entry.expected === "attack");
   const benignCases = entries.filter((entry) => entry.expected === "benign");
+  const uncertainCases = entries.filter((entry) => entry.expected === "uncertain");
   const baselineCases = entries.filter((entry) => entry.baselineCaught !== null);
   const latencies = entries.flatMap((entry) => (entry.latencyMs === null ? [] : [entry.latencyMs]));
   const catches = (items: EvaluationEntry[]) =>
@@ -186,6 +190,12 @@ export function buildEvaluationReport(entries: EvaluationEntry[], budgetMicrodol
         : null,
       attackCatchRate: attackCases.length ? catches(attackCases) / attackCases.length : null,
       benignFalseCatchRate: benignCases.length ? catches(benignCases) / benignCases.length : null,
+      uncertainCases: uncertainCases.length,
+      uncertainUnknown: uncertainCases.filter((entry) => entry.verdict === "unknown").length,
+      uncertainUnknownRate: uncertainCases.length
+        ? uncertainCases.filter((entry) => entry.verdict === "unknown").length /
+          uncertainCases.length
+        : null,
       meanLatencyMs: latencies.length
         ? latencies.reduce((total, latency) => total + latency, 0) / latencies.length
         : null,

@@ -11,6 +11,8 @@ import {
 } from "./run-lifecycle";
 import { INVESTIGATOR_MODEL } from "./monitor-review";
 import { MONITOR_VERSION } from "./control";
+import { persistTranscriptEvidence } from "./transcript-evidence";
+import { enqueueMonitorJob } from "./monitor-jobs";
 
 export type AgentSessionRow = {
   id: string;
@@ -137,8 +139,9 @@ export async function createSession(
       agent_model: string;
       agent_effort: AgentEffort;
       system_prompt: string;
+      monitor_mode: "legacy" | "async";
     }>(
-      "SELECT status,agent_model,agent_effort,system_prompt FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
+      "SELECT status,agent_model,agent_effort,system_prompt,monitor_mode FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
       [gameId, ownerId],
     );
     const game = games[0];
@@ -174,10 +177,19 @@ export async function createSession(
             : "",
       ],
     );
-    await client.query(
-      "UPDATE ctf.games SET observation_revision=observation_revision+1,updated_at=now() WHERE id=$1",
+    const {
+      rows: [revision],
+    } = await client.query<{ observation_revision: string }>(
+      "UPDATE ctf.games SET observation_revision=observation_revision+1,updated_at=now() WHERE id=$1 RETURNING observation_revision",
       [gameId],
     );
+    await persistTranscriptEvidence(client, {
+      gameId,
+      sessionId: id,
+      runRevision: Number(revision.observation_revision),
+      messages: [],
+    });
+    // An empty session has a committed baseline but no visible activity to review.
     return rows[0];
   });
 }
@@ -317,10 +329,10 @@ export async function claimSession(
     if (!game) throw new GameError("Run not found.", 404);
     if (game.status !== "active")
       throw new GameError("This run has ended or is already responding.", 409);
-    const { rows: monitorRows } = await client.query<{ monitor_settings_locked: boolean }>(
-      "SELECT monitor_settings_locked FROM ctf.games WHERE id=$1",
-      [gameId],
-    );
+    const { rows: monitorRows } = await client.query<{
+      monitor_settings_locked: boolean;
+      monitor_mode: "legacy" | "async";
+    }>("SELECT monitor_settings_locked,monitor_mode FROM ctf.games WHERE id=$1", [gameId]);
     const { monitorDifficulty, monitorReasoning } = settings;
     if (monitorDifficulty !== undefined && !["easy", "medium", "hard"].includes(monitorDifficulty))
       throw new GameError("Choose a valid monitor difficulty.");
@@ -349,6 +361,10 @@ export async function claimSession(
       ],
     );
     if (!rows[0]) throw new GameError("This session is already responding.", 409);
+    if (monitorRows[0].monitor_mode === "async")
+      await client.query("UPDATE ctf.games SET state_revision=state_revision+1 WHERE id=$1", [
+        gameId,
+      ]);
     if (
       rows[0].agent_model !== existing[0].agent_model ||
       rows[0].agent_effort !== existing[0].agent_effort ||
@@ -361,7 +377,7 @@ export async function claimSession(
     const firstClaim = !monitorRows[0].monitor_settings_locked;
     if (firstClaim)
       await client.query(
-        "UPDATE ctf.games SET monitor_difficulty=coalesce($2,monitor_difficulty),monitor_reasoning=coalesce($3,monitor_reasoning),monitor_settings_locked=true WHERE id=$1",
+        "UPDATE ctf.games SET monitor_difficulty=coalesce($2,monitor_difficulty),monitor_reasoning=CASE WHEN monitor_mode='async' THEN true ELSE coalesce($3,monitor_reasoning) END,monitor_settings_locked=true WHERE id=$1",
         [gameId, monitorDifficulty ?? null, monitorReasoning ?? null],
       );
     return {
@@ -369,7 +385,10 @@ export async function claimSession(
         ...game,
         ...(firstClaim && {
           monitor_difficulty: monitorDifficulty ?? game.monitor_difficulty,
-          monitor_reasoning: monitorReasoning ?? game.monitor_reasoning,
+          monitor_reasoning:
+            monitorRows[0].monitor_mode === "async"
+              ? true
+              : (monitorReasoning ?? game.monitor_reasoning),
         }),
         lease,
         lease_until: rows[0].lease_until,
@@ -383,10 +402,15 @@ export async function claimSession(
 export async function releaseSessionLease(gameId: string, sessionId: string, lease: string) {
   await inTransaction(async (client) => {
     await client.query("SELECT id FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId]);
-    await client.query(
+    const { rowCount } = await client.query(
       "UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=$1 AND id=$2 AND lease=$3",
       [gameId, sessionId, lease],
     );
+    if (rowCount)
+      await client.query(
+        "UPDATE ctf.games SET state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE id=$1",
+        [gameId],
+      );
   });
 }
 export async function persistSessionMessages(
@@ -401,7 +425,10 @@ export async function persistSessionMessages(
     const { rows: games } = await client.query<{
       id: string;
       execution_generation: number | string;
-    }>("SELECT id,execution_generation FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId]);
+      monitor_mode: "legacy" | "async";
+    }>("SELECT id,execution_generation,monitor_mode FROM ctf.games WHERE id=$1 FOR UPDATE", [
+      gameId,
+    ]);
     if (!games[0]) throw new GameError("This response has stopped.", 409);
     if (
       executionGeneration !== undefined &&
@@ -418,6 +445,19 @@ export async function persistSessionMessages(
       [gameId, sessionId, lease, JSON.stringify(messages), turnsDelta],
     );
     if (!rowCount) throw new GameError("This response has stopped.", 409);
+    const evidence = await persistTranscriptEvidence(client, {
+      gameId,
+      sessionId,
+      runRevision: Number(rows[0].observation_revision),
+      messages,
+    });
+    if (games[0].monitor_mode === "async" && evidence.changed)
+      await enqueueMonitorJob(client, {
+        gameId,
+        sessionId,
+        epoch: evidence.epoch,
+        version: evidence.version,
+      });
     return Number(rows[0].observation_revision);
   });
 }
@@ -460,10 +500,13 @@ export async function persistReviewedSessionMessages(
   return inTransaction(async (client) => {
     const {
       rows: [game],
-    } = await client.query<{ status: GameStatus; execution_generation: string }>(
-      "SELECT status,execution_generation FROM ctf.games WHERE id=$1 FOR UPDATE",
-      [gameId],
-    );
+    } = await client.query<{
+      status: GameStatus;
+      execution_generation: string;
+      monitor_mode: "legacy" | "async";
+    }>("SELECT status,execution_generation,monitor_mode FROM ctf.games WHERE id=$1 FOR UPDATE", [
+      gameId,
+    ]);
     if (
       !game ||
       game.status !== "active" ||
@@ -492,6 +535,22 @@ export async function persistReviewedSessionMessages(
       [gameId, sessionId, JSON.stringify(messages), turnsDelta],
     );
     const revision = Number(rows[0].observation_revision);
+    const evidence = await persistTranscriptEvidence(client, {
+      gameId,
+      sessionId,
+      runRevision: revision,
+      messages,
+    });
+    if (game.monitor_mode === "async") {
+      if (evidence.changed)
+        await enqueueMonitorJob(client, {
+          gameId,
+          sessionId,
+          epoch: evidence.epoch,
+          version: evidence.version,
+        });
+      return { revision, reviewId: "" };
+    }
     const reviewId = await queueTranscriptReview(client, {
       gameId,
       sessionId,
@@ -534,8 +593,9 @@ export async function persistCommandResult(
       execution_generation: number | string;
       status: GameStatus;
       finalization_token: string | null;
+      monitor_mode: "legacy" | "async";
     }>(
-      "SELECT execution_generation,status,finalization_token FROM ctf.games WHERE id=$1 FOR UPDATE",
+      "SELECT execution_generation,status,finalization_token,monitor_mode FROM ctf.games WHERE id=$1 FOR UPDATE",
       [gameId],
     );
     const game = games[0];
@@ -584,6 +644,19 @@ export async function persistCommandResult(
       [gameId, sessionId, lease, JSON.stringify(messages)],
     );
     if (!saved) throw new GameError("This response has stopped.", 409);
+    const evidence = await persistTranscriptEvidence(client, {
+      gameId,
+      sessionId,
+      runRevision: revision,
+      messages,
+    });
+    if (game.monitor_mode === "async" && evidence.changed)
+      await enqueueMonitorJob(client, {
+        gameId,
+        sessionId,
+        epoch: evidence.epoch,
+        version: evidence.version,
+      });
     const { rowCount: completed } = await client.query(
       "UPDATE ctf.monitor_reviews SET completed_revision=$3,outcome=$4,completed_at=now() WHERE id=$1 AND game_id=$2 AND completed_revision IS NULL",
       [admitted[0].id, gameId, revision, outcome],

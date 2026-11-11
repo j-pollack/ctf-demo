@@ -13,6 +13,7 @@ import { monitorStates } from "./monitor-document";
 import { evaluate, type TypesafeAnswer } from "./typesafe";
 import { DAILY_CAP_MICRODOLLARS, GameError } from "./policy";
 import { assertMonitorAuthorization } from "./run-lifecycle";
+import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 
 const noulOf = (answer: TypesafeAnswer | undefined) => {
   if (answer?.type !== "noul") throw new Error("Typesafe returned an unexpected answer shape.");
@@ -36,6 +37,7 @@ async function assertDispatchAuthorization(input: {
   executionGeneration: number;
   finalizationToken?: string;
   pendingReviewId?: string;
+  jobClaim?: MonitorJobClaim;
 }) {
   await transaction(async (client) => {
     const day = (await client.query("SELECT (now() AT TIME ZONE 'UTC')::date::text AS day")).rows[0]
@@ -54,7 +56,10 @@ async function assertDispatchAuthorization(input: {
       "SELECT execution_generation,spent_microdollars,reserved_microdollars,budget_microdollars FROM ctf.games WHERE id=$1 FOR UPDATE",
       [input.game.id],
     );
-    if (!rows[0] || Number(rows[0].execution_generation) !== input.executionGeneration)
+    if (
+      !rows[0] ||
+      (!input.jobClaim && Number(rows[0].execution_generation) !== input.executionGeneration)
+    )
       throw new GameError("This response has stopped.", 409);
     if (Number(spendRows[0].charged) + Number(spendRows[0].reserved) >= DAILY_CAP_MICRODOLLARS)
       throw new GameError(
@@ -73,11 +78,13 @@ async function assertDispatchAuthorization(input: {
         pending ? 400 : 402,
       );
     }
-    await assertMonitorAuthorization(client, input.game.id, input.sessionId, input.lease, {
-      reviewId: input.reviewId,
-      finalizationToken: input.finalizationToken,
-      pendingReviewId: input.pendingReviewId,
-    });
+    if (input.jobClaim) await assertMonitorJobClaim(client, input.jobClaim);
+    else
+      await assertMonitorAuthorization(client, input.game.id, input.sessionId, input.lease, {
+        reviewId: input.reviewId,
+        finalizationToken: input.finalizationToken,
+        pendingReviewId: input.pendingReviewId,
+      });
   });
 }
 
@@ -92,6 +99,7 @@ export async function classifyMonitorTarget(input: {
   executionGeneration: number;
   finalizationToken?: string;
   pendingReviewId?: string;
+  jobClaim?: MonitorJobClaim;
 }) {
   const difficulty = CONTROL_DIFFICULTY[input.game.monitor_difficulty];
   const command = input.target.kind === "command" ? input.target.command : undefined;
@@ -130,6 +138,7 @@ export async function classifyMonitorTarget(input: {
         finalizationToken: input.finalizationToken,
         pendingReviewId: input.pendingReviewId,
         dispatched: true,
+        jobClaim: input.jobClaim,
       },
     );
   if (commandResult.status === "rejected") throw commandResult.reason;

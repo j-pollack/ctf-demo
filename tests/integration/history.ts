@@ -58,7 +58,7 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     const ids: string[] = Array.from({ length: 22 }, randomUUID);
     const legacyDay = (await pool.query("SELECT (now() AT TIME ZONE 'UTC')::date::text AS day"))
       .rows[0].day;
-    const { MONITOR_VERSION } = await import("../../lib/control");
+    const { ASYNC_MONITOR_VERSION } = await import("../../lib/control");
     const { MODELS } = await import("../../lib/policy");
     await pool.query("INSERT INTO ctf.daily_spend(day) VALUES($1) ON CONFLICT DO NOTHING", [
       legacyDay,
@@ -83,7 +83,7 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       );
     await pool.query("UPDATE ctf.games SET monitor_version=$2 WHERE id=$1", [
       ids[1],
-      MONITOR_VERSION,
+      ASYNC_MONITOR_VERSION,
     ]);
     await pool.query(
       `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
@@ -353,7 +353,14 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
         token_budget,status,monitor_difficulty,forked_from)
        VALUES($1::uuid,$2::uuid,($1::uuid)::text,'hash',$4,'monitor',$6,100,'ended',$5,NULL),
              ($3::uuid,$2::uuid,($3::uuid)::text,'hash',$4,'monitor',$6,100,'captured',$5,$1::uuid)`,
-      [mixedParent, mixedOwner, mixedChild, actualModel, difficultyOf(ids[1]), MONITOR_VERSION],
+      [
+        mixedParent,
+        mixedOwner,
+        mixedChild,
+        actualModel,
+        difficultyOf(ids[1]),
+        ASYNC_MONITOR_VERSION,
+      ],
     );
     await pool.query(
       `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)

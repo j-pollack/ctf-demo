@@ -126,7 +126,7 @@ export function RunRiskChart({ series }: { series: SessionRiskSeries[] }) {
               </svg>
               Session {session.ordinal} ·{" "}
               {session.points.length === 0
-                ? "No reviews"
+                ? "No risk data"
                 : `peak ${Math.round(Math.max(...session.points.map((point) => point.risk)) * 100)}%`}
             </span>
           );

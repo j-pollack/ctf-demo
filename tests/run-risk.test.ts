@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runRiskSeries, runPeakRisk } from "../app/run-risk";
+import { hasRiskObservations, runRiskSeries, runPeakRisk } from "../app/run-risk";
 import type { SessionSummary } from "../lib/types";
 import type { SessionUIMap } from "../app/session-ui-state";
 import React from "react";
@@ -24,6 +24,14 @@ test("run peak includes an unvisited sibling and ignores foreign local views", (
   assert.deepEqual(
     result.map((series) => series.ordinal),
     [1, 2],
+  );
+});
+
+test("unreviewed runs are distinct from a measured zero-risk review", () => {
+  assert.equal(hasRiskObservations(runRiskSeries([session("one", 1)], {})), false);
+  assert.equal(
+    hasRiskObservations(runRiskSeries([session("one", 1, [{ turn: 1, risk: 0 }])], {})),
+    true,
   );
 });
 
@@ -76,7 +84,7 @@ test("run risk chart overlays sessions on a shared turn axis without transcript 
   assert.match(html, /Session 1/);
   assert.match(html, /Session 2/);
   assert.match(html, /Session 3/);
-  assert.match(html, /No reviews/);
+  assert.match(html, /No risk data/);
   assert.match(html, /Session 1 · peak 80%/);
   assert.match(html, /Session 2 · peak 90%/);
   assert.match(html, /Pre-turn/);

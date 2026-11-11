@@ -13,6 +13,7 @@ import { db } from "./db";
 import { GameError, inputCeiling, MODELS } from "./policy";
 import type { AgentEffort } from "./types";
 import { assertMonitorAuthorization } from "./run-lifecycle";
+import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 
 export type TrustedInferenceOptions = {
   role?: "agent" | "monitor";
@@ -22,6 +23,7 @@ export type TrustedInferenceOptions = {
   maxOutputTokens?: number;
   finalizationToken?: string;
   pendingReviewId?: string;
+  jobClaim?: MonitorJobClaim;
   stage?: string;
 };
 
@@ -390,6 +392,7 @@ export async function infer(
       finalizationToken: trusted.finalizationToken,
       pendingReviewId: trusted.pendingReviewId,
       executionGeneration: Number(game.execution_generation ?? 0),
+      jobClaim: trusted.jobClaim,
     },
   );
   const started = Date.now(),
@@ -421,7 +424,7 @@ export async function infer(
       requestSignal.throwIfAborted();
       return;
     }
-    if (!game.lease || !trusted.reviewId)
+    if (!trusted.jobClaim && (!game.lease || !trusted.reviewId))
       throw new GameError("Monitor review authorization is required.", 409);
     await transaction(async (client) => {
       const { rows } = await client.query<{ execution_generation: string }>(
@@ -430,14 +433,17 @@ export async function infer(
       );
       if (
         !rows[0] ||
-        Number(rows[0].execution_generation) !== Number(game.execution_generation ?? 0)
+        (!trusted.jobClaim &&
+          Number(rows[0].execution_generation) !== Number(game.execution_generation ?? 0))
       )
         throw new GameError("This response has stopped.", 409);
-      await assertMonitorAuthorization(client, game.id, sessionId, game.lease!, {
-        reviewId: trusted.reviewId,
-        finalizationToken: trusted.finalizationToken,
-        pendingReviewId: trusted.pendingReviewId,
-      });
+      if (trusted.jobClaim) await assertMonitorJobClaim(client, trusted.jobClaim);
+      else
+        await assertMonitorAuthorization(client, game.id, sessionId, game.lease!, {
+          reviewId: trusted.reviewId,
+          finalizationToken: trusted.finalizationToken,
+          pendingReviewId: trusted.pendingReviewId,
+        });
     });
     requestSignal.throwIfAborted();
   };

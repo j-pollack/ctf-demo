@@ -33,7 +33,7 @@ export async function investigateTarget(input: {
   const reviewSignal = AbortSignal.any([input.signal, deadline]);
   let reviewId = input.queuedReviewId;
   try {
-    const snapshot = await captureMonitorSnapshot(input.game.id);
+    const snapshot = await captureMonitorSnapshot(input.game.id, input.sessionId);
     const session = snapshot.sessions.find((candidate) => candidate.id === input.sessionId);
     if (!session) throw new Error("The review session is missing from its workspace snapshot.");
     reviewId ??= await createMonitorReview(input.game.id, {

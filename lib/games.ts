@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
-import { MONITOR_TOKEN_MICRODOLLARS, MONITOR_VERSION } from "./control";
+import { ASYNC_MONITOR_VERSION, MONITOR_TOKEN_MICRODOLLARS, MONITOR_VERSION } from "./control";
 import { AGENT_MODEL, MODELS, DAILY_CAP_MICRODOLLARS, GameError, makeSecret } from "./policy";
 import { TYPESAFE_MODEL } from "./typesafe";
 import {
@@ -16,8 +16,11 @@ import {
   type MonitorDifficulty,
   type PublicGame,
 } from "./types";
-import { createEnvironment, destroyEnvironment, restoreEnvironment } from "./sprites";
-import { forkBeforeLastInstruction } from "./fork-transcript";
+import { createEnvironment, restoreEnvironment } from "./sprites";
+import { forkBeforeLastInstruction, stripInheritedHiddenReasoning } from "./fork-transcript";
+import { persistTranscriptEvidence } from "./transcript-evidence";
+import { enqueueMonitorJob } from "./monitor-jobs";
+import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 import { listSessionSummaries, claimSession } from "./sessions";
 import { assertMonitorAuthorization } from "./run-lifecycle";
 import { expireFinalizations } from "./run-lifecycle";
@@ -51,6 +54,8 @@ export type GameRow = {
   updated_at: Date;
   forked_from: string | null;
   monitor_reasoning: boolean;
+  monitor_mode: "legacy" | "async";
+  state_revision: string;
 };
 // A blocked or caught run's environment is kept this long so its owner can fork it (cleanup adds a margin).
 const FORK_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -71,7 +76,7 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,sprite_deleted_at,updated_at";
+  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,state_revision,sprite_deleted_at,updated_at";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
@@ -89,6 +94,8 @@ export type PublicGameRow = Pick<
   | "monitor_difficulty"
   | "lease_until"
   | "monitor_reasoning"
+  | "monitor_mode"
+  | "state_revision"
   | "sprite_deleted_at"
   | "updated_at"
 >;
@@ -146,6 +153,71 @@ export async function publicGame(
   afterEventId = 0,
   selectedSessionId = game.id,
 ): Promise<PublicGame> {
+  const {
+    rows: [monitorState],
+  } = await db.query<{
+    status: GameStatus;
+    monitor_mode: "legacy" | "async";
+    state_revision: string;
+    pending_sessions: string;
+    reviewed_updates: string;
+    total_updates: string;
+    reviewing: boolean;
+    unresolved: boolean;
+    has_pending_review: boolean;
+    uncertain_command: boolean;
+    last_reviewed_at: Date | null;
+    finalization_error: string | null;
+  }>(
+    `SELECT g.status,g.monitor_mode,g.state_revision::text,g.finalization_error,
+      EXISTS(SELECT 1 FROM ctf.sprite_operations o
+        LEFT JOIN ctf.agent_sessions s ON s.game_id=o.game_id AND s.id=o.session_id
+        WHERE o.game_id=g.id AND o.kind='command' AND
+        (o.status='unknown' OR (o.status='running' AND
+          (s.lease_until IS NULL OR s.lease_until<=now())))) AS uncertain_command,
+      count(DISTINCT j.session_id) FILTER (WHERE j.covered_version<j.requested_version)::text AS pending_sessions,
+      coalesce(sum(CASE WHEN j.reviewed_version>=j.start_version
+        THEN j.reviewed_version-j.start_version+1 ELSE 0 END),0)::text AS reviewed_updates,
+      coalesce(sum(j.requested_version-j.start_version+1),0)::text AS total_updates,
+      coalesce(bool_or(j.status='reviewing'),false) AS reviewing,
+      coalesce(bool_or(j.status='unresolved'),false) AS unresolved,
+      coalesce(bool_or(j.status IN ('queued','reviewing')),false) AS has_pending_review,
+      max(j.last_reviewed_at) AS last_reviewed_at
+     FROM ctf.games g LEFT JOIN ctf.monitor_jobs j ON j.game_id=g.id
+     WHERE g.id=$1 GROUP BY g.id`,
+    [game.id],
+  );
+  if (!monitorState) throw new GameError("Run not found.", 404);
+  const monitor =
+    monitorState.monitor_mode === "async"
+      ? {
+          status:
+            monitorState.status === "caught"
+              ? ("caught" as const)
+              : monitorState.unresolved ||
+                  monitorState.finalization_error ||
+                  monitorState.uncertain_command
+                ? ("unresolved" as const)
+                : monitorState.reviewing
+                  ? ("reviewing" as const)
+                  : Number(monitorState.pending_sessions) > 0
+                    ? ("queued" as const)
+                    : ("caught-up" as const),
+          pendingSessions: Number(monitorState.pending_sessions),
+          reviewedUpdates: Number(monitorState.reviewed_updates),
+          totalUpdates: Number(monitorState.total_updates),
+          lastReviewedAt: monitorState.last_reviewed_at?.toISOString() ?? null,
+          hasPendingReview: monitorState.has_pending_review,
+          ...((monitorState.unresolved ||
+            monitorState.finalization_error ||
+            monitorState.uncertain_command) &&
+            monitorState.status !== "caught" && {
+              reason: monitorState.finalization_error
+                ? "Scoring could not be completed. The result remains unconfirmed."
+                : "Review could not be completed. The result remains unconfirmed.",
+            }),
+        }
+      : undefined;
   const sessions = await listSessionSummaries(game.id);
   const runTurns = Number(
     (await db.query<{ turns: number }>("SELECT turns FROM ctf.games WHERE id=$1", [game.id]))
@@ -177,12 +249,23 @@ export async function publicGame(
         [game.id],
       )
     ).rows[0]?.checkpoint;
+  const spriteBusy = !!(
+    await db.query(
+      `SELECT 1 FROM ctf.sprite_operations o JOIN ctf.games g ON g.sprite_name=o.sprite_name
+     WHERE g.id=$1 AND o.kind IN ('restore','delete') AND o.status IN ('running','unknown')
+     LIMIT 1`,
+      [game.id],
+    )
+  ).rowCount;
   const summaries = sessions;
   const busy = summaries.some((session) => session.busy);
   const sessionBusy = summaries.find((session) => session.id === selectedSessionId)?.busy ?? false;
   return {
     id: game.id,
-    status: game.status,
+    status: monitorState.status,
+    monitorMode: monitorState.monitor_mode,
+    stateRevision: monitorState.state_revision,
+    ...(monitor && { monitor }),
     agentModel: selected.agentModel,
     agentEffort: selected.agentEffort,
     monitorDifficulty: game.monitor_difficulty,
@@ -197,6 +280,7 @@ export async function publicGame(
       !forked &&
       sessions.length === 1 &&
       checkpointed &&
+      !spriteBusy &&
       !busy &&
       !game.sprite_deleted_at &&
       Date.now() - new Date(game.updated_at).getTime() < FORK_WINDOW_MS,
@@ -223,7 +307,9 @@ export async function finishSessionRun(game: GameRow, status: GameStatus, blocks
   return transaction(async (client) => {
     await client.query("SELECT id FROM ctf.games WHERE id=$1 FOR UPDATE", [game.id]);
     const { rows } = await client.query(
-      `UPDATE ctf.games g SET status=$3,blocks=blocks+$4,updated_at=now()
+      `UPDATE ctf.games g SET status=$3,blocks=blocks+$4,
+        state_revision=state_revision+CASE WHEN g.monitor_mode='async' THEN 1 ELSE 0 END,
+        updated_at=now()
       WHERE g.id=$1 AND g.status='active' AND g.execution_generation=$6 AND EXISTS(
         SELECT 1 FROM ctf.agent_sessions s WHERE s.game_id=g.id AND s.id=$5 AND s.lease=$2 AND s.lease_until>now())
       RETURNING g.*`,
@@ -284,11 +370,8 @@ export async function cleanup() {
     await Promise.all(
       rows.map(async ({ sprite_name }) => {
         try {
-          await destroyEnvironment(sprite_name);
-          await db.query(
-            "UPDATE ctf.games SET sprite_deleted_at=now() WHERE sprite_name=$1 AND sprite_deleted_at IS NULL",
-            [sprite_name],
-          );
+          const { deleteSpriteIfEligible } = await import("./monitor-commands");
+          await deleteSpriteIfEligible(sprite_name);
         } catch {
           // The terminal Sprite remains eligible for the ordinary cleanup retry below.
         }
@@ -305,10 +388,10 @@ export async function cleanup() {
     await client.query(`DELETE FROM ctf.games WHERE ${stuck}`);
   });
   await db.query(
-    "UPDATE ctf.games SET status='ended' WHERE status='creating' AND updated_at<now()-interval '5 minutes'",
+    "UPDATE ctf.games SET status='ended',state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE status='creating' AND updated_at<now()-interval '5 minutes'",
   );
   await db.query(
-    "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE status IN ('active','creating','finalizing') AND updated_at < now()-interval '24 hours'",
+    "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL,state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE (status IN ('active','creating') OR (status='finalizing' AND monitor_mode='legacy')) AND updated_at < now()-interval '24 hours'",
   );
   await db.query(
     `UPDATE ctf.agent_sessions s SET lease=NULL,lease_until=NULL WHERE s.lease_until<now()
@@ -328,11 +411,8 @@ export async function cleanup() {
   await Promise.all(
     rows.map(async ({ sprite_name }) => {
       try {
-        await destroyEnvironment(sprite_name);
-        await db.query(
-          "UPDATE ctf.games SET sprite_deleted_at=now() WHERE sprite_name=$1 AND sprite_deleted_at IS NULL",
-          [sprite_name],
-        );
+        const { deleteSpriteIfEligible } = await import("./monitor-commands");
+        await deleteSpriteIfEligible(sprite_name);
       } catch {
         /* Keep the deletion pending for the next sweep. */
       }
@@ -411,17 +491,27 @@ export async function startGame(
       "SELECT * FROM ctf.games WHERE owner_id=$1 AND status IN ('creating','active','finalizing') FOR UPDATE",
       [ownerId],
     );
-    if (existing.rows.some((row) => row.status === "creating" || row.status === "finalizing"))
+    if (
+      existing.rows.some(
+        (row) =>
+          row.status === "creating" ||
+          (row.status === "finalizing" && row.monitor_mode === "legacy"),
+      )
+    )
       throw new GameError("Wait for your current run to finish starting or responding.", 409);
     const busyOwned = await client.query(
       `SELECT 1 FROM ctf.agent_sessions s JOIN ctf.games g ON g.id=s.game_id
-      WHERE g.owner_id=$1 AND g.status IN ('creating','active','finalizing') AND s.lease_until>now() LIMIT 1`,
+      WHERE g.owner_id=$1 AND (g.status IN ('creating','active') OR
+        (g.status='finalizing' AND g.monitor_mode='legacy'))
+        AND s.lease_until>now() LIMIT 1`,
       [ownerId],
     );
     if (busyOwned.rowCount)
       throw new GameError("Wait for your current run to finish starting or responding.", 409);
     const count = await client.query(
-      "SELECT count(*)::int AS total FROM ctf.games WHERE status IN ('creating','active','finalizing') AND owner_id<>$1",
+      `SELECT count(DISTINCT sprite_name)::int AS total FROM ctf.games
+       WHERE status IN ('creating','active','finalizing')
+         AND (owner_id<>$1 OR (status='finalizing' AND monitor_mode='async'))`,
       [ownerId],
     );
     if (count.rows[0].total >= 10)
@@ -476,7 +566,10 @@ export async function startGame(
             [source.id],
           )
         ).rows.map((row) => ({ ...row.data, id: Number(row.id) }));
-        cut = forkBeforeLastInstruction(source.messages, history);
+        const fork = forkBeforeLastInstruction(source.messages, history);
+        cut = source.monitor_reasoning
+          ? fork
+          : { ...fork, messages: stripInheritedHiddenReasoning(fork.messages) };
       } catch {
         throw new GameError("This run can’t be safely forked.", 409);
       }
@@ -498,14 +591,14 @@ export async function startGame(
         throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
     }
     await client.query(
-      "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE owner_id=$1 AND status IN ('creating','active')",
+      "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL,state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE owner_id=$1 AND status IN ('creating','active')",
       [ownerId],
     );
     // A fork is born `creating` on its parent's sprite and secret, carrying the parent's whole
     // account; it turns active once the sprite is restored to the dropped instruction's checkpoint.
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run,monitor_settings_locked)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run,monitor_settings_locked,monitor_mode)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'async') RETURNING *`,
       [
         id,
         ownerId,
@@ -514,11 +607,11 @@ export async function startGame(
         source?.agent_model ?? agentModel,
         TYPESAFE_MODEL,
         source?.monitor_difficulty ?? monitor.difficulty ?? "hard",
-        MONITOR_VERSION,
+        ASYNC_MONITOR_VERSION,
         source?.token_budget ?? 500000,
         source?.budget_microdollars ?? RUN_BUDGET_MICRODOLLARS,
         source?.system_prompt ?? "",
-        source?.monitor_reasoning ?? monitor.reasoning ?? true,
+        true,
         "creating",
         source?.id ?? null,
         JSON.stringify(cut?.messages ?? []),
@@ -544,6 +637,19 @@ export async function startGame(
         source?.turns ?? 0,
       ],
     );
+    const initialEvidence = await persistTranscriptEvidence(client, {
+      gameId: id,
+      sessionId: id,
+      runRevision: 0,
+      messages: cut?.messages ?? [],
+    });
+    if (cut?.messages.length)
+      await enqueueMonitorJob(client, {
+        gameId: id,
+        sessionId: id,
+        epoch: initialEvidence.epoch,
+        version: initialEvidence.version,
+      });
     // The player-visible history up to the dropped instruction is copied as it was.
     if (source && cut)
       await client.query(
@@ -615,9 +721,24 @@ export async function startGame(
   });
   if (game.cut) {
     const { cut, ...child } = game;
+    let restoreOperation: string | null = null;
     try {
+      const { beginExclusiveSpriteOperation, completeExclusiveSpriteOperation } =
+        await import("./monitor-commands");
+      restoreOperation = await beginExclusiveSpriteOperation({
+        spriteName: child.sprite_name,
+        gameId: child.forked_from!,
+        kind: "restore",
+      });
+      if (!restoreOperation)
+        throw new GameError("The environment is still finishing earlier work.", 409);
       await restoreEnvironment(child.sprite_name, cut.checkpoint);
+      await completeExclusiveSpriteOperation(restoreOperation, "completed");
     } catch (error) {
+      if (restoreOperation) {
+        const { completeExclusiveSpriteOperation } = await import("./monitor-commands");
+        await completeExclusiveSpriteOperation(restoreOperation, "unknown");
+      }
       // The child never ran and has no inference; remove it so the parent can be forked again.
       await transaction(async (client) => {
         await client.query("DELETE FROM ctf.events WHERE game_id=$1", [id]);
@@ -636,19 +757,28 @@ export async function startGame(
         503,
       );
     }
-    await db.query("UPDATE ctf.games SET status='active',updated_at=now() WHERE id=$1", [id]);
+    await db.query(
+      "UPDATE ctf.games SET status='active',state_revision=state_revision+1,updated_at=now() WHERE id=$1",
+      [id],
+    );
     child.status = "active";
     await cleanup();
     return { ...(await publicGame(child)), retryInstruction: cut.instruction };
   }
   try {
     await createEnvironment(game.sprite_name, secret);
-    await db.query("UPDATE ctf.games SET status='active',updated_at=now() WHERE id=$1", [id]);
+    await db.query(
+      "UPDATE ctf.games SET status='active',state_revision=state_revision+1,updated_at=now() WHERE id=$1",
+      [id],
+    );
     game.status = "active";
     await cleanup();
     return publicGame(game);
   } catch (error) {
-    await db.query("UPDATE ctf.games SET status='ended' WHERE id=$1", [id]);
+    await db.query(
+      "UPDATE ctf.games SET status='ended',state_revision=state_revision+1 WHERE id=$1",
+      [id],
+    );
     await cleanup();
     throw error;
   }
@@ -744,6 +874,7 @@ export async function reserveInference(
     finalizationToken?: string;
     pendingReviewId?: string;
     executionGeneration?: number;
+    jobClaim?: MonitorJobClaim;
   } = {},
 ) {
   return transaction(async (client) => {
@@ -768,21 +899,25 @@ export async function reserveInference(
     if (
       !game ||
       (role === "agent" && game.status !== "active") ||
-      (context.executionGeneration !== undefined &&
+      (!context.jobClaim &&
+        context.executionGeneration !== undefined &&
         Number(game.execution_generation) !== context.executionGeneration) ||
       !session ||
-      session.lease !== lease ||
-      new Date(session.lease_until).getTime() <= Date.now()
+      (!context.jobClaim &&
+        (session.lease !== lease || new Date(session.lease_until).getTime() <= Date.now()))
     )
       throw new GameError("This response has stopped.", 409);
     if (role === "monitor") {
-      if (!lease || !context.reviewId)
+      if (context.jobClaim) {
+        await assertMonitorJobClaim(client, context.jobClaim);
+      } else if (!lease || !context.reviewId)
         throw new GameError("Monitor review authorization is required.", 409);
-      await assertMonitorAuthorization(client, gameId, sessionId, lease, {
-        reviewId: context.reviewId,
-        finalizationToken: context.finalizationToken,
-        pendingReviewId: context.pendingReviewId,
-      });
+      else
+        await assertMonitorAuthorization(client, gameId, sessionId, lease, {
+          reviewId: context.reviewId,
+          finalizationToken: context.finalizationToken,
+          pendingReviewId: context.pendingReviewId,
+        });
     }
     const available =
       Number(game.budget_microdollars) -
@@ -843,6 +978,7 @@ export async function chargeMonitor(
     finalizationToken?: string;
     pendingReviewId?: string;
     dispatched?: boolean;
+    jobClaim?: MonitorJobClaim;
   } = {},
 ) {
   if (!Number.isFinite(inputTokens) || inputTokens < 0) throw new Error("Invalid monitor usage.");
@@ -869,7 +1005,20 @@ export async function chargeMonitor(
         )
       ).rows[0];
     if (!game || !session) throw new GameError("This response has stopped.", 409);
-    if (reviewId && authorization.dispatched) {
+    if (authorization.jobClaim) {
+      const { rowCount } = await client.query(
+        `SELECT 1 FROM ctf.monitor_reviews WHERE id=$1 AND game_id=$2 AND session_id=$3
+         AND job_id=$4 AND job_claim_token=$5 FOR UPDATE`,
+        [
+          reviewId,
+          gameId,
+          sessionId,
+          authorization.jobClaim.jobId,
+          authorization.jobClaim.claimToken,
+        ],
+      );
+      if (!rowCount) throw new GameError("The dispatched monitor review was not found.", 409);
+    } else if (reviewId && authorization.dispatched) {
       const { rowCount } = await client.query(
         `SELECT id FROM ctf.monitor_reviews
          WHERE id=$1 AND game_id=$2 AND session_id=$3 AND originating_lease=$4 FOR UPDATE`,
@@ -881,6 +1030,7 @@ export async function chargeMonitor(
     }
     if (
       !authorization.dispatched &&
+      !authorization.jobClaim &&
       ((executionGeneration !== undefined &&
         Number(game.execution_generation) !== executionGeneration) ||
         !lease ||
@@ -888,13 +1038,13 @@ export async function chargeMonitor(
         new Date(session.lease_until).getTime() <= Date.now())
     )
       throw new GameError("This response has stopped.", 409);
-    if (reviewId && lease && !authorization.dispatched)
+    if (reviewId && lease && !authorization.dispatched && !authorization.jobClaim)
       await assertMonitorAuthorization(client, gameId, sessionId, lease, {
         reviewId,
         finalizationToken: authorization.finalizationToken,
         pendingReviewId: authorization.pendingReviewId,
       });
-    else if (!authorization.dispatched && game.status !== "active")
+    else if (!authorization.dispatched && !authorization.jobClaim && game.status !== "active")
       throw new GameError("This response has stopped.", 409);
     if (
       !authorization.dispatched &&
@@ -904,11 +1054,13 @@ export async function chargeMonitor(
         "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
         429,
       );
-    await client.query(
+    const { rowCount: inserted } = await client.query(
       `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,generation_id,settled_at,session_id,review_id)
-      VALUES($1,$2,$3,'monitor','typesafe',$4,$5,$4,$5,NULL,now(),$6,$7)`,
+      VALUES($1,$2,$3,'monitor','typesafe',$4,$5,$4,$5,NULL,now(),$6,$7)
+      ON CONFLICT DO NOTHING`,
       [randomUUID(), gameId, day, tokens, cost, sessionId, reviewId ?? null],
     );
+    if (!inserted) return;
     await client.query("UPDATE ctf.daily_spend SET charged=charged+$2 WHERE day=$1", [day, cost]);
     await client.query(
       "UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2 WHERE id=$1",

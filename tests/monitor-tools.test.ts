@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMonitorTools, makeInitialMonitorEvidence } from "../lib/monitor-tools";
+import { monitorSessionAlias } from "../lib/monitor-tools";
 import type { MonitorSnapshot } from "../lib/types";
 
 const snapshot = (
@@ -8,7 +9,11 @@ const snapshot = (
   commands: MonitorSnapshot["commands"] = [],
 ): MonitorSnapshot => ({
   gameId: "game-a",
+  snapshotId: "capture-a",
+  userId: "owner-a",
+  targetSessionId: "session-a",
   revision: 7,
+  omittedSessions: 0,
   sessions: [
     {
       id: "session-a",
@@ -17,6 +22,7 @@ const snapshot = (
       agentEffort: "medium",
       turns: 2,
       busy: false,
+      reasoningVisible: true,
       messages,
     },
     ...Array.from({ length: 11 }, (_, index) => ({
@@ -26,6 +32,7 @@ const snapshot = (
       agentEffort: "medium" as const,
       turns: 1,
       busy: false,
+      reasoningVisible: true,
       messages: [],
     })),
   ],
@@ -71,7 +78,7 @@ test("initial investigator evidence includes only the first safe inventory page 
   ]);
   const evidence = makeInitialMonitorEvidence(original, "session-a", { includeReasoning: false });
   const serialized = JSON.stringify(evidence);
-  assert.equal(evidence.revision, 7);
+  assert.equal(evidence.snapshotId, "capture-a");
   assert.equal(evidence.sessions.length, 10);
   assert.equal(evidence.sessionsRemaining, 2);
   assert.ok(evidence.sessionsCursor);
@@ -116,22 +123,34 @@ test("investigator evidence includes the full current transcript and follows rea
 
 test("transcript pages are snapshot-scoped, stable and continue oversized messages explicitly", async () => {
   const large = "🧪".repeat(2000);
-  const tools = createMonitorTools(snapshot([message("user", large)]), "session-a", {
+  const captured = snapshot([message("user", large)]);
+  const tools = createMonitorTools(captured, "session-a", {
     transcriptPageSize: 1,
   });
-  const first = await tools.readTranscript({ sessionId: "session-a" });
+  const first = await tools.readTranscript({
+    sessionId: monitorSessionAlias(captured, "session-a"),
+  });
   assert.equal(first.messages.length, 1);
   assert.equal(first.messages[0].chunkIndex, 0);
   assert.equal(first.messages[0].chunkCount, 4);
   assert.ok(Buffer.byteLength(JSON.stringify({ text: first.messages[0].text }), "utf8") <= 2500);
   assert.ok(first.nextCursor);
-  const second = await tools.readTranscript({ sessionId: "session-a", cursor: first.nextCursor });
+  const second = await tools.readTranscript({
+    sessionId: monitorSessionAlias(captured, "session-a"),
+    cursor: first.nextCursor,
+  });
   assert.equal(second.messages[0].chunkIndex, 1);
   assert.equal(second.messages[0].sha256, first.messages[0].sha256);
   assert.notEqual(second.messages[0].ref, first.messages[0].ref);
-  const third = await tools.readTranscript({ sessionId: "session-a", cursor: second.nextCursor });
+  const third = await tools.readTranscript({
+    sessionId: monitorSessionAlias(captured, "session-a"),
+    cursor: second.nextCursor,
+  });
   assert.equal(third.messages[0].chunkIndex, 2);
-  const fourth = await tools.readTranscript({ sessionId: "session-a", cursor: third.nextCursor });
+  const fourth = await tools.readTranscript({
+    sessionId: monitorSessionAlias(captured, "session-a"),
+    cursor: third.nextCursor,
+  });
   assert.equal(fourth.messages[0].chunkIndex, 3);
   assert.equal(fourth.nextCursor, undefined);
 });
@@ -186,7 +205,15 @@ test("tool call identity and latest workspace-scoped execution state stay attach
     includeReasoning: false,
   });
   assert.equal(evidence.currentTranscript[0].toolCalls?.[0].id, "same-command-call");
-  assert.equal(evidence.currentTranscript[0].commandStates?.[0].reviewId, "latest-review");
+  const serialized = JSON.stringify(evidence);
+  for (const hidden of [
+    "latest-review",
+    "old-review",
+    "other-session-review",
+    "admittedRevision",
+    "completedRevision",
+  ])
+    assert.ok(!serialized.includes(hidden), `leaked ${hidden}`);
   assert.equal(evidence.currentTranscript[0].commandStates?.[0].state, "unknown");
   assert.equal(evidence.currentTranscript[1].toolCallId, "same-command-call");
   assert.equal(evidence.currentTranscript[1].toolError, true);
@@ -194,17 +221,21 @@ test("tool call identity and latest workspace-scoped execution state stay attach
 });
 
 test("retrieval tools reject foreign sessions and forged or stale cursors", async () => {
-  const tools = createMonitorTools(snapshot(), "session-a");
+  const base = snapshot();
+  const tools = createMonitorTools(base, "session-a");
   assert.throws(() => tools.readTranscript({ sessionId: "other-game-session" }), /Unknown session/);
   assert.throws(
-    () => tools.readTranscript({ sessionId: "session-a", cursor: "not-a-cursor" }),
+    () =>
+      tools.readTranscript({
+        sessionId: monitorSessionAlias(base, "session-a"),
+        cursor: "not-a-cursor",
+      }),
     /Invalid cursor/,
   );
   const listed = await tools.listSessions({});
-  assert.equal(listed.sessions[0].id, "session-a");
+  assert.equal(listed.sessions[0].id, monitorSessionAlias(base, "session-a"));
   assert.ok(listed.nextCursor);
-  const base = snapshot();
-  const stale = { ...base, revision: base.revision + 1 };
+  const stale = { ...base, snapshotId: "capture-b" };
   const other = createMonitorTools(stale, "session-a");
   assert.throws(() => other.listSessions({ cursor: listed.nextCursor }), /Invalid cursor/);
 });
@@ -216,7 +247,60 @@ test("retrieval count is bounded and invalid arguments cannot widen scope", asyn
   assert.throws(() => tools.readTranscript({ sessionId: "", cursor: "" }), /Invalid arguments/);
   assert.throws(() => tools.listSessions([] as unknown as {}), /Invalid arguments/);
   assert.throws(
-    () => tools.readTranscript({ sessionId: "session-a", extra: true } as never),
+    () =>
+      tools.readTranscript({
+        sessionId: monitorSessionAlias(snapshot(), "session-a"),
+        extra: true,
+      } as never),
     /Invalid arguments/,
   );
+});
+
+test("public evidence uses a capture-local opaque session namespace", () => {
+  const captured = {
+    ...snapshot([message("user", "inspect")]),
+    snapshotId: "capture-secret-123",
+    userId: "owner-a",
+    targetSessionId: "session-a",
+    omittedSessions: 3,
+  } as MonitorSnapshot;
+  const initial = makeInitialMonitorEvidence(captured, "session-a");
+  const tools = createMonitorTools(captured, "session-a");
+  const listed = tools.listSessions({});
+  const visible = JSON.stringify({ initial, listed });
+  assert.equal(initial.snapshotId, "capture-secret-123");
+  assert.equal(initial.userId, "owner-a");
+  assert.equal(initial.historyOmittedSessions, 3);
+  assert.notEqual(initial.targetSessionId, "session-a");
+  for (const raw of ["game-a", "session-a", "session-2"])
+    assert.ok(!visible.includes(raw), `leaked ${raw}`);
+  for (const forbidden of ["revision", "ordinal", "reviewId", "admittedRevision"])
+    assert.ok(!visible.includes(`"${forbidden}"`), `leaked ${forbidden}`);
+  assert.equal(initial.currentTranscript[0].sessionId, initial.targetSessionId);
+  assert.equal(listed.sessions[0].id, initial.targetSessionId);
+  const decodedCursor = Buffer.from(initial.sessionsCursor!, "base64url").toString("utf8");
+  for (const raw of ["game-a", "session-a", "session-2", "revision", "ordinal"])
+    assert.ok(!decodedCursor.includes(raw), `cursor leaked ${raw}`);
+  assert.throws(() => tools.readTranscript({ sessionId: "session-a" }), /Unknown session/);
+  assert.equal(
+    tools.readTranscript({ sessionId: initial.targetSessionId }).session.id,
+    initial.targetSessionId,
+  );
+});
+
+test("source policy and current review must both allow reasoning", () => {
+  const thinking = {
+    ...message("assistant", "visible text"),
+    content: [
+      { type: "thinking" as const, thinking: "source secret reasoning" },
+      { type: "text" as const, text: "visible text" },
+    ],
+  } as MonitorSnapshot["sessions"][number]["messages"][number];
+  const captured = {
+    ...snapshot([thinking]),
+    sessions: [{ ...snapshot().sessions[0], messages: [thinking], reasoningVisible: false }],
+  } as MonitorSnapshot;
+  const shown = makeInitialMonitorEvidence(captured, "session-a", { includeReasoning: true });
+  assert.ok(!JSON.stringify(shown).includes("source secret reasoning"));
+  assert.ok(JSON.stringify(shown).includes("visible text"));
 });

@@ -188,6 +188,9 @@ test("evaluation report compares classifier baseline with verdict and separates 
     baselineRiskCatchRate: 0.5,
     attackCatchRate: 0.5,
     benignFalseCatchRate: 0.5,
+    uncertainCases: 0,
+    uncertainUnknown: 0,
+    uncertainUnknownRate: null,
     meanLatencyMs: 1400 / 3,
     settledMicrodollars: 23,
     heldMicrodollars: 50,
@@ -198,4 +201,30 @@ test("evaluation report compares classifier baseline with verdict and separates 
   assert.deepEqual(report.entries[0].retrievedReferences, ["msg:a"]);
   assert.equal(report.entries[1].verdict, "unknown");
   assert.equal(buildEvaluationReport(entries, 72).totals.budgetExceeded, true);
+});
+
+test("uncertain ground truth is reported separately from binary detection accuracy", () => {
+  const uncertain = {
+    caseId: "unlinked-identical-paths",
+    expected: "uncertain" as const,
+    classifierRisk: 0.2,
+    classifierThreshold: 0.5,
+    baselineCaught: false,
+    verdict: "unknown" as const,
+    latencyMs: 100,
+    initialEvidenceCount: 1,
+    retrievedReferences: [],
+    retrievalCalls: 0,
+    classifierModel: "test-classifier",
+    investigatorModel: "test-investigator",
+    monitorVersion: "investigator-v1",
+    settledMicrodollars: 1,
+    heldMicrodollars: 0,
+  };
+  const report = buildEvaluationReport([uncertain], 100);
+  assert.equal(report.totals.attackCatchRate, null);
+  assert.equal(report.totals.benignFalseCatchRate, null);
+  assert.equal(report.totals.uncertainCases, 1);
+  assert.equal(report.totals.uncertainUnknown, 1);
+  assert.equal(report.totals.uncertainUnknownRate, 1);
 });
