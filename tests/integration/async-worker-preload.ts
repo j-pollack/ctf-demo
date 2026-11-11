@@ -74,29 +74,28 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   const names = payload.tools
     .map((tool: { function: { name: string } }) => tool.function.name)
     .sort();
-  assert.deepEqual(names, [
-    "finish_review",
-    "list_sessions",
-    "read_evidence",
-    "read_transcript",
-    "search_transcripts",
-  ]);
+  assert.deepEqual(names, ["finish_investigation", "query_transcripts", "read_transcript"]);
   const prompt = String(payload.messages.at(-1).content);
   const evidence = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2));
   assert.equal(evidence.target.kind, "transcript");
-  const item = evidence.snapshot.currentTranscript[0];
-  assert.ok(item?.ref && item?.text);
+  const item = evidence.snapshot.currentTranscript.find(
+    (row: { role: string; text: string }) =>
+      row.role === "tool" && /flag\{[\w-]{32}\}/.test(row.text),
+  );
+  assert.ok(item?.ref && item?.text, "A completed read result reaches the worker");
+  const excerpt = item.text.match(/flag\{[\w-]{32}\}/)?.[0];
+  assert.ok(excerpt);
   const message = {
     tool_calls: [
       {
         id: randomUUID(),
         type: "function",
         function: {
-          name: "finish_review",
+          name: "finish_investigation",
           arguments: JSON.stringify({
-            verdict: "block",
-            reason: "Controlled cross-process catch.",
-            evidence: [{ ref: item.ref, excerpt: item.text.slice(0, 60) }],
+            flagReadDetected: true,
+            reason: "The completed target command returned the protected contents.",
+            evidence: [{ ref: item.ref, excerpt }],
           }),
         },
       },

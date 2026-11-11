@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import type { Message } from "@earendil-works/pi-ai";
 import type { Pool } from "pg";
 import type { ClassifierRiskSignals } from "../lib/control";
 import {
@@ -26,7 +27,7 @@ const MIGRATIONS = [
   "015-transcript-evidence.sql",
 ];
 
-type SeededWorkspace = {
+export type SeededWorkspace = {
   gameId: string;
   sessionIds: Map<string, string>;
   leases: Map<string, string>;
@@ -71,7 +72,7 @@ function corpusWorkspaces() {
   return workspaces;
 }
 
-async function migrateFreshDatabase(pool: Pool) {
+export async function migrateFreshDatabase(pool: Pool) {
   const { rows } = await pool.query("SELECT to_regnamespace('ctf') AS schema");
   if (rows[0].schema !== null)
     throw new Error("Refusing to migrate: the supplied database already has a ctf schema.");
@@ -84,7 +85,7 @@ async function migrateFreshDatabase(pool: Pool) {
   await backfillTranscriptSearchText(pool);
 }
 
-async function seedWorkspace(
+export async function seedWorkspace(
   pool: Pool,
   source: MonitorFixtureSnapshot,
   ownerId: string,
@@ -92,14 +93,22 @@ async function seedWorkspace(
   agentModel: string,
   classifierModel: string,
   monitorVersion: string,
+  options: {
+    activeSessionId?: string;
+    observations?: Record<string, readonly Message[][]>;
+  } = {},
 ): Promise<SeededWorkspace> {
   const gameId = randomUUID();
   const sourceSessionIds = source.sessions.map((session) => session.id);
   const sessionIds = new Map(sourceSessionIds.map((id) => [id, randomUUID()]));
   const leases = new Map(
-    source.sessions.filter((session) => session.busy).map((session) => [session.id, randomUUID()]),
+    source.sessions
+      .filter((session) => session.busy || session.id === options.activeSessionId)
+      .map((session) => [session.id, randomUUID()]),
   );
-  const activeSession = source.sessions.find((session) => session.busy);
+  const activeSession = source.sessions.find(
+    (session) => session.busy || session.id === options.activeSessionId,
+  );
   const gameLease = activeSession ? leases.get(activeSession.id)! : null;
   await pool.query(
     `INSERT INTO ctf.games
@@ -145,13 +154,15 @@ async function seedWorkspace(
   const evidenceClient = await pool.connect();
   try {
     await evidenceClient.query("BEGIN");
-    for (const session of source.sessions)
-      await persistTranscriptEvidence(evidenceClient, {
-        gameId,
-        sessionId: sessionIds.get(session.id)!,
-        runRevision: source.revision,
-        messages: session.messages,
-      });
+    for (const session of source.sessions) {
+      for (const messages of options.observations?.[session.id] ?? [session.messages])
+        await persistTranscriptEvidence(evidenceClient, {
+          gameId,
+          sessionId: sessionIds.get(session.id)!,
+          runRevision: source.revision,
+          messages,
+        });
+    }
     await evidenceClient.query("COMMIT");
   } catch (error) {
     await evidenceClient.query("ROLLBACK");
@@ -187,7 +198,7 @@ async function seedWorkspace(
   return { gameId, sessionIds, leases };
 }
 
-async function loadReviewGame(pool: Pool, gameId: string, sessionId: string) {
+export async function loadReviewGame(pool: Pool, gameId: string, sessionId: string) {
   const { rows } = await pool.query(
     `SELECT g.*,s.id AS session_id,s.agent_model,s.agent_effort,s.system_prompt,s.messages,s.turns,
        s.lease,s.lease_until FROM ctf.games g JOIN ctf.agent_sessions s ON s.game_id=g.id

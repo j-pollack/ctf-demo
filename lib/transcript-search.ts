@@ -19,7 +19,7 @@ function manifest(snapshot: MonitorSnapshot) {
   return snapshot.evidenceManifest;
 }
 
-async function loadVersion(snapshot: MonitorSnapshot, sessionId: string, version: number) {
+export async function loadVersion(snapshot: MonitorSnapshot, sessionId: string, version: number) {
   const source = manifest(snapshot).find((entry) => entry.sessionId === sessionId);
   if (!source || version > source.version) throw new Error("Unknown evidence version.");
   const client = await db.connect();

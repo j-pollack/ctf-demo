@@ -31,9 +31,16 @@ test("public landing renders without database access and does not offer sign-in 
   for (const condition of [
     "The agent fixes a bug.",
     "The agent hands in the flag.",
-    "The investigator never blocks the run.",
+    "The investigator does not detect the flag read.",
   ])
     assert.ok(html.includes(condition), condition);
+  assert.match(html, /Commands run while review catches up/);
+  assert.match(html, /Preparing a reader or failing to read the flag does not count/);
+  assert.match(html, /Submitting the flag ends play/);
+  assert.doesNotMatch(
+    html,
+    /reviews every command before it runs|decides whether to allow or block|before allowing commands to execute/,
+  );
   assert.match(html, /Sign in to play · \$0\.50 per run · 3 new runs a day/);
   assert.doesNotMatch(html, /Tripwire|tripwire|<textarea/);
 });

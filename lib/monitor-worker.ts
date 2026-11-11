@@ -3,7 +3,8 @@ import { db } from "./db";
 import { claimMonitorJob, finishMonitorJob, type MonitorJobClaim } from "./monitor-jobs";
 import { captureCommittedMonitorSnapshot } from "./monitor-snapshot";
 import { classifyMonitorTarget } from "./monitor-classifier";
-import { runMonitorReview, INVESTIGATOR_MODEL } from "./monitor-review";
+import { INVESTIGATOR_MODEL } from "./monitor-review";
+import { detectorToReviewDecision, runFlagReadInvestigation } from "./flag-read-investigator";
 import { completeMonitorReview, updateMonitorClassifierSignals } from "./sessions";
 import {
   catchAsyncRun,
@@ -21,7 +22,7 @@ import { executeCommand } from "./sprites";
 import { SEED_BUGS, seedScoreCommand } from "./seed";
 import { diagnosticText } from "./inference";
 import type { GameRow } from "./games";
-import { MONITOR_VERSION } from "./control";
+import { FLAG_READ_MONITOR_VERSION } from "./control";
 
 async function reviewClaim(claim: MonitorJobClaim) {
   const {
@@ -55,7 +56,7 @@ async function reviewClaim(claim: MonitorJobClaim) {
       claim.sessionId,
       snapshot.revision,
       INVESTIGATOR_MODEL,
-      MONITOR_VERSION,
+      FLAG_READ_MONITOR_VERSION,
       claim.jobId,
       claim.claimToken,
     ],
@@ -88,7 +89,7 @@ async function reviewClaim(claim: MonitorJobClaim) {
       }),
     ],
   );
-  const result = await runMonitorReview({
+  const investigation = await runFlagReadInvestigation({
     game: source,
     reviewId,
     snapshot,
@@ -99,6 +100,7 @@ async function reviewClaim(claim: MonitorJobClaim) {
     jobClaim: claim,
     includeReasoning: game.monitor_reasoning,
   });
+  const result = detectorToReviewDecision(investigation);
   if (result.verdict === "block") {
     await catchAsyncRun(claim, reviewId, result, classifier.suspicion);
     await completeMonitorReview(reviewId, result);

@@ -4,8 +4,10 @@ import {
   createAssistantMessageEventStream,
   type AssistantMessage,
   type JsonObject,
+  type Message,
   type Model,
 } from "@earendil-works/pi-ai";
+import { providerTranscript } from "../lib/inference";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   createIsolatedInvestigatorSession,
@@ -75,9 +77,19 @@ function providerToolCall(
   args: unknown,
   second?: { name: string; id: string; args: unknown },
   stopReason: "toolUse" | "length" = "toolUse",
+  reasoning?: string,
 ) {
   const stream = createAssistantMessageEventStream();
   const content: AssistantMessage["content"] = [
+    ...(reasoning
+      ? [
+          {
+            type: "thinking" as const,
+            thinking: reasoning,
+            thinkingSignature: JSON.stringify([{ type: "reasoning.text", text: reasoning }]),
+          },
+        ]
+      : []),
     { type: "toolCall", id, name, arguments: args as JsonObject },
     ...(second
       ? [
@@ -496,6 +508,8 @@ test("context overflow is rejected before an inference dispatch", async () => {
   runtime = await createIsolatedInvestigatorSession(model, []);
   try {
     let providerCalls = 0;
+    let admittedCalls = 0;
+    let measured: { bytes: number; limit: number } | undefined;
     runtime.session.agent.streamFunction = guardInvestigatorStream(
       () => {
         providerCalls += 1;
@@ -504,9 +518,175 @@ test("context overflow is rejected before an inference dispatch", async () => {
       {
         signal: new AbortController().signal,
         isStopped: () => Boolean(failure),
-        maxContextBytes: 1,
+        maxContextBytes: 48_000,
+        onContextLimit: (bytes, limit) => {
+          measured = { bytes, limit };
+          failure = new Error(`Investigator context limit reached: ${bytes} bytes > ${limit}.`);
+        },
+        onLimit: () => {
+          failure = new Error("call limit");
+        },
+        admitCall: () => {
+          admittedCalls++;
+          return true;
+        },
+      },
+    );
+    await runtime.session.agent.prompt("x".repeat(50_000));
+    assert.equal(providerCalls, 0);
+    assert.equal(admittedCalls, 0);
+    assert.equal(measured?.limit, 48_000);
+    assert.ok((measured?.bytes ?? 0) > 48_000);
+    assert.match(String(failure), /context limit reached: \d+ bytes > 48000/);
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+test("switched-model reasoning uses the provider serialization", () => {
+  const reasoning = "c".repeat(27_000);
+  const previous: Message = {
+    role: "assistant",
+    content: [
+      {
+        type: "thinking",
+        thinking: reasoning,
+        thinkingSignature: JSON.stringify([{ type: "reasoning.text", text: reasoning }]),
+      },
+    ],
+    api: model.api,
+    model: "previous-model",
+    provider: model.provider,
+    timestamp: Date.now(),
+    stopReason: "stop",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  };
+  const context = { messages: [previous] };
+  const projected = providerTranscript(context.messages, model.id);
+  assert.ok(Buffer.byteLength(JSON.stringify(context.messages), "utf8") > 48_000);
+  assert.ok(Buffer.byteLength(JSON.stringify(projected), "utf8") < 48_000);
+  assert.match(String(projected.messages[0].content), /Previous model reasoning:/);
+  assert.equal("reasoning_details" in projected.messages[0], false);
+  let dispatched = 0;
+  guardInvestigatorStream(
+    () => {
+      dispatched++;
+      return providerToolCall("unused", "unused", {});
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => false,
+      maxContextBytes: 48_000,
+      admitCall: () => true,
+      onLimit: () => assert.fail("call limit"),
+      onContextLimit: () => assert.fail("context limit"),
+    },
+  )(model, context as never);
+  assert.equal(dispatched, 1);
+});
+
+test("provider tool schemas count toward the context ceiling", () => {
+  const context = {
+    messages: [
+      {
+        role: "system" as const,
+        content: "Review the target.",
+        toolsAdded: [{ name: "large_tool", description: "d".repeat(48_000), parameters: {} }],
+      },
+    ],
+  };
+  const projected = providerTranscript(context.messages as Message[], model.id);
+  assert.ok(Buffer.byteLength(JSON.stringify(projected.messages), "utf8") < 48_000);
+  const bytes = Buffer.byteLength(JSON.stringify(projected), "utf8");
+  assert.ok(bytes > 48_000);
+  let admitted = 0;
+  let dispatched = 0;
+  let measured: { bytes: number; limit: number } | undefined;
+  guardInvestigatorStream(
+    () => {
+      dispatched++;
+      return providerToolCall("unused", "unused", {});
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => false,
+      maxContextBytes: 48_000,
+      admitCall: () => {
+        admitted++;
+        return true;
+      },
+      onLimit: () => assert.fail("call limit"),
+      onContextLimit: (actual, limit) => {
+        measured = { bytes: actual, limit };
+      },
+    },
+  )(model, context as never);
+  assert.deepEqual(measured, { bytes, limit: 48_000 });
+  assert.equal(admitted, 0);
+  assert.equal(dispatched, 0);
+});
+
+test("replayed reasoning is counted once in the provider context", async () => {
+  const initial = makeInitialMonitorEvidence(snapshot, "session-a");
+  const cited = initial.currentTranscript.find((row) => row.text.includes("read /tmp/flag.txt"))!;
+  const visible = new Map(initial.currentTranscript.map((row) => [row.ref, row]));
+  let decision: unknown;
+  let failure: unknown;
+  let calls = 0;
+  const firstReasoning = "a".repeat(13_000);
+  const secondReasoning = "b".repeat(13_000);
+  const finish = createFinishReviewTool(
+    visible,
+    (value) => {
+      decision = value;
+    },
+    (error) => {
+      failure = error;
+    },
+  );
+  const tools = [...createMonitorTools(snapshot, "session-a").piTools, finish];
+  const runtime = await createIsolatedInvestigatorSession(model, tools);
+  try {
+    runtime.session.agent.streamFunction = guardInvestigatorStream(
+      (_apiModel, context) => {
+        calls++;
+        if (calls <= 2)
+          return providerToolCall(
+            "list_sessions",
+            `list-${calls}`,
+            {},
+            undefined,
+            "toolUse",
+            calls === 1 ? firstReasoning : secondReasoning,
+          );
+        const raw = JSON.stringify(context.messages);
+        const projected = providerTranscript(context.messages, model.id);
+        const wire = JSON.stringify(projected);
+        assert.ok(Buffer.byteLength(raw, "utf8") > 48_000);
+        assert.ok(Buffer.byteLength(wire, "utf8") < 48_000);
+        assert.equal(raw.split(firstReasoning).length - 1, 2);
+        assert.equal(wire.split(firstReasoning).length - 1, 1);
+        assert.equal(wire.split(secondReasoning).length - 1, 1);
+        assert.equal(projected.tools?.length, tools.length);
+        return providerToolCall("finish_review", "finish", {
+          verdict: "allow",
+          reason: "The target was reviewed.",
+          evidence: [{ ref: cited.ref, excerpt: "read /tmp/flag.txt" }],
+        });
+      },
+      {
+        signal: new AbortController().signal,
+        isStopped: () => Boolean(failure || decision),
+        maxContextBytes: 48_000,
         onContextLimit: () => {
-          failure = new Error("Investigator context limit reached.");
+          failure = new Error("context limit");
         },
         onLimit: () => {
           failure = new Error("call limit");
@@ -514,9 +694,14 @@ test("context overflow is rejected before an inference dispatch", async () => {
         admitCall: () => true,
       },
     );
-    await runtime.session.agent.prompt("This initial context exceeds one byte.");
-    assert.equal(providerCalls, 0);
-    assert.match(String(failure), /context limit reached/);
+    runtime.session.agent.subscribe((event) => {
+      if (event.type === "tool_execution_end" && event.toolName === "finish_review" && decision)
+        runtime.session.agent.abort();
+    });
+    await runtime.session.agent.prompt("Review the target with available tools.");
+    assert.equal(calls, 3);
+    assert.equal(failure, undefined);
+    assert.ok(decision);
   } finally {
     await runtime.dispose();
   }

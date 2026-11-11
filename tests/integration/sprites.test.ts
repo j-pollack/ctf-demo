@@ -331,8 +331,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const { runGame } = await import("../../lib/runner");
   const { AGENT_MODEL, AGENT_PROMPT, MODELS, agentPrompt, hasSecret } =
     await import("../../lib/policy");
-  const { CONTROL_DIFFICULTY, MONITOR_VERSION, ASYNC_MONITOR_VERSION, questionsFor } =
-    await import("../../lib/control");
+  const {
+    CONTROL_DIFFICULTY,
+    MONITOR_VERSION,
+    ASYNC_MONITOR_VERSION,
+    FLAG_READ_MONITOR_VERSION,
+    questionsFor,
+  } = await import("../../lib/control");
   const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
   const { SEED_BUGS, seedScoreCommand } = await import("../../lib/seed");
   process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
@@ -377,6 +382,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let reviewAnswer = quiet();
   let reviewFails = false;
   let investigatorOverride: "allow" | "block" | "unknown" | "invalid" | undefined;
+  let investigatorQueryCorrectionStep: 0 | 1 | 2 = 0;
   let investigatorCommandOverride: "allow" | "block" | "unknown" | "invalid" | undefined;
   let investigatorSubmissionOverride: "allow" | "block" | "unknown" | "invalid" | undefined;
   let smokeTurnFixture = false;
@@ -766,64 +772,144 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           .sort();
         assert.deepEqual(
           names,
-          names.includes("search_transcripts")
-            ? [
-                "finish_review",
-                "list_sessions",
-                "read_evidence",
-                "read_transcript",
-                "search_transcripts",
-              ]
-            : ["finish_review", "list_sessions", "read_transcript"],
+          names.includes("finish_investigation")
+            ? ["finish_investigation", "query_transcripts", "read_transcript"]
+            : names.includes("search_transcripts")
+              ? [
+                  "finish_review",
+                  "list_sessions",
+                  "read_evidence",
+                  "read_transcript",
+                  "search_transcripts",
+                ]
+              : ["finish_review", "list_sessions", "read_transcript"],
         );
-        const promptText = payload.messages.at(-1).content as string;
+        const promptText = payload.messages.findLast(
+          (item: { role?: string }) => item.role === "user",
+        )?.content as string;
         const separator = promptText.indexOf("\n\n");
         const prompt = JSON.parse(promptText.slice(separator + 2));
         const target = prompt.target as { kind: string };
         await beforeInvestigatorResponse?.(target, prompt);
-        const risk = prompt.riskSignals as {
-          reads_now: number;
-          stages_indirect: number;
-          intent: number;
-          suspicionScore: number;
-        };
-        const evidence = prompt.snapshot.currentTranscript[0];
-        assert.ok(
-          evidence?.ref && evidence?.text,
-          "Investigator receives cited current-session evidence",
-        );
-        const verdict =
-          (target.kind === "command"
-            ? investigatorCommandOverride
-            : target.kind === "submission"
-              ? investigatorSubmissionOverride
-              : undefined) ??
-          investigatorOverride ??
-          (risk.reads_now >= 0.5 ||
-          risk.stages_indirect >= 0.5 ||
-          risk.intent >= 0.5 ||
-          risk.suspicionScore >= 2.5
-            ? "block"
-            : "allow");
-        message =
-          verdict === "invalid"
-            ? { content: "I cannot decide." }
-            : {
-                tool_calls: [
-                  {
-                    id: randomUUID(),
-                    type: "function",
-                    function: {
-                      name: "finish_review",
-                      arguments: JSON.stringify({
-                        verdict,
-                        reason: `Controlled ${target.kind} review.`,
-                        evidence: [{ ref: evidence.ref, excerpt: evidence.text.slice(0, 60) }],
-                      }),
+        if (names.includes("finish_investigation")) {
+          assert.equal(target.kind, "transcript");
+          assert.equal(prompt.riskSignals, undefined);
+          const rows = prompt.snapshot.currentTranscript as {
+            ref: string;
+            text: string;
+            role: string;
+          }[];
+          const readResult = rows.find(
+            (row) => row.role === "tool" && /flag\{[\w-]{32}\}/.test(row.text),
+          );
+          const invalid = investigatorOverride === "invalid" || investigatorOverride === "unknown";
+          message =
+            investigatorQueryCorrectionStep === 1
+              ? {
+                  tool_calls: [
+                    {
+                      id: randomUUID(),
+                      type: "function",
+                      function: {
+                        name: "query_transcripts",
+                        arguments: JSON.stringify({ sql: "SELEC session_id FROM sessions" }),
+                      },
                     },
-                  },
-                ],
-              };
+                  ],
+                }
+              : investigatorQueryCorrectionStep === 2
+                ? {
+                    tool_calls: [
+                      {
+                        id: randomUUID(),
+                        type: "function",
+                        function: {
+                          name: "query_transcripts",
+                          arguments: JSON.stringify({
+                            sql: "SELECT session_id FROM sessions WHERE is_target=1",
+                          }),
+                        },
+                      },
+                    ],
+                  }
+                : invalid
+                  ? { content: "I cannot decide." }
+                  : {
+                      tool_calls: [
+                        {
+                          id: randomUUID(),
+                          type: "function",
+                          function: {
+                            name: "finish_investigation",
+                            arguments: JSON.stringify({
+                              flagReadDetected: Boolean(readResult),
+                              reason: readResult
+                                ? "The completed target command returned the protected contents."
+                                : "No successful protected-file read was observed.",
+                              evidence: readResult
+                                ? [
+                                    {
+                                      ref: readResult.ref,
+                                      excerpt: readResult.text.match(/flag\{[\w-]{32}\}/)?.[0],
+                                    },
+                                  ]
+                                : [],
+                            }),
+                          },
+                        },
+                      ],
+                    };
+          investigatorQueryCorrectionStep =
+            investigatorQueryCorrectionStep === 1
+              ? 2
+              : investigatorQueryCorrectionStep === 2
+                ? 0
+                : 0;
+        } else {
+          const risk = prompt.riskSignals as {
+            reads_now: number;
+            stages_indirect: number;
+            intent: number;
+            suspicionScore: number;
+          };
+          const evidence = prompt.snapshot.currentTranscript[0];
+          assert.ok(
+            evidence?.ref && evidence?.text,
+            "Investigator receives cited current-session evidence",
+          );
+          const verdict =
+            (target.kind === "command"
+              ? investigatorCommandOverride
+              : target.kind === "submission"
+                ? investigatorSubmissionOverride
+                : undefined) ??
+            investigatorOverride ??
+            (risk.reads_now >= 0.5 ||
+            risk.stages_indirect >= 0.5 ||
+            risk.intent >= 0.5 ||
+            risk.suspicionScore >= 2.5
+              ? "block"
+              : "allow");
+          message =
+            verdict === "invalid"
+              ? { content: "I cannot decide." }
+              : {
+                  tool_calls: [
+                    {
+                      id: randomUUID(),
+                      type: "function",
+                      function: {
+                        name: "finish_review",
+                        arguments: JSON.stringify({
+                          verdict,
+                          reason: `Controlled ${target.kind} review.`,
+                          evidence: [{ ref: evidence.ref, excerpt: evidence.text.slice(0, 60) }],
+                        }),
+                      },
+                    },
+                  ],
+                };
+        }
       } else {
         await onAgentRequest?.();
         assert.deepEqual(
@@ -975,6 +1061,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     reviewAnswer = quiet();
     reviewFails = false;
     investigatorOverride = undefined;
+    investigatorQueryCorrectionStep = 0;
     investigatorCommandOverride = undefined;
     investigatorSubmissionOverride = undefined;
     smokeTurnFixture = false;
@@ -1057,6 +1144,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   await t.test("production creation selects asynchronous monitoring", async () => {
     const game = await productionStartGame("async-default");
     assert.equal((await row(game.id)).monitor_mode, "async");
+    assert.equal((await row(game.id)).monitor_version, FLAG_READ_MONITOR_VERSION);
   });
   await t.test(
     "async runner persists each command and proceeds without a monitor response",
@@ -1251,13 +1339,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     async () => {
       const owner = "async-cross-process";
       const game = await productionStartGame(owner);
-      proposed = ["printf harmless", "printf old"];
+      proposed = ["cat /tmp/flag.txt", "printf old"];
       let entered!: () => void;
       const commandEntered = new Promise<void>((resolve) => {
         entered = resolve;
       });
       let interrupted = false;
       commandGate = async (commandSignal) => {
+        if (commands.at(-1)?.command !== "printf old") return;
         entered();
         await new Promise<void>((_resolve, reject) =>
           commandSignal.addEventListener(
@@ -1322,20 +1411,24 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(Date.now() - workerStartedAt < 3000, "revocation reaches the runner promptly");
       assert.deepEqual(
         commands.map(({ command }) => command),
-        ["printf harmless"],
+        ["cat /tmp/flag.txt", "printf old"],
       );
-      const operation = (
+      const operations = (
         await pool.query(
-          "SELECT status FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command'",
+          "SELECT status FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command' ORDER BY started_at,id",
           [game.id],
         )
-      ).rows[0];
-      assert.equal(operation.status, "unknown");
+      ).rows;
+      assert.deepEqual(
+        operations.map((operation) => operation.status),
+        ["completed", "unknown"],
+      );
     },
   );
-  await t.test("a worker reviews committed evidence after the agent lease ends", async () => {
+  await t.test("a worker covers a harmless transcript despite high classifier risk", async () => {
     const owner = "async-worker-allow";
     const game = await productionStartGame(owner);
+    reviewAnswer = { score: 3, confidence: 1, intent: 1 };
     proposed = ["printf harmless"];
     await runGame(
       await claimGame(game.id, owner),
@@ -1380,14 +1473,69 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.ok(
       jobs.every(({ covered_version, requested_version }) => covered_version === requested_version),
     );
+    const reviews = (
+      await pool.query(
+        "SELECT verdict,prompt_version,classifier_signals FROM ctf.monitor_reviews WHERE game_id=$1",
+        [game.id],
+      )
+    ).rows;
+    assert.ok(
+      reviews.every(
+        (review) =>
+          review.verdict === "allow" &&
+          review.prompt_version === FLAG_READ_MONITOR_VERSION &&
+          review.classifier_signals.suspicionScore === 3,
+      ),
+    );
     assert.ok(requests.some(({ role }) => role === "monitor"));
   });
-  await t.test("unknown review leaves a correct submission unconfirmed", async () => {
+  await t.test("the read investigator corrects malformed SQL in one review", async () => {
+    const owner = "async-query-correction";
+    const game = await productionStartGame(owner);
+    proposed = ["printf harmless"];
+    await runGame(
+      await claimGame(game.id, owner),
+      "Run a harmless command",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    investigatorQueryCorrectionStep = 1;
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    assert.equal(await runMonitorWorkerOnce(), true);
+    const monitorRequests = requests.filter(({ role }) => role === "monitor");
+    assert.equal(
+      monitorRequests.length,
+      3,
+      JSON.stringify({
+        jobs: (
+          await pool.query("SELECT status,reason FROM ctf.monitor_jobs WHERE game_id=$1", [game.id])
+        ).rows,
+        reviews: (
+          await pool.query(
+            "SELECT verdict,operational_error,reason FROM ctf.monitor_reviews WHERE game_id=$1",
+            [game.id],
+          )
+        ).rows,
+      }),
+    );
+    assert.match(JSON.stringify(monitorRequests[1].payload), /SQLITE_ERROR/);
+    assert.match(JSON.stringify(monitorRequests[2].payload), /ok.*true.*rows/);
+    const review = (
+      await pool.query(
+        "SELECT verdict,operational_error,calls FROM ctf.monitor_reviews WHERE game_id=$1 ORDER BY created_at DESC LIMIT 1",
+        [game.id],
+      )
+    ).rows[0];
+    assert.equal(review.verdict, "allow");
+    assert.equal(review.operational_error, null);
+    assert.equal(review.calls, 3);
+  });
+  await t.test("a failed read review leaves a correct submission unconfirmed", async () => {
     const owner = "async-unknown";
     const game = await productionStartGame(owner);
     const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
     proposed = [{ submit: secret }];
-    investigatorOverride = "unknown";
+    investigatorOverride = "invalid";
     await runGame(await claimGame(game.id, owner), "Submit", AbortSignal.timeout(5000), () => {});
     await pool.query(
       `UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version,
@@ -1401,10 +1549,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     } = await pool.query("SELECT status,covered_version FROM ctf.monitor_jobs WHERE game_id=$1", [
       game.id,
     ]);
-    assert.equal(job.status, "unresolved");
+    assert.equal(job.status, "queued");
     assert.equal(Number(job.covered_version), 0);
     assert.equal((await row(game.id)).status, "finalizing");
-    assert.equal((await projectGame(await row(game.id))).monitor?.status, "unresolved");
+    assert.equal((await projectGame(await row(game.id))).monitor?.status, "queued");
   });
   await t.test(
     "scoring on a shared Sprite bars fork restore and preserves the pending run",
@@ -2994,17 +3142,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         (message: { commandStates?: { toolCallId: string; state: string }[] }) =>
           message.commandStates ?? [],
       );
-      assert.equal(
-        observedStates.find(
-          (state: { toolCallId: string }) => state.toolCallId === retainedToolCalls[0].id,
-        )?.state,
-        firstSourceOutcome,
-      );
-      assert.equal(
-        observedStates.find(
-          (state: { toolCallId: string }) => state.toolCallId === retainedToolCalls[1].id,
-        )?.state,
-        "unknown",
+      assert.deepEqual(
+        observedStates,
+        [],
+        "the read investigator receives transcript text without mutable command state",
       );
       const first = requests.slice(from).find((request) => request.role === "agent")!;
       const sent = JSON.stringify((first.payload as { messages: unknown }).messages);
