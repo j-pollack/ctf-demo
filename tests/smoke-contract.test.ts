@@ -4,9 +4,18 @@ import {
   assertRemoteProcessDeleted,
   hasEvidencedCatch,
   hasExactSuccessfulOutput,
+  smokeReviewErrorCategory,
   smokeCommandForTurn,
   successfulCommandStdout,
 } from "../scripts/smoke-contract";
+
+test("smoke review diagnostics expose only a fixed error category", () => {
+  assert.equal(smokeReviewErrorCategory("Invalid finish_review reason."), "decision-reason");
+  assert.equal(smokeReviewErrorCategory("Duplicate evidence reference."), "duplicate-citation");
+  assert.equal(smokeReviewErrorCategory("Evidence excerpt does not match."), "citation");
+  assert.equal(smokeReviewErrorCategory("Provider request timed out."), "deadline-or-abort");
+  assert.equal(smokeReviewErrorCategory("model output: flag{private} token=secret"), "other");
+});
 
 test("controlled command selection is scoped to the latest user turn", () => {
   const resumedCatch = smokeCommandForTurn([

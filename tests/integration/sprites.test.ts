@@ -1008,6 +1008,28 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       "Unexpected fake-boundary operations must fail even if app cleanup catches them",
     ),
   );
+  const failFirstSessionTranscriptWrite = async (run: () => Promise<void>) => {
+    await pool.query("CREATE SEQUENCE ctf.test_session_write_failure_seq");
+    await pool.query(`
+      CREATE FUNCTION ctf.test_fail_first_session_write() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF nextval('ctf.test_session_write_failure_seq') = 1 THEN
+          RAISE EXCEPTION 'Injected session transcript write failure';
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await pool.query(`
+      CREATE TRIGGER test_fail_first_session_write BEFORE UPDATE ON ctf.agent_sessions
+      FOR EACH ROW WHEN (OLD.messages IS DISTINCT FROM NEW.messages)
+      EXECUTE FUNCTION ctf.test_fail_first_session_write()`);
+    try {
+      await run();
+    } finally {
+      await pool.query("DROP TRIGGER test_fail_first_session_write ON ctf.agent_sessions");
+      await pool.query("DROP FUNCTION ctf.test_fail_first_session_write()");
+      await pool.query("DROP SEQUENCE ctf.test_session_write_failure_seq");
+    }
+  };
   const row = async (id: string) => {
     const game = (await pool.query("SELECT * FROM ctf.games WHERE id=$1", [id])).rows[0];
     const session = (
@@ -1138,6 +1160,47 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       "queued",
     );
   });
+  await t.test(
+    "async persistence failure surfaces without reviewing a synthetic Pi error",
+    async () => {
+      const owner = "async-subscriber-failure";
+      const game = await productionStartGame(owner);
+      const sent: { type: string; data: unknown }[] = [];
+      const leased = await claimGame(game.id, owner);
+      await failFirstSessionTranscriptWrite(() =>
+        runGame(leased, "Run a command", AbortSignal.timeout(5000), (type, data) =>
+          sent.push({ type, data }),
+        ),
+      );
+      assert.equal(agentCalls, 0, "no agent inference follows failed transcript persistence");
+      assert.deepEqual(commands, []);
+      assert.equal(requests.filter(({ role }) => role === "monitor").length, 0);
+      assert.equal(
+        sent.filter(
+          ({ type, data }) => type === "event" && (data as { kind?: string }).kind === "error",
+        ).length,
+        1,
+        "the original subscriber failure produces one response error",
+      );
+      const saved = await getSession(game.id, game.id, owner);
+      assert.equal(
+        saved.messages.some(
+          (message) => message.role === "assistant" && message.stopReason === "error",
+        ),
+        false,
+        "Pi's synthetic assistant error is not persisted as new evidence",
+      );
+      assert.equal((await row(game.id)).lease, null);
+      proposed = [];
+      await runGame(
+        await claimGame(game.id, owner),
+        "Retry after the storage failure",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      assert.equal(agentCalls, 1, "a later valid response can run");
+    },
+  );
   await t.test("a ready finalization progresses amid unrelated queued reviews", async () => {
     const owner = "async-fair-finalization";
     const submitted = await productionStartGame(owner);
@@ -1851,6 +1914,79 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     return getGame(id, owner);
   };
 
+  await t.test(
+    "legacy subscriber failure surfaces once without reviewing Pi's synthetic error",
+    async () => {
+      const owner = "legacy-subscriber-failure";
+      const game = await startGame(owner);
+      const sent: { type: string; data: unknown }[] = [];
+      const leased = await claimGame(game.id, owner);
+      await failFirstSessionTranscriptWrite(() =>
+        runGame(leased, "Run a command", AbortSignal.timeout(5000), (type, data) =>
+          sent.push({ type, data }),
+        ),
+      );
+      assert.equal(agentCalls, 0);
+      assert.deepEqual(commands, []);
+      assert.equal(requests.filter(({ role }) => role === "monitor").length, 0);
+      assert.equal(
+        sent.filter(
+          ({ type, data }) => type === "event" && (data as { kind?: string }).kind === "error",
+        ).length,
+        1,
+      );
+      const saved = await getSession(game.id, game.id, owner);
+      assert.equal(
+        saved.messages.some(
+          (message) => message.role === "assistant" && message.stopReason === "error",
+        ),
+        false,
+      );
+      assert.equal((await row(game.id)).lease, null);
+      proposed = [];
+      await play(game.id, owner);
+      assert.equal(agentCalls, 1, "a later valid response can run");
+    },
+  );
+
+  await t.test("legacy tool event failure closes its committed transcript review", async () => {
+    const owner = "legacy-tool-event-failure";
+    const game = await startGame(owner);
+    await runGame(
+      await claimGame(game.id, owner),
+      "Run a command",
+      AbortSignal.timeout(5000),
+      (type, data) => {
+        if (type === "event" && (data as { kind?: string }).kind === "tool")
+          throw new Error("Injected tool event delivery failure");
+      },
+    );
+    assert.deepEqual(
+      commands.map(({ command }) => command),
+      ["printf harmless"],
+    );
+    const saved = await getSession(game.id, game.id, owner);
+    assert.ok(saved.messages.some((message) => message.role === "toolResult"));
+    const reviews = (
+      await pool.query(
+        "SELECT target_kind,completed_at,operational_error FROM ctf.monitor_reviews WHERE game_id=$1 ORDER BY created_at,id",
+        [game.id],
+      )
+    ).rows;
+    assert.ok(
+      reviews.every((review) => review.completed_at),
+      "no review remains pending",
+    );
+    assert.equal(
+      reviews.filter(
+        (review) => review.operational_error === "Response stopped before transcript review.",
+      ).length,
+      1,
+      "the committed tool result has an unresolved review record",
+    );
+    assert.equal((await row(game.id)).lease, null);
+  });
+
   await t.test("an evidenced transcript catch stops before attacker inference", async () => {
     const game = await startGame("user-review-barrier");
     investigatorOverride = "block";
@@ -2414,8 +2550,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const classifierRows = monitorRows.filter((entry) => entry.model === "typesafe");
     assert.equal(
       classifierRows.length,
-      5,
-      "completed transcript and partial command classifier groups persist",
+      3,
+      "only completed transcript and partial command classifier groups persist",
     );
     const failedCommand = (
       await pool.query(
@@ -2441,7 +2577,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
     assert.deepEqual(
       classifierRows.map((entry) => [entry.tokens, Number(entry.cost)]),
-      Array.from({ length: 5 }, () => [1_000_000, 42]),
+      Array.from({ length: 3 }, () => [1_000_000, 42]),
     );
     assert.ok(
       monitorRows.filter((entry) => entry.model === AGENT_MODEL).every((entry) => entry.settled_at),

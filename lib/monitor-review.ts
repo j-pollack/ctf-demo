@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Value } from "typebox/value";
 import {
   createAssistantMessageEventStream,
   InMemoryCredentialStore,
@@ -278,6 +279,9 @@ export async function runMonitorReview(input: RunMonitorReviewInput): Promise<Mo
   const retrievedRefs = new Set<string>();
   let decision: MonitorDecision | undefined;
   let failure: unknown;
+  let lastInvalidDecision: string | undefined;
+  const invalidFinishCalls = new Set<string>();
+  const finishArguments = new Map<string, unknown>();
   let investigator: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
   let calls = 0;
   const recordFailure = (error: unknown) => {
@@ -316,6 +320,11 @@ export async function runMonitorReview(input: RunMonitorReviewInput): Promise<Mo
       decision = value;
     },
     recordFailure,
+    (error, toolCallId) => {
+      invalidFinishCalls.add(toolCallId);
+      lastInvalidDecision =
+        error instanceof Error ? error.message : "Invalid finish_review arguments.";
+    },
   );
   const tools = [...retrieval.piTools, ...(committedRetrieval?.piTools ?? []), finish];
   const maxContextBytes = validateInitialContext(
@@ -344,7 +353,14 @@ export async function runMonitorReview(input: RunMonitorReviewInput): Promise<Mo
     investigator.session.agent.streamFunction = guardInvestigatorStream(stream, {
       signal,
       isStopped: () => Boolean(failure || decision),
-      onLimit: () => failAndStop(new Error("Investigator call limit reached.")),
+      onLimit: () =>
+        failAndStop(
+          new Error(
+            lastInvalidDecision
+              ? `Investigator call limit reached after ${lastInvalidDecision}`
+              : "Investigator call limit reached.",
+          ),
+        ),
       maxContextBytes,
       onContextLimit: () => failAndStop(new Error("Investigator context limit reached.")),
       admitCall: () => {
@@ -354,6 +370,10 @@ export async function runMonitorReview(input: RunMonitorReviewInput): Promise<Mo
       },
     });
     investigator.session.agent.subscribe((event) => {
+      if (event.type === "message_end" && event.message.role === "assistant")
+        for (const part of event.message.content)
+          if (part.type === "toolCall" && part.name === "finish_review")
+            finishArguments.set(part.id, part.arguments);
       if (
         event.type === "message_end" &&
         event.message.role === "assistant" &&
@@ -363,15 +383,33 @@ export async function runMonitorReview(input: RunMonitorReviewInput): Promise<Mo
         investigator?.session.agent.abort();
       }
       if (event.type === "tool_execution_end" && event.toolName === "finish_review") {
-        if (event.isError && !failure)
-          failure = new Error("Investigator finish_review tool failed.");
+        const rawArgs = finishArguments.get(event.toolCallId);
+        finishArguments.delete(event.toolCallId);
+        if (event.isError && !failure) {
+          const result = event.result as { content?: { type: string; text?: string }[] };
+          const schemaRejected =
+            rawArgs !== undefined &&
+            !Value.Check(finish.parameters, rawArgs) &&
+            !!result.content?.some(
+              (part) =>
+                part.type === "text" &&
+                part.text?.startsWith('Validation failed for tool "finish_review":'),
+            );
+          if (invalidFinishCalls.delete(event.toolCallId) || schemaRejected)
+            lastInvalidDecision ??= "Invalid finish_review arguments.";
+          else failure = new Error("Investigator finish_review tool failed.");
+        }
         if (decision || failure) investigator?.session.agent.abort();
       } else if (event.type === "tool_execution_end" && event.isError && !decision) {
         failure ??= new Error(`Investigator tool failed: ${event.toolName}.`);
         investigator?.session.agent.abort();
       }
       if (event.type === "agent_end" && !decision && !failure)
-        failure = new Error("Investigator ended without a valid finish_review decision.");
+        failure = new Error(
+          lastInvalidDecision
+            ? `Investigator ended after ${lastInvalidDecision}`
+            : "Investigator ended without a valid finish_review decision.",
+        );
     });
     if (signal.aborted)
       throw new Error(

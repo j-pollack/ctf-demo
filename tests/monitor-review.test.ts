@@ -349,6 +349,54 @@ test("invalid evidence citation fails before a decision is latched", async () =>
   }
 });
 
+test("unexpected finish validator and callback errors stay fatal", async () => {
+  const initial = makeInitialMonitorEvidence(snapshot, "session-a");
+  const cited = initial.currentTranscript[0];
+  const args = {
+    verdict: "block",
+    reason: "Protected file request.",
+    evidence: [{ ref: cited.ref, excerpt: "read /tmp/flag.txt" }],
+  };
+  const cases = [
+    {
+      visible: new (class extends Map<string, typeof cited> {
+        override get(): typeof cited {
+          throw new Error("validator exploded");
+        }
+      })([[cited.ref, cited]]),
+      finish: () => {},
+      expected: /validator exploded/,
+    },
+    {
+      visible: new Map([[cited.ref, cited]]),
+      finish: () => {
+        throw new Error("callback exploded");
+      },
+      expected: /callback exploded/,
+    },
+  ];
+  for (const scenario of cases) {
+    let fatal: unknown;
+    let recoverable: unknown;
+    const tool = createFinishReviewTool(
+      scenario.visible,
+      scenario.finish,
+      (error) => {
+        fatal = error;
+      },
+      (error) => {
+        recoverable = error;
+      },
+    );
+    await assert.rejects(
+      tool.execute("finish-internal", args as never, undefined, undefined, {} as never),
+      scenario.expected,
+    );
+    assert.match(String(fatal), scenario.expected);
+    assert.equal(recoverable, undefined);
+  }
+});
+
 test("cutoff tool arguments fail closed before execution or another model dispatch", async () => {
   let runtime: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
   let failure: unknown;

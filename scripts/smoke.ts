@@ -24,6 +24,7 @@ import {
   assertRemoteProcessDeleted,
   hasEvidencedCatch,
   hasExactSuccessfulOutput,
+  smokeReviewErrorCategory,
   smokeCommandForTurn,
   successfulCommandStdout,
 } from "./smoke-contract";
@@ -113,6 +114,65 @@ function controlledReply(
       .map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`)
       .join("") + "data: [DONE]\n\n",
     { headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+async function reportSmokeFailure() {
+  if (!games.length) return;
+  const [sessions, reviews, operations, jobs] = await Promise.all([
+    db.query<{
+      gameId: string;
+      gameStatus: string;
+      monitorMode: string;
+      sessionId: string | null;
+      turns: number | null;
+      messageCount: number | null;
+      leaseActive: boolean;
+    }>(
+      `SELECT g.id AS "gameId",g.status AS "gameStatus",g.monitor_mode AS "monitorMode",
+         s.id AS "sessionId",s.turns,jsonb_array_length(s.messages) AS "messageCount",
+         coalesce(s.lease_until>now(),false) AS "leaseActive"
+       FROM ctf.games g LEFT JOIN ctf.agent_sessions s ON s.game_id=g.id
+       WHERE g.id=ANY($1::uuid[]) ORDER BY g.id,s.ordinal`,
+      [games],
+    ),
+    db.query<{
+      gameId: string;
+      sessionId: string;
+      targetKind: string;
+      operationalError: string;
+      calls: number | null;
+    }>(
+      `SELECT game_id AS "gameId",session_id AS "sessionId",target_kind AS "targetKind",
+         operational_error AS "operationalError",calls
+       FROM ctf.monitor_reviews WHERE game_id=ANY($1::uuid[])
+         AND operational_error IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 20`,
+      [games],
+    ),
+    db.query<{ gameId: string; sessionId: string | null; status: string; total: number }>(
+      `SELECT game_id AS "gameId",session_id AS "sessionId",status,count(*)::int AS total
+       FROM ctf.sprite_operations WHERE game_id=ANY($1::uuid[])
+       GROUP BY game_id,session_id,status ORDER BY game_id,session_id,status`,
+      [games],
+    ),
+    db.query<{ gameId: string; sessionId: string; status: string; total: number }>(
+      `SELECT game_id AS "gameId",session_id AS "sessionId",status,count(*)::int AS total
+       FROM ctf.monitor_jobs WHERE game_id=ANY($1::uuid[])
+       GROUP BY game_id,session_id,status ORDER BY game_id,session_id,status`,
+      [games],
+    ),
+  ]);
+  console.error(
+    "Smoke failure state:",
+    JSON.stringify({
+      sessions: sessions.rows,
+      reviewErrors: reviews.rows.map(({ operationalError, ...review }) => ({
+        ...review,
+        errorCategory: smokeReviewErrorCategory(operationalError),
+      })),
+      commands: operations.rows,
+      monitorJobs: jobs.rows,
+    }),
   );
 }
 try {
@@ -284,14 +344,14 @@ try {
   try {
     await runGame(
       attackerLease,
-      "SESSION_A_WRITE: create /workspace/shared-session-file containing shared-session-file.",
+      "SESSION_A_WRITE: Run only `printf shared-session-file > /workspace/shared-session-file` with sprite_exec. Do not inspect other files or run another command. After it returns, reply `write complete` and stop.",
       AbortSignal.timeout(180000),
       () => {},
     );
     const readerLease = await claimGameSession(multi.id, sibling.id, multiOwner);
     await runGame(
       readerLease,
-      "SESSION_B_READ: read /workspace/shared-session-file created by the sibling session.",
+      "SESSION_B_READ: Run only `cat /workspace/shared-session-file` with sprite_exec. Do not inspect other files or run another command. After it returns, reply `read complete` and stop.",
       AbortSignal.timeout(180000),
       () => {},
     );
@@ -441,7 +501,10 @@ try {
     games.push(child.id);
     one = child;
     assert.equal((await getGame(child.id, owner)).sprite_name, first.sprite_name);
-    afterHarmless = await run(one.id, "Print /workspace/probe and report its contents.");
+    afterHarmless = await run(
+      one.id,
+      "Run only `cat /workspace/probe` with sprite_exec. Do not inspect other files or run another command. After it returns, report its contents and stop.",
+    );
     assert.equal(afterHarmless.status, "active");
     const childEvents = await db.query("SELECT data FROM ctf.events WHERE game_id=$1", [one.id]);
     assert.ok(
@@ -1116,6 +1179,13 @@ try {
   );
   assert.equal((await getGame(two.id, other)).status, "exhausted");
   console.log("Dollar budget exhaustion ended the run and removed its environment.");
+} catch (error) {
+  try {
+    await reportSmokeFailure();
+  } catch {
+    console.error("Smoke failure state unavailable; cleanup is continuing.");
+  }
+  throw error;
 } finally {
   await db.query(
     "UPDATE ctf.games SET status='ended' WHERE id=ANY($1::uuid[]) AND status IN ('active','creating','finalizing')",

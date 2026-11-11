@@ -338,12 +338,28 @@ export async function runGame(
         );
         game.execution_generation = queued.executionGeneration;
         permits.delete(message.toolCallId);
-        await emit({ kind: "tool", text, turn: game.turns });
-        await reviewTarget(
-          { kind: "transcript" },
-          { pendingReviewId: queued.reviewId },
-          queued.reviewId,
-        );
+        const closeUnreviewed = () =>
+          completeMonitorReview(queued.reviewId, {
+            operationalError: "Response stopped before transcript review.",
+          });
+        if (failure) {
+          await closeUnreviewed();
+          await emit({ kind: "tool", text, turn: game.turns });
+          return;
+        }
+        try {
+          await emit({ kind: "tool", text, turn: game.turns });
+        } catch (error) {
+          await closeUnreviewed();
+          throw error;
+        }
+        if (failure) await closeUnreviewed();
+        else
+          await reviewTarget(
+            { kind: "transcript" },
+            { pendingReviewId: queued.reviewId },
+            queued.reviewId,
+          );
         return;
       }
     }
@@ -631,13 +647,29 @@ export async function runGame(
       if (event.type === "turn_start") send("stage", (phase = "Agent thinking"));
       if (event.type !== "message_end") return;
       const message = event.message as Message;
+      if (
+        failure &&
+        !(
+          message.role === "toolResult" &&
+          message.toolName === "sprite_exec" &&
+          permits.has(message.toolCallId)
+        )
+      )
+        return;
       const truncated =
         message.role === "assistant" &&
         message.stopReason === "length" &&
         !message.content.some((part) => part.type === "toolCall");
       if (message.role === "toolResult" && message.toolName === "submit") return;
-      await persistMessage(message, truncated);
-      if (message.role === "toolResult" && game.status !== "active") session!.agent.abort();
+      try {
+        await persistMessage(message, truncated);
+        if (message.role === "toolResult" && game.status !== "active") session!.agent.abort();
+      } catch (error) {
+        failure ??= error;
+        slot.attacker.abort();
+        slot.monitors.forEach((controller) => controller.abort());
+        session!.agent.abort();
+      }
     });
     const abort = () => {
       slot.attacker.abort();

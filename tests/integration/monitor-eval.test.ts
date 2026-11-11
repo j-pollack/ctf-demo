@@ -61,6 +61,8 @@ await test(
     let requestedHistoricalTranscript = false;
     let observedHistoricalToolResult = false;
     let historicalRetrievalStage = 0;
+    const reviewPrompts: string[] = [];
+    const reviewAttempts = new Map<string, number>();
     const modelVisiblePayloads: string[] = [];
     const retrievalReply = (name: string, args: object) =>
       Response.json({
@@ -158,6 +160,10 @@ await test(
               message.content?.includes("Investigate the following exact review target."),
           )?.content;
           assert.ok(prompt, "Investigator receives the real review prompt");
+          let reviewIndex = reviewPrompts.indexOf(prompt);
+          if (reviewIndex < 0) reviewIndex = reviewPrompts.push(prompt) - 1;
+          const reviewAttempt = reviewAttempts.get(prompt) ?? 0;
+          reviewAttempts.set(prompt, reviewAttempt + 1);
           const jsonStart = prompt.indexOf("\n\n") + 2;
           const promptData = JSON.parse(prompt.slice(jsonStart)) as {
             target: { command: string };
@@ -223,6 +229,13 @@ await test(
             "Citation comes from visible transcript evidence",
           );
           investigatorCalls++;
+          if (reviewAttempt > 0 && [0, 1, 3, 4, 5, 7].includes(reviewIndex)) {
+            const feedback = request.messages.findLast((message) => message.role === "tool");
+            assert.ok(
+              feedback?.content,
+              "Pi returns invalid-decision feedback to the investigator",
+            );
+          }
 
           // Exercise the persisted unknown/held path once while leaving attack and benign verdicts
           // to the actual finish_review tool and the same reviewer orchestration used in production.
@@ -233,12 +246,37 @@ await test(
               { status: 503 },
             );
           }
+          if (reviewIndex === 5 && reviewAttempt === 1) {
+            assert.ok(request.tools.some((tool) => tool.function.name === "read_evidence"));
+            return retrievalReply("read_evidence", {
+              sessionId: "invalid-session",
+              observationRef: "invalid-observation",
+            });
+          }
+          if (reviewIndex === 7 && reviewAttempt === 1) {
+            providerFailures++;
+            return Response.json(
+              { error: { message: "Synthetic correction provider outage" } },
+              { status: 503 },
+            );
+          }
 
           const verdict = promptData.target.command.includes("daily_report.py") ? "block" : "allow";
           const argumentsJson = JSON.stringify({
             verdict,
-            reason: "Synthetic fixture verdict with a citation visible in the supplied prompt.",
-            evidence: [{ ref: visible.ref, excerpt: visible.text.slice(0, 120) }],
+            reason:
+              ((reviewIndex === 0 || reviewIndex === 7) && reviewAttempt === 0) || reviewIndex === 4
+                ? "x".repeat(401)
+                : "Synthetic fixture verdict with a citation visible in the supplied prompt.",
+            evidence:
+              (reviewIndex === 1 || reviewIndex === 5) && reviewAttempt === 0
+                ? [
+                    { ref: visible.ref, excerpt: visible.text.slice(0, 120) },
+                    { ref: visible.ref, excerpt: visible.text.slice(0, 120) },
+                  ]
+                : reviewIndex === 3 && reviewAttempt === 0
+                  ? [{ ref: visible.ref, excerpt: "not present in visible transcript" }]
+                  : [{ ref: visible.ref, excerpt: visible.text.slice(0, 120) }],
           });
           const id = `synthetic-generation-${randomUUID()}`;
           return Response.json({
@@ -287,10 +325,25 @@ await test(
       2 * monitorInvestigationCases.length,
       "Real classifier performs command and context requests per case",
     );
-    assert.equal(investigatorCalls, monitorInvestigationCases.length + 2);
+    assert.equal(
+      entries[0].verdict,
+      "block",
+      "malformed finish_review is corrected within the same review",
+    );
+    assert.equal(entries[1].verdict, "block", "duplicate citations are corrected");
+    assert.equal(entries[3].verdict, "allow", "mismatched citations are corrected");
+    assert.equal(entries[4].verdict, null, "repeated invalid decisions never approve a run");
+    assert.match(entries[4].operationalError ?? "", /call limit reached/i);
+    assert.match(entries[4].operationalError ?? "", /invalid finish_review/i);
+    assert.equal(reviewAttempts.get(reviewPrompts[4]), 8);
+    assert.equal(entries[5].verdict, null, "retrieval failure during correction stays fatal");
+    assert.match(entries[5].operationalError ?? "", /invalid|evidence|session|reference/i);
+    assert.equal(entries[7].verdict, null, "provider failure during correction stays fatal");
+    assert.match(entries[7].operationalError ?? "", /503/);
+    assert.equal(investigatorCalls, monitorInvestigationCases.length + 14);
     assert.ok(requestedHistoricalTranscript);
     assert.ok(observedHistoricalToolResult);
-    assert.equal(providerFailures, 1);
+    assert.equal(providerFailures, 2);
     assert.ok(entries.some((entry) => entry.expected === "attack" && entry.verdict === "block"));
     assert.ok(entries.some((entry) => entry.expected === "benign" && entry.verdict === "allow"));
     assert.deepEqual(
@@ -302,7 +355,7 @@ await test(
     );
     assert.equal(report.totals.uncertainCases, 2);
     assert.equal(report.totals.unknown, 0);
-    assert.equal(report.totals.errors, 1);
+    assert.equal(report.totals.errors, 4);
     assert.equal(report.totals.budgetExceeded, false);
 
     const persisted = new Pool({
@@ -322,7 +375,7 @@ await test(
         "Live corpus seeds same-owner history in a separate run",
       );
       assert.ok(owners.rows.length > 1, "Other-owner decoys remain separate principals");
-      assert.equal(modelVisiblePayloads.length, monitorInvestigationCases.length + 2);
+      assert.equal(modelVisiblePayloads.length, monitorInvestigationCases.length + 14);
       for (const payload of modelVisiblePayloads) {
         assert.doesNotMatch(
           payload,
@@ -355,8 +408,8 @@ await test(
       );
       const stored = rows.rows[0];
       assert.equal(Number(stored.reviews), monitorInvestigationCases.length);
-      assert.equal(Number(stored.settled_reviews), monitorInvestigationCases.length - 1);
-      assert.equal(Number(stored.error_reviews), 1);
+      assert.equal(Number(stored.settled_reviews), monitorInvestigationCases.length - 4);
+      assert.equal(Number(stored.error_reviews), 4);
       assert.equal(
         Number(stored.settled_classifier_calls),
         monitorInvestigationCases.length,

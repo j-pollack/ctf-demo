@@ -264,64 +264,78 @@ export async function runAsyncGame(
       if (event.type !== "message_end") return;
       const message = event.message as Message;
       if (
+        failure &&
+        !(
+          message.role === "toolResult" &&
+          message.toolName === "sprite_exec" &&
+          activeCommands.has(message.toolCallId)
+        )
+      )
+        return;
+      if (
         message.role === "system" ||
         (message.role === "toolResult" && message.toolName === "submit")
       )
         return;
-      const messages = session!.messages as Message[];
-      if (message.role === "toolResult") {
-        const dispatchId = activeCommands.get(message.toolCallId);
-        if (dispatchId) {
-          const output = textOf(message);
-          const completed = await completeAsyncCommand({
-            dispatchId,
-            gameId: game.id,
-            sessionId,
-            messages,
-            outcome: message.isError ? "unknown" : "completed",
-            output,
-          });
-          activeCommands.delete(message.toolCallId);
-          send("event", completed.event);
-          await emitBilling();
-          return;
+      try {
+        const messages = session!.messages as Message[];
+        if (message.role === "toolResult") {
+          const dispatchId = activeCommands.get(message.toolCallId);
+          if (dispatchId) {
+            const output = textOf(message);
+            const completed = await completeAsyncCommand({
+              dispatchId,
+              gameId: game.id,
+              sessionId,
+              messages,
+              outcome: message.isError ? "unknown" : "completed",
+              output,
+            });
+            activeCommands.delete(message.toolCallId);
+            send("event", completed.event);
+            await emitBilling();
+            return;
+          }
         }
-      }
-      if (game.status !== "active") return;
-      const turnsDelta =
-        message.role === "assistant" &&
-        message.stopReason !== "error" &&
-        message.stopReason !== "aborted"
-          ? 1
-          : 0;
-      await persistReviewedSessionMessages(
-        game.id,
-        sessionId,
-        lease,
-        messages,
-        turnsDelta,
-        generation,
-      );
-      if (turnsDelta) game.turns++;
-      if (message.role === "user") await emit({ kind: "user", text: textOf(message), checkpoint });
-      if (message.role === "assistant" && turnsDelta) {
-        const commands = message.content.flatMap((part) =>
-          part.type === "toolCall" && part.name === "sprite_exec"
-            ? [String(part.arguments.command ?? "")]
-            : [],
+        if (game.status !== "active") return;
+        const turnsDelta =
+          message.role === "assistant" &&
+          message.stopReason !== "error" &&
+          message.stopReason !== "aborted"
+            ? 1
+            : 0;
+        await persistReviewedSessionMessages(
+          game.id,
+          sessionId,
+          lease,
+          messages,
+          turnsDelta,
+          generation,
         );
-        await emit({
-          kind: "agent",
-          text: textOf(message),
-          reasoning: reasoningOf(message),
-          command: commands.join("\n") || undefined,
-          ...(commands.length && { commands }),
-          turn: game.turns,
-          model: message.model,
-        });
+        if (turnsDelta) game.turns++;
+        if (message.role === "user")
+          await emit({ kind: "user", text: textOf(message), checkpoint });
+        if (message.role === "assistant" && turnsDelta) {
+          const commands = message.content.flatMap((part) =>
+            part.type === "toolCall" && part.name === "sprite_exec"
+              ? [String(part.arguments.command ?? "")]
+              : [],
+          );
+          await emit({
+            kind: "agent",
+            text: textOf(message),
+            reasoning: reasoningOf(message),
+            command: commands.join("\n") || undefined,
+            ...(commands.length && { commands }),
+            turn: game.turns,
+            model: message.model,
+          });
+        }
+        if (message.role === "toolResult")
+          await emit({ kind: "tool", text: textOf(message), turn: game.turns });
+      } catch (error) {
+        abort(error);
       }
-      if (message.role === "toolResult")
-        await emit({ kind: "tool", text: textOf(message), turn: game.turns });
     });
     if (signal.aborted) throw new Error("Response stopped.");
     await assertLease(game);
