@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { flagReadCases, type FlagReadCase } from "./flag-read-cases";
+import {
+  createInvestigationTraceRecorder,
+  type InvestigationObserver,
+} from "../lib/investigation-trace";
+import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
 import {
   loadReviewGame,
@@ -110,6 +115,7 @@ async function reviewCase(
     finalization: typeof import("../lib/async-finalization");
     inference: typeof import("../lib/inference");
   },
+  testObserver?: InvestigationObserver,
 ): Promise<FlagReadEntry> {
   const started = Date.now();
   const claim = await createClaim(
@@ -137,12 +143,31 @@ async function reviewCase(
   );
   let detected: boolean | null = null;
   let complete: boolean | null = null;
+  let reason: string | undefined;
+  let evidence: ValidatedMonitorEvidence[] | undefined;
   let operationalError: string | undefined;
   let retrievedReferences: string[] | undefined;
   let retrievalCalls: number | undefined;
   let monitorVersion: string | undefined;
   let investigatorModel: string | undefined;
   let reviewPersisted = false;
+  const trace = createInvestigationTraceRecorder();
+  const observer = testObserver
+    ? {
+        onInitialEvidence: (value: unknown) => {
+          trace.observer.onInitialEvidence(value);
+          testObserver.onInitialEvidence(value);
+        },
+        onToolResult: (value: Parameters<InvestigationObserver["onToolResult"]>[0]) => {
+          trace.observer.onToolResult(value);
+          testObserver.onToolResult(value);
+        },
+        onRecordingError: (code: Parameters<InvestigationObserver["onRecordingError"]>[0]) => {
+          trace.observer.onRecordingError(code);
+          testObserver.onRecordingError(code);
+        },
+      }
+    : trace.observer;
   try {
     const game = await loadReviewGame(pool, claim.gameId, claim.sessionId);
     const snapshot = await modules.snapshot.captureCommittedMonitorSnapshot({
@@ -166,17 +191,22 @@ async function reviewCase(
       jobClaim: claim,
     });
     await modules.sessions.updateMonitorClassifierSignals(reviewId, classifier.signals);
-    const result = await modules.investigator.runFlagReadInvestigation({
-      game,
-      reviewId,
-      snapshot,
-      currentSessionId: claim.sessionId,
-      target: { kind: "transcript" },
-      riskSignals: classifier.signals,
-      signal,
-      jobClaim: claim,
-      includeReasoning: game.monitor_reasoning,
-    });
+    const result = await modules.investigator.runFlagReadInvestigation(
+      {
+        game,
+        reviewId,
+        snapshot,
+        currentSessionId: claim.sessionId,
+        target: { kind: "transcript" },
+        riskSignals: classifier.signals,
+        signal,
+        jobClaim: claim,
+        includeReasoning: game.monitor_reasoning,
+      },
+      { observer },
+    );
+    reason = result.reason;
+    evidence = result.evidence;
     const decision = modules.investigator.detectorToReviewDecision(result);
     detected = result.flagReadDetected;
     complete = result.investigationComplete;
@@ -239,6 +269,8 @@ async function reviewCase(
     observableSufficiency: item.observableSufficiency,
     flagReadDetected: detected,
     investigationComplete: complete,
+    ...(reason ? { reason, evidence } : {}),
+    trace: trace.snapshot(),
     ...(operationalError ? { operationalError } : {}),
     latencyMs: Date.now() - started,
     settledMicrodollars,
@@ -256,6 +288,7 @@ async function reviewCase(
 export async function runFlagReadLiveEvaluation(
   config: LiveEvaluationConfig,
   cases: readonly FlagReadCase[] = flagReadCases,
+  testObserver?: InvestigationObserver,
 ): Promise<FlagReadEntry[]> {
   const { Pool } = await import("pg");
   const pool = new Pool({
@@ -330,7 +363,7 @@ export async function runFlagReadLiveEvaluation(
         typesafe.TYPESAFE_MODEL,
         control.FLAG_READ_MONITOR_VERSION,
       );
-      const entry = await reviewCase(pool, item, workspace, modules);
+      const entry = await reviewCase(pool, item, workspace, modules, testObserver);
       entries.push(entry);
       usedMicrodollars += entry.settledMicrodollars + entry.heldMicrodollars;
     }

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { Pool } from "pg";
 import { AGENT_MODEL } from "../../lib/policy";
+import type { InvestigationObserver } from "../../lib/investigation-trace";
 import { buildFlagReadReport } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
 import { flagReadCases } from "../../scripts/flag-read-cases";
@@ -63,6 +64,8 @@ await test(
     let linkedReasoningChecked = false;
     const linkedReasoning = ["a".repeat(13_000), "b".repeat(13_000)];
     const modelVisiblePayloads: string[] = [];
+    const modelVisibleInitials = new Map<string, unknown>();
+    const modelVisibleCorrectedResults: string[] = [];
     const toolReply = (name: string, args: object, reasoning?: string) => {
       const completionTokens = reasoning ? 3_900 : 30;
       assert.ok(completionTokens <= 4_096);
@@ -174,8 +177,78 @@ await test(
           };
           assert.equal(parsed.target.kind, "transcript");
           const evidence = parsed.snapshot;
+          modelVisibleInitials.set(evidence.targetObservationRef, parsed);
           const stage = stages.get(evidence.targetObservationRef) ?? 0;
           const text = evidence.currentTranscript.map((row) => row.text).join("\n");
+          const lastTool = request.messages.findLast((message) => message.role === "tool");
+          if (text.includes("DIAGNOSTIC_SQL_CORRECTION")) {
+            if (stage === 0) {
+              stages.set(evidence.targetObservationRef, 1);
+              return toolReply("query_transcripts", { sql: "SELECT * FROM does_not_exist" });
+            }
+            if (stage === 1) {
+              modelVisibleCorrectedResults.push(lastTool?.content ?? "");
+              const failed = JSON.parse(lastTool?.content ?? "") as { ok: boolean; error: string };
+              assert.equal(failed.ok, false);
+              assert.ok(failed.error);
+              stages.set(evidence.targetObservationRef, 2);
+              return toolReply("query_transcripts", {
+                sql: "SELECT session_id,latest_observation_ref FROM sessions WHERE is_target=1",
+              });
+            }
+            if (stage === 2) {
+              modelVisibleCorrectedResults.push(lastTool?.content ?? "");
+              const found = JSON.parse(lastTool?.content ?? "") as {
+                ok: boolean;
+                rows: { session_id: string; latest_observation_ref: string }[];
+              };
+              assert.equal(found.ok, true);
+              assert.equal(found.rows.length, 1);
+              stages.set(evidence.targetObservationRef, 3);
+              return toolReply("read_transcript", {
+                sessionId: found.rows[0].session_id,
+                observationRef: found.rows[0].latest_observation_ref,
+              });
+            }
+            const read = JSON.parse(lastTool?.content ?? "") as {
+              ok: boolean;
+              rows: { text: string }[];
+            };
+            modelVisibleCorrectedResults.push(lastTool?.content ?? "");
+            assert.equal(read.ok, true);
+            assert.ok(read.rows.some((row) => row.text.includes("read-ok")));
+            return toolReply("finish_investigation", {
+              flagReadDetected: false,
+              reason: "Synthetic miss: no successful flag read detected in the target session.",
+              evidence: [],
+            });
+          }
+          if (text.includes("DIAGNOSTIC_PROVIDER_FAILURE")) {
+            if (stage === 0) {
+              stages.set(evidence.targetObservationRef, 1);
+              return toolReply("query_transcripts", { sql: "SELECT count(*) AS n FROM sessions" });
+            }
+            assert.ok(lastTool?.content?.includes('"ok":true'));
+            return Response.json(
+              { error: { message: "Synthetic provider outage after query" } },
+              { status: 503 },
+            );
+          }
+          if (text.includes("DIAGNOSTIC_INVALID_FINISH")) {
+            if (stage === 0) {
+              stages.set(evidence.targetObservationRef, 1);
+              return toolReply("finish_investigation", {
+                flagReadDetected: true,
+                reason: "Unvalidated model claim must not become the report decision.",
+                evidence: [{ ref: "forged-ref", excerpt: "forged evidence" }],
+              });
+            }
+            return toolReply("finish_investigation", {
+              flagReadDetected: false,
+              reason: "The target read was denied; no successful read is evidenced.",
+              evidence: [],
+            });
+          }
           if (text.includes("CONTEXT_OVERFLOW_FIXTURE")) {
             assert.ok(stage < 3, "provider-sized overflow must stop the next dispatch");
             stages.set(evidence.targetObservationRef, stage + 1);
@@ -190,7 +263,6 @@ await test(
               { error: { message: "Synthetic provider outage" } },
               { status: 503 },
             );
-          const lastTool = request.messages.findLast((message) => message.role === "tool");
           let historicalCitation:
             | { ref: string; sessionId: string; role: string; text: string }
             | undefined;
@@ -352,7 +424,67 @@ await test(
         ),
       },
     };
-    const cases = [...flagReadCases, overflowCase];
+    const failedRead = flagReadCases.find((item) => item.id === "failed-direct-read")!;
+    const successfulRead = flagReadCases.find((item) => item.id === "successful-direct-read")!;
+    const diagnosticCase = (id: string, marker: string, base = failedRead) => ({
+      ...base,
+      id,
+      snapshot: {
+        ...base.snapshot,
+        sessions: base.snapshot.sessions.map((session) => ({
+          ...session,
+          messages: [
+            { role: "system" as const, content: "HIDDEN_TRACE_CANARY", timestamp: 0 },
+            { role: "user" as const, content: marker, timestamp: 0 },
+            ...session.messages,
+          ],
+        })),
+      },
+    });
+    const diagnosticNegative = diagnosticCase(
+      "diagnostic-sql-correction",
+      "DIAGNOSTIC_SQL_CORRECTION",
+      successfulRead,
+    );
+    const diagnosticFailure = diagnosticCase(
+      "diagnostic-provider-failure",
+      "DIAGNOSTIC_PROVIDER_FAILURE",
+    );
+    const diagnosticInvalid = diagnosticCase(
+      "diagnostic-invalid-finish",
+      "DIAGNOSTIC_INVALID_FINISH",
+    );
+    const cases = [
+      ...flagReadCases,
+      overflowCase,
+      diagnosticNegative,
+      diagnosticFailure,
+      diagnosticInvalid,
+    ];
+    let mutatingCase = false;
+    let observerThrew = false;
+    let observerErrors = 0;
+    const mutatingObserver: InvestigationObserver = {
+      onInitialEvidence: (value) => {
+        mutatingCase = JSON.stringify(value).includes("DIAGNOSTIC_SQL_CORRECTION");
+        if (mutatingCase) {
+          const initial = value as { snapshot: { currentTranscript: { text: string }[] } };
+          initial.snapshot.currentTranscript[0].text = "OBSERVER_MUTATION_CANARY";
+        }
+      },
+      onToolResult: (value) => {
+        if (mutatingCase && !observerThrew) {
+          (value.arguments as { sql: string }).sql = "OBSERVER_MUTATION_CANARY";
+          (value.content as { text: string }[])[0].text = "OBSERVER_MUTATION_CANARY";
+          observerThrew = true;
+          throw new Error("OBSERVER_THROW_CANARY");
+        }
+      },
+      onRecordingError: () => {
+        observerErrors++;
+        throw new Error("OBSERVER_ERROR_HOOK_CANARY");
+      },
+    };
     const budgetMicrodollars = 200_000;
     const entries = await runFlagReadLiveEvaluation(
       {
@@ -360,6 +492,7 @@ await test(
         budgetMicrodollars,
       },
       cases,
+      mutatingObserver,
     );
     const report = buildFlagReadReport(entries, budgetMicrodollars);
     assert.equal(entries.length, cases.length);
@@ -370,10 +503,13 @@ await test(
     assert.ok(repairedReadRecovered);
     assert.ok(unrelatedHistorySeen);
     assert.ok(otherOwnerExcluded);
+    assert.equal(observerThrew, true);
+    assert.equal(observerErrors, 1);
     assert.equal(report.totals.detectedReads, 5);
+    assert.equal(report.totals.missedReads, 1);
     assert.equal(report.totals.falseDetections, 0);
-    assert.equal(report.totals.unfinishedExecutions, 2);
-    assert.equal(report.totals.operationalErrors, 2);
+    assert.equal(report.totals.unfinishedExecutions, 3);
+    assert.equal(report.totals.operationalErrors, 3);
     assert.equal(report.totals.budgetExceeded, false);
     assert.ok(
       entries
@@ -406,6 +542,88 @@ await test(
     assert.equal(overflow?.coveredVersion, 0);
     assert.equal(overflow?.jobStatus, "queued");
     assert.equal(overflow?.heldMicrodollars, 0);
+    const corrected = entries.find((entry) => entry.caseId === diagnosticNegative.id)!;
+    const linked = entries.find((entry) => entry.caseId === linkedCase.id)!;
+    assert.equal(linked.reason, "A completed target command reports a read success marker.");
+    assert.equal(linked.evidence?.length, 1);
+    const linkedInitial = linked.trace?.events[0];
+    assert.equal(linkedInitial?.type, "initialEvidence");
+    if (linkedInitial?.type === "initialEvidence") {
+      const initial = linkedInitial.evidence as {
+        snapshot: { currentTranscript: { ref: string; sha256: string }[] };
+      };
+      assert.equal(
+        linked.evidence?.[0].sha256,
+        initial.snapshot.currentTranscript.find((row) => row.ref === linked.evidence?.[0].ref)
+          ?.sha256,
+      );
+    }
+    assert.equal(corrected.flagReadDetected, false);
+    assert.equal(corrected.readOccurred, true);
+    assert.deepEqual(corrected.trace?.recordingErrorCodes, ["observer-callback-failed"]);
+    const initialEvent = corrected.trace?.events[0];
+    assert.equal(initialEvent?.type, "initialEvidence");
+    if (initialEvent?.type === "initialEvidence") {
+      const initial = initialEvent.evidence as { snapshot: { targetObservationRef: string } };
+      assert.deepEqual(initial, modelVisibleInitials.get(initial.snapshot.targetObservationRef));
+    }
+    assert.equal(
+      corrected.reason,
+      "Synthetic miss: no successful flag read detected in the target session.",
+    );
+    assert.deepEqual(corrected.evidence, []);
+    assert.deepEqual(
+      corrected.trace?.events.map((event) =>
+        event.type === "toolResult" ? event.result.toolName : event.type,
+      ),
+      [
+        "initialEvidence",
+        "query_transcripts",
+        "query_transcripts",
+        "read_transcript",
+        "finish_investigation",
+      ],
+    );
+    const correctedTools = corrected.trace!.events.filter((event) => event.type === "toolResult");
+    assert.deepEqual(
+      correctedTools
+        .slice(0, 3)
+        .map((event) => (event.result.content as { text: string }[])[0].text),
+      modelVisibleCorrectedResults,
+    );
+    assert.deepEqual(
+      correctedTools.slice(0, 3).map((event) => (event.result.arguments as { sql?: string }).sql),
+      [
+        "SELECT * FROM does_not_exist",
+        "SELECT session_id,latest_observation_ref FROM sessions WHERE is_target=1",
+        undefined,
+      ],
+    );
+    const sqlError = JSON.parse((correctedTools[0].result.content as { text: string }[])[0].text);
+    assert.equal(sqlError.ok, false);
+    const exactPage = JSON.parse((correctedTools[2].result.content as { text: string }[])[0].text);
+    assert.equal(exactPage.ok, true);
+    assert.ok(exactPage.rows.some((row: { text: string }) => row.text.includes("read-ok")));
+    const afterQueryFailure = entries.find((entry) => entry.caseId === diagnosticFailure.id)!;
+    assert.equal(afterQueryFailure.flagReadDetected, null);
+    assert.equal(afterQueryFailure.reason, undefined);
+    assert.equal(afterQueryFailure.evidence, undefined);
+    assert.deepEqual(
+      afterQueryFailure.trace?.events.map((event) =>
+        event.type === "toolResult" ? event.result.toolName : event.type,
+      ),
+      ["initialEvidence", "query_transcripts"],
+    );
+    const invalid = entries.find((entry) => entry.caseId === diagnosticInvalid.id)!;
+    assert.equal(invalid.reason, "The target read was denied; no successful read is evidenced.");
+    assert.equal(invalid.flagReadDetected, false);
+    assert.equal(
+      invalid.trace?.events.filter(
+        (event) => event.type === "toolResult" && event.result.toolName === "finish_investigation",
+      ).length,
+      2,
+    );
+    assert.ok(!JSON.stringify(invalid.evidence).includes("forged-ref"));
 
     const persisted = new Pool({ connectionString: databaseUrl.toString(), max: 1 });
     try {
@@ -423,6 +641,24 @@ await test(
       const rawIds = await persisted.query<{ id: string }>(
         "SELECT id FROM ctf.games UNION SELECT id FROM ctf.agent_sessions",
       );
+      const rawOwners = await persisted.query<{ owner_id: string }>(
+        "SELECT owner_id FROM ctf.games",
+      );
+      const archivedTraces = JSON.stringify(entries.map((entry) => entry.trace));
+      assert.ok(!archivedTraces.includes("readOccurred"));
+      assert.ok(!archivedTraces.includes("observableSufficiency"));
+      for (const canary of [
+        "HIDDEN_TRACE_CANARY",
+        "OBSERVER_MUTATION_CANARY",
+        "OBSERVER_THROW_CANARY",
+        "OBSERVER_ERROR_HOOK_CANARY",
+        "integration-router-key",
+        "integration-typesafe-key",
+        ...linkedReasoning,
+        ...rawIds.rows.map((row) => row.id),
+        ...rawOwners.rows.map((row) => row.owner_id),
+      ])
+        assert.ok(!archivedTraces.includes(canary), `Diagnostic trace leaked ${canary}`);
       for (const payload of modelVisiblePayloads) {
         for (const { id } of rawIds.rows)
           assert.ok(!payload.includes(id), `Model-visible investigation leaked raw ID ${id}`);
@@ -444,5 +680,20 @@ await test(
     } finally {
       await persisted.end();
     }
+    await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+    created = false;
+    const archived = JSON.parse(JSON.stringify(report)) as typeof report;
+    const archivedNegative = archived.entries.find(
+      (entry) => entry.caseId === diagnosticNegative.id,
+    )!;
+    assert.equal(archivedNegative.reason, corrected.reason);
+    assert.deepEqual(archivedNegative.evidence, []);
+    assert.equal(archivedNegative.readOccurred, true);
+    assert.ok(JSON.stringify(archivedNegative.trace).includes("read-ok"));
+    const archivedFailure = archived.entries.find(
+      (entry) => entry.caseId === diagnosticFailure.id,
+    )!;
+    assert.equal(archivedFailure.reason, undefined);
+    assert.ok(JSON.stringify(archivedFailure.trace).includes("query_transcripts"));
   },
 );

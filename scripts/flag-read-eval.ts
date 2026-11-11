@@ -1,6 +1,8 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { flagReadCases } from "./flag-read-cases";
+import type { InvestigationTrace } from "../lib/investigation-trace";
+import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
 import {
   parseArguments,
   validateLiveConfig,
@@ -18,6 +20,9 @@ export type FlagReadEntry = {
   observableSufficiency: "sufficient" | "ambiguous";
   flagReadDetected: boolean | null;
   investigationComplete: boolean | null;
+  reason?: string;
+  evidence?: ValidatedMonitorEvidence[];
+  trace?: InvestigationTrace;
   operationalError?: string;
   latencyMs: number | null;
   settledMicrodollars: number;

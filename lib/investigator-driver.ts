@@ -25,6 +25,7 @@ import {
   type TrustedInferenceOptions,
 } from "./inference";
 import { INVESTIGATOR_SYSTEM_PROMPT, MONITOR_OUTPUT_TOKENS } from "./monitor-evidence";
+import { notifyInvestigationObserver, type InvestigationObserver } from "./investigation-trace";
 import type { RunMonitorReviewInput } from "./monitor-review";
 
 export const MONITOR_CALL_LIMIT = 8;
@@ -167,6 +168,7 @@ export async function runInvestigatorDriver<T>(
   config: {
     systemPrompt: string;
     finishName: string;
+    observer?: InvestigationObserver;
     recoverToolSchemaErrors?: boolean;
     prepare: (context: {
       model: Model<"openai-completions">;
@@ -283,6 +285,18 @@ export async function runInvestigatorDriver<T>(
         event.message.stopReason === "length"
       )
         recordFailure(new Error("Investigator output reached its token limit."));
+      if (
+        event.type === "tool_execution_end" &&
+        config.observer &&
+        setup?.tools.some((tool) => tool.name === event.toolName)
+      )
+        notifyInvestigationObserver(config.observer, "onToolResult", {
+          toolName: event.toolName,
+          toolCallId: event.toolCallId,
+          arguments: toolArguments.get(event.toolCallId),
+          isError: event.isError,
+          content: event.result.content,
+        });
       if (event.type === "tool_execution_end" && event.toolName === config.finishName) {
         const rawArgs = toolArguments.get(event.toolCallId);
         toolArguments.delete(event.toolCallId);
