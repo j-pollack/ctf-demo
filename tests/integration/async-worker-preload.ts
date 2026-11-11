@@ -85,8 +85,7 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
       row.role === "tool" && /flag\{[\w-]{32}\}/.test(row.text),
   );
   assert.ok(item?.ref && item?.text, "A completed read result reaches the worker");
-  const excerpt = item.text.match(/flag\{[\w-]{32}\}/)?.[0];
-  assert.ok(excerpt);
+  assert.match(item.text, /flag\{[\w-]{32}\}/);
   const message = {
     tool_calls: [
       {
@@ -97,7 +96,7 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
           arguments: JSON.stringify({
             flagReadDetected: true,
             reason: "The completed target command returned the protected contents.",
-            evidence: [{ ref: item.ref, excerpt }],
+            evidence: [{ ref: item.ref }],
           }),
         },
       },

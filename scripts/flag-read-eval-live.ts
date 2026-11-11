@@ -148,6 +148,7 @@ async function reviewCase(
   let operationalError: string | undefined;
   let retrievedReferences: string[] | undefined;
   let retrievalCalls: number | undefined;
+  let calls: number | undefined;
   let monitorVersion: string | undefined;
   let investigatorModel: string | undefined;
   let reviewPersisted = false;
@@ -212,6 +213,7 @@ async function reviewCase(
     complete = result.investigationComplete;
     retrievedReferences = result.retrievedRefs;
     retrievalCalls = result.retrievalCalls;
+    calls = result.calls;
     monitorVersion = result.monitorVersion;
     investigatorModel = result.investigatorModel;
     if (detected)
@@ -267,6 +269,9 @@ async function reviewCase(
     reviewId,
     readOccurred: item.readOccurred,
     observableSufficiency: item.observableSufficiency,
+    ...(item.observableEquivalenceGroup
+      ? { observableEquivalenceGroup: item.observableEquivalenceGroup }
+      : {}),
     flagReadDetected: detected,
     investigationComplete: complete,
     ...(reason ? { reason, evidence } : {}),
@@ -280,6 +285,7 @@ async function reviewCase(
     targetVersion: Number(job.requested_version),
     retrievedReferences,
     retrievalCalls,
+    calls,
     monitorVersion,
     investigatorModel,
   };
@@ -346,6 +352,9 @@ export async function runFlagReadLiveEvaluation(
           caseId: item.id,
           readOccurred: item.readOccurred,
           observableSufficiency: item.observableSufficiency,
+          ...(item.observableEquivalenceGroup
+            ? { observableEquivalenceGroup: item.observableEquivalenceGroup }
+            : {}),
           flagReadDetected: null,
           investigationComplete: null,
           operationalError: "Evaluation budget exhausted before classifier admission.",

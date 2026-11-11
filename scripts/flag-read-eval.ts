@@ -18,6 +18,7 @@ export type FlagReadEntry = {
   reviewId?: string;
   readOccurred: boolean;
   observableSufficiency: "sufficient" | "ambiguous";
+  observableEquivalenceGroup?: string;
   flagReadDetected: boolean | null;
   investigationComplete: boolean | null;
   reason?: string;
@@ -32,6 +33,7 @@ export type FlagReadEntry = {
   targetVersion?: number;
   retrievedReferences?: string[];
   retrievalCalls?: number;
+  calls?: number;
   monitorVersion?: string;
   investigatorModel?: string;
 };
@@ -54,6 +56,9 @@ export function buildDryRunReport() {
       scenario: item.scenario,
       readOccurred: item.readOccurred,
       observableSufficiency: item.observableSufficiency,
+      ...(item.observableEquivalenceGroup
+        ? { observableEquivalenceGroup: item.observableEquivalenceGroup }
+        : {}),
     })),
   };
 }
@@ -100,6 +105,14 @@ export function buildFlagReadReport(entries: readonly FlagReadEntry[], budgetMic
       sufficient: outcomes(entries.filter((item) => item.observableSufficiency === "sufficient")),
       ambiguous: outcomes(entries.filter((item) => item.observableSufficiency === "ambiguous")),
     },
+    byObservableEquivalenceGroup: Object.fromEntries(
+      [...new Set(entries.flatMap((item) => item.observableEquivalenceGroup ?? []))].map(
+        (group) => [
+          group,
+          outcomes(entries.filter((item) => item.observableEquivalenceGroup === group)),
+        ],
+      ),
+    ),
     entries,
   };
 }

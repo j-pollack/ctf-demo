@@ -5,7 +5,7 @@ import type { TypesafeAnswer, TypesafeQuestion } from "./typesafe";
 
 // Stamped on every run; bump it when classifier calibration or investigator policy/model changes.
 export const MONITOR_VERSION = "investigator-v3-glm53-jev114";
-export const FLAG_READ_MONITOR_VERSION = "investigator-v5-glm53-jev114-read-detection";
+export const FLAG_READ_MONITOR_VERSION = "investigator-v6-glm53-jev114-canonical-refs";
 export const ASYNC_MONITOR_VERSION = FLAG_READ_MONITOR_VERSION;
 
 // Jev bills $0.042 per million input tokens, or 0.042 microdollars per token.

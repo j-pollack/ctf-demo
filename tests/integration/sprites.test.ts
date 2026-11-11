@@ -802,6 +802,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         if (names.includes("finish_investigation")) {
           assert.equal(target.kind, "transcript");
           assert.equal(prompt.riskSignals, undefined);
+          const finish = payload.tools.find(
+            (tool: { function: { name: string } }) => tool.function.name === "finish_investigation",
+          );
+          assert.deepEqual(
+            Object.keys(finish.function.parameters.properties.evidence.items.properties),
+            ["ref"],
+          );
           const rows = prompt.snapshot.currentTranscript as {
             ref: string;
             text: string;
@@ -854,14 +861,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
                               reason: readResult
                                 ? "The completed target command returned the protected contents."
                                 : "No successful protected-file read was observed.",
-                              evidence: readResult
-                                ? [
-                                    {
-                                      ref: readResult.ref,
-                                      excerpt: readResult.text.match(/flag\{[\w-]{32}\}/)?.[0],
-                                    },
-                                  ]
-                                : [],
+                              evidence: readResult ? [{ ref: readResult.ref }] : [],
                             }),
                           },
                         },
@@ -1431,6 +1431,20 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         operations.map((operation) => operation.status),
         ["completed", "unknown"],
       );
+      const reviews = (
+        await pool.query(
+          "SELECT evidence FROM ctf.monitor_reviews WHERE game_id=$1 AND verdict='block'",
+          [game.id],
+        )
+      ).rows;
+      assert.equal(reviews.length, 1);
+      const citation = reviews[0].evidence[0] as { ref: string; excerpt: string; sha256: string };
+      assert.match(citation.ref, /^msg:/);
+      assert.ok(
+        citation.excerpt.includes(environments.get((await row(game.id)).sprite_name)!.secret!),
+      );
+      assert.ok(citation.excerpt.length > 38, "the worker stores the complete canonical chunk");
+      assert.match(citation.sha256, /^[0-9a-f]{64}$/);
     },
   );
   await t.test("a worker covers a harmless transcript despite high classifier risk", async () => {

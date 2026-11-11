@@ -996,9 +996,7 @@ try {
                 reason: detectionRun
                   ? "Controlled finding from completed flag-read output."
                   : "Controlled completed investigation without a detected read.",
-                evidence: detectionRun
-                  ? [{ ref: citation!.ref, excerpt: citation!.text.slice(0, 60) }]
-                  : [],
+                evidence: detectionRun ? [{ ref: citation!.ref }] : [],
               }),
             },
           },
