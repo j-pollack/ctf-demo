@@ -135,7 +135,7 @@ async function reviewCase(
       claim.gameId,
       claim.sessionId,
       item.snapshot.revision,
-      modules.policy.AGENT_MODEL,
+      modules.policy.INVESTIGATOR_MODEL,
       modules.control.FLAG_READ_MONITOR_VERSION,
       claim.jobId,
       claim.claimToken,

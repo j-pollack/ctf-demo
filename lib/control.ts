@@ -4,14 +4,12 @@ import type { TypesafeAnswer, TypesafeQuestion } from "./typesafe";
 // `scripts/monitor-calibrate.ts` after changing any question, weight or threshold below.
 
 // Stamped on every run; bump it when classifier calibration or investigator policy/model changes.
-export const MONITOR_VERSION = "investigator-v2";
-export const FLAG_READ_MONITOR_VERSION = "investigator-v4-read-detection";
+export const MONITOR_VERSION = "investigator-v3-glm53-jev114";
+export const FLAG_READ_MONITOR_VERSION = "investigator-v5-glm53-jev114-read-detection";
 export const ASYNC_MONITOR_VERSION = FLAG_READ_MONITOR_VERSION;
 
-// Jev bills per input token at $0.042 per 1e6 tokens = 0.000042 microdollars/token. A small call is
-// a few hundred tokens, so cost is well under 1 microdollar: Stage 2 must accumulate fractional cost
-// (sum inputTokens × this) or a per-call charge will round to 0.
-export const MONITOR_TOKEN_MICRODOLLARS = 0.000042;
+// Jev bills $0.042 per million input tokens, or 0.042 microdollars per token.
+export const MONITOR_TOKEN_MICRODOLLARS = 0.042;
 
 // Score criteria are ordered level descriptions; position is the level, starting at 0. Four levels →
 // scores 0..3, so normalize the expectation by MONITOR_SCORE_MAX.

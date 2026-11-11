@@ -126,8 +126,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const game = await productionStartGame(...args);
     const reasoning = args[2]?.monitorReasoning;
     await pool.query(
-      "UPDATE ctf.games SET monitor_mode='legacy',monitor_version='investigator-v2',monitor_reasoning=coalesce($2,monitor_reasoning) WHERE id=$1",
-      [game.id, reasoning ?? null],
+      "UPDATE ctf.games SET monitor_mode='legacy',monitor_version=$2,monitor_reasoning=coalesce($3,monitor_reasoning) WHERE id=$1",
+      [game.id, MONITOR_VERSION, reasoning ?? null],
     );
     return {
       ...game,
@@ -329,7 +329,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const { executeCommand, destroyEnvironment, operationTimeout } =
     await import("../../lib/sprites");
   const { runGame } = await import("../../lib/runner");
-  const { AGENT_MODEL, AGENT_PROMPT, MODELS, agentPrompt, hasSecret } =
+  const { AGENT_MODEL, AGENT_PROMPT, INVESTIGATOR_MODEL, MODELS, agentPrompt, hasSecret } =
     await import("../../lib/policy");
   const {
     CONTROL_DIFFICULTY,
@@ -386,7 +386,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let investigatorCommandOverride: "allow" | "block" | "unknown" | "invalid" | undefined;
   let investigatorSubmissionOverride: "allow" | "block" | "unknown" | "invalid" | undefined;
   let smokeTurnFixture = false;
-  // Input tokens each Typesafe call reports; 1M tokens bill 42 microdollars.
+  // Input tokens each Typesafe call reports; 1,000 tokens bill 42 microdollars.
   let typesafeTokens = 100;
   // Exit code of each SEED_BUGS test in the sprite; one fixed bug by default.
   let seedExits = [0, 1, 1, 1];
@@ -734,6 +734,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(options?.method, "POST");
       const payload = JSON.parse(String(options.body));
       const role = String(payload.session_id).includes(":monitor:") ? "monitor" : "agent";
+      assert.equal(payload.provider?.require_parameters, true);
+      assert.equal(payload.provider?.sort, role === "agent" ? "price" : undefined);
+      if (role === "agent" && agentModelOverride === AGENT_MODEL)
+        assert.equal(payload.model, "deepseek/deepseek-v4.1-flash-1017");
       requests.push({ role, payload, at: performance.now() });
       const planned = responses[role]?.shift();
       if (fetchGate && requests.filter((request) => request.role === "agent").length === 2)
@@ -759,8 +763,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           },
         );
       }
-      assert.equal(payload.model, role === "agent" ? agentModelOverride : AGENT_MODEL);
+      assert.equal(payload.model, role === "agent" ? agentModelOverride : "z-ai/glm-5.3");
       if (role === "agent") assert.equal(payload.stream, true, "Agent calls stream");
+      if (role === "monitor") {
+        assert.ok(payload.max_tokens > 0 && payload.max_tokens <= 8_192);
+        assert.equal(payload.reasoning?.effort, "high");
+      }
       let message: {
         reasoning?: string;
         content?: string;
@@ -2470,6 +2478,60 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     },
   );
 
+  await t.test("public new sessions pin an older run and reject setting overrides", async () => {
+    const who = await member();
+    const game = await startGame(who.id, "deepseek/deepseek-v4.1-flash", { agentEffort: "high" });
+    const { POST } = await import("../../app/api/games/[id]/sessions/route");
+    const create = (settings: Record<string, unknown>) =>
+      POST(
+        new Request(`${origin}/api/games/${game.id}/sessions`, {
+          method: "POST",
+          headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+          body: JSON.stringify(settings),
+        }),
+        { params: Promise.resolve({ id: game.id }) },
+      );
+    for (const settings of [
+      { agentModel: "deepseek/deepseek-v4.1-flash" },
+      { agentEffort: "high" },
+      { agentModel: null },
+    ]) {
+      assert.equal((await create(settings)).status, 400);
+      assert.equal(
+        (
+          await pool.query("SELECT count(*)::int AS n FROM ctf.agent_sessions WHERE game_id=$1", [
+            game.id,
+          ])
+        ).rows[0].n,
+        1,
+      );
+      assert.equal(requests.length, 0);
+    }
+    const accepted = await create({
+      agentModel: AGENT_MODEL,
+      agentEffort: "low",
+      systemPrompt: "session prompt",
+    });
+    assert.equal(accepted.status, 200);
+    const projected = await accepted.json();
+    assert.equal(projected.sessions[1].agentModel, "deepseek/deepseek-v4.1-flash-1017");
+    assert.equal(projected.sessions[1].agentEffort, "low");
+    const stored = await pool.query(
+      "SELECT agent_model,agent_effort,system_prompt FROM ctf.agent_sessions WHERE id=$1",
+      [projected.sessionId],
+    );
+    assert.deepEqual(stored.rows[0], {
+      agent_model: AGENT_MODEL,
+      agent_effort: "low",
+      system_prompt: "session prompt",
+    });
+    assert.equal(
+      (await row(game.id)).agent_effort,
+      "high",
+      "the source session retains its history",
+    );
+  });
+
   await t.test(
     "system prompt is saved with an instruction, persists, changes and clears; monitor never sees it",
     async () => {
@@ -2626,7 +2688,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       // Transcript reviews use one Typesafe context call (42 microdollars each). The command
       // review combines command-only and context calls (84). Each agent call costs 40.
       agentCost = 0.00004;
-      typesafeTokens = 1_000_000;
+      typesafeTokens = 1_000;
       const who = await member();
       const game = await startGame(who.id);
       const { response, frames } = await instructFrames(who, game.id);
@@ -2668,12 +2730,23 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.deepEqual(pick(billing.at(-1)!.data), pick(done.data));
       assert.equal(done.data.spentMicrodollars, 332);
       assert.equal(Number((await row(game.id)).spent_microdollars), 332);
+      const day = (await pool.query("SELECT charged,reserved FROM ctf.daily_spend")).rows[0];
+      assert.deepEqual([Number(day.charged), Number(day.reserved)], [332, 0]);
+      const classifierRows = (
+        await pool.query(
+          "SELECT tokens,cost FROM ctf.inference WHERE game_id=$1 AND role='monitor' AND model='typesafe'",
+          [game.id],
+        )
+      ).rows;
+      assert.ok(
+        classifierRows.some((entry) => Number(entry.tokens) === 1_000 && Number(entry.cost) === 42),
+      );
     },
   );
 
   await t.test("a monitor error bills only the calls that completed", async () => {
     agentCost = 0.00004;
-    typesafeTokens = 1_000_000;
+    typesafeTokens = 1_000;
     monitor = "invalid";
     const who = await member();
     const game = await startGame(who.id);
@@ -2715,20 +2788,24 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       failedCommand
         .filter((entry) => entry.model === "typesafe")
         .map((entry) => [entry.tokens, Number(entry.cost)]),
-      [[1_000_000, 42]],
+      [[1_000, 42]],
       "only the command review's completed context request is billed",
     );
     assert.equal(
-      failedCommand.filter((entry) => entry.model === AGENT_MODEL).length,
+      failedCommand.filter((entry) => entry.model === INVESTIGATOR_MODEL).length,
       0,
       "the failed classifier group never dispatched the investigator",
     );
     assert.deepEqual(
       classifierRows.map((entry) => [entry.tokens, Number(entry.cost)]),
-      Array.from({ length: 3 }, () => [1_000_000, 42]),
+      Array.from({ length: 3 }, () => [1_000, 42]),
     );
+    const completedInvestigatorRows = monitorRows.filter(
+      (entry) => entry.model === INVESTIGATOR_MODEL,
+    );
+    assert.ok(completedInvestigatorRows.length > 0, "at least one investigator call is billed");
     assert.ok(
-      monitorRows.filter((entry) => entry.model === AGENT_MODEL).every((entry) => entry.settled_at),
+      completedInvestigatorRows.every((entry) => entry.settled_at),
       "completed investigator calls remain settled",
     );
     const done = frames.find((frame) => frame.type === "done")!;
@@ -2756,6 +2833,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     who: { cookie: string } | undefined,
     id: string,
     requestOrigin = origin,
+    payload?: Record<string, unknown>,
   ) => {
     const { POST } = await import("../../app/api/games/[id]/fork/route");
     return POST(
@@ -2766,7 +2844,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           ...(who && { cookie: who.cookie }),
           "Content-Type": "application/json",
         },
-        body: "{}",
+        ...(payload ? { body: JSON.stringify(payload) } : {}),
       }),
       { params: Promise.resolve({ id }) },
     );
@@ -2901,7 +2979,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "fork goes back to before the last instruction and restores that checkpoint",
     async () => {
       agentCost = 0.00004;
-      typesafeTokens = 1_000_000;
+      typesafeTokens = 1_000;
       const who = await member();
       const parent = await startGame(who.id, undefined, {
         monitorReasoning: false,
@@ -3434,10 +3512,18 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const { game: parent } = await blockRun(who.id);
       const before = await row(parent.id);
       const games = (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n;
+      const restoresBefore = restores.length;
       for (const [label, status, response] of [
         ["no session", 401, await forkRoute(undefined, parent.id)],
         ["bad origin", 403, await forkRoute(who, parent.id, "https://not-local.invalid")],
         ["another owner", 404, await forkRoute(stranger, parent.id)],
+        [
+          "different model",
+          400,
+          await forkRoute(who, parent.id, origin, { agentModel: "deepseek/deepseek-v4.1-flash" }),
+        ],
+        ["different effort", 400, await forkRoute(who, parent.id, origin, { agentEffort: "high" })],
+        ["malformed effort", 400, await forkRoute(who, parent.id, origin, { agentEffort: null })],
       ] as const) {
         assert.equal(response.status, status, label);
         assert.equal(
@@ -3446,6 +3532,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           label,
         );
         assert.deepEqual(await row(parent.id), before, label);
+        assert.equal(restores.length, restoresBefore, `${label} did not restore a sprite`);
       }
     },
   );
@@ -3830,90 +3917,113 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       },
     );
 
-  // --- Players choose the agent's reasoning effort per run; it is changeable between instructions. ---
+  // --- Public player settings are pinned; internal historical settings remain readable. ---
   const lastAgentEffort = () =>
     (requests.findLast((r) => r.role === "agent")!.payload as { reasoning?: { effort?: string } })
       .reasoning?.effort;
 
-  await t.test("the start route stores the agent effort and defaults it to medium", async () => {
+  await t.test("the start route pins the player model and low effort", async () => {
     const who = await member();
     const plain = await (await startRoute(who, {})).json();
-    assert.equal(plain.agentEffort, "medium");
-    assert.equal((await row(plain.id)).agent_effort, "medium");
-    const chosen = await (await startRoute(who, { agentEffort: "low" })).json();
-    assert.equal(chosen.agentEffort, "low");
-    assert.equal((await row(chosen.id)).agent_effort, "low");
+    assert.equal(plain.agentModel, "deepseek/deepseek-v4.1-flash-1017");
+    assert.equal(plain.agentEffort, "low");
+    assert.deepEqual(
+      [(await row(plain.id)).agent_model, (await row(plain.id)).agent_effort],
+      [AGENT_MODEL, "low"],
+    );
+    const accepted = await startRoute(who, { agentModel: AGENT_MODEL, agentEffort: "low" });
+    assert.equal(accepted.status, 200);
+    const identical = await accepted.json();
+    assert.deepEqual([identical.agentModel, identical.agentEffort], [AGENT_MODEL, "low"]);
   });
 
-  for (const [name, value] of [
-    ["an unknown effort", "extreme"],
-    ["a non-string effort", 3],
-    ["a null effort", null],
+  for (const [name, hints] of [
+    ["a different model", { agentModel: "deepseek/deepseek-v4.1-flash" }],
+    ["a malformed model", { agentModel: 3 }],
+    ["a null model", { agentModel: null }],
+    ["a different effort", { agentEffort: "high" }],
+    ["an unknown effort", { agentEffort: "extreme" }],
+    ["a non-string effort", { agentEffort: 3 }],
+    ["a null effort", { agentEffort: null }],
   ] as const)
-    await t.test(`the start route rejects ${name} without creating a run`, async () => {
+    await t.test(`the start route rejects ${name} before creating a run`, async () => {
       const who = await member();
       const current = await startGame(who.id);
       const games = (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n;
-      const response = await startRoute(who, { agentEffort: value });
+      const creates = createCount();
+      const response = await startRoute(who, hints);
       assert.equal(response.status, 400);
       assert.equal((await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n, games);
+      assert.equal(createCount(), creates);
       assert.equal((await row(current.id)).status, "active", "the current run stays active");
     });
 
   await t.test(
-    "the agent request carries the run's effort and an instruction can change it",
+    "public instructions pin an old session and send low-price agent routing",
     async () => {
       const who = await member();
-      const game = await startGame(who.id, undefined, { agentEffort: "low" });
-      agentCalls = 0;
-      assert.equal((await instruct(who, game.id)).status, 200);
-      assert.equal(lastAgentEffort(), "low");
-      // Not sending an effort keeps the stored one.
-      agentCalls = 0;
-      assert.equal((await instruct(who, game.id)).status, 200);
-      assert.equal(lastAgentEffort(), "low");
-      // Changing it applies to this very instruction and persists, even after the first one.
-      agentCalls = 0;
-      assert.equal((await instruct(who, game.id, { agentEffort: "high" })).status, 200);
-      assert.equal(lastAgentEffort(), "high");
+      const game = await startGame(who.id, "deepseek/deepseek-v4.1-flash", { agentEffort: "high" });
       assert.equal((await row(game.id)).agent_effort, "high");
-      // A fresh default run sends medium.
-      const plain = await startGame(who.id);
       agentCalls = 0;
-      assert.equal((await instruct(who, plain.id)).status, 200);
-      assert.equal(lastAgentEffort(), "medium");
+      assert.equal((await instruct(who, game.id)).status, 200);
+      assert.equal(lastAgentEffort(), "low");
+      assert.deepEqual(
+        [(await row(game.id)).agent_model, (await row(game.id)).agent_effort],
+        [AGENT_MODEL, "low"],
+      );
+      agentCalls = 0;
+      assert.equal(
+        (await instruct(who, game.id, { agentModel: AGENT_MODEL, agentEffort: "low" })).status,
+        200,
+      );
+      assert.equal(lastAgentEffort(), "low");
     },
   );
 
-  for (const value of ["extreme", 2, null])
+  for (const hints of [
+    { agentModel: "deepseek/deepseek-v4.1-flash" },
+    { agentModel: null },
+    { agentEffort: "high" },
+    { agentEffort: "extreme" },
+    { agentEffort: 2 },
+    { agentEffort: null },
+  ])
     await t.test(
-      `an instruction with agent effort ${JSON.stringify(value)} is rejected: nothing runs, no lease`,
+      `an instruction with ${JSON.stringify(hints)} is rejected: nothing runs, no lease`,
       async () => {
         const who = await member();
         const game = await startGame(who.id);
         const before = requests.length;
-        const response = await instruct(who, game.id, { agentEffort: value });
+        const response = await instruct(who, game.id, hints);
         assert.equal(response.status, 400);
         const after = await row(game.id);
-        assert.equal(after.agent_effort, "medium");
+        assert.equal(after.agent_effort, "low");
         assert.equal(after.lease, null);
         assert.equal(requests.length, before, "no inference");
       },
     );
 
-  await t.test("a fork inherits the parent's agent effort", async () => {
+  await t.test("a public fork pins its child while retaining the source settings", async () => {
     const who = await member();
-    const parent = await startGame(who.id, undefined, { agentEffort: "high" });
+    const parent = await startGame(who.id, "deepseek/deepseek-v4.1-flash", { agentEffort: "high" });
     proposed = ["printf old", "cat /tmp/flag.txt"];
     monitorQueue = ["allow", "block"];
+    agentModelOverride = "deepseek/deepseek-v4.1-flash";
     agentCalls = 0;
-    assert.equal((await instruct(who, parent.id)).status, 200);
+    assert.equal((await play(parent.id, who.id)).status, "caught");
     assert.equal((await row(parent.id)).status, "caught");
     const response = await forkRoute(who, parent.id);
     assert.equal(response.status, 200);
     const child = await response.json();
-    assert.equal(child.agentEffort, "high");
-    assert.equal((await row(child.id)).agent_effort, "high");
+    assert.deepEqual([child.agentModel, child.agentEffort], [AGENT_MODEL, "low"]);
+    assert.deepEqual(
+      [(await row(child.id)).agent_model, (await row(child.id)).agent_effort],
+      [AGENT_MODEL, "low"],
+    );
+    assert.deepEqual(
+      [(await row(parent.id)).agent_model, (await row(parent.id)).agent_effort],
+      ["deepseek/deepseek-v4.1-flash", "high"],
+    );
   });
 
   // Difficulty is the transcript window (5 / 10 / 20 turns). This short run fits inside every
@@ -4117,7 +4227,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           (
             await pool.query(
               "SELECT count(*)::int AS n FROM ctf.inference i JOIN ctf.monitor_reviews r ON r.id=i.review_id WHERE i.game_id=$1 AND i.role='monitor' AND i.model=$2 AND r.target_kind='command'",
-              [game.id, AGENT_MODEL],
+              [game.id, INVESTIGATOR_MODEL],
             )
           ).rows[0].n,
           decision === "block" ? 1 : 0,
@@ -4450,7 +4560,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       }
       const stored = await row(game.id);
       assert.equal(Number(stored.reserved_microdollars), 0);
-      assert.equal(Number(stored.spent_microdollars), 4000);
+      assert.equal(Number(stored.spent_microdollars), 4024);
       // Deltas are never stored: the event log holds only the finished turn.
       const events = (
         await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])
@@ -5418,7 +5528,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           [game.id],
         )
       ).rows.map((entry) => entry.model);
-      assert.deepEqual(submissionBilling, ["deepseek/deepseek-v4.1-flash", "typesafe"]);
+      assert.deepEqual(submissionBilling, ["typesafe", INVESTIGATOR_MODEL]);
       assert.equal(
         (
           await pool.query(
@@ -5569,8 +5679,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           )
         ).rows.filter((entry) => entry.role === "monitor");
       const billed = await rows();
+      assert.ok(
+        requests.some(
+          (request) =>
+            request.role === "monitor" &&
+            (request.payload as { max_tokens: number }).max_tokens === 8_192,
+        ),
+        "a normal investigator receives the full output ceiling",
+      );
       const classifierRows = billed.filter((entry) => entry.model === "typesafe");
-      const investigatorRows = billed.filter((entry) => entry.model === AGENT_MODEL);
+      const investigatorRows = billed.filter((entry) => entry.model === INVESTIGATOR_MODEL);
       // Four transcript reviews each use one context call. The command review combines the
       // command-only and context calls into one classifier inference row.
       assert.deepEqual(
@@ -5578,11 +5696,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           .map((entry) => [entry.tokens, Number(entry.cost)])
           .sort((left, right) => Number(left[0]) - Number(right[0])),
         [
-          [1_000_000, 42],
-          [1_000_000, 42],
-          [1_000_000, 42],
-          [1_000_000, 42],
-          [2_000_000, 84],
+          [1_000_000, 42_000],
+          [1_000_000, 42_000],
+          [1_000_000, 42_000],
+          [1_000_000, 42_000],
+          [2_000_000, 84_000],
         ],
       );
       assert.equal(
@@ -5593,20 +5711,20 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(classifierRows.every((entry) => entry.settled_at && entry.generation_id === null));
       assert.ok(investigatorRows.every((entry) => entry.settled_at && entry.generation_id));
       const stored = await row(game.id);
-      assert.equal(Number(stored.spent_microdollars), 252);
+      assert.equal(Number(stored.spent_microdollars), 252_000);
       assert.equal(Number(stored.reserved_microdollars), 0);
       const day = (await pool.query("SELECT charged,reserved FROM ctf.daily_spend")).rows[0];
-      assert.deepEqual([Number(day.charged), Number(day.reserved)], [252, 0]);
+      assert.deepEqual([Number(day.charged), Number(day.reserved)], [252_000, 0]);
       const { gameBilling } = await import("../../lib/games");
-      assert.equal((await gameBilling(game.id)).monitorSpendMicrodollars, 252);
+      assert.equal((await gameBilling(game.id)).monitorSpendMicrodollars, 252_000);
       // Day-old settled rows are never re-settled or estimated by cleanup.
       await pool.query("UPDATE ctf.inference SET created_at=now()-interval '3 days'");
       await cleanup();
       assert.deepEqual(await rows(), billed);
-      assert.equal(Number((await row(game.id)).spent_microdollars), 252);
+      assert.equal(Number((await row(game.id)).spent_microdollars), 252_000);
       assert.equal(
         Number((await pool.query("SELECT charged FROM ctf.daily_spend")).rows[0].charged),
-        252,
+        252_000,
       );
     },
   );

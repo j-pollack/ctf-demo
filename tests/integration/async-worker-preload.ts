@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { AGENT_MODEL, MODELS } from "../../lib/policy";
+import { MODELS } from "../../lib/policy";
 import { TYPESAFE_MODEL } from "../../lib/typesafe";
 
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -69,7 +69,9 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   assert.equal(options?.method, "POST");
   assert.equal(new Headers(options.headers).get("authorization"), "Bearer integration-router-key");
   const payload = JSON.parse(String(options.body));
-  assert.equal(payload.model, AGENT_MODEL);
+  assert.equal(payload.model, "z-ai/glm-5.3");
+  assert.equal(payload.max_tokens, 8_192);
+  assert.equal(payload.reasoning?.effort, "high");
   assert.equal(payload.stream, undefined);
   const names = payload.tools
     .map((tool: { function: { name: string } }) => tool.function.name)

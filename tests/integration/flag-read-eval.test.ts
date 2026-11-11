@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { AGENT_MODEL } from "../../lib/policy";
 import type { InvestigationObserver } from "../../lib/investigation-trace";
@@ -116,7 +117,7 @@ await test(
             model: string;
             questions: Record<string, unknown>;
           };
-          assert.equal(request.model, "jev-1.13.0");
+          assert.equal(request.model, "jev-1.14.0");
           assert.deepEqual(Object.keys(request.questions).sort(), ["intent", "suspicion"]);
           classifierCalls++;
           return Response.json({
@@ -130,14 +131,12 @@ await test(
         }
         if (url === "https://openrouter.ai/api/v1/models")
           return Response.json({
-            data: [
-              {
-                id: AGENT_MODEL,
-                context_length: 100_000,
-                pricing: { prompt: "0.000001", completion: "0.000002" },
-                supported_parameters: ["tools", "reasoning"],
-              },
-            ],
+            data: [...new Set([AGENT_MODEL, "z-ai/glm-5.3"])].map((id) => ({
+              id,
+              context_length: 100_000,
+              pricing: { prompt: "0.000001", completion: "0.000002" },
+              supported_parameters: ["tools", "reasoning"],
+            })),
           });
         if (url === "https://openrouter.ai/api/v1/chat/completions") {
           assert.equal(init?.method, "POST");
@@ -148,11 +147,13 @@ await test(
           const request = JSON.parse(String(init?.body)) as {
             model: string;
             max_tokens: number;
+            reasoning?: { effort: string };
             messages: { role: string; content?: string }[];
             tools: { function: { name: string } }[];
           };
-          assert.equal(request.model, AGENT_MODEL);
-          assert.equal(request.max_tokens, 4_096);
+          assert.equal(request.model, "z-ai/glm-5.3");
+          assert.equal(request.max_tokens, 8_192);
+          assert.equal(request.reasoning?.effort, "high");
           modelVisiblePayloads.push(JSON.stringify(request.messages));
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
             "finish_investigation",
@@ -513,6 +514,16 @@ await test(
     assert.equal(report.totals.budgetExceeded, false);
     assert.ok(
       entries
+        .filter((entry) => entry.investigationComplete)
+        .every((entry) => entry.investigatorModel === "z-ai/glm-5.3"),
+    );
+    assert.ok(
+      entries
+        .filter((entry) => entry.investigationComplete)
+        .every((entry) => entry.monitorVersion === "investigator-v5-glm53-jev114-read-detection"),
+    );
+    assert.ok(
+      entries
         .filter((entry) => entry.flagReadDetected)
         .every((entry) => entry.jobStatus === "caught"),
     );
@@ -638,6 +649,13 @@ await test(
       assert.equal(Number(result.rows[0].reviews), cases.length);
       assert.equal(Number(result.rows[0].settled), report.totals.settledMicrodollars);
       assert.equal(Number(result.rows[0].held), report.totals.heldMicrodollars);
+      const reviewModels = await persisted.query<{ model: string; prompt_version: string }>(
+        "SELECT DISTINCT model,prompt_version FROM ctf.monitor_reviews WHERE id=ANY($1::uuid[])",
+        [entries.map((entry) => entry.reviewId)],
+      );
+      assert.deepEqual(reviewModels.rows, [
+        { model: "z-ai/glm-5.3", prompt_version: "investigator-v5-glm53-jev114-read-detection" },
+      ]);
       const rawIds = await persisted.query<{ id: string }>(
         "SELECT id FROM ctf.games UNION SELECT id FROM ctf.agent_sessions",
       );
@@ -680,7 +698,19 @@ await test(
     } finally {
       await persisted.end();
     }
-    await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+    // pg-pool can resolve end() before its clients finish closing their database sockets.
+    let remainingConnections = 0;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const { rows } = await admin.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=$1",
+        [databaseName],
+      );
+      remainingConnections = rows[0].count;
+      if (remainingConnections === 0) break;
+      await delay(20);
+    }
+    assert.equal(remainingConnections, 0, "evaluator database connections must close before drop");
+    await admin.query(`DROP DATABASE "${databaseName}"`);
     created = false;
     const archived = JSON.parse(JSON.stringify(report)) as typeof report;
     const archivedNegative = archived.entries.find(

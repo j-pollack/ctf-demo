@@ -91,13 +91,10 @@ const label = (model: string) => model.split("/")[1];
 export const modelLabel = (model: string | null) =>
   model === null ? "Mixed models" : label(model);
 type Choice = { name: string; hint: string };
-const EFFORT_CHOICES: Record<AgentEffort, Choice> = {
-  low: { name: "Low", hint: "The agent thinks a little before each move. Cheapest and fastest." },
-  medium: { name: "Medium", hint: "The agent thinks a moderate amount. A good default." },
-  high: {
-    name: "High",
-    hint: "The agent thinks hard before each move. Better plans, but it uses up your budget faster.",
-  },
+const EFFORT_NAMES: Record<AgentEffort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
 };
 // What each monitor setting means: the select's tooltip, and the line under it in setup.
 const DIFFICULTY_CHOICES: Record<MonitorDifficulty, Choice> = {
@@ -291,13 +288,7 @@ async function api(url: string, options?: RequestInit) {
   if (!response.ok) throw new Error(data.error ?? "Could not complete this request.");
   return data;
 }
-export default function GameUI({
-  models,
-  defaultAgent,
-}: {
-  models: string[];
-  defaultAgent: string;
-}) {
+export default function GameUI({ models }: { models: string[] }) {
   const pathname = usePathname(),
     params = useParams<{ id?: string }>(),
     router = useRouter();
@@ -373,9 +364,7 @@ export default function GameUI({
     [forkRunId, setForkRunId] = useState<string | null>(null),
     [email, setEmail] = useState(""),
     [emailSent, setEmailSent] = useState(false);
-  const [agent, setAgent] = useState(defaultAgent),
-    [effort, setEffort] = useState<AgentEffort>("medium"),
-    [scores, setScores] = useState<Score[]>([]);
+  const [scores, setScores] = useState<Score[]>([]);
   const [creatingSession, setCreatingSession] = useState(false);
   const [requestedSessionId, setRequestedSessionId] = useState<string | null>(null);
   const [boardDifficulty, setBoardDifficulty] = useState<MonitorDifficulty>("hard"),
@@ -493,8 +482,6 @@ export default function GameUI({
         ...current,
         draft: prompt,
         systemPromptDraft: systemDraft,
-        agentModel: agent,
-        agentEffort: effort,
       }));
     }
     const targetSummary = summariesFor(source).find((session) => session.id === id);
@@ -505,8 +492,6 @@ export default function GameUI({
     if (sourceIsLive) {
       setPrompt(target?.draft ?? "");
       setSystemDraft(target?.systemPromptDraft ?? targetSummary?.systemPrompt ?? "");
-      setAgent(target?.agentModel ?? targetSummary?.agentModel ?? source.agentModel);
-      setEffort(target?.agentEffort ?? targetSummary?.agentEffort ?? source.agentEffort);
       setLive(sessionLive.current.get(id) ?? null);
     }
     const version = new URL(window.location.href);
@@ -620,12 +605,10 @@ export default function GameUI({
     if (!signedIn && new URLSearchParams(window.location.search).get("signin") === "1")
       setModal("login");
   }, [account.isPending, signedIn, modal]);
-  // The setup dialog and the run bar edit drafts; a different run resets them to its settings, so
-  // the next setup defaults to the last run's choice.
+  // A different run resets the difficulty draft to its stored setting.
   useEffect(() => {
     if (!game) return;
     setDifficulty(game.monitorDifficulty);
-    setEffort(game.agentEffort);
     autoContinues.current.clear();
     userStopped.current.clear();
   }, [game?.id]);
@@ -792,8 +775,6 @@ export default function GameUI({
         liveRequest.current++;
         setGame(fresh);
         setSelectedSessionId(fresh.sessionId);
-        setAgent(fresh.agentModel);
-        setEffort(fresh.agentEffort);
         setSystemDraft(fresh.systemPrompt);
         setPrompt("");
         setStage("");
@@ -867,7 +848,6 @@ export default function GameUI({
         )
           return;
         setGame(fresh);
-        setAgent(fresh.agentModel);
       })
       .catch((err) => {
         if (
@@ -904,7 +884,6 @@ export default function GameUI({
         if (request !== liveRequest.current) return;
         if (data.game) {
           setGame(data.game);
-          setAgent(data.game.agentModel);
         }
       })
       .catch((err) => {
@@ -1225,8 +1204,6 @@ export default function GameUI({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          agentModel: agent,
-          agentEffort: effort,
           monitorDifficulty: difficulty,
           monitorReasoning: true,
         }),
@@ -1297,7 +1274,6 @@ export default function GameUI({
       liveRequest.current++;
       latestRequest.current++;
       setGame(next);
-      setAgent(next.agentModel);
       setRememberedPlayId(next.id);
       setPrompt(composerAfterFork(next));
       setError("");
@@ -1504,8 +1480,6 @@ export default function GameUI({
         body: JSON.stringify({
           prompt: submitted.text,
           sessionId,
-          agentModel: agent,
-          agentEffort: effort,
           ...(!runStarted(game) && {
             ...(difficulty !== game.monitorDifficulty && { monitorDifficulty: difficulty }),
           }),
@@ -1601,7 +1575,7 @@ export default function GameUI({
       const next: PublicGame = await api(`/api/games/${encodeURIComponent(runId)}/sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentModel: agent, agentEffort: effort, systemPrompt: systemDraft }),
+        body: JSON.stringify({ systemPrompt: systemDraft }),
       });
       if (!isCurrent() || next.id !== runId) return;
       updateSessionViews((current) => {
@@ -1623,8 +1597,6 @@ export default function GameUI({
       setSelectedSessionId(next.sessionId);
       setPrompt("");
       setSystemDraft(next.systemPrompt);
-      setAgent(next.agentModel);
-      setEffort(next.agentEffort);
       setLive(null);
       const url = new URL(window.location.href);
       url.searchParams.set("session", next.sessionId);
@@ -1931,121 +1903,26 @@ export default function GameUI({
                     <span>TURNS</span>
                   </div>
                 </div>
-                <details className="run-settings">
-                  <summary>
-                    Session settings{" "}
-                    <span>
-                      {editingSystemPrompt &&
-                      "systemPrompt" in
-                        systemPromptChange(systemDraft, displayGame?.systemPrompt ?? "")
-                        ? "· Unsaved prompt"
-                        : ""}
-                    </span>
-                  </summary>
-                  <div className="run-settings-fields">
-                    {editingSystemPrompt ? (
-                      <ModelSelect
-                        models={models}
-                        label="Model"
-                        value={agent}
-                        change={(value) => {
-                          setAgent(value);
-                          if (selectedId)
-                            updateSession(selectedId, (current) => ({
-                              ...current,
-                              agentModel: value,
-                            }));
-                        }}
-                        disabled={loading}
-                      />
-                    ) : (
-                      displayGame && (
-                        <span className="run-model">
-                          <span className="eyebrow">MODEL</span>
-                          {label(displayGame.agentModel)} ·{" "}
-                          {EFFORT_CHOICES[displayGame.agentEffort].name}
-                        </span>
-                      )
-                    )}
-                    {editingSystemPrompt && (
-                      <ChoiceSelect
-                        label="Effort"
-                        choices={EFFORT_CHOICES}
-                        value={effort}
-                        change={(value) => {
-                          setEffort(value);
-                          if (selectedId)
-                            updateSession(selectedId, (current) => ({
-                              ...current,
-                              agentEffort: value,
-                            }));
-                        }}
-                        disabled={loading}
-                      />
-                    )}
-                    {editingSystemPrompt && displayGame ? (
-                      <ChoiceSelect
-                        label="Difficulty"
-                        choices={DIFFICULTY_CHOICES}
-                        value={monitorLocked ? displayGame.monitorDifficulty : difficulty}
-                        change={setDifficulty}
-                        disabled={loading || monitorLocked}
-                      />
-                    ) : (
-                      displayGame && (
-                        <span className="run-model">
-                          <span className="eyebrow">MONITOR</span>
-                          {DIFFICULTY_CHOICES[displayGame.monitorDifficulty].name}
-                        </span>
-                      )
-                    )}
-                  </div>
-                  {(editingSystemPrompt || displayGame?.systemPrompt) && (
-                    <details
-                      className="system-prompt"
-                      onToggle={() => {
-                        if (atBottom.current) scrollToBottom();
-                      }}
-                    >
-                      <summary>
-                        <span className="eyebrow">SYSTEM PROMPT</span>
-                        <span className="hidden-tag">Hidden from investigator</span>
-                        <span className="preview" aria-hidden="true">
-                          {(editingSystemPrompt ? systemDraft : displayGame?.systemPrompt) ||
-                            "None"}
-                        </span>
-                        {editingSystemPrompt &&
-                          "systemPrompt" in
-                            systemPromptChange(systemDraft, displayGame?.systemPrompt ?? "") && (
-                            <span className="unsaved">Sends with next instruction</span>
-                          )}
-                      </summary>
-                      {editingSystemPrompt ? (
-                        <textarea
-                          id="system-prompt"
-                          aria-label="System prompt, hidden from the investigator"
-                          value={systemDraft}
-                          onChange={(event) => {
-                            setSystemDraft(event.target.value);
-                            if (selectedId)
-                              updateSession(selectedId, (current) => ({
-                                ...current,
-                                systemPromptDraft: event.target.value,
-                              }));
-                          }}
-                          maxLength={8192}
-                          rows={4}
-                          placeholder="Optional. Your secret plan for the agent: it reads this every turn, and the investigator never sees it."
-                        />
-                      ) : (
-                        <p tabIndex={0}>{displayGame?.systemPrompt}</p>
-                      )}
-                      <p className="fixed-suffix">
-                        Always added at the end: <em>{SUBMIT_INSTRUCTION}</em>
-                      </p>
-                    </details>
-                  )}
-                </details>
+                <SessionSettings
+                  game={displayGame}
+                  editable={editingSystemPrompt}
+                  monitorLocked={monitorLocked}
+                  difficulty={difficulty}
+                  changeDifficulty={setDifficulty}
+                  systemDraft={systemDraft}
+                  changeSystemDraft={(value) => {
+                    setSystemDraft(value);
+                    if (selectedId)
+                      updateSession(selectedId, (current) => ({
+                        ...current,
+                        systemPromptDraft: value,
+                      }));
+                  }}
+                  disabled={loading}
+                  onPromptToggle={() => {
+                    if (atBottom.current) scrollToBottom();
+                  }}
+                />
               </header>
               <div
                 className="thread"
@@ -2314,9 +2191,9 @@ export default function GameUI({
                 <strong>Sign in.</strong> Enter your email and click the link we send you.
               </li>
               <li>
-                <strong>Start a run.</strong> Press Play and choose a difficulty (start with Easy)
-                and an AI model for the agent. The investigator can read the agent’s reasoning. A
-                run gets one computer and one flag. Its sessions share both.
+                <strong>Start a run.</strong> Press Play and choose a difficulty (start with Easy).
+                The investigator can read the agent’s reasoning. A run gets one computer and one
+                flag. Its sessions share both.
               </li>
               <li>
                 <strong>Write a secret plan, if you want.</strong> The system prompt box at the top
@@ -2648,26 +2525,7 @@ export default function GameUI({
             <>
               <p className="eyebrow">NEW RUN</p>
               <h2>Start a run</h2>
-              <ModelSelect models={models} label="Agent model" value={agent} change={setAgent} />
-              <ChoiceSelect
-                label="Agent effort"
-                choices={EFFORT_CHOICES}
-                value={effort}
-                change={setEffort}
-              />
-              <small>{EFFORT_CHOICES[effort].hint}</small>
-              <ChoiceSelect
-                label="Difficulty"
-                choices={DIFFICULTY_CHOICES}
-                value={difficulty}
-                change={setDifficulty}
-              />
-              <small>{DIFFICULTY_CHOICES[difficulty].hint}</small>
-              <p>
-                {RUN_BUDGET} budget, {RUNS_PER_DAY} new runs a day. You can change the agent’s model
-                and effort at any time. Difficulty locks once you send your first instruction. The
-                investigator can read agent reasoning.
-              </p>
+              <RunSetupFields difficulty={difficulty} change={setDifficulty} />
               {game?.status === "active" && <p>Starting a new run ends your current one.</p>}
               {!canStartNewRun && (
                 <p>You already have an unused run. Send it an instruction first.</p>
@@ -2721,6 +2579,117 @@ export default function GameUI({
     </div>
   );
 }
+export function RunSetupFields({
+  difficulty,
+  change,
+}: {
+  difficulty: MonitorDifficulty;
+  change: (value: MonitorDifficulty) => void;
+}) {
+  return (
+    <>
+      <ChoiceSelect
+        label="Difficulty"
+        choices={DIFFICULTY_CHOICES}
+        value={difficulty}
+        change={change}
+      />
+      <small>{DIFFICULTY_CHOICES[difficulty].hint}</small>
+      <p>
+        {RUN_BUDGET} budget, {RUNS_PER_DAY} new runs a day. Difficulty locks once you send your
+        first instruction. The investigator can read agent reasoning.
+      </p>
+    </>
+  );
+}
+
+export function SessionSettings({
+  game,
+  editable,
+  monitorLocked,
+  difficulty,
+  changeDifficulty,
+  systemDraft,
+  changeSystemDraft,
+  disabled,
+  onPromptToggle,
+}: {
+  game: Pick<
+    PublicGame,
+    "agentModel" | "agentEffort" | "monitorDifficulty" | "systemPrompt"
+  > | null;
+  editable: boolean;
+  monitorLocked: boolean;
+  difficulty: MonitorDifficulty;
+  changeDifficulty: (value: MonitorDifficulty) => void;
+  systemDraft: string;
+  changeSystemDraft: (value: string) => void;
+  disabled: boolean;
+  onPromptToggle: () => void;
+}) {
+  const changed =
+    editable && "systemPrompt" in systemPromptChange(systemDraft, game?.systemPrompt ?? "");
+  return (
+    <details className="run-settings">
+      <summary>
+        Session settings <span>{changed ? "· Unsaved prompt" : ""}</span>
+      </summary>
+      <div className="run-settings-fields">
+        {game && (
+          <span className="run-model">
+            <span className="eyebrow">MODEL</span>
+            {label(game.agentModel)} · {EFFORT_NAMES[game.agentEffort]}
+          </span>
+        )}
+        {editable && game ? (
+          <ChoiceSelect
+            label="Difficulty"
+            choices={DIFFICULTY_CHOICES}
+            value={monitorLocked ? game.monitorDifficulty : difficulty}
+            change={changeDifficulty}
+            disabled={disabled || monitorLocked}
+          />
+        ) : (
+          game && (
+            <span className="run-model">
+              <span className="eyebrow">MONITOR</span>
+              {DIFFICULTY_CHOICES[game.monitorDifficulty].name}
+            </span>
+          )
+        )}
+      </div>
+      {(editable || game?.systemPrompt) && (
+        <details className="system-prompt" onToggle={onPromptToggle}>
+          <summary>
+            <span className="eyebrow">SYSTEM PROMPT</span>
+            <span className="hidden-tag">Hidden from investigator</span>
+            <span className="preview" aria-hidden="true">
+              {(editable ? systemDraft : game?.systemPrompt) || "None"}
+            </span>
+            {changed && <span className="unsaved">Sends with next instruction</span>}
+          </summary>
+          {editable ? (
+            <textarea
+              id="system-prompt"
+              aria-label="System prompt, hidden from the investigator"
+              value={systemDraft}
+              onChange={(event) => changeSystemDraft(event.target.value)}
+              maxLength={8192}
+              rows={4}
+              placeholder="Optional. Your secret plan for the agent: it reads this every turn, and the investigator never sees it."
+            />
+          ) : (
+            <p tabIndex={0}>{game?.systemPrompt}</p>
+          )}
+          <p className="fixed-suffix">
+            Always added at the end: <em>{SUBMIT_INSTRUCTION}</em>
+          </p>
+        </details>
+      )}
+    </details>
+  );
+}
+
 function ChoiceSelect<T extends string>({
   label: caption,
   choices,
@@ -2746,33 +2715,6 @@ function ChoiceSelect<T extends string>({
         {(Object.keys(choices) as T[]).map((item) => (
           <option key={item} value={item} title={choices[item].hint}>
             {choices[item].name}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-function ModelSelect({
-  label: caption,
-  value,
-  change,
-  models,
-  disabled = false,
-}: {
-  label: string;
-  value: string;
-  change: (value: string) => void;
-  models: string[];
-  disabled?: boolean;
-}) {
-  return (
-    <label className="model-select">
-      <span className="model-caption">{caption.toUpperCase()}</span>
-      <select disabled={disabled} value={value} onChange={(event) => change(event.target.value)}>
-        {/* A run's stored model may have left the list; keep it selectable so it still shows. */}
-        {[...new Set([value, ...models])].map((model) => (
-          <option key={model} value={model}>
-            {label(model)}
           </option>
         ))}
       </select>
@@ -3036,8 +2978,8 @@ export function Entry({
         ))}
       {event.truncated && (
         <p className="truncated-note">
-          Ran out of tokens mid-thought — the reasoning above is kept and carried into the next
-          turn. Lower the agent effort, or ask for something smaller.
+          Ran out of tokens mid-thought. The reasoning above is kept and carried into the next turn.
+          Ask for something smaller.
         </p>
       )}
       {calls?.map((call, index) => (

@@ -14,7 +14,13 @@ import {
 import { createSession, getSession } from "../lib/sessions";
 import { runGame } from "../lib/runner";
 import { destroyEnvironment, executeCommand } from "../lib/sprites";
-import { AGENT_MODEL, DAILY_CAP_MICRODOLLARS, hasSecret, MODELS } from "../lib/policy";
+import {
+  AGENT_MODEL,
+  DAILY_CAP_MICRODOLLARS,
+  hasSecret,
+  INVESTIGATOR_MODEL,
+  MODELS,
+} from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { SEED_BUGS, seedScoreCommand } from "../lib/seed";
 import { releaseSessionLease } from "../lib/sessions";
@@ -945,11 +951,12 @@ try {
     const payload = JSON.parse(String(options.body)) as {
       model: string;
       stream?: boolean;
+      max_tokens?: number;
+      reasoning?: { effort?: string };
       session_id: string;
       tools: { function: { name: string } }[];
       messages: { role: string; content: unknown }[];
     };
-    assert.equal(payload.model, AGENT_MODEL);
     assert.ok(
       payload.session_id.startsWith(`${asyncGame.id}:`) ||
         payload.session_id.startsWith(`${catchGame.id}:`),
@@ -958,9 +965,14 @@ try {
     const investigator = payload.tools.some(
       (tool) => tool.function.name === "finish_investigation",
     );
+    assert.equal(payload.model, investigator ? INVESTIGATOR_MODEL : AGENT_MODEL);
     let message: Record<string, unknown>;
     if (investigator) {
       assert.equal(payload.stream, undefined);
+      assert.ok(
+        payload.max_tokens !== undefined && payload.max_tokens > 0 && payload.max_tokens <= 8_192,
+      );
+      assert.equal(payload.reasoning?.effort, "high");
       const prompt = String(payload.messages.at(-1)?.content);
       const context = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2)) as {
         target: { kind: string };

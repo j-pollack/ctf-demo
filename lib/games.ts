@@ -3,7 +3,14 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { ASYNC_MONITOR_VERSION, MONITOR_TOKEN_MICRODOLLARS, MONITOR_VERSION } from "./control";
-import { AGENT_MODEL, MODELS, DAILY_CAP_MICRODOLLARS, GameError, makeSecret } from "./policy";
+import {
+  AGENT_MODEL,
+  PLAYER_AGENT_EFFORT,
+  MODELS,
+  DAILY_CAP_MICRODOLLARS,
+  GameError,
+  makeSecret,
+} from "./policy";
 import { TYPESAFE_MODEL } from "./typesafe";
 import {
   AGENT_EFFORTS,
@@ -445,13 +452,13 @@ function checkEffort(effort: unknown) {
 }
 export async function startGame(
   ownerId: string,
-  agentModel: string = AGENT_MODEL,
+  agentModel?: string,
   options: MonitorOptions & { sourceId?: string; agentEffort?: unknown } = {},
 ) {
   const { sourceId } = options;
   if (sourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sourceId))
     throw new GameError("Run not found.", 404);
-  if (!MODELS.some((model) => model === agentModel))
+  if (agentModel !== undefined && !MODELS.includes(agentModel))
     throw new GameError("Unsupported agent model.");
   const effort = checkEffort(options.agentEffort);
   // Before cleanup and admission: a bad choice must neither create a run nor end the current one.
@@ -604,7 +611,7 @@ export async function startGame(
         ownerId,
         source?.sprite_name ?? `ctf-${id}`,
         source?.secret_hash ?? hash,
-        source?.agent_model ?? agentModel,
+        agentModel ?? source?.agent_model ?? AGENT_MODEL,
         TYPESAFE_MODEL,
         source?.monitor_difficulty ?? monitor.difficulty ?? "hard",
         ASYNC_MONITOR_VERSION,
@@ -620,7 +627,7 @@ export async function startGame(
         0,
         source?.tokens_used ?? 0,
         source?.spent_microdollars ?? 0,
-        source?.agent_effort ?? effort ?? "medium",
+        effort ?? source?.agent_effort ?? PLAYER_AGENT_EFFORT,
         newRun,
         !newRun,
       ],
@@ -630,8 +637,8 @@ export async function startGame(
        VALUES($1,$1,1,$2,$3,$4,$5,$6)`,
       [
         id,
-        source?.agent_model ?? agentModel,
-        source?.agent_effort ?? effort ?? "medium",
+        agentModel ?? source?.agent_model ?? AGENT_MODEL,
+        effort ?? source?.agent_effort ?? PLAYER_AGENT_EFFORT,
         source?.system_prompt ?? "",
         JSON.stringify(cut?.messages ?? []),
         source?.turns ?? 0,
@@ -930,7 +937,7 @@ export async function reserveInference(
           ? "There isn’t enough available budget for this request. Some billing is still pending."
           : available <= 0
             ? "Your inference budget is exhausted."
-            : "There isn’t enough budget for this request. Choose a cheaper agent model or start a new run.",
+            : "There isn’t enough budget for this request. Start a new run.",
         available <= 0 && Number(game.reserved_microdollars) === 0 ? 402 : 400,
       );
     const globalAllowance = requestAllowance(
@@ -982,8 +989,7 @@ export async function chargeMonitor(
   } = {},
 ) {
   if (!Number.isFinite(inputTokens) || inputTokens < 0) throw new Error("Invalid monitor usage.");
-  // ponytail: calls under ~12k input tokens round to 0 microdollars, so the monitor is effectively
-  // free. A game-y flat per-call rate is a one-line change here.
+  // Round fulfilled classifier usage to integer microdollars.
   const cost = Math.round(inputTokens * MONITOR_TOKEN_MICRODOLLARS);
   const tokens = Math.ceil(inputTokens);
   await transaction(async (client) => {

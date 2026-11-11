@@ -1,7 +1,7 @@
 import { createSession } from "@/lib/sessions";
 import { getPublicGameRow, publicGame } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
-import { GameError } from "@/lib/policy";
+import { GameError, publicAgentSettings } from "@/lib/policy";
 import { getModel } from "@/lib/inference";
 
 export const runtime = "nodejs";
@@ -11,21 +11,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     checkOrigin(request);
     const user = await player(request);
     const data = await body(request);
-    if (data.agentModel !== undefined && typeof data.agentModel !== "string")
-      throw new GameError("Choose an agent model.");
-    if (data.agentModel) await getModel(data.agentModel);
-    if (
-      data.agentEffort !== undefined &&
-      !["low", "medium", "high"].includes(data.agentEffort as string)
-    )
-      throw new GameError("Choose an agent effort.");
+    const agent = publicAgentSettings(data);
     if (data.systemPrompt !== undefined && typeof data.systemPrompt !== "string")
       throw new GameError("Enter a valid system prompt.");
     const { id } = await params;
     await getPublicGameRow(id, user.id);
+    await getModel(agent.agentModel);
     const session = await createSession(id, user.id, {
-      agentModel: data.agentModel as string | undefined,
-      agentEffort: data.agentEffort as "low" | "medium" | "high" | undefined,
+      agentModel: agent.agentModel,
+      agentEffort: agent.agentEffort,
       systemPrompt: data.systemPrompt as string | undefined,
     });
     const game = await getPublicGameRow(id, user.id);

@@ -12,13 +12,16 @@ const AGENT_MODELS = [
   "minimax/minimax-m3",
   "tencent/hy4-preview",
   "deepseek/deepseek-v4.1-flash",
+  "deepseek/deepseek-v4.1-flash-1017",
   "xiaomi/mimo-v2.6-flash",
   "z-ai/glm-5.3-flash",
   "qwen/qwen3.8-flash",
   "qwen/qwen3.8-27b",
 ];
-// Cheapest listed agent: agent turns resend the transcript, so input price dominates.
-export const AGENT_MODEL = "deepseek/deepseek-v4.1-flash";
+// Fixed player model; keep older entries for historical runs and internal replay.
+export const AGENT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+export const PLAYER_AGENT_EFFORT = "low" as const;
+export const INVESTIGATOR_MODEL = "z-ai/glm-5.3";
 // Sorted by the name shown in selectors (the part after the provider).
 export const MODELS = [...AGENT_MODELS].sort((a, b) =>
   a.split("/")[1].localeCompare(b.split("/")[1]),
@@ -52,4 +55,12 @@ export class GameError extends Error {
   ) {
     super(message);
   }
+}
+
+export function publicAgentSettings(data: Record<string, unknown>) {
+  if (data.agentModel !== undefined && data.agentModel !== AGENT_MODEL)
+    throw new GameError("The agent model cannot be changed.");
+  if (data.agentEffort !== undefined && data.agentEffort !== PLAYER_AGENT_EFFORT)
+    throw new GameError("The agent reasoning effort cannot be changed.");
+  return { agentModel: AGENT_MODEL, agentEffort: PLAYER_AGENT_EFFORT };
 }

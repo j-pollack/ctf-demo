@@ -1,7 +1,7 @@
 import { claimGameSession, getGame } from "@/lib/games";
 import { getSession } from "@/lib/sessions";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
-import { GameError } from "@/lib/policy";
+import { GameError, publicAgentSettings } from "@/lib/policy";
 import { runGame } from "@/lib/runner";
 import { getModel } from "@/lib/inference";
 export const runtime = "nodejs";
@@ -13,8 +13,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       data = await body(request);
     if (typeof data.prompt !== "string" || !data.prompt.trim() || data.prompt.length > 8192)
       throw new GameError("Enter an instruction of up to 8,192 characters.");
-    if (data.agentModel !== undefined && typeof data.agentModel !== "string")
-      throw new GameError("Choose an agent model.");
+    const agent = publicAgentSettings(data);
     const gameId = (await params).id;
     if (
       data.sessionId !== undefined &&
@@ -23,18 +22,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       throw new GameError("Choose a valid session.");
     await getGame(gameId, user.id);
     if (data.sessionId !== undefined) await getSession(gameId, data.sessionId as string, user.id);
-    if (typeof data.agentModel === "string") await getModel(data.agentModel);
+    await getModel(agent.agentModel);
     const game = await claimGameSession(
       gameId,
       (data.sessionId as string | undefined) ?? gameId,
       user.id,
-      data.agentModel as string | undefined,
+      agent.agentModel,
       data.systemPrompt,
       {
         monitorDifficulty: data.monitorDifficulty,
         monitorReasoning: data.monitorReasoning,
       },
-      data.agentEffort,
+      agent.agentEffort,
     );
     const cancel = new AbortController();
     const responseDeadline = AbortSignal.timeout(230000);

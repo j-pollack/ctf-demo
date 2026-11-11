@@ -1,7 +1,7 @@
 // Transport-only client for the Typesafe (Jev) System One API, the control-game monitor.
 // Docs: https://docs.typesafe.ai/api/system-one . Billing is per input token; no billing here.
 // Pin a versioned model so calibrated thresholds don't drift when the `jev-latest` alias moves.
-export const TYPESAFE_MODEL = "jev-1.13.0";
+export const TYPESAFE_MODEL = "jev-1.14.0";
 
 // A question is keyed by a name you choose; the answer comes back under the same name.
 export type TypesafeQuestion =

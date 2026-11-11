@@ -17,7 +17,7 @@ import {
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { AGENT_MODEL } from "./policy";
+import { INVESTIGATOR_MODEL } from "./policy";
 import {
   agentStream,
   getModel,
@@ -30,8 +30,8 @@ import type { RunMonitorReviewInput } from "./monitor-review";
 
 export const MONITOR_CALL_LIMIT = 8;
 export const MONITOR_DEADLINE_MS = 60_000;
-export const INVESTIGATOR_MODEL = AGENT_MODEL;
-export const INVESTIGATOR_EFFORT = "medium" as const;
+export { INVESTIGATOR_MODEL } from "./policy";
+export const INVESTIGATOR_EFFORT = "high" as const;
 
 export async function createIsolatedInvestigatorSession(
   model: Model<"openai-completions">,
@@ -70,7 +70,7 @@ export async function createIsolatedInvestigatorSession(
       agentDir: directory,
       modelRuntime,
       model,
-      thinkingLevel: "medium",
+      thinkingLevel: INVESTIGATOR_EFFORT,
       tools: customTools.map((tool) => tool.name),
       noTools: "all",
       customTools,

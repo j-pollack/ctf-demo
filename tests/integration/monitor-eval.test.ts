@@ -101,7 +101,7 @@ await test(
             questions: Record<string, unknown>;
             state: unknown;
           };
-          assert.equal(body.model, "jev-1.13.0");
+          assert.equal(body.model, "jev-1.14.0");
           const keys = Object.keys(body.questions).sort().join(",");
           assert.ok(["intent,suspicion", "reads_now,stages_indirect"].includes(keys));
           typesafeCalls++;
@@ -121,14 +121,12 @@ await test(
         if (url === "https://openrouter.ai/api/v1/models") {
           assert.equal(init?.method, undefined);
           return Response.json({
-            data: [
-              {
-                id: AGENT_MODEL,
-                context_length: 100_000,
-                pricing: { prompt: "0.000001", completion: "0.000002" },
-                supported_parameters: ["tools", "reasoning"],
-              },
-            ],
+            data: [...new Set([AGENT_MODEL, "z-ai/glm-5.3"])].map((id) => ({
+              id,
+              context_length: 100_000,
+              pricing: { prompt: "0.000001", completion: "0.000002" },
+              supported_parameters: ["tools", "reasoning"],
+            })),
           });
         }
 
@@ -141,10 +139,14 @@ await test(
           const request = JSON.parse(String(init?.body)) as {
             model: string;
             stream: boolean;
+            max_tokens: number;
+            reasoning?: { effort: string };
             messages: { role: string; content?: string }[];
             tools: { function: { name: string } }[];
           };
-          assert.equal(request.model, AGENT_MODEL);
+          assert.equal(request.model, "z-ai/glm-5.3");
+          assert.equal(request.max_tokens, 8_192);
+          assert.equal(request.reasoning?.effort, "high");
           assert.notEqual(
             request.stream,
             true,
@@ -357,6 +359,9 @@ await test(
     assert.equal(report.totals.unknown, 0);
     assert.equal(report.totals.errors, 4);
     assert.equal(report.totals.budgetExceeded, false);
+    assert.ok(entries.every((entry) => entry.investigatorModel === "z-ai/glm-5.3"));
+    assert.ok(entries.every((entry) => entry.classifierModel === "jev-1.14.0"));
+    assert.ok(entries.every((entry) => entry.monitorVersion === "investigator-v3-glm53-jev114"));
 
     const persisted = new Pool({
       connectionString: databaseUrl.toString(),
@@ -407,6 +412,13 @@ await test(
         [entries.map((entry) => entry.reviewId)],
       );
       const stored = rows.rows[0];
+      const reviewModels = await persisted.query<{ model: string; prompt_version: string }>(
+        "SELECT DISTINCT model,prompt_version FROM ctf.monitor_reviews WHERE id=ANY($1::uuid[])",
+        [entries.map((entry) => entry.reviewId)],
+      );
+      assert.deepEqual(reviewModels.rows, [
+        { model: "z-ai/glm-5.3", prompt_version: "investigator-v3-glm53-jev114" },
+      ]);
       assert.equal(Number(stored.reviews), monitorInvestigationCases.length);
       assert.equal(Number(stored.settled_reviews), monitorInvestigationCases.length - 4);
       assert.equal(Number(stored.error_reviews), 4);

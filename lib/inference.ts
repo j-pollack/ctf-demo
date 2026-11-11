@@ -10,7 +10,7 @@ import {
 import { setTimeout as sleep } from "node:timers/promises";
 import { assertLease, reserveInference, settleInference, transaction, type GameRow } from "./games";
 import { db } from "./db";
-import { GameError, inputCeiling, MODELS } from "./policy";
+import { GameError, inputCeiling, MODELS, PLAYER_AGENT_EFFORT } from "./policy";
 import type { AgentEffort } from "./types";
 import { assertMonitorAuthorization } from "./run-lifecycle";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
@@ -57,10 +57,7 @@ export async function getModel(
     throw new GameError("The selected model is unavailable for this game.", 503);
   const reasoning = entry.supported_parameters.includes("reasoning");
   if (!reasoning)
-    throw new GameError(
-      "The selected agent model does not support readable reasoning. Choose a different agent.",
-      503,
-    );
+    throw new GameError("The configured model does not support readable reasoning.", 503);
   if (!entry.supported_parameters.includes("tools"))
     throw new GameError(
       "The selected agent model does not support the required request format.",
@@ -339,7 +336,7 @@ export async function collectStream(
 // answer budget — the failure where an agent "thinks" until stopReason=length with no tool call.
 export function reasoningParam(
   model: Pick<Model<"openai-completions">, "reasoning">,
-  effort: AgentEffort = "medium",
+  effort: AgentEffort = PLAYER_AGENT_EFFORT,
 ) {
   return model.reasoning ? { effort, exclude: false } : undefined;
 }
@@ -368,15 +365,12 @@ export async function infer(
     ...providerTranscript(messages, model.id),
     session_id: `${sessionId}:${role}${trusted.reviewId ? `:${trusted.reviewId}` : ""}`,
     ...(reasoning ? { reasoning } : {}),
-    provider: { require_parameters: true },
+    provider: { require_parameters: true, ...(role === "agent" ? { sort: "price" } : {}) },
     ...(onDelta ? { stream: true } : {}),
   };
   const ceiling = inputCeiling(payload);
   if (ceiling + 4096 > model.contextWindow)
-    throw new GameError(
-      "This conversation is too long for the selected model. Choose a model with a larger context window.",
-      400,
-    );
+    throw new GameError("This conversation is too long for the configured model.", 400);
   const reservation = await reserveInference(
     game.id,
     game.lease,

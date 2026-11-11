@@ -237,7 +237,7 @@ async function reviewCase(
     toolCallId: item.subject.toolCallId,
     command: item.subject.command,
     classifierSignals: { evaluation: "classifier_pending" },
-    model: modules.AGENT_MODEL,
+    model: modules.INVESTIGATOR_MODEL,
     promptVersion: modules.MONITOR_VERSION,
   });
   let signals: ClassifierRiskSignals | undefined;
@@ -375,7 +375,7 @@ async function reviewCase(
     retrievedReferences,
     retrievalCalls,
     classifierModel: modules.TYPESAFE_MODEL,
-    investigatorModel: modules.AGENT_MODEL,
+    investigatorModel: modules.INVESTIGATOR_MODEL,
     monitorVersion: modules.MONITOR_VERSION,
     settledMicrodollars: settled,
     heldMicrodollars: held,
@@ -461,7 +461,7 @@ export async function runLiveEvaluation(config: LiveEvaluationConfig): Promise<E
           retrievedReferences: [],
           retrievalCalls: 0,
           classifierModel: modules.TYPESAFE_MODEL,
-          investigatorModel: modules.AGENT_MODEL,
+          investigatorModel: modules.INVESTIGATOR_MODEL,
           monitorVersion: modules.MONITOR_VERSION,
           settledMicrodollars: 0,
           heldMicrodollars: 0,

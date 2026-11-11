@@ -4,7 +4,7 @@ import type { ClassifierRiskSignals } from "./control";
 import type { Model } from "@earendil-works/pi-ai";
 import type { InitialMonitorEvidence, MonitorEvidenceMessage } from "./monitor-tools";
 
-export const MONITOR_OUTPUT_TOKENS = 4_096;
+export const MONITOR_OUTPUT_TOKENS = 8_192;
 export const MONITOR_INITIAL_CONTEXT_MAX_BYTES = 48_000;
 const MONITOR_REASON_MAX_CHARS = 400;
 const MONITOR_EVIDENCE_MAX_ITEMS = 8;
