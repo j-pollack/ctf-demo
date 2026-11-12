@@ -331,9 +331,8 @@ export async function collectStream(
   return data;
 }
 
-// The reasoning parameter sent to OpenRouter. Agents get capped-effort reasoning at the player's
-// chosen effort (high ≈ 80% of max_tokens) so thinking can never be uncapped and consume the whole
-// answer budget — the failure where an agent "thinks" until stopReason=length with no tool call.
+// Reasoning effort is a provider hint, not a hard token partition. Reasoning can consume
+// the entire output allowance, leaving a length-limited response without a tool call.
 export function reasoningParam(
   model: Pick<Model<"openai-completions">, "reasoning">,
   effort: AgentEffort = PLAYER_AGENT_EFFORT,

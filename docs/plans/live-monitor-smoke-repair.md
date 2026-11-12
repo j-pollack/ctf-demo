@@ -58,3 +58,30 @@ Controlled inference with real Sprites passed the complete smoke suite in `.arti
 The full live-model suite FAILED in `.artifacts/live-smoke/full-scoped.log`. It passed the original shared-file, sibling-read, catch and remote-deletion scenario, plus direct protected-read rejection. Later, the fork's benign read stopped because the investigator reached its output-token limit. The original error surfaced, no fork agent command continued, and the shared-file assertion failed because the read never ran. Sprite environments and the disposable Postgres database were removed. This remains a failed deployment gate. No further paid retries or limit increases are part of this repair.
 
 Independent final review approved the repair with no P0–P2 code or security findings. The reviewer checked the full diff, real-component regression evidence, offline and integration gates, controlled live smoke and failed full live smoke. D1, R1 and R2 are satisfied. S1 is satisfied by reporting the two smoke outcomes separately, not by claiming the full live suite passed.
+
+## Output-limit follow-up
+
+The following sections record the earlier DeepSeek smoke configuration and its experiment. Current GLM settings and subsequent results are documented in [investigator reliability](investigator-reliability.md).
+
+Read-only provider metadata for failed generation `gen-1794375755-0O2GSXZCYuT5ugkZuh2t` confirms 4,096 native completion tokens, all 4,096 classified as reasoning, and finish reason `length`. The provider was InferenceNet. The response consumed the configured output ceiling without producing a verdict. This was not the eight-call limit or a swallowed runner error. No new inference was generated for this investigation.
+
+The application requests medium reasoning effort and a 4,096-token output ceiling. Effort is not a guarantee that answer tokens remain. OpenRouter documents that reasoning and visible output share the completion budget and that reasoning can consume it entirely: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens. The current inference comment overstates that guarantee.
+
+Keep the existing fail-closed behavior. Do not silently lower investigator effort or raise spending limits to obtain a passing smoke result. A bounded model-configuration evaluation must measure valid-decision completion and detection quality before changing the experiment configuration.
+
+The public model catalog inspected during follow-up lists `max`, `high`, `low` and `none` for `deepseek/deepseek-v4.1-flash`. It does not advertise `supports_max_tokens` for reasoning. The configured `medium` effort is absent from that list. The request was accepted, but the provider's interpretation of that unsupported effort is unknown. Any next evaluation should use a supported effort and explicitly compare detection quality. No runtime configuration has been changed.
+
+## Authorized larger-output experiment
+
+The user selected keeping medium reasoning and testing a larger output ceiling. Override only `MONITOR_OUTPUT_TOKENS` from 4,096 to 8,192 inside the smoke child process using an ignored module-load hook. The hook matches the exact source path and one original constant. Keep the on-disk runtime source unchanged to protect the existing dev server. Preserve the eight-call limit, deadline, validation, budget accounting and all smoke assertions. Run one full live smoke using the existing disposable-Postgres harness and real service credentials. Verify the production constant remains unchanged after the experiment. Do not adopt a higher production limit based on one successful run.
+
+- [x] Independently verify the bounded experiment and resource cleanup. The read-only reviewer approved the scoped harness and process-local override, with an offline assertion before paid execution.
+- [x] Run baseline checks and assert the experimental ceiling inside the isolated process, then one full live smoke. All 154 offline checks passed. The probe returned 8,192 only with the experimental loader and 4,096 without it.
+- [x] Record pass/fail, duration and available spend evidence, including any changed failure. See result below.
+- [x] Verify the original ceiling and final diff are unchanged by the experiment. No runtime configuration diff. Only this plan and the corrected inference comment changed.
+
+Success for this experiment means an honestly recorded result at the larger ceiling, with cleanup and the production configuration restored. A full-suite pass is stronger operational evidence, not proof of monitor detection quality. A failure is retained without a retry loop. The model catalog's unsupported medium effort remains an explicit limitation.
+
+The single 8,192-token smoke attempt PASSED with exit 0. Evidence: `.artifacts/live-smoke/full-8192.log`. Both the original shared-file scenario and the previously failing fork read passed. The script then passed its controlled capture/async-review/budget scenarios. Those controlled sections do not test live model detection quality. Sprite environments and the disposable Postgres container were removed.
+
+The log records 67 live completions with total reported model cost $0.027976978, excluding Sprite and classifier costs. The first-to-last completion span was 161.346 seconds, excluding setup and cleanup. The slowest live call took 18.702 seconds. One successful stochastic trial does not establish a reliability rate or show that the larger ceiling caused the pass. Production remains at 4,096 tokens, whose last full live smoke failed. Medium reasoning remains absent from the model's advertised supported efforts.
