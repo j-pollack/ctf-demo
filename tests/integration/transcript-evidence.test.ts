@@ -58,7 +58,7 @@ test(
       const { captureCommittedMonitorSnapshot } = await import("../../lib/monitor-snapshot");
       const { searchCommittedTranscripts, readCommittedTranscript, createCommittedEvidenceTools } =
         await import("../../lib/transcript-search");
-      const { monitorSessionAlias } = await import("../../lib/monitor-tools");
+      const { evidenceMessages, monitorSessionAlias } = await import("../../lib/monitor-tools");
       const owner = randomUUID();
       const other = randomUUID();
       const insert = async (id: string, ownerId: string, messages: unknown[]) => {
@@ -173,12 +173,16 @@ test(
         ).rows.map((row) => row.version),
         [1, 2, 3],
       );
-      const snapshot = await captureCommittedMonitorSnapshot({
+      const capturedSnapshot = await captureCommittedMonitorSnapshot({
         gameId: target,
         sessionId: target,
         epoch: 1,
         targetVersion: 1,
       });
+      const snapshot = {
+        ...capturedSnapshot,
+        snapshotId: "12000000-0000-4000-8000-000000000000",
+      };
       assert.equal(snapshot.searchableHistorySessions, 108);
       assert.equal(snapshot.omittedSessions, 0);
       const hits = await searchCommittedTranscripts(snapshot, needle, false);
@@ -215,6 +219,16 @@ test(
         observationRef: found.rows[0].observationRef,
       });
       assert.ok(exact.rows.length > 0);
+      const expectedRef = (row: {
+        sessionId: string;
+        index: number;
+        chunkCount: number;
+        chunkIndex: number;
+      }) =>
+        `msg:${snapshot.snapshotId}:${row.sessionId}:${found.rows[0].observationRef}:${row.index}${row.chunkCount > 1 ? `#${row.chunkIndex}` : ""}`;
+      for (const row of exact.rows) assert.equal(row.ref, expectedRef(row));
+      assert.ok(exact.rows.some((row: { index: number }) => row.index === 1));
+      assert.ok(exact.rows.some((row: { chunkCount: number }) => row.chunkCount > 1));
       const firstPage = await call(0, { query: "decoy" });
       assert.ok(firstPage.nextCursor);
       await assert.rejects(
@@ -230,6 +244,20 @@ test(
       assert.equal((await searchCommittedTranscripts(snapshot, reasoningMarker, true)).length, 1);
       const oldAlias = monitorSessionAlias(snapshot, old);
       const version2 = await readCommittedTranscript(snapshot, oldAlias, 2, false);
+      for (const row of version2) assert.equal(row.ref, expectedRef(row));
+      assert.deepEqual(
+        exact.rows.map((row: { ref: string }) => row.ref),
+        version2.map((row) => row.ref),
+      );
+      assert.equal(
+        evidenceMessages(
+          snapshot,
+          old,
+          [{ role: "user", content: "uncommitted", timestamp: 1 }],
+          false,
+        )[0].ref,
+        `msg:${snapshot.snapshotId}:${oldAlias}:0`,
+      );
       assert.ok(
         version2
           .filter((row) => row.index === 1)

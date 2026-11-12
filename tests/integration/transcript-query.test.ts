@@ -47,6 +47,7 @@ test(
         await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
       const { captureCommittedMonitorSnapshot } = await import("../../lib/monitor-snapshot");
       const { createTranscriptInvestigationTools } = await import("../../lib/transcript-query");
+      const { committedObservationRef } = await import("../../lib/transcript-query-projection");
       const { monitorSessionAlias } = await import("../../lib/monitor-tools");
       const owner = randomUUID();
       const target = randomUUID();
@@ -91,7 +92,9 @@ test(
         [
           { role: "system", content: "hidden target prompt", timestamp: 1 },
           user("target observation"),
-          ...Array.from({ length: 61 }, (_, index) => user(`target history message ${index}`)),
+          ...Array.from({ length: 61 }, (_, index) =>
+            user(index === 48 ? "x".repeat(3_000) : `target history message ${index}`),
+          ),
         ],
         1,
       );
@@ -176,7 +179,7 @@ test(
         Buffer.byteLength(JSON.stringify(tools.initialEvidence.currentTranscript), "utf8") <=
           8 * 1024,
       );
-      assert.ok(tools.initialEvidence.currentTranscript.length < 62);
+      assert.ok(tools.initialEvidence.currentTranscript.length < 63);
       assert.doesNotMatch(JSON.stringify(tools.initialEvidence), new RegExp(owner));
       assert.doesNotMatch(JSON.stringify(tools.initialEvidence), /hidden target prompt/);
       const searched = await call("query_transcripts", {
@@ -241,7 +244,99 @@ test(
         targetCount += next.rows.length;
         targetCursor = next.nextCursor;
       }
-      assert.equal(targetCount, 62);
+      assert.equal(targetCount, 63);
+      const fixedSnapshot = {
+        ...snapshot,
+        snapshotId: "12000000-0000-4000-8000-000000000000",
+      };
+      const canonicalTools = await createTranscriptInvestigationTools(fixedSnapshot, target, {
+        includeReasoning: false,
+        signal: new AbortController().signal,
+        onPage: () => {},
+        onFatal: (error) => failures.push(error),
+      });
+      const canonicalCall = async (args: {
+        sessionId: string;
+        observationRef?: string;
+        cursor?: string;
+      }) => {
+        const response = await canonicalTools.piTools
+          .find((tool) => tool.name === "read_transcript")!
+          .execute(randomUUID(), args, undefined, undefined, {} as never);
+        assert.equal(response.content[0]?.type, "text");
+        return JSON.parse(response.content[0].text);
+      };
+      const fixedAlias = monitorSessionAlias(fixedSnapshot, target);
+      const first = await canonicalCall({ sessionId: fixedAlias });
+      const canonicalRows = [...first.rows];
+      let nextCursor = first.nextCursor;
+      while (nextCursor) {
+        const next = await canonicalCall({ sessionId: fixedAlias, cursor: nextCursor });
+        canonicalRows.push(...next.rows);
+        nextCursor = next.nextCursor;
+      }
+      const expectedRef = (
+        row: { sessionId: string; index: number; chunkCount: number; chunkIndex: number },
+        observationRef: string,
+      ) =>
+        `msg:${fixedSnapshot.snapshotId}:${row.sessionId}:${observationRef}:${row.index}${row.chunkCount > 1 ? `#${row.chunkIndex}` : ""}`;
+      for (const row of canonicalRows)
+        assert.equal(row.ref, expectedRef(row, first.observationRef));
+      for (const index of [1, 12, 50]) assert.ok(canonicalRows.some((row) => row.index === index));
+      assert.deepEqual(
+        canonicalRows.filter((row) => row.index === 50).map((row) => row.chunkIndex),
+        [0, 1],
+      );
+      for (const row of canonicalTools.initialEvidence.currentTranscript) {
+        assert.equal(
+          row.ref,
+          expectedRef(row, canonicalTools.initialEvidence.targetObservationRef),
+        );
+        assert.ok(canonicalRows.some((readRow) => readRow.ref === row.ref));
+      }
+      const initialCollisionSnapshot = {
+        ...snapshot,
+        snapshotId: "50000000-0000-4000-8000-000000000000",
+      };
+      const initialCollisionTools = await createTranscriptInvestigationTools(
+        initialCollisionSnapshot,
+        target,
+        {
+          includeReasoning: false,
+          signal: new AbortController().signal,
+          onPage: () => {},
+          onFatal: (error) => failures.push(error),
+        },
+      );
+      const initialCollisionRows = initialCollisionTools.initialEvidence.currentTranscript.filter(
+        (row) => row.index === 50,
+      );
+      assert.deepEqual(
+        initialCollisionRows.map((row) => row.chunkIndex),
+        [0, 1],
+      );
+      for (const row of initialCollisionRows)
+        assert.equal(
+          row.ref,
+          `msg:${initialCollisionSnapshot.snapshotId}:${row.sessionId}:${initialCollisionTools.initialEvidence.targetObservationRef}:50#${row.chunkIndex}`,
+        );
+      await initialCollisionTools.dispose();
+      const oldAlias = monitorSessionAlias(fixedSnapshot, history);
+      const oldObservation = await canonicalCall({
+        sessionId: oldAlias,
+        observationRef: committedObservationRef(fixedSnapshot, history, 2),
+      });
+      assert.equal(oldObservation.ok, true);
+      for (const row of oldObservation.rows)
+        assert.equal(row.ref, expectedRef(row, oldObservation.observationRef));
+      const repairedHistory = await canonicalCall({
+        sessionId: oldAlias,
+        observationRef: committedObservationRef(fixedSnapshot, history, 3),
+      });
+      assert.equal(repairedHistory.ok, true);
+      for (const row of repairedHistory.rows)
+        assert.equal(row.ref, expectedRef(row, repairedHistory.observationRef));
+      await canonicalTools.dispose();
       await write(history, [user("post-capture private version")], 5);
       const future = await call("query_transcripts", {
         sql: "SELECT text FROM messages WHERE text LIKE '%post-capture%'",

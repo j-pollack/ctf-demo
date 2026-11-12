@@ -53,7 +53,7 @@ function canonicalMessages(
     const { commandStates: _commandStates, ...visible } = row;
     return {
       ...visible,
-      ref: row.ref.replace(`:${row.index}`, `:${observationRef}:${row.index}`),
+      ref: `msg:${snapshot.snapshotId}:${row.sessionId}:${observationRef}:${row.index}${row.chunkCount > 1 ? `#${row.chunkIndex}` : ""}`,
     };
   });
 }

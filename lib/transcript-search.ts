@@ -195,6 +195,7 @@ export async function readCommittedTranscript(
   const targetReasoning =
     manifest(snapshot).find((item) => item.sessionId === snapshot.targetSessionId)
       ?.reasoningVisible ?? false;
+  const committedRef = observationRef(snapshot, entry.sessionId, version);
   return evidenceMessages(
     snapshot,
     entry.sessionId,
@@ -202,10 +203,7 @@ export async function readCommittedTranscript(
     includeReasoning && targetReasoning && selected.reasoningVisible,
   ).map((row) => ({
     ...row,
-    ref: row.ref.replace(
-      `:${row.index}`,
-      `:${observationRef(snapshot, entry.sessionId, version)}:${row.index}`,
-    ),
+    ref: `msg:${snapshot.snapshotId}:${row.sessionId}:${committedRef}:${row.index}${row.chunkCount > 1 ? `#${row.chunkIndex}` : ""}`,
   }));
 }
 
