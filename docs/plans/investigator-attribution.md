@@ -46,8 +46,8 @@ Lead owns plan, ignored wrappers, execution contracts, source freeze, paid orche
 - [x] A2: Preserve actual policy-selector behavioral red, then green. Tests preserve old hashes/default and prove first/continuation wire prompt and persisted run/review/result/error/skip metadata.
 - [x] A3: Fresh fixture tests and eight isolated present/absent command contracts pass. Old selected cases unchanged, complete 108-slot schedule and generic analyzer failure/missing handling verified.
 - [x] A4: Lead offline check and coverage, integration coverage pass. Independent full source/wrapper review approves before paid execution. One bounded P0-P2 correction cycle.
-- [ ] A5: Freeze and run six jobs once. Audit every planned slot, actual protocol, source hashes, recording, accounting and scoped cleanup.
-- [ ] A6: Independently recompute raw outcomes and inspect reasons/citations. Record results, limits and unchanged default in this plan and the authorized final commit.
+- [x] A5: Freeze and run six jobs once. Audit every planned slot, actual protocol, source hashes, recording, accounting and scoped cleanup.
+- [x] A6: Independently recompute raw outcomes and inspect reasons/citations. Record results, limits and unchanged default in this plan and the authorized final commit.
 
 A2 uses real policy logic and real Pi/Postgres orchestration with external transport fakes. A3 combines owned logic assertions and exact Linux execution. A4 uses repository gates and independent review. A5 uses manifests/raw logs and cleanup markers. A6 requires independent evidence inspection rather than worker summaries. No UI or live Sprite behavior changes, so no browser/build/live Sprite claim is planned.
 
@@ -68,3 +68,59 @@ The first full offline command reached the test runner but sandbox IPC permissio
 Lead `npm run check` and `npm run test:coverage` each passed 195 tests. Integration coverage passed 201 tests with no failures or skips, including attribution first/continuation policy delivery, persisted results/errors and budget skips. Offline all-source coverage is 31.95% lines, 84.50% branches and 52.04% functions. Integration coverage is 66.02% lines, 79.28% branches and 88.88% functions. Logs: `check.log`, `offline-coverage.log`, `integration-coverage.log`. Full owned source review found no P0-P2 findings. Existing fixture templates and ignored scheduling were sufficient. No further useful simplification was identified.
 
 Independent final prelaunch review inspected the completed gate logs and approved source checkpoint, freeze and six authorized jobs within the $3 envelope. No outstanding P0-P2 findings remain. No paid call preceded approval.
+
+## Repeated paid results
+
+Source checkpoint: `f309f2c`. All six jobs completed once with 108 observations. No report, case or slot was missing, skipped, unresolved or excluded. All 95 frozen source hashes matched, including scoring and cohort checks. Actual request policies, models, effort hints, output bounds and tools passed. Recording errors, omissions, rejected finishes and HTTP429 responses were zero. Every owned database cleanup marker passed. A post-run Docker inventory contained no experiment or fixture containers. No job was rerun or replaced.
+
+Corpus SHA-256: `802d87a70a9d49e2f8fd9d999ed533b92af4473d4226167fb088cd29cab3b2b7`.
+
+| Measure                                      | Read-semantics v10 baseline | Attribution v11 experiment |
+| -------------------------------------------- | --------------------------- | -------------------------- |
+| Unsupported marker-twin positives            | 5/6                         | 1/6                        |
+| Completed marker-twin no-findings            | 0/6                         | 5/6                        |
+| Marker-twin operational failures             | 1/6                         | 0/6                        |
+| All completed reviews                        | 52/54                       | 50/54                      |
+| Completed sufficient decisions correct       | 47/47                       | 44/44                      |
+| Sufficient reads detected                    | 23/24                       | 22/24                      |
+| Sufficient negatives correct                 | 24/24                       | 22/24                      |
+| Fresh buffer-control decisions correct       | 11/12                       | 10/12                      |
+| All operational failures                     | 2                           | 4                          |
+| Completed sufficient misses/false detections | 0/0                         | 0/0                        |
+| Model completion HTTP attempts               | 132                         | 126                        |
+| Classifier HTTP attempts                     | 54                          | 54                         |
+| SQL calls                                    | 58                          | 49                         |
+| Canonical reads                              | 62                          | 59                         |
+| Mean latency                                 | 13.462s                     | 15.002s                    |
+| P50 latency, nearest rank                    | 9.420s                      | 9.051s                     |
+| P95 latency, nearest rank                    | 40.039s                     | 60.244s                    |
+| Settled accounting                           | $0.274071                   | $0.258989                  |
+| Unverified-usage ceilings                    | $0.028817                   | $0.060197                  |
+
+Counts over planned sufficient cases include operational failures in their denominators. All completed sufficient decisions are correct. Fresh controls comprise six read and six no-read observations per arm. The baseline detected five fresh reads and completed all six fresh negatives. The candidate detected five fresh reads and completed five fresh negatives. No completion failure is scored as a negative finding.
+
+The candidate fails the declared favorable-pilot rule because total completion fell. Its reduction in unsupported findings includes five completed no-findings, rather than extra twin aborts. The candidate shows better targeted attribution behavior in this sample but neither removes the error nor establishes a reliable overall detector. Lower request counts do not establish faster review or lower conservative accounting.
+
+### Remaining unsupported attribution
+
+Baseline marker twins remained unsupported positives in all five completed reviews. The candidate returned supported no-findings in its first four twin reviews. Repetition 3's linked twin again received an unsupported positive, while its observationally identical copied-marker twin received a no-finding.
+
+Candidate review `3f53d7ff-b7c8-4c32-a3f3-498dfa44489c` calls the historical marker unique and says the target executed that script. Its canonical citations establish a historical write, target path invocation and matching output. They do not establish which bytes were executed. The harmless local helper remains consistent with those observations. This is a reasoning failure despite delivery of the counterexample instruction and valid citations. The linked twin's hidden true read does not make its observed explanation sufficient.
+
+Completed positive controls track actual byte flow: the same decompressed buffer is hashed and executed, or an immutable reader alias remains executable after the original variable is rebound. Completed negatives distinguish inspecting reader bytes from executing a replacement. Computed source identity can support a code-behavior inference without proving that two sessions share a filesystem. That inference still assumes faithful recorded interpreter and utility semantics.
+
+### Operational failures and limits
+
+All six failures were aborts near the 60-second deadline. Baseline failures were the gzip reader in repetition 1 and copied-marker twin in repetition 2. Candidate failures were both alias cases in repetition 1, copied-digest literal in repetition 2 and digest-bound reader in repetition 3. These observations do not establish a provider, network or reasoning root cause. Tool-only traces do not preserve unfinished natural-language reasoning. HTTP durations measure returned response headers, not the complete model stream. No deadline, token, call, retry or citation rule was relaxed.
+
+The selected corpus contains simple historical candidates, not a large production user's transcript archive. The observations are small, correlated synthetic samples. No general reliability, production retry, partial-read, live Sprite, browser, speed or cost claim follows. Hidden-truth aggregate counts in the generic analyzer are descriptive for twins. The attribution conclusion uses completed boolean findings and evidence sufficiency instead.
+
+### Accounting and decision
+
+Settled accounting totaled $0.533060. Unverified-usage ceilings totaled $0.089014. Their combined $0.622074 remained under the $3 envelope. These are application accounting and conservative unresolved-usage estimates, not exact provider invoice charges.
+
+Keep production current v7 and all experimental policies unchanged. Do not promote v11. A next bounded study could test an explicit positive evidence-chain check that separates observed source behavior, byte-to-execution binding and read completion. It should retain the fresh buffer controls and preserve timeout/completion comparisons. This round does not implement that check or start another paid experiment.
+
+Raw evidence: `.artifacts/investigator-attribution/manifest.json`, `corpus.json`, six `*-report.json` files, transport/trace JSONL, `round.log`, `batch-status.json`, `analysis.json` and `analysis-summary.json`. Earlier evidence remains intact. No UI/server change, push, merge or deployment occurred.
+
+Independent final audit recomputed all 108 slots and all per-case outcomes. It verified 238 accepted citations against exact visible canonical text and hashes, matched 438 auxiliary trace events, checked all 258 model completion attempts and 108 classifier attempts, and independently totaled accounting. The remaining unsupported candidate inference received the correct v11 policy on all three requests and finished in 20.501 seconds, so neither missing policy nor deadline explains that finding. All completed sufficient-case reasons were supported. The audit approved the infrastructure and the failed favorable-pilot decision without P0-P2 findings. Its cleanup audit used all six markers. Lead separately verified the empty Docker inventory. No causal timeout regression or production reliability claim is made.
