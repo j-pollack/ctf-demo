@@ -6,6 +6,11 @@ import {
   type InvestigationObserver,
 } from "../lib/investigation-trace";
 import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
+import {
+  resolveFlagReadPolicy,
+  type FlagReadPolicy,
+  type FlagReadSearchStrategy,
+} from "../lib/flag-read-policy";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
 import {
   loadReviewGame,
@@ -102,6 +107,7 @@ async function reviewCase(
   pool: Pool,
   item: FlagReadCase,
   workspace: SeededWorkspace,
+  selectedPolicy: FlagReadPolicy,
   modules: {
     policy: typeof import("../lib/policy");
     typesafe: typeof import("../lib/typesafe");
@@ -136,7 +142,7 @@ async function reviewCase(
       claim.sessionId,
       item.snapshot.revision,
       modules.policy.INVESTIGATOR_MODEL,
-      modules.control.FLAG_READ_MONITOR_VERSION,
+      selectedPolicy.monitorVersion,
       claim.jobId,
       claim.claimToken,
     ],
@@ -149,7 +155,9 @@ async function reviewCase(
   let retrievedReferences: string[] | undefined;
   let retrievalCalls: number | undefined;
   let calls: number | undefined;
-  let monitorVersion: string | undefined;
+  let monitorVersion = selectedPolicy.monitorVersion;
+  let promptHash = selectedPolicy.promptHash;
+  let searchStrategy: FlagReadSearchStrategy = selectedPolicy.searchStrategy;
   let investigatorModel: string | undefined;
   let reviewPersisted = false;
   const trace = createInvestigationTraceRecorder();
@@ -204,8 +212,14 @@ async function reviewCase(
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
       },
-      { observer },
+      { observer, searchStrategy: selectedPolicy.searchStrategy },
     );
+    if (
+      result.monitorVersion !== selectedPolicy.monitorVersion ||
+      result.promptHash !== selectedPolicy.promptHash ||
+      result.searchStrategy !== selectedPolicy.searchStrategy
+    )
+      throw new Error(`${item.id}: dispatched investigator policy does not match seeded policy.`);
     reason = result.reason;
     evidence = result.evidence;
     const decision = modules.investigator.detectorToReviewDecision(result);
@@ -215,6 +229,8 @@ async function reviewCase(
     retrievalCalls = result.retrievalCalls;
     calls = result.calls;
     monitorVersion = result.monitorVersion;
+    promptHash = result.promptHash;
+    searchStrategy = result.searchStrategy;
     investigatorModel = result.investigatorModel;
     if (detected)
       await modules.finalization.catchAsyncRun(claim, reviewId, decision, classifier.suspicion);
@@ -287,6 +303,8 @@ async function reviewCase(
     retrievalCalls,
     calls,
     monitorVersion,
+    promptHash,
+    searchStrategy,
     investigatorModel,
   };
 }
@@ -295,7 +313,9 @@ export async function runFlagReadLiveEvaluation(
   config: LiveEvaluationConfig,
   cases: readonly FlagReadCase[] = flagReadCases,
   testObserver?: InvestigationObserver,
+  options: { searchStrategy?: FlagReadSearchStrategy } = {},
 ): Promise<FlagReadEntry[]> {
+  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy);
   const { Pool } = await import("pg");
   const pool = new Pool({
     connectionString: config.databaseUrl,
@@ -358,9 +378,13 @@ export async function runFlagReadLiveEvaluation(
           flagReadDetected: null,
           investigationComplete: null,
           operationalError: "Evaluation budget exhausted before classifier admission.",
+          skipped: true,
           latencyMs: null,
           settledMicrodollars: 0,
           heldMicrodollars: 0,
+          monitorVersion: selectedPolicy.monitorVersion,
+          promptHash: selectedPolicy.promptHash,
+          searchStrategy: selectedPolicy.searchStrategy,
         });
         continue;
       }
@@ -370,9 +394,9 @@ export async function runFlagReadLiveEvaluation(
         remaining,
         policy.AGENT_MODEL,
         typesafe.TYPESAFE_MODEL,
-        control.FLAG_READ_MONITOR_VERSION,
+        selectedPolicy.monitorVersion,
       );
-      const entry = await reviewCase(pool, item, workspace, modules, testObserver);
+      const entry = await reviewCase(pool, item, workspace, selectedPolicy, modules, testObserver);
       entries.push(entry);
       usedMicrodollars += entry.settledMicrodollars + entry.heldMicrodollars;
     }

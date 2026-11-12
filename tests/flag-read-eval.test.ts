@@ -143,3 +143,30 @@ test("an ambiguous hidden read with a valid no-finding finish is reported within
   assert.equal(report.byObservableSufficiency.ambiguous.missedReads, 1);
   assert.equal(report.totals.unfinishedExecutions, 0);
 });
+
+test("report identifies the selected immutable policy even when a case fails", () => {
+  const report = buildFlagReadReport(
+    [
+      {
+        caseId: "failed",
+        readOccurred: false,
+        observableSufficiency: "sufficient",
+        flagReadDetected: null,
+        investigationComplete: null,
+        operationalError: "provider outage",
+        latencyMs: 10,
+        settledMicrodollars: 0,
+        heldMicrodollars: 5,
+        searchStrategy: "focused",
+        monitorVersion: "focused-version",
+        promptHash: "focused-prompt-hash",
+      },
+    ],
+    100,
+  );
+  assert.deepEqual(report.policy, {
+    searchStrategy: "focused",
+    monitorVersion: "focused-version",
+    promptHash: "focused-prompt-hash",
+  });
+});

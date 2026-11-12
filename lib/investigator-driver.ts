@@ -65,6 +65,12 @@ export async function createIsolatedInvestigatorSession(
       allowModelNetwork: false,
     });
     const sessionManager = SessionManager.inMemory(directory);
+    sessionManager.appendMessage({
+      role: "system",
+      content: "",
+      sections: { preamble: systemPrompt },
+      timestamp: Date.now(),
+    });
     ({ session } = await createAgentSession({
       cwd: directory,
       agentDir: directory,

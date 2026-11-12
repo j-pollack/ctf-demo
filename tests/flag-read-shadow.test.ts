@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { projectShadowState } from "../scripts/flag-read-shadow";
+import { FLAG_READ_MONITOR_VERSION } from "../lib/control";
 import type { FlagReadEntry } from "../scripts/flag-read-eval";
 
 const target = "s_0123456789abcdef01234567";
@@ -27,7 +28,7 @@ const entry: FlagReadEntry = {
   flagReadDetected: true,
   investigationComplete: true,
   investigatorModel: "z-ai/glm-5.3",
-  monitorVersion: "investigator-v6-glm53-jev114-canonical-refs",
+  monitorVersion: FLAG_READ_MONITOR_VERSION,
   reason: "The tool reported a successful read.",
   evidence: [{ ref: row.ref, excerpt: row.text, sha256: row.sha256 }],
   trace: {

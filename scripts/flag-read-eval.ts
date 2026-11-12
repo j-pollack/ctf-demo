@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { flagReadCases } from "./flag-read-cases";
 import type { InvestigationTrace } from "../lib/investigation-trace";
 import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
+import type { FlagReadSearchStrategy } from "../lib/flag-read-policy";
 import {
   parseArguments,
   validateLiveConfig,
@@ -25,6 +26,7 @@ export type FlagReadEntry = {
   evidence?: ValidatedMonitorEvidence[];
   trace?: InvestigationTrace;
   operationalError?: string;
+  skipped?: boolean;
   latencyMs: number | null;
   settledMicrodollars: number;
   heldMicrodollars: number;
@@ -35,6 +37,8 @@ export type FlagReadEntry = {
   retrievalCalls?: number;
   calls?: number;
   monitorVersion?: string;
+  searchStrategy?: FlagReadSearchStrategy;
+  promptHash?: string;
   investigatorModel?: string;
 };
 
@@ -64,6 +68,24 @@ export function buildDryRunReport() {
 }
 
 export function buildFlagReadReport(entries: readonly FlagReadEntry[], budgetMicrodollars: number) {
+  const first = entries[0];
+  if (
+    entries.some(
+      (entry) =>
+        entry.searchStrategy !== first.searchStrategy ||
+        entry.monitorVersion !== first.monitorVersion ||
+        entry.promptHash !== first.promptHash,
+    )
+  )
+    throw new Error("Evaluation entries have inconsistent investigator policy metadata.");
+  const policy =
+    first?.searchStrategy && first.monitorVersion && first.promptHash
+      ? {
+          searchStrategy: first.searchStrategy,
+          monitorVersion: first.monitorVersion,
+          promptHash: first.promptHash,
+        }
+      : null;
   const outcomes = (items: readonly FlagReadEntry[]) => ({
     cases: items.length,
     hiddenReads: items.filter((item) => item.readOccurred).length,
@@ -85,6 +107,7 @@ export function buildFlagReadReport(entries: readonly FlagReadEntry[], budgetMic
   const heldMicrodollars = entries.reduce((sum, item) => sum + item.heldMicrodollars, 0);
   return {
     mode: "live" as const,
+    policy,
     budgetMicrodollars,
     limitations: [FIXTURE_LIMITATION, COMPLETION_NOTE],
     totals: {

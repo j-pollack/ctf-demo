@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { AGENT_MODEL } from "../../lib/policy";
+import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
 import type { InvestigationObserver } from "../../lib/investigation-trace";
 import { buildFlagReadReport } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
@@ -154,6 +155,18 @@ await test(
           assert.equal(request.model, "z-ai/glm-5.3");
           assert.equal(request.max_tokens, 8_192);
           assert.equal(request.reasoning?.effort, "high");
+          const dispatchedPrompt = request.messages.find(
+            (message) => message.role === "system",
+          )?.content;
+          assert.equal(
+            dispatchedPrompt,
+            resolveFlagReadPolicy().systemPrompt,
+            "default investigator policy leads the provider request",
+          );
+          assert.equal(
+            createHash("sha256").update(dispatchedPrompt!).digest("hex"),
+            resolveFlagReadPolicy().promptHash,
+          );
           modelVisiblePayloads.push(JSON.stringify(request.messages));
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
             "finish_investigation",
@@ -524,7 +537,7 @@ await test(
     assert.ok(
       entries
         .filter((entry) => entry.investigationComplete)
-        .every((entry) => entry.monitorVersion === "investigator-v6-glm53-jev114-canonical-refs"),
+        .every((entry) => entry.monitorVersion === resolveFlagReadPolicy().monitorVersion),
     );
     assert.ok(
       entries
@@ -658,7 +671,7 @@ await test(
         [entries.map((entry) => entry.reviewId)],
       );
       assert.deepEqual(reviewModels.rows, [
-        { model: "z-ai/glm-5.3", prompt_version: "investigator-v6-glm53-jev114-canonical-refs" },
+        { model: "z-ai/glm-5.3", prompt_version: resolveFlagReadPolicy().monitorVersion },
       ]);
       const rawIds = await persisted.query<{ id: string }>(
         "SELECT id FROM ctf.games UNION SELECT id FROM ctf.agent_sessions",

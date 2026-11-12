@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { Pool } from "pg";
+import { INVESTIGATOR_SYSTEM_PROMPT } from "../../lib/monitor-evidence";
 import { AGENT_MODEL } from "../../lib/policy";
 import { buildEvaluationReport } from "../../scripts/monitor-investigate-eval";
 import { runLiveEvaluation } from "../../scripts/monitor-investigate-eval-live";
@@ -61,6 +63,7 @@ await test(
     let requestedHistoricalTranscript = false;
     let observedHistoricalToolResult = false;
     let historicalRetrievalStage = 0;
+    let continuationCwdSeen = false;
     const reviewPrompts: string[] = [];
     const reviewAttempts = new Map<string, number>();
     const modelVisiblePayloads: string[] = [];
@@ -152,7 +155,23 @@ await test(
             true,
             "Investigator uses the actual buffered review path",
           );
-          assert.ok(request.tools.some((tool) => tool.function.name === "finish_review"));
+          const systems = request.messages.filter((message) => message.role === "system");
+          assert.equal(systems[0]?.content, INVESTIGATOR_SYSTEM_PROMPT);
+          const cwdPrefix = `<cwd>\n${tmpdir()}/tripwire-monitor-`;
+          for (const system of systems.slice(1)) {
+            const content = system.content ?? "";
+            if (!content) continue;
+            assert.ok(content.startsWith(cwdPrefix) && content.endsWith("\n</cwd>"));
+            assert.match(content.slice(cwdPrefix.length, -"\n</cwd>".length), /^[A-Za-z0-9_-]+$/);
+            continuationCwdSeen = true;
+          }
+          assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
+            "finish_review",
+            "list_sessions",
+            "read_evidence",
+            "read_transcript",
+            "search_transcripts",
+          ]);
           modelVisiblePayloads.push(
             JSON.stringify({ messages: request.messages, tools: request.tools }),
           );
@@ -344,6 +363,7 @@ await test(
     assert.match(entries[7].operationalError ?? "", /503/);
     assert.equal(investigatorCalls, monitorInvestigationCases.length + 14);
     assert.ok(requestedHistoricalTranscript);
+    assert.ok(continuationCwdSeen, "later Pi requests include only the isolated cwd section");
     assert.ok(observedHistoricalToolResult);
     assert.equal(providerFailures, 2);
     assert.ok(entries.some((entry) => entry.expected === "attack" && entry.verdict === "block"));
@@ -361,7 +381,11 @@ await test(
     assert.equal(report.totals.budgetExceeded, false);
     assert.ok(entries.every((entry) => entry.investigatorModel === "z-ai/glm-5.3"));
     assert.ok(entries.every((entry) => entry.classifierModel === "jev-1.14.0"));
-    assert.ok(entries.every((entry) => entry.monitorVersion === "investigator-v3-glm53-jev114"));
+    assert.ok(
+      entries.every(
+        (entry) => entry.monitorVersion === "investigator-v4-glm53-jev114-policy-delivery",
+      ),
+    );
 
     const persisted = new Pool({
       connectionString: databaseUrl.toString(),
@@ -417,7 +441,7 @@ await test(
         [entries.map((entry) => entry.reviewId)],
       );
       assert.deepEqual(reviewModels.rows, [
-        { model: "z-ai/glm-5.3", prompt_version: "investigator-v3-glm53-jev114" },
+        { model: "z-ai/glm-5.3", prompt_version: "investigator-v4-glm53-jev114-policy-delivery" },
       ]);
       assert.equal(Number(stored.reviews), monitorInvestigationCases.length);
       assert.equal(Number(stored.settled_reviews), monitorInvestigationCases.length - 4);
