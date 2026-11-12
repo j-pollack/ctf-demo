@@ -3,6 +3,7 @@ import type { FlagReadSearchStrategy } from "../lib/flag-read-policy";
 import type { FlagReadEntry } from "./flag-read-eval";
 import { heldoutFlagReadCases } from "./flag-read-heldout-cases";
 import { provenanceFlagReadCases } from "./flag-read-provenance-cases";
+import { processReadFlagReadCases } from "./flag-read-process-read-cases";
 
 export type ReliabilityJob = {
   repetition: number;
@@ -10,28 +11,36 @@ export type ReliabilityJob = {
   cases: readonly FlagReadCase[];
 };
 
+function pairedSchedule(
+  cases: readonly FlagReadCase[],
+  arm: FlagReadSearchStrategy,
+  step: number,
+): ReliabilityJob[] {
+  return [1, 2, 3].flatMap((repetition) => {
+    const offset = (repetition - 1) * step;
+    const rotated = [...cases.slice(offset), ...cases.slice(0, offset)];
+    const arms: FlagReadSearchStrategy[] =
+      repetition % 2 === 1 ? ["current", arm] : [arm, "current"];
+    return arms.map((searchStrategy) => ({ repetition, searchStrategy, cases: [...rotated] }));
+  });
+}
+
 export function buildReliabilitySchedule(cases: readonly FlagReadCase[]): ReliabilityJob[] {
   if (cases.length !== 18 || new Set(cases.map((item) => item.id)).size !== cases.length)
     throw new Error("Reliability schedule requires eighteen distinct cases.");
-  return [1, 2, 3].flatMap((repetition) => {
-    const offset = (repetition - 1) * 6;
-    const rotated = [...cases.slice(offset), ...cases.slice(0, offset)];
-    const arms: FlagReadSearchStrategy[] =
-      repetition % 2 === 1 ? ["current", "focused"] : ["focused", "current"];
-    return arms.map((searchStrategy) => ({ repetition, searchStrategy, cases: [...rotated] }));
-  });
+  return pairedSchedule(cases, "focused", 6);
 }
 
 export function buildProvenanceSchedule(cases: readonly FlagReadCase[]): ReliabilityJob[] {
   if (cases.length !== 22 || new Set(cases.map((item) => item.id)).size !== cases.length)
     throw new Error("Provenance schedule requires twenty-two distinct cases.");
-  return [1, 2, 3].flatMap((repetition) => {
-    const offset = (repetition - 1) * 7;
-    const rotated = [...cases.slice(offset), ...cases.slice(0, offset)];
-    const arms: FlagReadSearchStrategy[] =
-      repetition % 2 === 1 ? ["current", "provenance"] : ["provenance", "current"];
-    return arms.map((searchStrategy) => ({ repetition, searchStrategy, cases: [...rotated] }));
-  });
+  return pairedSchedule(cases, "provenance", 7);
+}
+
+export function buildReadSemanticsSchedule(cases: readonly FlagReadCase[]): ReliabilityJob[] {
+  if (cases.length !== 26 || new Set(cases.map((item) => item.id)).size !== cases.length)
+    throw new Error("Read-semantics schedule requires twenty-six distinct cases.");
+  return pairedSchedule(cases, "read-semantics", 8);
 }
 
 export type ReliabilityRun = {
@@ -54,7 +63,7 @@ type Sample = {
   repetition: number;
   searchStrategy: FlagReadSearchStrategy;
   caseId: string;
-  cohort: "original" | "heldout" | "fresh-heldout";
+  cohort: "original" | "heldout" | "fresh-heldout" | "read-semantics-heldout";
   observableSufficiency: FlagReadCase["observableSufficiency"];
   outcome: Outcome;
   latencyMs: number | null;
@@ -138,6 +147,7 @@ export function analyzeReliabilityRuns(
   }
   const heldoutIds = new Set(heldoutFlagReadCases.map((item) => item.id));
   const freshHeldoutIds = new Set(provenanceFlagReadCases.map((item) => item.id));
+  const readSemanticsHeldoutIds = new Set(processReadFlagReadCases.map((item) => item.id));
   const samples: Sample[] = schedule.flatMap((job) => {
     const entries = observed.get(jobKey(job.repetition, job.searchStrategy))?.entries ?? [];
     const byId = new Map(entries.map((entry) => [entry.caseId, entry]));
@@ -159,11 +169,13 @@ export function analyzeReliabilityRuns(
         repetition: job.repetition,
         searchStrategy: job.searchStrategy,
         caseId: item.id,
-        cohort: freshHeldoutIds.has(item.id)
-          ? ("fresh-heldout" as const)
-          : heldoutIds.has(item.id)
-            ? ("heldout" as const)
-            : ("original" as const),
+        cohort: readSemanticsHeldoutIds.has(item.id)
+          ? ("read-semantics-heldout" as const)
+          : freshHeldoutIds.has(item.id)
+            ? ("fresh-heldout" as const)
+            : heldoutIds.has(item.id)
+              ? ("heldout" as const)
+              : ("original" as const),
         observableSufficiency: item.observableSufficiency,
         outcome: outcome(item, entry),
         latencyMs: entry?.latencyMs ?? null,

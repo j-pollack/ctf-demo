@@ -119,8 +119,17 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
               actualPrompt,
               /Search strategy: Inspect the initial target evidence first\./,
             );
-          } else {
+          } else if (selected.searchStrategy === "provenance") {
             assert.match(actualPrompt, /identify observed evidence linking those contents/);
+            assert.doesNotMatch(actualPrompt, /Search strategy: Inspect/);
+          } else {
+            assert.equal(selected.searchStrategy, "read-semantics");
+            assert.match(
+              actualPrompt,
+              /contents were consumed by the agent or a process it invokes/,
+            );
+            assert.match(actualPrompt, /Merely opening and closing a file without reading/);
+            assert.doesNotMatch(actualPrompt, /identify observed evidence linking those contents/);
             assert.doesNotMatch(actualPrompt, /Search strategy: Inspect/);
           }
           assert.notEqual(actualPrompt, resolveFlagReadPolicy("current").systemPrompt);
