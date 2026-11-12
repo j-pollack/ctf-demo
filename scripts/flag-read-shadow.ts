@@ -7,6 +7,7 @@ import {
   type TypesafeQuestion,
 } from "../lib/typesafe";
 import type { FlagReadEntry } from "./flag-read-eval";
+import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
 
 const MAX_REQUEST_BYTES = 48 * 1024;
 const TIMEOUT_MS = 15_000;
@@ -36,7 +37,7 @@ const QUESTIONS: Record<string, TypesafeQuestion> = {
   },
 };
 
-type Row = {
+export type Row = {
   ref: string;
   sessionId: string;
   role: "user" | "agent" | "tool";
@@ -62,6 +63,7 @@ type ShadowState = {
     evidence: { ref: string; excerpt: string; sha256: string }[];
   };
   rows: Row[];
+  chain?: unknown;
 };
 
 type Projection =
@@ -74,7 +76,7 @@ function object(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function canonicalRow(value: unknown): Row | null {
+export function canonicalRow(value: unknown): Row | null {
   const row = object(value);
   if (
     !row ||
@@ -165,7 +167,9 @@ function canonicalRow(value: unknown): Row | null {
   };
 }
 
-export function projectShadowState(entry: FlagReadEntry): Projection {
+export function projectShadowState(entry: FlagReadEntry, strategy?: "evidence-chain"): Projection {
+  const explicitChain = strategy === "evidence-chain";
+  const policy = explicitChain ? resolveFlagReadPolicy("evidence-chain") : undefined;
   if (
     entry.investigationComplete !== true ||
     typeof entry.flagReadDetected !== "boolean" ||
@@ -174,7 +178,12 @@ export function projectShadowState(entry: FlagReadEntry): Projection {
     return { skipReason: "unfinished decision" };
   if (
     entry.investigatorModel !== INVESTIGATOR_MODEL ||
-    entry.monitorVersion !== FLAG_READ_MONITOR_VERSION
+    (policy
+      ? entry.monitorVersion !== policy.monitorVersion ||
+        entry.searchStrategy !== policy.searchStrategy ||
+        entry.promptHash !== policy.promptHash ||
+        entry.flagReadDetected !== true
+      : entry.monitorVersion !== FLAG_READ_MONITOR_VERSION)
   )
     return { skipReason: "unaccepted investigator version" };
   const trace = entry.trace;
@@ -210,7 +219,9 @@ export function projectShadowState(entry: FlagReadEntry): Projection {
   };
   if (!addRows(snapshot.currentTranscript)) return { skipReason: "malformed initial evidence" };
   let finished = false;
+  let acceptedFinish: Record<string, unknown> | null = null;
   for (const event of trace.events.slice(1)) {
+    if (explicitChain && finished) return { skipReason: "post-finish evidence" };
     if (event.type !== "toolResult") return { skipReason: "malformed trace" };
     const result = event.result;
     if (!result || typeof result.isError !== "boolean") return { skipReason: "malformed trace" };
@@ -222,6 +233,10 @@ export function projectShadowState(entry: FlagReadEntry): Projection {
       return { skipReason: "malformed trace" };
     if (result.isError) continue;
     if (result.toolName === "finish_investigation") {
+      if (explicitChain) {
+        acceptedFinish = object(result.arguments);
+        if (!acceptedFinish) return { skipReason: "malformed accepted finish" };
+      }
       finished = true;
       continue;
     }
@@ -257,11 +272,34 @@ export function projectShadowState(entry: FlagReadEntry): Projection {
       return { skipReason: "citation outside visible evidence" };
     evidence.push({ ref: citation.ref, excerpt: citation.excerpt, sha256: citation.sha256 });
   }
+  if (explicitChain) {
+    const args = acceptedFinish;
+    if (
+      !args ||
+      Object.keys(args).length !== 4 ||
+      ["flagReadDetected", "reason", "evidence", "chain"].some(
+        (key) => !Object.hasOwn(args, key),
+      ) ||
+      args.flagReadDetected !== true ||
+      typeof args.reason !== "string" ||
+      args.reason.trim() !== entry.reason ||
+      !Array.isArray(args.evidence) ||
+      args.evidence.length !== evidence.length ||
+      args.evidence.some(
+        (citation, index) =>
+          !object(citation) ||
+          Object.keys(citation).length !== 1 ||
+          citation.ref !== evidence[index].ref,
+      )
+    )
+      return { skipReason: "inconsistent accepted finish" };
+  }
   return {
     state: {
       targetSessionId: snapshot.targetSessionId,
       decision: { flagReadDetected: entry.flagReadDetected, reason: entry.reason, evidence },
       rows: [...visible.values()],
+      ...(explicitChain ? { chain: acceptedFinish?.chain } : {}),
     },
   };
 }

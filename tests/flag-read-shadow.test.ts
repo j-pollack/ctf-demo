@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { projectShadowState } from "../scripts/flag-read-shadow";
 import { FLAG_READ_MONITOR_VERSION } from "../lib/control";
+import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
 import type { FlagReadEntry } from "../scripts/flag-read-eval";
 
 const target = "s_0123456789abcdef01234567";
@@ -187,4 +188,110 @@ test("shadow skips incomplete traces and unverified citations", () => {
     },
   } satisfies FlagReadEntry;
   assert.deepEqual(projectShadowState(failedRead), projectShadowState(entry));
+});
+
+test("explicit evidence-chain projection accepts pinned positive finish and retains raw chain", () => {
+  const policy = resolveFlagReadPolicy("evidence-chain");
+  const chain = {
+    reader: { claim: "The reader consumes the file.", refs: [row.ref] },
+    binding: { claim: "The reader executed in target.", refs: [row.ref] },
+    completion: { claim: "The read completed.", refs: [row.ref] },
+  };
+  const candidate: FlagReadEntry = {
+    ...entry,
+    monitorVersion: policy.monitorVersion,
+    searchStrategy: policy.searchStrategy,
+    promptHash: policy.promptHash,
+    trace: {
+      ...entry.trace!,
+      events: entry.trace!.events.map((event) =>
+        event.type === "toolResult" && event.result.toolName === "finish_investigation"
+          ? {
+              ...event,
+              result: {
+                ...event.result,
+                arguments: {
+                  flagReadDetected: true,
+                  reason: entry.reason,
+                  evidence: [{ ref: row.ref }],
+                  chain,
+                },
+              },
+            }
+          : event,
+      ),
+    },
+  };
+  const projection = projectShadowState(candidate, "evidence-chain");
+  assert.ok(projection.state);
+  assert.deepEqual(projection.state.chain, chain);
+  assert.equal(projection.state.rows.length, 1);
+  assert.deepEqual(
+    projectShadowState(
+      {
+        ...candidate,
+        evidence: [null as unknown as NonNullable<FlagReadEntry["evidence"]>[number]],
+      },
+      "evidence-chain",
+    ),
+    { skipReason: "malformed decision" },
+  );
+  assert.deepEqual(projectShadowState(candidate), {
+    skipReason: "unaccepted investigator version",
+  });
+  for (const changed of [
+    { monitorVersion: "wrong" },
+    { searchStrategy: "current" as const },
+    { promptHash: "wrong" },
+  ])
+    assert.deepEqual(projectShadowState({ ...candidate, ...changed }, "evidence-chain"), {
+      skipReason: "unaccepted investigator version",
+    });
+  assert.deepEqual(
+    projectShadowState({ ...candidate, reason: "Different final reason." }, "evidence-chain"),
+    { skipReason: "inconsistent accepted finish" },
+  );
+  assert.deepEqual(projectShadowState({ ...candidate, evidence: [] }, "evidence-chain"), {
+    skipReason: "inconsistent accepted finish",
+  });
+  assert.deepEqual(
+    projectShadowState(
+      {
+        ...candidate,
+        trace: {
+          ...candidate.trace!,
+          events: [...candidate.trace!.events, candidate.trace!.events[2]],
+        },
+      },
+      "evidence-chain",
+    ),
+    { skipReason: "post-finish evidence" },
+  );
+  const rejected = {
+    sequence: 2,
+    type: "toolResult" as const,
+    result: {
+      toolName: "finish_investigation",
+      toolCallId: "rejected-finish",
+      arguments: { flagReadDetected: true },
+      isError: true,
+      content: [],
+    },
+  };
+  assert.ok(
+    projectShadowState(
+      {
+        ...candidate,
+        trace: {
+          ...candidate.trace!,
+          events: [
+            ...candidate.trace!.events.slice(0, -1),
+            rejected,
+            candidate.trace!.events.at(-1)!,
+          ],
+        },
+      },
+      "evidence-chain",
+    ).state,
+  );
 });
