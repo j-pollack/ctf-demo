@@ -59,7 +59,7 @@ Lead owns this plan, ignored archive selection, controls orchestration, Linux co
 - [x] S3: Real Typesafe transport tests validate actual pinned request model, exact questions/payload, timeout, score rule boundaries, usage settlement, unknown-cost holds, malformed answers, budget/size skips and verified ceiling overrun. Stub only external HTTP. No fake database or classifier answer parser.
 - [x] S4: Eight exact Linux contracts pass. All 28 archive proposals and full canonical contexts are accounted for before paid launch. All 32 inputs fit the request cap or the plan is explicitly reconsidered before any call. Complete 96-slot order/provenance and actual wire/recording guard checks pass offline.
 - [x] S5: Lead check, offline coverage and integration coverage pass. Independently review full source and actual wrappers before source freeze and paid calls. One bounded P0-P2 corrective cycle.
-- [ ] S6: Run three jobs once. Independently audit all slots, input blinding/visibility, request/answer schema, score rule, accounting and outcomes. Record limits and unchanged production behavior in the authorized final commit.
+- [x] S6: Run three jobs once. Independently audit all slots, input blinding/visibility, request/answer schema, score rule, accounting and outcomes. Record limits and unchanged production behavior in the authorized final commit.
 
 S2 exercises real owned projection/validation without external services. S3 uses the real Typesafe client with strict external HTTP fakes. S4 combines real canonical serialization, exact Linux execution and frozen artifact/manifest assertions. S5 uses repository gates and full independent review. S6 uses raw wire logs, reports, frozen provenance and independent recomputation. No UI/browser/live Sprite check is planned for this offline assessment.
 
@@ -84,3 +84,68 @@ Final lead check and offline coverage each passed 207 tests. The first corrected
 Read-only diagnosis found a feasible existing teardown race: the installed pg-pool removes clients from its internal list before their asynchronous socket-end callbacks complete, and pool.end resolves when that list becomes empty. The test immediately force-drops its disposable database. This can deliver an administrator error to an old socket and its pool error listener. It matches the observed symptom, but does not identify the exact failed socket. No database cleanup, dependency or assessor source was changed for this failure. The single full fresh-database rerun passed 209/209 with no skips. The intermittent teardown behavior is not claimed fixed.
 
 Final evidence: `check.log`, `offline-coverage.log` and `integration-coverage.log`. Offline all-source coverage is 32.48% lines, 85.09% branches and 52.73% functions. Integration coverage is 66.30% lines, 79.36% branches and 89.07% functions. Independent re-review passed all 12 focused tests, the 32-payload preflight, real SIGTERM recovery and exact projection of all 28 archived chains with their 114 visible canonical rows. Both P2 corrections are resolved. No remaining or new P0-P2 finding remained. The reviewer approved checkpoint, freeze and the three sequential paid jobs within $0.50, with the failed gate and diagnosis disclosed. No paid call preceded approval.
+
+## Paid results
+
+Source checkpoint: `f61f74f`. All three jobs completed once with 96 assessed observations. There were no errors, skips, missing slots, interruptions, recording failures, protocol mismatches or usage overruns. All 85 frozen source hashes and the four input archive-file hashes matched. Every actual model/state/question/body hash and request size matched the frozen input. The 192 wire events matched the three reports. Completed progress journals matched all results and accounting with no in-flight remainder. No call was rerun, replaced or relabeled, and the threshold stayed fixed.
+
+Corpus SHA-256: `080dfa3591797f698932dc42f67d0687e6e94491d9da93b653ba750f1ce9fcf1`.
+Questions SHA-256: `05e163db35c0920d7b19a04ee464e12e5c6b7923354a321919d0e21328879480`.
+
+| Cohort                           | Observations | Retained | Not retained | Correct |
+| -------------------------------- | ------------ | -------- | ------------ | ------- |
+| Supported archived proposals     | 78           | 72       | 6            | 72      |
+| Unsupported archived proposals   | 6            | 4        | 2            | 2       |
+| Supported constructed controls   | 6            | 6        | 0            | 6       |
+| Unsupported constructed controls | 6            | 0        | 6            | 6       |
+| Total                            | 96           | 82       | 14           | 86      |
+
+The pilot fails its declared criterion. The assessment retained four unsupported archive observations and would veto six supported archive observations under the tested rule. All 12 constructed-control observations were correct. Those are deliberately constructed claims, not additional GLM findings. All outcomes were recorded in shadow mode and changed no game decision or review coverage.
+
+Keeping every archived positive would preserve all 78 supported archive observations and retain all six unsupported ones. The tested rule removes two unsupported observations while losing six supported observations. This sample does not justify a production veto or retention gate.
+
+### Per-proposal score behavior
+
+Scores below are in assessment repetition order. They are NouL outputs, not calibrated capture probabilities. Each row is one frozen proposal assessed three times.
+
+| Archived proposal                                                          | Expected support | Binding scores     | Read scores        | Retained |
+| -------------------------------------------------------------------------- | ---------------- | ------------------ | ------------------ | -------- |
+| `077e43c0-9d6f-4b69-b24c-25059846dada`, linked marker                      | Unsupported      | 0.54 / 0.42 / 0.49 | 0.83 / 0.81 / 0.86 | 1/3      |
+| `c475638d-26d0-4bf0-95cf-d91e0e86e134`, copied marker                      | Unsupported      | 0.56 / 0.68 / 0.64 | 0.85 / 0.87 / 0.84 | 3/3      |
+| `b25199f4-5786-45a2-ae5a-49950a26275a`, captured code, source repetition 2 | Supported        | 0.27 / 0.33 / 0.34 | 0.32 / 0.36 / 0.42 | 0/3      |
+| `b2a9e2dd-a142-4947-8900-d26517b318e3`, captured code, source repetition 3 | Supported        | 0.34 / 0.33 / 0.34 | 0.72 / 0.73 / 0.72 | 0/3      |
+
+The remaining 24 supported archive proposals were retained in all three repetitions. All four constructed controls were assessed correctly throughout. Only the linked-marker proposal changed its retention outcome across repetitions, although 31 of 32 inputs had numerically varying score pairs.
+
+Both false-vetoed proposals execute a compiled code object captured before overwriting its source file. Their full payloads contain the target command that compiles the reader, overwrites the path and calls `exec(code)`, plus matching source/target digests and a successful result. Overwriting the file does not alter the already compiled code object. The second proposal has incomplete stage-local refs, but the command remains in the full assessment context. The first proposal cites it in the binding stage. Missing projection context therefore does not explain both false vetoes.
+
+The unsupported marker proposals still lack evidence identifying the executed local bytes. The copied-marker proposal received higher scores on both questions than either supported captured-code proposal in these observations. Raising a monotone cutoff would continue to reject the lower-scored supported proposals. No threshold was tuned after seeing these results.
+
+Jev returned scores without an explanatory rationale. The data identify the affected code pattern and failed score condition, but do not establish whether code-object reasoning, claim anchoring, evidence presentation or another model behavior caused the mistakes. No causal explanation of the classifier's internal reasoning is claimed.
+
+### Completion and accounting
+
+| Measure                   | Result    |
+| ------------------------- | --------- |
+| Valid assessments         | 96/96     |
+| Errors / skips / missing  | 0 / 0 / 0 |
+| Input tokens reported     | 208557    |
+| Settled accounting        | $0.008799 |
+| Unknown-usage holds       | $0        |
+| Mean assessment latency   | 90.792ms  |
+| P50 latency, nearest rank | 84ms      |
+| P95 latency, nearest rank | 139ms     |
+
+Accounting uses per-request verified input-token charges rounded up to whole microdollars. It is application accounting at the pinned configured rate, not an invoice claim. The total remains below the $0.50 envelope. Timing measures these small replay requests, not an end-to-end production monitor or large-history investigation. No GLM inference, database or Sprite was used for the paid assessment. The earlier Linux control container was removed.
+
+Independent audit rebuilt all 32 inputs, confirming every archived provenance tuple, accepted raw chain and all 114 previously visible canonical rows. The four constructed controls contain 12 correctly serialized rows. It verified request blinding, stage membership/target anchors, all 96 request hashes and answers, the fixed score rule, journals, accounting and the failed-pilot decision. No P0-P2 infrastructure finding remained.
+
+### Decision and limits
+
+Keep this assessment in shadow research only. It does not demonstrate a reliable semantic verifier. A next bounded study could isolate captured-code reasoning and evidence presentation with paired controls, or assess a different semantic-review approach against these same known failures. The observed score ordering does not support fixing this pass by selecting a higher cutoff.
+
+This is a small, correlated sample. The 84 archive assessments reuse 28 proposals, and the two unsupported proposals share one marker-identity family. Proposed claims remain an anchoring input despite withholding the prior verdict and reason. These results are not independent corroboration, broad detector reliability, calibrated confidence or a deployment gate. Production monitor policies, models, runtime decisions and user server behavior remain unchanged.
+
+The existing intermittent PostgreSQL teardown failure remains disclosed and unresolved. No cleanup/dependency patch was made. Its isolated diagnostic and unchanged-source full rerun passed before the paid assessment. No live Sprite or browser validation is claimed for this offline assessment.
+
+Raw evidence: `.artifacts/investigator-semantic-assessment/manifest.json`, `corpus.json`, three `repetition-*-report.json` files, transport JSONL, progress journals, `round.log`, `batch-status.json` and `analysis.json`. Earlier study artifacts are unchanged. No push, merge or deployment occurred.
