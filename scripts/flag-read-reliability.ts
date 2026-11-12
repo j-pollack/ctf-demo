@@ -2,6 +2,7 @@ import type { FlagReadCase } from "./flag-read-cases";
 import type { FlagReadSearchStrategy } from "../lib/flag-read-policy";
 import type { FlagReadEntry } from "./flag-read-eval";
 import { heldoutFlagReadCases } from "./flag-read-heldout-cases";
+import { provenanceFlagReadCases } from "./flag-read-provenance-cases";
 
 export type ReliabilityJob = {
   repetition: number;
@@ -17,6 +18,18 @@ export function buildReliabilitySchedule(cases: readonly FlagReadCase[]): Reliab
     const rotated = [...cases.slice(offset), ...cases.slice(0, offset)];
     const arms: FlagReadSearchStrategy[] =
       repetition % 2 === 1 ? ["current", "focused"] : ["focused", "current"];
+    return arms.map((searchStrategy) => ({ repetition, searchStrategy, cases: [...rotated] }));
+  });
+}
+
+export function buildProvenanceSchedule(cases: readonly FlagReadCase[]): ReliabilityJob[] {
+  if (cases.length !== 22 || new Set(cases.map((item) => item.id)).size !== cases.length)
+    throw new Error("Provenance schedule requires twenty-two distinct cases.");
+  return [1, 2, 3].flatMap((repetition) => {
+    const offset = (repetition - 1) * 7;
+    const rotated = [...cases.slice(offset), ...cases.slice(0, offset)];
+    const arms: FlagReadSearchStrategy[] =
+      repetition % 2 === 1 ? ["current", "provenance"] : ["provenance", "current"];
     return arms.map((searchStrategy) => ({ repetition, searchStrategy, cases: [...rotated] }));
   });
 }
@@ -41,7 +54,7 @@ type Sample = {
   repetition: number;
   searchStrategy: FlagReadSearchStrategy;
   caseId: string;
-  cohort: "original" | "heldout";
+  cohort: "original" | "heldout" | "fresh-heldout";
   observableSufficiency: FlagReadCase["observableSufficiency"];
   outcome: Outcome;
   latencyMs: number | null;
@@ -124,6 +137,7 @@ export function analyzeReliabilityRuns(
     observed.set(key, run);
   }
   const heldoutIds = new Set(heldoutFlagReadCases.map((item) => item.id));
+  const freshHeldoutIds = new Set(provenanceFlagReadCases.map((item) => item.id));
   const samples: Sample[] = schedule.flatMap((job) => {
     const entries = observed.get(jobKey(job.repetition, job.searchStrategy))?.entries ?? [];
     const byId = new Map(entries.map((entry) => [entry.caseId, entry]));
@@ -145,7 +159,11 @@ export function analyzeReliabilityRuns(
         repetition: job.repetition,
         searchStrategy: job.searchStrategy,
         caseId: item.id,
-        cohort: heldoutIds.has(item.id) ? ("heldout" as const) : ("original" as const),
+        cohort: freshHeldoutIds.has(item.id)
+          ? ("fresh-heldout" as const)
+          : heldoutIds.has(item.id)
+            ? ("heldout" as const)
+            : ("original" as const),
         observableSufficiency: item.observableSufficiency,
         outcome: outcome(item, entry),
         latencyMs: entry?.latencyMs ?? null,
@@ -162,13 +180,19 @@ export function analyzeReliabilityRuns(
     );
   return {
     summary: summarize(samples),
-    byArm: group(["current", "focused"], (sample) => sample.searchStrategy),
+    byArm: group(
+      [...new Set(schedule.map((job) => job.searchStrategy))],
+      (sample) => sample.searchStrategy,
+    ),
     byRepetition: group(["1", "2", "3"], (sample) => String(sample.repetition)),
     byArmRepetition: group(
       schedule.map((job) => jobKey(job.repetition, job.searchStrategy)),
       (sample) => jobKey(sample.repetition, sample.searchStrategy),
     ),
-    byCohort: group(["original", "heldout"], (sample) => sample.cohort),
+    byCohort: group(
+      [...new Set(samples.map((sample) => sample.cohort))],
+      (sample) => sample.cohort,
+    ),
     byObservableSufficiency: group(
       ["sufficient", "ambiguous"],
       (sample) => sample.observableSufficiency,

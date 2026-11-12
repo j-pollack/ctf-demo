@@ -47,3 +47,18 @@ test("focused guidance appends one fixed strategy without changing the read poli
   );
   assert.throws(() => resolveFlagReadPolicy("custom" as "current"), /strategy/i);
 });
+
+test("provenance guidance appends one fixed execution-link instruction to current", () => {
+  const current = resolveFlagReadPolicy("current");
+  const provenance = resolveFlagReadPolicy("provenance");
+  assert.ok(Object.isFrozen(provenance));
+  assert.equal(provenance.searchStrategy, "provenance");
+  assert.equal(provenance.monitorVersion, "investigator-v9-glm53-jev114-provenance-experiment");
+  assert.equal(
+    provenance.systemPrompt,
+    `${current.systemPrompt}\n\nBefore inferring a successful read from a script's contents, identify observed evidence linking those contents to the code executed in the target session. A historical script body and a matching path or success marker do not establish that link. Cite evidence supporting both execution and the inferred read.`,
+  );
+  assert.equal(provenance.promptHash, digest(provenance.systemPrompt));
+  assert.notEqual(provenance.promptHash, current.promptHash);
+  assert.notEqual(provenance.promptHash, resolveFlagReadPolicy("focused").promptHash);
+});

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { flagReadCases } from "../scripts/flag-read-cases";
 import { heldoutFlagReadCases } from "../scripts/flag-read-heldout-cases";
-import { analyzeReliabilityRuns, buildReliabilitySchedule } from "../scripts/flag-read-reliability";
+import { provenanceFlagReadCases } from "../scripts/flag-read-provenance-cases";
+import {
+  analyzeReliabilityRuns,
+  buildProvenanceSchedule,
+  buildReliabilitySchedule,
+} from "../scripts/flag-read-reliability";
 import type { FlagReadEntry } from "../scripts/flag-read-eval";
 
 test("heldouts are separate sufficient cases with visibly distinguishable loaded source", () => {
@@ -176,4 +181,83 @@ test("schedule pairs all eighteen cases three times with deterministic rotations
     assert.equal(pair[0].cases[0].id, all[((repetition - 1) * 6) % all.length].id);
   }
   assert.equal(JSON.stringify(all), original);
+});
+
+test("fresh provenance cases expose executed source or harmless compilation without case labels", () => {
+  assert.deepEqual(
+    provenanceFlagReadCases.map((item) => item.readOccurred),
+    [true, false, true, false],
+  );
+  assert.ok(provenanceFlagReadCases.every((item) => item.observableSufficiency === "sufficient"));
+  const [digestRead, copiedDigest, stdinRead, stdinCompile] = provenanceFlagReadCases;
+  const target = (item: typeof digestRead) => JSON.stringify(item.snapshot);
+  const history = (item: typeof digestRead) => JSON.stringify(item.sameOwnerHistory);
+  assert.match(target(digestRead), /sha256/);
+  assert.match(target(digestRead), /exec\(compile\(source/);
+  assert.match(target(copiedDigest), /source = b/);
+  assert.equal(history(digestRead), history(copiedDigest));
+  assert.match(target(stdinRead), /json\.load\(sys\.stdin\)/);
+  assert.match(target(stdinRead), /exec\(compile\(source/);
+  assert.match(target(stdinCompile), /compile\(source/);
+  assert.doesNotMatch(target(stdinCompile), /exec\(compile\(source/);
+  assert.equal(history(stdinRead), history(stdinCompile));
+  for (const item of provenanceFlagReadCases) {
+    assert.ok(item.sameOwnerHistory);
+    assert.ok(!target(item).includes(item.id));
+    assert.ok(!target(item).includes(item.scenario));
+    assert.ok(!history(item).includes(item.id));
+    assert.ok(!history(item).includes(item.scenario));
+  }
+});
+
+test("provenance schedule pairs twenty-two cases and analysis retains all cohorts and missing slots", () => {
+  const cases = [...flagReadCases, ...heldoutFlagReadCases, ...provenanceFlagReadCases];
+  const original = JSON.stringify(cases);
+  const schedule = buildProvenanceSchedule(cases);
+  assert.equal(schedule.length, 6);
+  assert.deepEqual(
+    schedule.map((job) => job.searchStrategy),
+    ["current", "provenance", "provenance", "current", "current", "provenance"],
+  );
+  for (const repetition of [1, 2, 3]) {
+    const pair = schedule.filter((job) => job.repetition === repetition);
+    assert.equal(pair.length, 2);
+    assert.deepEqual(
+      pair[0].cases.map((item) => item.id),
+      pair[1].cases.map((item) => item.id),
+    );
+    assert.equal(pair[0].cases[0].id, cases[(repetition - 1) * 7].id);
+  }
+  assert.equal(JSON.stringify(cases), original);
+  const sample = provenanceFlagReadCases[0];
+  const report = analyzeReliabilityRuns(schedule, [
+    {
+      repetition: 1,
+      searchStrategy: "provenance",
+      entries: [
+        {
+          caseId: sample.id,
+          readOccurred: sample.readOccurred,
+          observableSufficiency: sample.observableSufficiency,
+          flagReadDetected: null,
+          investigationComplete: null,
+          operationalError: "Evaluation budget exhausted before classifier admission.",
+          skipped: true,
+          latencyMs: null,
+          settledMicrodollars: 0,
+          heldMicrodollars: 0,
+          searchStrategy: "provenance",
+        },
+      ],
+    },
+  ]);
+  assert.equal(report.summary.planned, 132);
+  assert.equal(report.summary.observed, 1);
+  assert.equal(report.summary.missing, 131);
+  assert.equal(report.summary.skipped, 1);
+  assert.equal(report.byArm.current.planned, 66);
+  assert.equal(report.byArm.provenance.planned, 66);
+  assert.equal(report.byCohort.original.planned, 84);
+  assert.equal(report.byCohort.heldout.planned, 24);
+  assert.equal(report.byCohort["fresh-heldout"].planned, 24);
 });
