@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { Pool } from "pg";
 import { AGENT_MODEL } from "../../lib/policy";
 import { resolveFlagReadPolicy, type FlagReadSearchStrategy } from "../../lib/flag-read-policy";
+import { createFinishInvestigationTool } from "../../lib/monitor-evidence";
 import { buildFlagReadReport } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
 import { heldoutFlagReadCases } from "../../scripts/flag-read-heldout-cases";
@@ -35,6 +36,20 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
       let selected = resolveFlagReadPolicy("current");
       const readStages = new Map<string, number>();
       const observedPrompts: string[] = [];
+      const observedFinishHashes: string[] = [];
+      const baseFinishParameters = JSON.parse(
+        JSON.stringify(
+          createFinishInvestigationTool(
+            new Map(),
+            "target",
+            () => {},
+            () => {},
+          ).parameters,
+        ),
+      );
+      const baseFinishHash = createHash("sha256")
+        .update(JSON.stringify(baseFinishParameters))
+        .digest("hex");
       const reply = (name: string, args: object) =>
         Response.json({
           id: `synthetic-${randomUUID()}`,
@@ -97,7 +112,7 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
             max_tokens: number;
             reasoning?: { effort: string };
             messages: { role: string; content?: string }[];
-            tools: { function: { name: string } }[];
+            tools: { function: { name: string; parameters: unknown } }[];
           };
           assert.equal(request.model, "z-ai/glm-5.3");
           assert.equal(request.max_tokens, 8_192);
@@ -157,6 +172,17 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
             "query_transcripts",
             "read_transcript",
           ]);
+          if (selected.searchStrategy === "attribution") {
+            const parameters = request.tools.find(
+              (tool) => tool.function.name === "finish_investigation",
+            )!.function.parameters;
+            assert.deepEqual(parameters, baseFinishParameters);
+            const actualHash = createHash("sha256")
+              .update(JSON.stringify(parameters))
+              .digest("hex");
+            assert.equal(actualHash, baseFinishHash);
+            observedFinishHashes.push(actualHash);
+          }
           const wire = JSON.stringify(request.messages);
           for (const hidden of [
             "heldout-loaded",
@@ -295,6 +321,8 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
         observedPrompts.every((prompt) => prompt === resolveFlagReadPolicy(strategy).systemPrompt),
       );
       assert.equal(observedPrompts.length, 4);
+      if (strategy === "attribution")
+        assert.deepEqual(observedFinishHashes, Array(4).fill(baseFinishHash));
       assert.equal(readStages.size, 1);
     },
   );
