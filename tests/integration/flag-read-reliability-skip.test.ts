@@ -12,7 +12,7 @@ assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
 assert.equal(baseUrl.hostname, "127.0.0.1");
 assert.match(baseUrl.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
 
-for (const searchStrategy of ["focused", "provenance", "read-semantics"] as const)
+for (const searchStrategy of ["focused", "provenance", "read-semantics", "attribution"] as const)
   test(`budget-skipped cases retain the ${searchStrategy} policy without dispatch`, async (t) => {
     const databaseName = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
     const adminUrl = new URL(baseUrl);

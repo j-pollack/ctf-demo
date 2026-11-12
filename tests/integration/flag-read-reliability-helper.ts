@@ -122,14 +122,28 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
           } else if (selected.searchStrategy === "provenance") {
             assert.match(actualPrompt, /identify observed evidence linking those contents/);
             assert.doesNotMatch(actualPrompt, /Search strategy: Inspect/);
-          } else {
-            assert.equal(selected.searchStrategy, "read-semantics");
+          } else if (selected.searchStrategy === "read-semantics") {
             assert.match(
               actualPrompt,
               /contents were consumed by the agent or a process it invokes/,
             );
             assert.match(actualPrompt, /Merely opening and closing a file without reading/);
             assert.doesNotMatch(actualPrompt, /identify observed evidence linking those contents/);
+            assert.doesNotMatch(actualPrompt, /Search strategy: Inspect/);
+          } else {
+            assert.equal(selected.searchStrategy, "attribution");
+            assert.match(
+              actualPrompt,
+              /contents were consumed by the agent or a process it invokes/,
+            );
+            assert.match(
+              actualPrompt,
+              /observed target command and result also fit a different local program/,
+            );
+            assert.match(
+              actualPrompt,
+              /which buffer was inspected or hashed and which buffer was executed/,
+            );
             assert.doesNotMatch(actualPrompt, /Search strategy: Inspect/);
           }
           assert.notEqual(actualPrompt, resolveFlagReadPolicy("current").systemPrompt);
