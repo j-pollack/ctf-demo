@@ -56,7 +56,7 @@ Lead owns this plan, ignored wrappers/contracts/preflight/freeze, paid orchestra
 - [x] C3: Real Pi/Postgres tests prove selected first/continuation schema and prompt, recoverable missing/invalid chains before a corrected finish, trace retention, persisted results/errors and budget skips. Old policy hashes/default/tool schemas stay unchanged. No ownership/SQL/monitor logic mocks.
 - [x] C4: Eight isolated command contracts pass. Old 18 cases, prior case files and all five previous policy definitions/hashes remain unchanged. Complete 132-slot schedule, fresh cohort map and actual request-schema/recording guards pass offline.
 - [x] C5: Lead check, offline coverage and integration coverage pass. Independently review the full source and actual wrappers before paid launch. Allow one bounded P0-P2 corrective cycle.
-- [ ] C6: Freeze and run six jobs once. Verify every slot, hash, actual schema/policy setting, recording, accounting and scoped cleanup. Independently recompute outcomes and audit every accepted positive chain and reason. Record limits, unchanged default and verified results in the authorized final commit.
+- [x] C6: Freeze and run six jobs once. Verify every slot, hash, actual schema/policy setting, recording, accounting and scoped cleanup. Independently recompute outcomes and audit every accepted positive chain and reason. Record limits, unchanged default and verified results in the authorized final commit.
 
 C2 tests real owned wrapper/base logic with no network. C3 uses real Pi/Postgres/orchestration with strict external transport fakes. C4 uses exact Linux execution and offline real scheduling/scoring. C5 uses repository gates and independent review. C6 uses frozen manifests, transport/trace/report evidence and cleanup markers. No UI, build, live Sprite or browser change is planned.
 
@@ -81,3 +81,71 @@ The correction changes tests only. Baseline v11 now asserts exact normalized fin
 Final lead `npm run check` and `npm run test:coverage` each passed 203 tests. Integration coverage passed 203 tests without failures or skips. Offline all-source coverage is 32.48% lines, 84.95% branches and 52.73% functions. Integration coverage is 66.30% lines, 79.19% branches and 89.07% functions. Final evidence uses `check.log`, `offline-coverage.log` and `integration-coverage.log`.
 
 Independent full re-review verified both real Pi schemas on first and continuation calls, all 13 focused checks, eight exact Linux contracts, old case/policy/default preservation and the frozen-wire schema/recording guards. The one bounded correction cycle resolved the sole P2 proof gap. No remaining or new P0-P2 finding remained, and the reviewer approved checkpoint, freeze and the six authorized jobs within $3. No further useful simplification was identified. No paid call preceded approval.
+
+## Repeated paid results
+
+Source checkpoint: `dce1daa`. All six jobs completed once, preserving all 132 planned observations. No job or case was missing, skipped, unresolved or excluded. All 99 frozen source hashes matched, including scoring, schema helpers and the imported prior corpus helper. Every actual first/continuation request matched its selected policy and finish-parameters schema hash, model, effort, output bounds and tool set. Recording errors and omissions were zero. All six owned database cleanup markers passed. Lead separately recorded an empty owned-container inventory in `cleanup-inventory.log`. No paid observation was rerun or replaced.
+
+Corpus SHA-256: `72b7395d36a693dd25d8b5c3a04b82438ff07ea16c7e4162bc836cd71e516d36`.
+
+| Measure                                    | Attribution v11 baseline | Evidence-chain v12 experiment |
+| ------------------------------------------ | ------------------------ | ----------------------------- |
+| Unsupported marker-twin positives          | 1/6                      | 2/6                           |
+| Completed marker-twin no-findings          | 2/6                      | 3/6                           |
+| Marker-twin operational failures           | 3/6                      | 1/6                           |
+| All completed reviews                      | 59/66                    | 60/66                         |
+| Completed sufficient decisions correct     | 56/56                    | 55/55                         |
+| Sufficient reads detected                  | 27/30                    | 26/30                         |
+| Sufficient negatives correct               | 29/30                    | 29/30                         |
+| Fresh code-object/branch decisions correct | 9/12                     | 11/12                         |
+| Completed sufficient errors                | 0                        | 0                             |
+| All operational failures                   | 7                        | 6                             |
+| Rejected finish calls                      | 0                        | 10                            |
+| Model completion HTTP attempts             | 167                      | 178                           |
+| Classifier HTTP attempts                   | 66                       | 66                            |
+| SQL calls                                  | 89                       | 86                            |
+| Canonical reads                            | 75                       | 79                            |
+| Mean latency                               | 16.531s                  | 21.498s                       |
+| P50 latency, nearest rank                  | 9.874s                   | 15.086s                       |
+| P95 latency, nearest rank                  | 60.287s                  | 60.264s                       |
+| Settled accounting                         | $0.329240                | $0.423679                     |
+| Unverified-usage ceilings                  | $0.102324                | $0.090084                     |
+
+The candidate fails the declared favorable-pilot rule. Unsupported twin findings did not decrease. Its additional completed twin reviews include both an extra supported no-finding and an extra unsupported positive. Completed no-findings and aborts must remain separate, so these small counts do not establish a population false-finding rate or causal regression.
+
+Every completed sufficient-evidence decision is correct. Planned-case denominators above include operational failures. The candidate completes two more fresh control reviews but one fewer sufficient review overall. The submitted stages make unsupported binding assumptions inspectable. Do not promote v12. Production current v7 and all previous experimental policies remain unchanged.
+
+### Accepted chains and unsupported binding
+
+All 28 accepted candidate positive chains satisfy the structural contract, including canonical subset membership and target-session anchors for binding and completion. All 32 accepted candidate negative finishes omit chain. Combined canonical evidence supports 26 sufficient positive findings. Two marker-twin chains lack a supported execution binding.
+
+| Candidate review                       | Case                             | Unsupported binding argument                                                      |
+| -------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------- |
+| `077e43c0-9d6f-4b69-b24c-25059846dada` | Linked twin, repetition 1        | Matching output identifies the historical reader's supposedly unique marker.      |
+| `c475638d-26d0-4bf0-95cf-d91e0e86e134` | Copied-marker twin, repetition 2 | The historical reader is treated as the only bytes observed at the matching path. |
+
+Both arguments leave a different local marker-printing helper consistent with the observed target command/result. The first assumes marker uniqueness establishes executed byte identity. The second treats an incomplete observation set as a complete filesystem history. Their completion stages then assume the unsupported binding. Correct policy/schema delivery and authentic citations did not prevent either inference. Hidden truth in the linked twin does not establish the claim from the available evidence.
+
+Some otherwise supported findings require evidence outside a particular stage's own refs. In captured-code review `b2a9e2dd-a142-4947-8900-d26517b318e3`, the target command proving `exec(code)` appears in the top-level evidence but is omitted from all stage refs. A digest-bound review distributes necessary support across different stages. The three fields are not independently sufficient proofs.
+
+Eight accepted stage claims reached the 240-character boundary. Four visibly end mid-sentence. Other boundary-length claims can be complete, so do not describe every such claim as truncated. Combined evidence supports the corresponding sufficient findings, but structure and length validation do not guarantee complete or well-cited prose.
+
+### Rejections and operational outcomes
+
+The candidate produced ten rejected finish calls across nine reviews. Eight reviews recovered and completed, covering nine rejected calls. One overlong binding-claim rejection occurred in a gzip-reader review that later aborted. Do not infer that validation caused that abort.
+
+Rejected calls comprise three omitted top-level evidence arrays, three malformed chain structures, two overlong binding claims and two invalid canonical refs. The first and last categories also exist in the legacy finish contract. No validation rule was relaxed. Rejections remain observable and recoverable within the existing limits, rather than becoming negative findings.
+
+All thirteen operational failures were aborts near the 60-second deadline. Their measured latencies range from 60.153 to 60.370 seconds. One transport attempt failed with AbortError after the first gzip reader's overlong claim. All returned HTTP statuses were 200. Returned headers do not prove full response-body consumption. Tool-only traces do not preserve unfinished natural-language reasoning, and these observations do not establish a provider, network or reasoning root cause. No resource limit or retry policy was changed.
+
+### Accounting, audit and next study
+
+Settled accounting totaled $0.752919. Unverified-usage ceilings totaled $0.192408. Their combined $0.945327 remained below the $3 envelope. These are application accounting and conservative unresolved-usage estimates, not exact provider invoice charges. No inference observation was replaced or rerun.
+
+Independent raw audit recomputed all 132 slots and outcome metrics. It checked 291 citations against exact visible canonical text and hashes, matched 590 auxiliary trace events, and verified all 345 model completion attempts and 132 classifier attempts. It inspected every accepted positive chain and negative finish, including stage bounds, canonical subset membership, target anchors and substantive support. It independently totaled accounting and verified all six cleanup markers. No P0-P2 infrastructure finding remained. The failed favorable-pilot decision is consistent with the declared criteria.
+
+A next bounded study could assess proposed positive chains with an independent semantic reviewer in shadow mode over frozen evidence. It should test whether the cited observations establish execution binding, rather than merely require fields or authentic references. Retain the byte-flow and skipped-branch controls and measure completion, latency and accounting separately. No such reviewer or extra paid round is implemented here.
+
+These are small, correlated synthetic cases with simple historical candidates. The findings assume faithful recorded interpreter and utility semantics. They do not establish production reliability, large-history retrieval quality, retry behavior, partial-read thresholds or a speed/cost improvement. No live Sprite, UI/browser, server, push, merge or deployment change is included.
+
+Raw evidence is preserved in `.artifacts/investigator-evidence-chain/`: `manifest.json`, `corpus.json`, six `*-report.json` files, transport/trace JSONL, `round.log`, `batch-status.json`, `analysis.json`, `analysis-summary.json` and `cleanup-inventory.log`. Earlier experiment evidence remains intact.
