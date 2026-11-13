@@ -50,7 +50,7 @@ Use Node 24.16.0 and cached Docker `postgres:17-alpine`. Long-duration checks de
 - All three earlier schedules remain byte-identical. The new schedule preserves cases, policy, corpus, call/output limits and proposed maximum. Only the six intended runtime/seeder/schedule-builder source hashes changed, including the new pure profile. The previous capped schedule rejects on source drift before execution.
 - Real-timer baseline integrations passed 24/24, including the 65s successful response, 90s investigation abort, and 15s classifier abort with persisted completion/failure status, claim duration and held balances. The original combined run passed the other 185 tests covering default evaluator behavior, async claim fencing and Sprite orchestration.
 - The initial combined run failed two legacy assertions expecting a whole-case skip after unknown usage. DigitalOcean reservations leave enough budget for classification but insufficient funds for another investigator. Corrected tests assert one admitted investigator, retained first-call holds, subsequent persisted budget errors and classifier-only inference rows for both policy prompts. No runtime logic changed to satisfy these assertions. The entire baseline suite then passed; `npm run check` also passed again.
-- Independent final review approved D1–D6 with no P0–P2 findings. No further in-scope simplification was needed. Live provider enforcement and detection quality on this profile remain untested.
+- Independent final review approved D1–D6 with no P0–P2 findings. No further in-scope simplification was needed. Live provider enforcement and detection quality were untested at this checkpoint; subsequent authorized run evidence follows below.
 
 Raw logs: `/private/var/folders/vv/0ncq7_rn70x5z37wt_j0lf1r0000gn/T/opencode/digitalocean-{unit-red,integration-red,check,coverage,integration-green,baseline-green}.log`. `integration-green` contains the initial mixed result; `baseline-green` is the passing corrected rerun. Implementation verification made no paid inference calls. The user subsequently authorized the verified checkpoint and fresh $2 candidate run.
 
@@ -63,3 +63,32 @@ node --import tsx scripts/flag-read-baseline-run.ts --dry-run --strategy closed-
 ```
 
 Approved run 003 uses a fresh `candidate-run-003/` output directory and empty loopback database, only the two previously approved provider keys, and a $2 stop budget. Recheck DigitalOcean endpoint eligibility/rates first. Inspect generation metadata for the provider pin, reconcile persisted charges/holds, and retain operational failures rather than silently retrying them. The earlier baseline used a different provider mix and 60s deadline; a prompt-only comparison requires a new current-policy schedule generated under this same DigitalOcean/90s profile. Do not overwrite earlier schedules or artifacts. Integrate into `feature/persistent-run-sessions` only with merge authorization and combined-branch verification.
+
+## Paid run 003 results
+
+Executed commit `87ccede0272a926327dcb6450d703698db7e0086` on November 13, 2026, 20:06:20–20:14:42 UTC (8m22s). All 72 investigations completed, with zero operational errors, skips, unresolved holds or reservation overruns. DigitalOcean endpoint eligibility and the frozen prices were confirmed immediately before execution.
+
+| Measure                               | Original baseline | Capped candidate 002 | DigitalOcean candidate 003 |
+| ------------------------------------- | ----------------- | -------------------- | -------------------------- |
+| Completed cases                       | 72/72             | 63/72                | 72/72                      |
+| Presumption positives detected        | 23/39             | 34/39                | 39/39                      |
+| Presumption unsupported findings      | 0                 | 0                    | 0                          |
+| Strict positives detected             | 16/29             | 27/29                | 29/29                      |
+| Strict unsupported findings           | 7                 | 7                    | 10                         |
+| Mean case latency, including failures | 14.61s            | 31.25s               | 6.93s                      |
+| Median case latency                   | 12.46s            | 28.41s               | 5.86s                      |
+| p95 case latency                      | 30.25s            | 60.31s               | 12.38s                     |
+| Settled dollars                       | $0.431805         | $0.331142            | $0.448853                  |
+| Unresolved held dollars               | $0                | $0.302821            | $0                         |
+
+Under presumption, run 003 correctly classified all 72 dev cases and all 36 pairs: 16 recovered baseline detections and no regressions. All nine previously incomplete cases now completed. The 63 cases completed in both candidate runs have identical verdicts (34/34 presumption positives, zero unsupported findings). Strict scoring remains separate: its ten unsupported findings are the ten additional positives authorized by the presumption labels, not operational failures.
+
+Mean latency fell 52.5% relative to the original baseline and 77.8% relative to run 002. The slowest case took 26.20s, so this live run never needed the extra deadline allowance; real-timer integration tests establish the 90s behavior. Total spend was 3.95% above baseline. On the 63-case matched completed candidate cohort, spend rose from $0.303191 to $0.376200 (+24.1%), while mean latency fell from 27.10s to 6.55s. Lower endpoint rates than Modal do not establish lower total cost than run 002's different provider/workload, and unresolved run-002 holds are not final charges.
+
+Accounting verification matched every field of all 228 persisted inference rows (72 classifier, 156 investigator) against the case journal. Journal and summary entries, schedule hash/order, per-case charges, aggregate game balances and daily spend agree: $0.448853 settled, $0 held, below the approved $2. Five generation metadata samples spread across the 156 investigator calls all name DigitalOcean and match stored rounded charges within reservation ceilings. This sample verifies provider names for those calls, not endpoint tags or every request.
+
+Independent read-only results review confirmed the recorded metrics, matched-cohort comparison, retained accounting evidence and limitations with no blocking errors.
+
+Artifacts are retained locally under `/Users/jonathan/Code/ctf/.worktrees/flag-read-digitalocean-90s/candidate-run-003/`: `schedule.json`, `run.json`, `entries.jsonl`, `summary.json`, `comparison.json`, `verification.json`, `provenance.json`, `endpoint-snapshot.json`, `provider-verification.json`, `execution.json`, and `execution.log`. Retained database: `ctf_integration_candidate_cd5aafbdf6c04580944065c3ef47638d`; container: `ctf-candidate-cd5aafbdf6c04580944065c3ef47638d`; loopback port: `32840`.
+
+This is one dev-corpus run, not a repeatability or held-out estimate. Prompt, routing and deadline differ from the original baseline; routing and deadline differ from run 002. Production policy remains `current`. Prior paid artifacts and unresolved run-002 holds remain intact. No automatic retry/resume, locked-test evaluation, merge, push or deployment was performed. The intended integration target remains `feature/persistent-run-sessions`, subject to later authorization and combined-branch verification.
