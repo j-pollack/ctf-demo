@@ -73,6 +73,13 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   assert.equal(payload.max_tokens, 8_192);
   assert.equal(payload.reasoning?.effort, "high");
   assert.equal(payload.stream, undefined);
+  assert.deepEqual(payload.provider, {
+    require_parameters: true,
+    only: ["digitalocean"],
+    allow_fallbacks: false,
+    max_price: { prompt: 0.91, completion: 2.86, request: 0 },
+  });
+  assert.match(payload.messages[0].content, /Trusted game contract/);
   const names = payload.tools
     .map((tool: { function: { name: string } }) => tool.function.name)
     .sort();

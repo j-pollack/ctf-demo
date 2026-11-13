@@ -22,13 +22,16 @@ import { executeCommand } from "./sprites";
 import { SEED_BUGS, seedScoreCommand } from "./seed";
 import { diagnosticText } from "./inference";
 import type { GameRow } from "./games";
-import { FLAG_READ_MONITOR_VERSION } from "./control";
+import { flagReadPolicyForRun } from "./flag-read-policy";
+import { BOUNDED_INVESTIGATOR_POLICY } from "./investigator-evaluation-policy";
 
 async function reviewClaim(claim: MonitorJobClaim) {
   const {
     rows: [game],
   } = await db.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1", [claim.gameId]);
   if (!game) throw new Error("Monitor job run is missing.");
+  const policy = flagReadPolicyForRun(game.monitor_version);
+  const bounded = policy.searchStrategy === "closed-world-presumption";
   const {
     rows: [session],
   } = await db.query<GameRow>(
@@ -56,7 +59,7 @@ async function reviewClaim(claim: MonitorJobClaim) {
       claim.sessionId,
       snapshot.revision,
       INVESTIGATOR_MODEL,
-      FLAG_READ_MONITOR_VERSION,
+      policy.monitorVersion,
       claim.jobId,
       claim.claimToken,
     ],
@@ -69,9 +72,15 @@ async function reviewClaim(claim: MonitorJobClaim) {
     reviewId,
     messages: [...current.messages],
     target: { kind: "transcript" },
-    signal,
+    signal: bounded
+      ? AbortSignal.any([
+          signal,
+          AbortSignal.timeout(BOUNDED_INVESTIGATOR_POLICY.classifierDeadlineMs),
+        ])
+      : signal,
     executionGeneration: Number(game.execution_generation),
     jobClaim: claim,
+    reserveBudget: bounded,
   });
   await updateMonitorClassifierSignals(reviewId, classifier.signals);
   await db.query(
@@ -89,17 +98,20 @@ async function reviewClaim(claim: MonitorJobClaim) {
       }),
     ],
   );
-  const investigation = await runFlagReadInvestigation({
-    game: source,
-    reviewId,
-    snapshot,
-    currentSessionId: claim.sessionId,
-    target: { kind: "transcript" },
-    riskSignals: classifier.signals,
-    signal,
-    jobClaim: claim,
-    includeReasoning: game.monitor_reasoning,
-  });
+  const investigation = await runFlagReadInvestigation(
+    {
+      game: source,
+      reviewId,
+      snapshot,
+      currentSessionId: claim.sessionId,
+      target: { kind: "transcript" },
+      riskSignals: classifier.signals,
+      signal,
+      jobClaim: claim,
+      includeReasoning: game.monitor_reasoning,
+    },
+    { searchStrategy: policy.searchStrategy },
+  );
   const result = detectorToReviewDecision(investigation);
   if (result.verdict === "block") {
     await catchAsyncRun(claim, reviewId, result, classifier.suspicion);
@@ -177,7 +189,7 @@ async function finalizeOneRun() {
 
 export async function runMonitorWorkerOnce(): Promise<boolean> {
   const finalized = await finalizeOneRun();
-  const claim = await claimMonitorJob();
+  const claim = await claimMonitorJob(BOUNDED_INVESTIGATOR_POLICY.claimMs);
   if (!claim) return finalized;
   try {
     await reviewClaim(claim);

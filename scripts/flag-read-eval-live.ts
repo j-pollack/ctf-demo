@@ -346,7 +346,7 @@ export async function runFlagReadLiveEvaluation(
     onEntry?: (entry: FlagReadEntry) => void | Promise<void>;
   } = {},
 ): Promise<FlagReadEntry[]> {
-  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy);
+  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy ?? "current");
   const { Pool } = await import("pg");
   const pool = new Pool({
     connectionString: config.databaseUrl,

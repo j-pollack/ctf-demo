@@ -1,4 +1,5 @@
-// Frozen bounded-evaluation contract. Rates are USD per million tokens from the
+// Frozen bounded contract, also used by the promoted production flag-read policy.
+// Rates are USD per million tokens from the
 // DigitalOcean endpoint snapshot (2026-11-13), not model-wide minimum prices.
 export const BOUNDED_INVESTIGATOR_POLICY = Object.freeze({
   deadlineMs: 90_000,
