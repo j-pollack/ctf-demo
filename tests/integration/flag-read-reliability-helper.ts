@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { Pool } from "pg";
+import { closePool } from "./postgres";
 import { AGENT_MODEL } from "../../lib/policy";
 import { resolveFlagReadPolicy, type FlagReadSearchStrategy } from "../../lib/flag-read-policy";
 import { createFinishInvestigationTool } from "../../lib/monitor-evidence";
@@ -317,18 +318,7 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
           assert.equal(byId.get(entries[2].reviewId!)?.verdict, null);
           assert.match(byId.get(entries[2].reviewId!)?.operational_error ?? "", /503/);
         } finally {
-          // pg-pool resolves end() before its socket-close callbacks emit remove.
-          // Finish closing every client before teardown drops this disposable database.
-          let remaining = persisted.totalCount;
-          const closed = new Promise<void>((resolve) => {
-            if (!remaining) resolve();
-            else
-              persisted.on("remove", () => {
-                if (--remaining === 0) resolve();
-              });
-          });
-          await persisted.end();
-          await closed;
+          await closePool(persisted);
         }
       }
       assert.ok(

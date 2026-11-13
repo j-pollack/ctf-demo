@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { Pool } from "pg";
+import { closePool } from "./postgres";
 import { INVESTIGATOR_SYSTEM_PROMPT } from "../../lib/monitor-evidence";
 import { AGENT_MODEL } from "../../lib/policy";
 import { buildEvaluationReport } from "../../scripts/monitor-investigate-eval";
@@ -29,7 +30,7 @@ await test(
       if (created) {
         const cleanup = new Pool({ connectionString: adminUrl.toString(), max: 1 });
         try {
-          await cleanup.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+          await cleanup.query(`DROP DATABASE "${databaseName}"`);
         } finally {
           await cleanup.end();
         }
@@ -461,7 +462,7 @@ await test(
         "Persisted settled spend plus holds stays within the total evaluator budget",
       );
     } finally {
-      await persisted.end();
+      await closePool(persisted);
     }
   },
 );

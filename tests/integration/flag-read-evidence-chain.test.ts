@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { Pool } from "pg";
+import { closePool } from "./postgres";
 import { withReadEvidenceChain } from "../../lib/flag-read-chain";
 import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
 import { createFinishInvestigationTool } from "../../lib/monitor-evidence";
@@ -25,7 +26,7 @@ test(
     let created = false;
     t.after(async () => {
       try {
-        if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+        if (created) await admin.query(`DROP DATABASE "${name}"`);
       } finally {
         await admin.end();
       }
@@ -293,7 +294,7 @@ test(
       assert.match(byId.get(entries[2].reviewId!)?.operational_error ?? "", /503/);
       assert.ok(reviews.rows.every((row) => row.prompt_version === policy.monitorVersion));
     } finally {
-      await persisted.end();
+      await closePool(persisted);
     }
   },
 );
