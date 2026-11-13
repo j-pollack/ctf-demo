@@ -235,6 +235,7 @@ async function startSprite(name: string) {
     "run",
     "-d",
     "--rm",
+    "--pull=never",
     "--network",
     "none",
     "--tmpfs",

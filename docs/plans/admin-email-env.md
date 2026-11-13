@@ -38,3 +38,9 @@ User authorized wiring the production workflow and setting the GitHub Actions re
 - `gh secret set ADMIN_EMAILS --repo j-pollack/ctf-demo` succeeded with the existing seed address. `gh secret list` confirmed the name and update timestamp `2026-11-13T07:54:11Z`; secret contents are not readable through that listing.
 - User authorized pushing this branch and creating a PR based on `feature/persistent-run-sessions`. This includes the intervening unmerged commits, not just admin-email configuration. Merge remains pending green PR checks and further authorization.
 - Independent final review approved A4–A5 with no findings. Commit only the workflow, documentation and this plan before opening the PR.
+
+## CI repair integration
+
+User authorized merging the repaired base into this branch and pushing to refresh PR #25, while leaving both GitHub PRs unmerged. Source repair `8cdfd34` on `feature/persistent-run-sessions` fixes missing corpus-image preparation, asynchronous Postgres pool teardown, and deprecated Fly region configuration; its independent review and local proof are in `persistent-ci-repair.md`. PR #23 passed GitHub CI (`43481074766`), Vercel and the preview worker (`43481174227`).
+
+Merged source into `/Users/jonathan/Code/ctf/.worktrees/admin-email-env`, branch `feature/admin-email-env`, from baseline `615c7fb` without conflicts. The downstream async-backend teardown correction was already present and merges unchanged. Offline check passes 232 tests; full integration passes all 223 tests. Independent merge-scope review approved with no blockers. Logs use `/private/var/folders/vv/0ncq7_rn70x5z37wt_j0lf1r0000gn/T/opencode/admin-email-env-refresh-{check,integration}.log`.

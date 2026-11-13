@@ -105,7 +105,7 @@ jobs:
           flyctl machine list --app "$FLY_APP" --json |
             jq -r --arg b "$BRANCH" '.[] | select(.config.metadata.preview_branch == $b) | .id' |
             xargs -r -n1 flyctl machine destroy --force --app "$FLY_APP"
-          flyctl machine run "registry.fly.io/$FLY_APP:$SHA" --app "$FLY_APP" --region sea \
+          flyctl machine run "registry.fly.io/$FLY_APP:$SHA" --app "$FLY_APP" --region sjc \
             --vm-size shared-cpu-1x --vm-memory 1024 --restart on-failure \
             --metadata preview_branch="$BRANCH" --env DATABASE_URL_UNPOOLED="$DATABASE_URL_UNPOOLED" \
             --detach
