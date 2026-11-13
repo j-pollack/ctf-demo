@@ -27,3 +27,14 @@ Initial tracked tree/index clean; temporary dependency symlink only. Lead implem
 - Raw logs: `/private/var/folders/vv/0ncq7_rn70x5z37wt_j0lf1r0000gn/T/opencode/admin-email-env-{red,check,coverage,integration}.log`.
 - The runtime change is inline parsing plus a revocation comment; no useful further simplification identified. No live setup, shared database mutation, merge, push or deployment performed.
 - Independent full-delta final review approved with no findings or blockers; A1–A3 complete.
+
+## Production follow-up
+
+User authorized wiring the production workflow and setting the GitHub Actions repository secret via `gh`. Continue in the same worktree/branch from `bd4315b`.
+
+- A4: The production setup step in `.github/workflows/migrate-prod.yml` receives `ADMIN_EMAILS` from `secrets.ADMIN_EMAILS`. README lists the new required seed configuration. Verify the scoped diff and `npm run check`.
+- A5: Set repository secret `ADMIN_EMAILS` on the verified origin `j-pollack/ctf-demo` to the existing local seed address using `gh secret set`; verify its presence through `gh secret list` without reading back secrets. This does not run setup or deploy.
+- Independent plan review approved. Added the step-scoped secret mapping and updated README. `npm run check` passed all offline gates and 232 tests; log: `/private/var/folders/vv/0ncq7_rn70x5z37wt_j0lf1r0000gn/T/opencode/admin-email-env-production-check.log`.
+- `gh secret set ADMIN_EMAILS --repo j-pollack/ctf-demo` succeeded with the existing seed address. `gh secret list` confirmed the name and update timestamp `2026-11-13T07:54:11Z`; secret contents are not readable through that listing.
+- User authorized pushing this branch and creating a PR based on `feature/persistent-run-sessions`. This includes the intervening unmerged commits, not just admin-email configuration. Merge remains pending green PR checks and further authorization.
+- Independent final review approved A4–A5 with no findings. Commit only the workflow, documentation and this plan before opening the PR.
