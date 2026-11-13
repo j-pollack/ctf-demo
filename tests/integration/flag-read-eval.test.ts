@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
+import { MONITOR_INITIAL_CONTEXT_MAX_BYTES } from "../../lib/monitor-evidence";
 import { AGENT_MODEL } from "../../lib/policy";
 import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
 import type { InvestigationObserver } from "../../lib/investigation-trace";
@@ -269,7 +270,10 @@ await test(
             return toolReply(
               "query_transcripts",
               { sql: "SELECT count(*) AS n FROM sessions" },
-              "Review the transcript carefully. ".repeat(500),
+              // Two steps of this exceed the context cap, so the third dispatch never happens.
+              "Review the transcript carefully. ".repeat(
+                Math.ceil(MONITOR_INITIAL_CONTEXT_MAX_BYTES / 2 / 33),
+              ),
             );
           }
           if (text.includes("flag{synthetic-claim}"))
@@ -566,7 +570,7 @@ await test(
     assert.equal(failedProvider?.coveredVersion, 0);
     assert.equal(failedProvider?.jobStatus, "queued");
     const overflow = entries.find((entry) => entry.caseId === overflowCase.id);
-    assert.match(overflow?.operationalError ?? "", /context limit reached: \d+ bytes > 48000/);
+    assert.match(overflow?.operationalError ?? "", /context limit reached: \d+ bytes > \d+/);
     assert.equal(overflow?.coveredVersion, 0);
     assert.equal(overflow?.jobStatus, "queued");
     assert.equal(overflow?.heldMicrodollars, 0);
