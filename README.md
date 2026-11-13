@@ -19,7 +19,7 @@ Deploy the schema migration before enabling new async runs. Deployed environment
 UPDATE ctf."user" SET "isAdmin" = true WHERE email = 'you@example.com';
 ```
 
-Or add the email to `ADMIN_EMAILS` in `scripts/setup.ts`; every `npm run setup` (local and the production migrate workflow) grants it to existing accounts. Remove an email there before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
+Or set `ADMIN_EMAILS` in `.env.local` (comma-separated, for example `ADMIN_EMAILS=you@example.com,other@example.com`). `npm run setup` loads that file and grants admin to matching existing non-guest accounts; sign in once, then rerun setup. Whitespace and case are ignored. Unset or blank grants nobody, and removing an address does not revoke an existing grant. For production setup, supply the same variable in its environment. Remove an email from every setup environment's `ADMIN_EMAILS` before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
 
 List current admins, including manual grants:
 
