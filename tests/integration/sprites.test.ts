@@ -3821,6 +3821,127 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const { monitor_model, monitor_version, monitor_difficulty, monitor_reasoning } = await row(id);
     return { monitor_model, monitor_version, monitor_difficulty, monitor_reasoning };
   };
+  for (const admin of [false, true])
+    await t.test(
+      `personal run quota ${admin ? "exempts persisted admins and respects revocation" : "rejects member privilege hints"}`,
+      async () => {
+        const who = await member();
+        await pool.query('UPDATE ctf."user" SET "isAdmin"=$2 WHERE id=$1', [who.id, admin]);
+        const anotherAdmin = await member();
+        await pool.query('UPDATE ctf."user" SET "isAdmin"=true WHERE id=$1', [anotherAdmin.id]);
+        let currentId = "";
+        for (let i = 0; i < 3; i++) {
+          const response = await startRoute(who, {});
+          assert.equal(response.status, 200);
+          currentId = (await response.json()).id;
+        }
+        const fourth = await startRoute(who, {
+          isAdmin: true,
+          ownerId: anotherAdmin.id,
+          user: { id: anotherAdmin.id, isAdmin: true },
+        });
+        assert.equal(fourth.status, admin ? 200 : 429);
+        if (admin) {
+          currentId = (await fourth.json()).id;
+          const created = await row(currentId);
+          assert.equal(created.owner_id, who.id);
+          assert.equal(created.new_run, true);
+          await pool.query('UPDATE ctf."user" SET "isAdmin"=false WHERE id=$1', [who.id]);
+          const revoked = await startRoute(who, { isAdmin: true });
+          assert.equal(revoked.status, 429, "same cookie must not retain revoked quota privileges");
+          assert.match((await revoked.json()).error, /daily limit of new runs/);
+        } else assert.match((await fourth.json()).error, /daily limit of new runs/);
+        assert.equal(
+          (await row(currentId)).status,
+          "active",
+          "rejected admission leaves the current run active",
+        );
+        const count = (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM ctf.games WHERE owner_id=$1 AND new_run",
+            [who.id],
+          )
+        ).rows[0].n;
+        assert.equal(count, admin ? 4 : 3);
+        assert.equal(
+          (await pool.query("SELECT 1 FROM ctf.games WHERE owner_id=$1", [anotherAdmin.id]))
+            .rowCount,
+          0,
+        );
+      },
+    );
+
+  await t.test(
+    "anonymous admin flags and missing user rows cannot bypass the personal quota",
+    async () => {
+      const guest = await session(false);
+      await pool.query('UPDATE ctf."user" SET "isAdmin"=true WHERE id=$1', [guest.id]);
+      const guestResponse = await startRoute(guest, { isAdmin: true });
+      assert.equal(guestResponse.status, 401);
+      for (const ownerId of [guest.id, `missing-${randomUUID()}`]) {
+        let currentId = "";
+        for (let i = 0; i < 3; i++) currentId = (await startGame(ownerId)).id;
+        await assert.rejects(() => startGame(ownerId), /daily limit of new runs/);
+        assert.equal((await row(currentId)).status, "active");
+        assert.equal(
+          (
+            await pool.query("SELECT count(*)::int AS n FROM ctf.games WHERE owner_id=$1", [
+              ownerId,
+            ])
+          ).rows[0].n,
+          3,
+        );
+      }
+    },
+  );
+
+  await t.test("admin new-run forks bypass personal quota and still record a new run", async () => {
+    const who = await member();
+    await pool.query('UPDATE ctf."user" SET "isAdmin"=true WHERE id=$1', [who.id]);
+    const { game: parent } = await blockRun(who.id);
+    await startGame(who.id);
+    const third = await startGame(who.id);
+    const response = await forkRoute(who, parent.id);
+    assert.equal(response.status, 200);
+    const child = await row((await response.json()).id);
+    assert.equal(child.forked_from, parent.id);
+    assert.equal(child.owner_id, who.id);
+    assert.equal(child.new_run, true);
+    assert.equal(child.status, "active");
+    assert.equal((await row(third.id)).status, "ended");
+    assert.equal(
+      (
+        await pool.query("SELECT count(*)::int AS n FROM ctf.games WHERE owner_id=$1 AND new_run", [
+          who.id,
+        ])
+      ).rows[0].n,
+      4,
+    );
+  });
+
+  await t.test("admin quota exemption preserves global spend and new-run caps", async () => {
+    const who = await member();
+    await pool.query('UPDATE ctf."user" SET "isAdmin"=true WHERE id=$1', [who.id]);
+    let currentId = "";
+    for (let i = 0; i < 3; i++) currentId = (await startGame(who.id)).id;
+    await pool.query(
+      "INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,10000000) ON CONFLICT(day) DO UPDATE SET charged=10000000",
+    );
+    const spend = await startRoute(who, {});
+    assert.equal(spend.status, 429);
+    assert.match((await spend.json()).error, /shared inference budget/);
+    await pool.query("UPDATE ctf.daily_spend SET charged=0");
+    await pool.query(`INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
+      SELECT gen_random_uuid(),'bulk-'||n,'bulk-'||n,'h','a','m','v',1,'ended',now() FROM generate_series(1,97) n`);
+    const starts = await startRoute(who, {});
+    assert.equal(starts.status, 429);
+    assert.match((await starts.json()).error, /No more new runs/);
+    assert.equal((await row(currentId)).status, "active");
+    assert.equal(
+      (await pool.query("SELECT count(*)::int AS n FROM ctf.games WHERE new_run")).rows[0].n,
+      100,
+    );
+  });
   // Every run is stamped with the current Typesafe monitor; only difficulty and reasoning vary.
   const DEFAULT_MONITOR = {
     monitor_model: TYPESAFE_MODEL,

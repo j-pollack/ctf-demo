@@ -21,6 +21,16 @@ UPDATE ctf."user" SET "isAdmin" = true WHERE email = 'you@example.com';
 
 Or add the email to `ADMIN_EMAILS` in `scripts/setup.ts`; every `npm run setup` (local and the production migrate workflow) grants it to existing accounts. Remove an email there before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
 
+List current admins, including manual grants:
+
+```sql
+SELECT id, email, name FROM ctf."user"
+WHERE "isAdmin" = true AND "isAnonymous" IS NOT TRUE
+ORDER BY email;
+```
+
+Admins are exempt from the personal three-new-runs-per-24-hours limit. Shared spend, global new-run and environment limits still apply. Admission checks the current database flag, so revocation takes effect on the next start request.
+
 ## Parallel worktrees
 
 Every feature uses a dedicated branch/worktree at `<primary-checkout>/.worktrees/<feature-slug>`; see [AGENTS.md](AGENTS.md) for agent workflow rules.
