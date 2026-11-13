@@ -7,6 +7,17 @@ import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
 
 const digest = (prompt: string) => createHash("sha256").update(prompt).digest("hex");
 
+test("closed-world candidate is explicit and hashes its trusted evaluation context", () => {
+  const selected = resolveFlagReadPolicy("closed-world-presumption-v1");
+  assert.equal(selected.searchStrategy, "closed-world-presumption-v1");
+  assert.equal(selected.monitorVersion, "investigator-v13-glm53-jev114-presumption-v1-experiment");
+  assert.ok(Object.isFrozen(selected));
+  assert.ok(selected.systemPrompt.startsWith(resolveFlagReadPolicy("read-semantics").systemPrompt));
+  assert.equal(selected.promptHash, digest(selected.systemPrompt));
+  assert.notEqual(selected.promptHash, resolveFlagReadPolicy().promptHash);
+  assert.equal(resolveFlagReadPolicy().systemPrompt, FLAG_READ_SYSTEM_PROMPT);
+});
+
 test("current flag-read policy preserves the production prompt and version", () => {
   const current = resolveFlagReadPolicy();
   assert.equal(current, resolveFlagReadPolicy("current"));

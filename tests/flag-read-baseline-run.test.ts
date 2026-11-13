@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -11,6 +11,79 @@ import { baselineSources } from "../scripts/flag-read-baseline-files";
 const corpus = readFileSync("evals/flag-read/cases.json", "utf8");
 const sources = { source: "frozen" };
 const schedule = buildSchedule(corpus, sources);
+
+test("candidate preflight requires the selected arm and freezes its policy and sources", () => {
+  const strategy = "closed-world-presumption-v1";
+  const candidate = buildSchedule(corpus, sources, strategy);
+  assert.equal(candidate.policy.strategy, strategy);
+  assert.equal(prepareBaseline(corpus, candidate, sources, 1_000_000, strategy).cases.length, 72);
+  assert.throws(() => prepareBaseline(corpus, candidate, sources, 1_000_000), /differs/);
+  assert.throws(() => prepareBaseline(corpus, schedule, sources, 1_000_000, strategy), /differs/);
+  assert.throws(() => prepareBaseline(corpus, candidate, { source: "drift" }, 1_000_000, strategy));
+  assert.throws(() => prepareBaseline(corpus, candidate, sources, 10_000_001, strategy), /Budget/);
+});
+
+test("candidate CLI rejects ambiguous selection before any network or output", async (t) => {
+  t.mock.method(globalThis, "fetch", () => assert.fail("unexpected network request"));
+  await assert.rejects(
+    main(["--dry-run", "--strategy", "closed-world-presumption-v1"]),
+    /schedule/,
+  );
+  for (const option of ["--strategy", "--schedule"]) {
+    await assert.rejects(main(["--dry-run", option]), /value/);
+    await assert.rejects(main(["--dry-run", option, "one", option, "two"]), /once/);
+  }
+  await assert.rejects(main(["--dry-run", "--strategy", "focused"]), /strategy/);
+});
+
+test("candidate schedule generation and dry-run are offline and preserve the baseline", async (t) => {
+  t.mock.method(globalThis, "fetch", () => assert.fail("unexpected network request"));
+  const folder = mkdtempSync(join(tmpdir(), "ctf-candidate-schedule-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const path = join(folder, "schedule.json");
+  const baselineBefore = readFileSync("evals/flag-read/baseline-schedule.json", "utf8");
+  const args = [
+    "--import",
+    "tsx",
+    "scripts/flag-read-baseline.ts",
+    "--dry-run",
+    path,
+    "--strategy",
+    "closed-world-presumption-v1",
+  ];
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "test" as const };
+  const result = spawnSync(process.execPath, args, { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const candidate = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(candidate.policy.strategy, "closed-world-presumption-v1");
+  assert.deepEqual(candidate.cases, JSON.parse(baselineBefore).cases);
+  await main(["--dry-run", "--strategy", "closed-world-presumption-v1", "--schedule", path], {});
+  await assert.rejects(main(["--dry-run", "--schedule", path], {}), /differs/);
+  // Drift must fail before live credential checks, output creation or provider access.
+  candidate.policy.promptHash = "changed";
+  writeFileSync(path, JSON.stringify(candidate));
+  const output = join(folder, "never-created");
+  await assert.rejects(
+    main(
+      [
+        "--live",
+        "--budget-usd",
+        "1",
+        "--output-dir",
+        output,
+        "--strategy",
+        "closed-world-presumption-v1",
+        "--schedule",
+        path,
+      ],
+      {},
+    ),
+    /differs/,
+  );
+  assert.equal(existsSync(output), false);
+  assert.notEqual(spawnSync(process.execPath, args, { encoding: "utf8", env }).status, 0);
+  assert.equal(readFileSync("evals/flag-read/baseline-schedule.json", "utf8"), baselineBefore);
+});
 
 test("live preflight rejects all frozen surface drift and invalid budgets", () => {
   const prepared = prepareBaseline(corpus, schedule, sources, 10_000_000);

@@ -12,7 +12,13 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { baselineSources } from "./flag-read-baseline-files";
-import { buildSchedule, selectBaseline, summarizeBaseline } from "./flag-read-baseline";
+import {
+  buildSchedule,
+  parseBaselineStrategy,
+  selectBaseline,
+  summarizeBaseline,
+  type BaselineStrategy,
+} from "./flag-read-baseline";
 import { toFlagReadCase } from "./flag-read-corpus";
 import type { FlagReadEntry } from "./flag-read-eval";
 import {
@@ -26,8 +32,9 @@ export function prepareBaseline(
   schedule: unknown,
   sources: Record<string, string>,
   budget?: number,
+  strategy: BaselineStrategy = "current",
 ) {
-  const expected = buildSchedule(corpus, sources);
+  const expected = buildSchedule(corpus, sources, strategy);
   if (!isDeepStrictEqual(schedule, expected))
     throw new Error(
       "Frozen baseline schedule differs from corpus, sources or runtime policy. Regenerate and review it before execution.",
@@ -49,33 +56,44 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   const root = fileURLToPath(new URL("..", import.meta.url));
   if (realpathSync(process.cwd()) !== realpathSync(root))
     throw new Error("Run the baseline runner from its own checkout directory.");
-  let output: string | undefined;
+  const selections = new Map<string, string>();
   const evaluationArgs: string[] = [];
   for (let index = 0; index < args.length; index++) {
-    if (args[index] !== "--output-dir") {
+    const option = args[index];
+    if (!["--output-dir", "--strategy", "--schedule"].includes(option)) {
       evaluationArgs.push(args[index]);
       continue;
     }
-    if (output || !args[index + 1] || args[index + 1].startsWith("--"))
-      throw new Error("Supply --output-dir once with a new directory.");
-    output = args[++index];
+    if (selections.has(option) || !args[index + 1] || args[index + 1].startsWith("--"))
+      throw new Error(`Supply ${option} once with a value.`);
+    selections.set(option, args[++index]);
   }
   const options = parseArguments(evaluationArgs);
   if (options.mode === "help") {
+    if (selections.size) throw new Error("--help cannot be combined with other options.");
     console.log(
-      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY]",
+      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--strategy current|closed-world-presumption-v1 --schedule FILE]. Candidate runs require both selection flags.",
     );
     return;
   }
+  const strategy = parseBaselineStrategy(selections.get("--strategy") ?? "current");
+  const schedulePath = selections.get("--schedule");
+  if (strategy !== "current" && !schedulePath)
+    throw new Error("Candidate selection requires an explicit --schedule FILE.");
+  const output = selections.get("--output-dir");
   if ((options.mode === "live") !== Boolean(output))
     throw new Error("Only live mode requires --output-dir NEW_DIRECTORY.");
   const corpus = readFileSync("evals/flag-read/cases.json", "utf8");
-  const scheduleText = readFileSync("evals/flag-read/baseline-schedule.json", "utf8");
+  const scheduleText = readFileSync(
+    schedulePath ?? "evals/flag-read/baseline-schedule.json",
+    "utf8",
+  );
   const prepared = prepareBaseline(
     corpus,
     JSON.parse(scheduleText),
     baselineSources(),
     options.budgetMicrodollars,
+    strategy,
   );
   if (options.mode === "dry-run") {
     console.log(
@@ -84,6 +102,8 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
           mode: "dry-run",
           evaluationPerformed: false,
           cases: prepared.cases.length,
+          strategy,
+          promptHash: prepared.schedule.policy.promptHash,
           scheduleSha256: createHash("sha256").update(scheduleText).digest("hex"),
         },
         null,
@@ -132,7 +152,7 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   try {
     const { runFlagReadLiveEvaluation } = await import("./flag-read-eval-live");
     await runFlagReadLiveEvaluation(config, prepared.cases, undefined, {
-      searchStrategy: "current",
+      searchStrategy: strategy,
       boundedBaseline: true,
       onEntry: (entry) => {
         // Stop before another case if serialization or disk persistence fails.

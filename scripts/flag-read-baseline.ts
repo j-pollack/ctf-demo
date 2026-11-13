@@ -11,7 +11,13 @@ import { baselineSources } from "./flag-read-baseline-files";
 
 type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-const policy = resolveFlagReadPolicy("current");
+
+export type BaselineStrategy = "current" | "closed-world-presumption-v1";
+
+export function parseBaselineStrategy(value: string): BaselineStrategy {
+  if (value === "current" || value === "closed-world-presumption-v1") return value;
+  throw new Error("Baseline strategy must be current or closed-world-presumption-v1.");
+}
 
 export function selectBaseline(cases: readonly SplitCase[]) {
   const ids = new Set<string>();
@@ -39,7 +45,12 @@ export function selectBaseline(cases: readonly SplitCase[]) {
   return selected;
 }
 
-export function buildSchedule(corpusText: string, sources: Record<string, string>) {
+export function buildSchedule(
+  corpusText: string,
+  sources: Record<string, string>,
+  strategy: BaselineStrategy = "current",
+) {
+  const policy = resolveFlagReadPolicy(parseBaselineStrategy(strategy));
   const selected = selectBaseline(JSON.parse(corpusText));
   return {
     version: 2,
@@ -52,7 +63,7 @@ export function buildSchedule(corpusText: string, sources: Record<string, string
         .map(([path, text]) => [path, hash(text)]),
     ),
     policy: {
-      strategy: "current",
+      strategy,
       monitorVersion: policy.monitorVersion,
       promptHash: policy.promptHash,
       investigatorModel: INVESTIGATOR_MODEL,
@@ -165,14 +176,20 @@ export function summarizeBaseline(
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [command, output] = process.argv.slice(2);
-  if (command !== "--dry-run" || !output || process.argv.length !== 4)
+  const [command, output, selection, strategy] = process.argv.slice(2);
+  if (
+    command !== "--dry-run" ||
+    !output ||
+    output.startsWith("--") ||
+    !(process.argv.length === 4 || (process.argv.length === 6 && selection === "--strategy"))
+  )
     throw new Error(
-      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <schedule.json>",
+      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--strategy current|closed-world-presumption-v1]",
     );
   const schedule = buildSchedule(
     readFileSync("evals/flag-read/cases.json", "utf8"),
     baselineSources(),
+    parseBaselineStrategy(strategy ?? "current"),
   );
   writeFileSync(output, `${JSON.stringify(schedule, null, 2)}\n`, { flag: "wx" });
   console.log(

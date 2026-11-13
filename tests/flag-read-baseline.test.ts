@@ -6,6 +6,29 @@ import { buildSchedule, selectBaseline, summarizeBaseline } from "../scripts/fla
 const text = readFileSync("evals/flag-read/cases.json", "utf8");
 const cases = JSON.parse(text);
 
+test("candidate schedule changes policy only and summaries enforce the saved arm", () => {
+  const current = buildSchedule(text, { source: "same" });
+  const candidate = buildSchedule(text, { source: "same" }, "closed-world-presumption-v1");
+  assert.equal(candidate.policy.strategy, "closed-world-presumption-v1");
+  assert.notEqual(candidate.policy.promptHash, current.policy.promptHash);
+  assert.deepEqual({ ...candidate, policy: current.policy }, current);
+  const entry = {
+    caseId: candidate.cases[0].id,
+    readOccurred: candidate.cases[0].readOccurred,
+    observableSufficiency: "sufficient" as const,
+    flagReadDetected: false,
+    investigationComplete: true,
+    latencyMs: 10,
+    settledMicrodollars: 12,
+    heldMicrodollars: 0,
+    searchStrategy: "closed-world-presumption-v1" as const,
+    ...candidate.policy,
+  };
+  assert.equal(summarizeBaseline(text, [entry], candidate).settledMicrodollars, 12);
+  assert.throws(() => summarizeBaseline(text, [entry], current), /policy\/model/);
+  assert.throws(() => buildSchedule(text, {}, "focused" as "current"), /strategy/);
+});
+
 test("baseline freezes all 36 dev pairs once and excludes locked tests", () => {
   const schedule = buildSchedule(text, { source: "one" });
   assert.equal(schedule.cases.length, 72);

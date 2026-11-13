@@ -9,10 +9,12 @@ import { flagReadCases } from "../../scripts/flag-read-cases";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
 import { AGENT_MODEL, INVESTIGATOR_MODEL } from "../../lib/policy";
 import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../../scripts/flag-read-baseline-run";
+import { buildSchedule } from "../../scripts/flag-read-baseline";
+import { baselineSources } from "../../scripts/flag-read-baseline-files";
 import { MONITOR_OUTPUT_TOKENS } from "../../lib/monitor-evidence";
 
 const base = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -39,6 +41,10 @@ await test(
       "callback-failure",
       "wrapper",
       "wrapper-failure",
+      "candidate-wrapper",
+      "candidate-rate-limit",
+      "candidate-missing-usage",
+      "candidate-overrun",
     ] as const;
     if (!process.env.CTF_BASELINE_TEST_MODE) {
       for (const mode of modes)
@@ -62,8 +68,12 @@ await test(
       return;
     }
     assert.ok(modes.some((mode) => mode === process.env.CTF_BASELINE_TEST_MODE));
-    for (const mode of modes.filter((mode) => mode === process.env.CTF_BASELINE_TEST_MODE))
-      await t.test(mode, async (t) => {
+    for (const name of modes.filter((mode) => mode === process.env.CTF_BASELINE_TEST_MODE))
+      await t.test(name, async (t) => {
+        const candidate = name.startsWith("candidate-");
+        const mode = name.replace(/^candidate-/, "");
+        const strategy = candidate ? "closed-world-presumption-v1" : "current";
+        const policy = resolveFlagReadPolicy(strategy);
         const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
         const adminUrl = new URL(base);
         adminUrl.pathname = "/postgres";
@@ -145,7 +155,12 @@ await test(
               investigator++;
               assert.equal(body.model, INVESTIGATOR_MODEL);
               assert.equal(body.reasoning.effort, "high");
-              assert.equal(body.messages[0].content, resolveFlagReadPolicy("current").systemPrompt);
+              assert.equal(body.messages[0].content, policy.systemPrompt);
+              assert.doesNotMatch(
+                JSON.stringify(body.messages),
+                /hiddenSprites|readOccurred|observableSufficiency|observableEquivalenceGroup/,
+                "provider receives evidence, not evaluator labels or hidden mappings",
+              );
               assert.ok(body.max_tokens > 0 && body.max_tokens <= 8192);
               if (mode === "rate-limit") return new Response("{}", { status: 429 });
               if (mode === "timeout") throw new DOMException("synthetic timeout", "TimeoutError");
@@ -218,10 +233,36 @@ await test(
           const parent = mkdtempSync(join(tmpdir(), "ctf-baseline-"));
           t.after(() => rmSync(parent, { recursive: true, force: true }));
           const output = join(parent, "run");
+          // The recorded baseline is immutable. Current-source tests use a fresh schedule.
+          const schedulePath = candidate
+            ? "evals/flag-read/closed-world-presumption-v1-schedule.json"
+            : join(parent, "current-schedule.json");
+          if (!candidate)
+            writeFileSync(
+              schedulePath,
+              JSON.stringify(
+                buildSchedule(
+                  readFileSync("evals/flag-read/cases.json", "utf8"),
+                  baselineSources(),
+                ),
+              ),
+              { flag: "wx" },
+            );
+          const argumentsForRun = [
+            "--live",
+            "--budget-usd",
+            "1",
+            "--output-dir",
+            output,
+            "--strategy",
+            strategy,
+            "--schedule",
+            schedulePath,
+          ];
           if (mode === "wrapper-failure") {
             await inspection.query("CREATE SCHEMA ctf");
             await assert.rejects(
-              main(["--live", "--budget-usd", "1", "--output-dir", output], {
+              main(argumentsForRun, {
                 ...process.env,
                 CTF_INTEGRATION_DATABASE_URL: url.toString(),
               }),
@@ -234,7 +275,7 @@ await test(
             assert.equal(classifier + investigator, 0);
             return;
           }
-          const summary = await main(["--live", "--budget-usd", "1", "--output-dir", output], {
+          const summary = await main(argumentsForRun, {
             ...process.env,
             CTF_INTEGRATION_DATABASE_URL: url.toString(),
           });
@@ -247,6 +288,8 @@ await test(
           assert.equal(schedule.execution.investigatorOutputTokensPerCall, MONITOR_OUTPUT_TOKENS);
           assert.equal(schedule.execution.investigatorDeadlineMs, MONITOR_DEADLINE_MS);
           assert.equal(schedule.policy.effort, INVESTIGATOR_EFFORT);
+          assert.equal(schedule.policy.strategy, strategy);
+          assert.equal(schedule.policy.promptHash, policy.promptHash);
           const persisted = JSON.parse(readFileSync(join(output, "summary.json"), "utf8"));
           const journal = readFileSync(join(output, "entries.jsonl"), "utf8")
             .trim()
@@ -262,13 +305,25 @@ await test(
           assert.equal(investigator, 72);
           assert.ok(
             journal.every(
-              (entry) => entry.investigationComplete && entry.trace && entry.inference.length === 2,
+              (entry) =>
+                entry.investigationComplete &&
+                entry.trace &&
+                entry.inference.length === 2 &&
+                entry.searchStrategy === strategy &&
+                entry.promptHash === policy.promptHash &&
+                entry.monitorVersion === policy.monitorVersion,
             ),
           );
+          const { rows: reviews } = await inspection.query(
+            "SELECT DISTINCT prompt_version FROM ctf.monitor_reviews",
+          );
+          assert.deepEqual(reviews, [{ prompt_version: policy.monitorVersion }]);
+          assert.equal(persisted.scores.strict.incomplete, 0);
+          assert.equal(persisted.scores.presumption.incomplete, 0);
           assert.equal(persisted.status, "completed");
           assert.equal(persisted.settledMicrodollars, 72 * 14);
           await assert.rejects(
-            main(["--live", "--budget-usd", "1", "--output-dir", output], {
+            main(argumentsForRun, {
               ...process.env,
               CTF_INTEGRATION_DATABASE_URL: url.toString(),
             }),
@@ -301,7 +356,7 @@ await test(
           { databaseUrl: url.toString(), budgetMicrodollars: budget },
           cases,
           undefined,
-          { boundedBaseline: true } as Parameters<typeof runFlagReadLiveEvaluation>[3],
+          { boundedBaseline: true, searchStrategy: strategy },
         );
         // The fake's deliberate timeout is an external failure, not an assertion failure.
         assert.deepEqual(
@@ -364,11 +419,23 @@ await test(
           }
           if (mode === "missing-usage" || mode === "timeout") {
             assert.ok(totals.held > 0);
-            assert.equal(
-              entries[2].skipped,
-              true,
-              "unknown holds consume the allowance for subsequent cases",
-            );
+            if (candidate) {
+              // The larger prompt leaves a balance below investigator admission, rather
+              // than below the outer classifier skip threshold. Prove actual denial.
+              assert.equal(investigator, 1);
+              assert.ok(entries[0].heldMicrodollars > 0);
+              assert.equal(totals.held, entries[0].heldMicrodollars);
+              for (const entry of entries.slice(1)) {
+                assert.match(entry.operationalError ?? "", /budget/i);
+                assert.ok(entry.inference?.every((row) => row.model === "jev-1.14.0"));
+              }
+            } else {
+              assert.equal(
+                entries[2].skipped,
+                true,
+                "unknown holds consume the allowance for subsequent cases",
+              );
+            }
           }
           assert.ok(totals.settled + totals.held <= budget);
         }
