@@ -29,6 +29,8 @@ jobs:
         run: npm ci
       - name: Prepare disposable Postgres image
         run: docker pull postgres:17-alpine
+      - name: Build corpus test image
+        run: docker build -t ctf-flag-read-sprite:1 evals/flag-read
       - name: Check lint, formatting, types, and offline tests
         run: npm run check
       - name: Run Postgres integration tests

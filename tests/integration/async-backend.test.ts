@@ -27,8 +27,19 @@ await test(
     const pool = new Pool({ connectionString: url.toString(), max: 4 });
     (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = pool;
     t.after(async () => {
+      // pg-pool resolves end() after removing clients from its list, before their sockets close.
+      // Wait for actual removal callbacks so dropping this disposable DB cannot kill a closing client.
+      let remaining = pool.totalCount;
+      const closed = new Promise<void>((resolve) => {
+        if (!remaining) resolve();
+        else
+          pool.on("remove", () => {
+            if (--remaining === 0) resolve();
+          });
+      });
       await pool.end();
-      await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+      await closed;
+      await admin.query(`DROP DATABASE "${databaseName}"`);
       await admin.end();
     });
     for (const file of [

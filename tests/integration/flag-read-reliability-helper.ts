@@ -24,8 +24,11 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
       const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
       const created: string[] = [];
       t.after(async () => {
-        for (const name of created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
-        await admin.end();
+        try {
+          for (const name of created) await admin.query(`DROP DATABASE "${name}"`);
+        } finally {
+          await admin.end();
+        }
       });
       const oldTypesafe = process.env.TYPESAFE_API_KEY;
       process.env.TYPESAFE_API_KEY = "synthetic-reliability-jev";
@@ -314,7 +317,18 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
           assert.equal(byId.get(entries[2].reviewId!)?.verdict, null);
           assert.match(byId.get(entries[2].reviewId!)?.operational_error ?? "", /503/);
         } finally {
+          // pg-pool resolves end() before its socket-close callbacks emit remove.
+          // Finish closing every client before teardown drops this disposable database.
+          let remaining = persisted.totalCount;
+          const closed = new Promise<void>((resolve) => {
+            if (!remaining) resolve();
+            else
+              persisted.on("remove", () => {
+                if (--remaining === 0) resolve();
+              });
+          });
           await persisted.end();
+          await closed;
         }
       }
       assert.ok(
