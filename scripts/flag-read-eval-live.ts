@@ -13,6 +13,11 @@ import {
 } from "../lib/flag-read-policy";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
 import {
+  BOUNDED_INVESTIGATOR_POLICY,
+  resolveInvestigatorTiming,
+  type InvestigatorTiming,
+} from "../lib/investigator-evaluation-policy";
+import {
   loadReviewGame,
   migrateFreshDatabase,
   seedWorkspace,
@@ -76,6 +81,7 @@ async function createClaim(
   workspace: SeededWorkspace,
   enqueueMonitorJob: typeof import("../lib/monitor-jobs").enqueueMonitorJob,
   claimMonitorJob: typeof import("../lib/monitor-jobs").claimMonitorJob,
+  boundedBaseline: boolean,
 ) {
   const sessionId = workspace.sessionIds.get(item.targetSessionId);
   if (!sessionId) throw new Error(`${item.id}: target session was not seeded.`);
@@ -103,7 +109,9 @@ async function createClaim(
   } finally {
     client.release();
   }
-  const claim = await claimMonitorJob();
+  const claim = await claimMonitorJob(
+    boundedBaseline ? BOUNDED_INVESTIGATOR_POLICY.claimMs : undefined,
+  );
   if (!claim || claim.gameId !== workspace.gameId || claim.sessionId !== sessionId)
     throw new Error(`${item.id}: evaluation could not claim its own target review job.`);
   return claim;
@@ -128,6 +136,8 @@ async function reviewCase(
     inference: typeof import("../lib/inference");
   },
   testObserver?: InvestigationObserver,
+  boundedBaseline = false,
+  timing: InvestigatorTiming = BOUNDED_INVESTIGATOR_POLICY,
 ): Promise<FlagReadEntry> {
   const started = Date.now();
   const claim = await createClaim(
@@ -136,6 +146,7 @@ async function reviewCase(
     workspace,
     modules.jobs.enqueueMonitorJob,
     modules.jobs.claimMonitorJob,
+    boundedBaseline,
   );
   const reviewId = randomUUID();
   await pool.query(
@@ -201,9 +212,12 @@ async function reviewCase(
       reviewId,
       messages: [...target.messages],
       target: { kind: "transcript" },
-      signal,
+      signal: boundedBaseline
+        ? AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)])
+        : signal,
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: claim,
+      reserveBudget: boundedBaseline,
     });
     await modules.sessions.updateMonitorClassifierSignals(reviewId, classifier.signals);
     const result = await modules.investigator.runFlagReadInvestigation(
@@ -217,8 +231,9 @@ async function reviewCase(
         signal,
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
+        deadlineAt: boundedBaseline ? Date.now() + timing.deadlineMs : undefined,
       },
-      { observer, searchStrategy: selectedPolicy.searchStrategy },
+      { observer, searchStrategy: selectedPolicy.searchStrategy, boundedBaseline },
     );
     if (
       result.monitorVersion !== selectedPolicy.monitorVersion ||
@@ -286,6 +301,11 @@ async function reviewCase(
     [claim.jobId],
   );
   if (!job) throw new Error(`${item.id}: review job disappeared.`);
+  const { rows: inference } = await pool.query<NonNullable<FlagReadEntry["inference"]>[number]>(
+    `SELECT id,model,tokens::float8 AS tokens,cost::float8 AS cost,cost_ceiling::float8 AS "costCeiling",settled_at IS NOT NULL AS settled,
+      generation_id AS "generationId" FROM ctf.inference WHERE game_id=$1 AND review_id=$2 ORDER BY created_at,id`,
+    [claim.gameId, reviewId],
+  );
   return {
     caseId: item.id,
     reviewId,
@@ -312,6 +332,10 @@ async function reviewCase(
     promptHash,
     searchStrategy,
     investigatorModel,
+    inference,
+    accountingOverrun: inference.some(
+      (row) => row.settled && row.cost !== null && row.cost > row.costCeiling,
+    ),
   };
 }
 
@@ -319,9 +343,15 @@ export async function runFlagReadLiveEvaluation(
   config: LiveEvaluationConfig,
   cases: readonly FlagReadCase[] = flagReadCases,
   testObserver?: InvestigationObserver,
-  options: { searchStrategy?: FlagReadSearchStrategy } = {},
+  options: {
+    searchStrategy?: FlagReadSearchStrategy;
+    boundedBaseline?: boolean;
+    timing?: InvestigatorTiming;
+    onEntry?: (entry: FlagReadEntry) => void | Promise<void>;
+  } = {},
 ): Promise<FlagReadEntry[]> {
-  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy);
+  const timing = resolveInvestigatorTiming(options.timing);
+  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy ?? "current");
   const { Pool } = await import("pg");
   const pool = new Pool({
     connectionString: config.databaseUrl,
@@ -371,10 +401,11 @@ export async function runFlagReadLiveEvaluation(
     };
     const entries: FlagReadEntry[] = [];
     let usedMicrodollars = 0;
+    let accountingOverrun = false;
     for (const item of cases) {
       const remaining = config.budgetMicrodollars - usedMicrodollars;
-      if (remaining <= CLASSIFIER_RESERVE_MICRODOLLARS) {
-        entries.push({
+      if (remaining <= CLASSIFIER_RESERVE_MICRODOLLARS || accountingOverrun) {
+        const entry: FlagReadEntry = {
           caseId: item.id,
           readOccurred: item.readOccurred,
           observableSufficiency: item.observableSufficiency,
@@ -383,7 +414,9 @@ export async function runFlagReadLiveEvaluation(
             : {}),
           flagReadDetected: null,
           investigationComplete: null,
-          operationalError: "Evaluation budget exhausted before classifier admission.",
+          operationalError: accountingOverrun
+            ? "Evaluation stopped after a reservation overrun."
+            : "Evaluation budget exhausted before classifier admission.",
           skipped: true,
           latencyMs: null,
           settledMicrodollars: 0,
@@ -391,7 +424,9 @@ export async function runFlagReadLiveEvaluation(
           monitorVersion: selectedPolicy.monitorVersion,
           promptHash: selectedPolicy.promptHash,
           searchStrategy: selectedPolicy.searchStrategy,
-        });
+        };
+        entries.push(entry);
+        await options.onEntry?.(entry);
         continue;
       }
       const workspace = await seedCase(
@@ -402,9 +437,20 @@ export async function runFlagReadLiveEvaluation(
         typesafe.TYPESAFE_MODEL,
         selectedPolicy.monitorVersion,
       );
-      const entry = await reviewCase(pool, item, workspace, selectedPolicy, modules, testObserver);
+      const entry = await reviewCase(
+        pool,
+        item,
+        workspace,
+        selectedPolicy,
+        modules,
+        testObserver,
+        options.boundedBaseline,
+        timing,
+      );
       entries.push(entry);
       usedMicrodollars += entry.settledMicrodollars + entry.heldMicrodollars;
+      accountingOverrun ||= Boolean(options.boundedBaseline && entry.accountingOverrun);
+      await options.onEntry?.(entry);
     }
     return entries;
   } finally {

@@ -27,6 +27,7 @@ import {
 import { INVESTIGATOR_SYSTEM_PROMPT, MONITOR_OUTPUT_TOKENS } from "./monitor-evidence";
 import { notifyInvestigationObserver, type InvestigationObserver } from "./investigation-trace";
 import type { RunMonitorReviewInput } from "./monitor-review";
+import { BOUNDED_INVESTIGATOR_POLICY } from "./investigator-evaluation-policy";
 
 export const MONITOR_CALL_LIMIT = 8;
 export const MONITOR_DEADLINE_MS = 60_000;
@@ -176,6 +177,7 @@ export async function runInvestigatorDriver<T>(
     finishName: string;
     observer?: InvestigationObserver;
     recoverToolSchemaErrors?: boolean;
+    boundedInference?: boolean;
     prepare: (context: {
       model: Model<"openai-completions">;
       signal: AbortSignal;
@@ -196,14 +198,26 @@ export async function runInvestigatorDriver<T>(
   const started = Date.now();
   const deadline = Math.min(
     input.deadlineAt ?? Number.POSITIVE_INFINITY,
-    started + MONITOR_DEADLINE_MS,
+    started +
+      (config.boundedInference ? BOUNDED_INVESTIGATOR_POLICY.deadlineMs : MONITOR_DEADLINE_MS),
   );
   if (input.signal.aborted) throw new Error("Investigator review was cancelled.");
   const timeLeft = deadline - Date.now();
   if (timeLeft <= 0) throw new Error("Investigator review deadline expired.");
   const deadlineSignal = AbortSignal.timeout(timeLeft);
   const signal = AbortSignal.any([input.signal, deadlineSignal]);
-  const model = await getModel(INVESTIGATOR_MODEL, signal);
+  const catalogModel = await getModel(INVESTIGATOR_MODEL, signal);
+  const model = config.boundedInference
+    ? {
+        ...catalogModel,
+        cost: {
+          input: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
+          output: BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion,
+          cacheRead: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
+          cacheWrite: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
+        },
+      }
+    : catalogModel;
   if (signal.aborted)
     throw new Error(
       input.signal.aborted
@@ -260,6 +274,11 @@ export async function runInvestigatorDriver<T>(
       finalizationToken: input.finalizationToken,
       pendingReviewId: input.pendingReviewId,
       jobClaim: input.jobClaim,
+      singleAttempt: config.boundedInference,
+      stopOnReservationOverrun: config.boundedInference,
+      providerEndpoint: config.boundedInference
+        ? BOUNDED_INVESTIGATOR_POLICY.providerEndpoint
+        : undefined,
     } satisfies TrustedInferenceOptions);
     investigator.session.agent.streamFunction = guardInvestigatorStream(dispatch, {
       signal,

@@ -149,11 +149,13 @@ await test(
           const request = JSON.parse(String(init?.body)) as {
             model: string;
             max_tokens: number;
+            provider: unknown;
             reasoning?: { effort: string };
             messages: { role: string; content?: string }[];
             tools: { function: { name: string } }[];
           };
           assert.equal(request.model, "z-ai/glm-5.3");
+          assert.deepEqual(request.provider, { require_parameters: true });
           assert.equal(request.max_tokens, 8_192);
           assert.equal(request.reasoning?.effort, "high");
           const dispatchedPrompt = request.messages.find(
@@ -161,12 +163,12 @@ await test(
           )?.content;
           assert.equal(
             dispatchedPrompt,
-            resolveFlagReadPolicy().systemPrompt,
+            resolveFlagReadPolicy("current").systemPrompt,
             "default investigator policy leads the provider request",
           );
           assert.equal(
             createHash("sha256").update(dispatchedPrompt!).digest("hex"),
-            resolveFlagReadPolicy().promptHash,
+            resolveFlagReadPolicy("current").promptHash,
           );
           modelVisiblePayloads.push(JSON.stringify(request.messages));
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
@@ -541,7 +543,7 @@ await test(
     assert.ok(
       entries
         .filter((entry) => entry.investigationComplete)
-        .every((entry) => entry.monitorVersion === resolveFlagReadPolicy().monitorVersion),
+        .every((entry) => entry.monitorVersion === resolveFlagReadPolicy("current").monitorVersion),
     );
     assert.ok(
       entries
@@ -675,7 +677,7 @@ await test(
         [entries.map((entry) => entry.reviewId)],
       );
       assert.deepEqual(reviewModels.rows, [
-        { model: "z-ai/glm-5.3", prompt_version: resolveFlagReadPolicy().monitorVersion },
+        { model: "z-ai/glm-5.3", prompt_version: resolveFlagReadPolicy("current").monitorVersion },
       ]);
       const rawIds = await persisted.query<{ id: string }>(
         "SELECT id FROM ctf.games UNION SELECT id FROM ctf.agent_sessions",

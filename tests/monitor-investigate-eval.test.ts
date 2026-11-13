@@ -59,6 +59,22 @@ test("live preflight accepts only a loopback ctf_integration database and suppli
     databaseUrl: env.CTF_INTEGRATION_DATABASE_URL,
     budgetMicrodollars: 500_000,
   });
+  for (const override of [
+    "host=remote.example",
+    "host=%2Ftmp",
+    "port=5433",
+    "dbname=shared",
+    "options=-c%20search_path%3Dpublic",
+  ]) {
+    assert.throws(
+      () =>
+        validateLiveConfig(options, {
+          ...env,
+          CTF_INTEGRATION_DATABASE_URL: `${env.CTF_INTEGRATION_DATABASE_URL}?${override}`,
+        }),
+      /query|override/,
+    );
+  }
   assert.throws(
     () =>
       validateLiveConfig(options, {

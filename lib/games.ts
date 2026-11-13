@@ -3,7 +3,12 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { isAdmin } from "./admin";
-import { ASYNC_MONITOR_VERSION, MONITOR_TOKEN_MICRODOLLARS, MONITOR_VERSION } from "./control";
+import {
+  ASYNC_MONITOR_VERSION,
+  LEGACY_FLAG_READ_MONITOR_VERSION,
+  MONITOR_TOKEN_MICRODOLLARS,
+  MONITOR_VERSION,
+} from "./control";
 import {
   AGENT_MODEL,
   PLAYER_AGENT_EFFORT,
@@ -622,7 +627,8 @@ export async function startGame(
         agentModel ?? source?.agent_model ?? AGENT_MODEL,
         TYPESAFE_MODEL,
         source?.monitor_difficulty ?? monitor.difficulty ?? "hard",
-        ASYNC_MONITOR_VERSION,
+        // Fork checkpoint/history semantics have not been promoted to the presumption policy.
+        source ? LEGACY_FLAG_READ_MONITOR_VERSION : ASYNC_MONITOR_VERSION,
         source?.token_budget ?? 500000,
         source?.budget_microdollars ?? RUN_BUDGET_MICRODOLLARS,
         source?.system_prompt ?? "",
@@ -1084,15 +1090,20 @@ export async function chargeMonitor(
 }
 export async function settleInference(
   id: string,
-  usage?: { tokens: number; cost: number; generationId?: string },
+  usage?: { tokens: number; generationId?: string } & (
+    | { cost: number; costMicrodollars?: never }
+    | { costMicrodollars: number; cost?: never }
+  ),
 ) {
   // Unknown billing remains a pending hold, never a fabricated charge.
   if (!usage) return;
+  const cost = usage.costMicrodollars ?? Math.ceil(usage.cost! * 1_000_000);
   if (
     !Number.isFinite(usage.tokens) ||
     usage.tokens < 0 ||
-    !Number.isFinite(usage.cost) ||
-    usage.cost < 0
+    !Number.isSafeInteger(cost) ||
+    cost < 0 ||
+    (usage.cost !== undefined && (!Number.isFinite(usage.cost) || usage.cost < 0))
   )
     throw new Error("Invalid inference usage.");
   await transaction(async (client) => {
@@ -1100,7 +1111,6 @@ export async function settleInference(
       .rows[0];
     if (!call || call.settled_at) return;
     const tokens = Math.ceil(usage.tokens);
-    const cost = Math.ceil(usage.cost * 1_000_000);
     await client.query(
       "UPDATE ctf.daily_spend SET reserved=reserved-$2,charged=charged+$3 WHERE day=$1",
       [call.day, call.cost_ceiling, cost],

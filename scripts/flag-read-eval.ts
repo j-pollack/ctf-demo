@@ -15,6 +15,16 @@ export { parseArguments, validateLiveConfig };
 export type { LiveEvaluationConfig };
 
 export type FlagReadEntry = {
+  accountingOverrun?: boolean;
+  inference?: {
+    id: string;
+    model: string;
+    tokens: number | null;
+    cost: number | null;
+    costCeiling: number;
+    settled: boolean;
+    generationId: string | null;
+  }[];
   caseId: string;
   reviewId?: string;
   readOccurred: boolean;

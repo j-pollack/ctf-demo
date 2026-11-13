@@ -8,6 +8,7 @@ import {
   type Model,
 } from "@earendil-works/pi-ai";
 import { providerTranscript } from "../lib/inference";
+import { runInvestigatorDriver } from "../lib/investigator-driver";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   createIsolatedInvestigatorSession,
@@ -35,6 +36,28 @@ const quietRisk = {
   suspicionScore: 0,
   suspicionConfidence: 0.9,
 };
+
+test("bounded and default investigators respect caller cancellation and expired deadlines", async () => {
+  for (const boundedBaseline of [false, true]) {
+    const config = {
+      systemPrompt: "",
+      finishName: "finish",
+      boundedInference: boundedBaseline,
+      prepare: () => assert.fail("cancelled or expired work must not prepare an investigator"),
+    };
+    await assert.rejects(
+      runInvestigatorDriver({ signal: AbortSignal.abort() } as never, config),
+      /review was cancelled/,
+    );
+    await assert.rejects(
+      runInvestigatorDriver(
+        { signal: new AbortController().signal, deadlineAt: 0 } as never,
+        config,
+      ),
+      /deadline expired/,
+    );
+  }
+});
 const model: Model<"openai-completions"> = {
   id: "test-investigator",
   name: "test-investigator",

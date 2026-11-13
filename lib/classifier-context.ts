@@ -4,7 +4,7 @@ import {
   MAX_MONITOR_DOCUMENT_BYTES,
   type MonitorDocumentOptions,
 } from "./monitor-document";
-import { evaluate, TypesafeDocumentTooLargeError, type TypesafeQuestion } from "./typesafe";
+import { TypesafeDocumentTooLargeError, type evaluate, type TypesafeQuestion } from "./typesafe";
 
 // The provider is authoritative about token count; byte budgeting is only a packing estimate.
 export async function evaluateClassifierContext(
@@ -12,7 +12,10 @@ export async function evaluateClassifierContext(
   options: Pick<MonitorDocumentOptions, "includeReasoning" | "proposedCommand">,
   questions: Record<string, TypesafeQuestion>,
   signal: AbortSignal,
-  authorize: () => Promise<void>,
+  dispatch: (
+    state: unknown,
+    questions: Record<string, TypesafeQuestion>,
+  ) => ReturnType<typeof evaluate>,
 ) {
   let maxBytes = MAX_MONITOR_DOCUMENT_BYTES - Buffer.byteLength(JSON.stringify(questions));
   let previousTranscript: string | undefined;
@@ -21,10 +24,9 @@ export async function evaluateClassifierContext(
     const document = buildMonitorDocument(messages, { ...options, maxBytes });
     const transcript = JSON.stringify(document.transcript);
     if (transcript === previousTranscript) throw new TypesafeDocumentTooLargeError();
-    await authorize();
-    signal.throwIfAborted();
     try {
-      return await evaluate(document, questions, signal);
+      // Every attempt must pass through the caller's authorization and accounting boundary.
+      return await dispatch(document, questions);
     } catch (error) {
       if (!(error instanceof TypesafeDocumentTooLargeError) || attempt >= 4) throw error;
       previousTranscript = transcript;

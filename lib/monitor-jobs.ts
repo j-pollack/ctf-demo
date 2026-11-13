@@ -68,7 +68,9 @@ export async function assertMonitorJobClaim(client: PoolClient, claim: MonitorJo
     throw new GameError("This monitor job no longer owns its claim.", 409);
 }
 
-export async function claimMonitorJob(): Promise<MonitorJobClaim | null> {
+export async function claimMonitorJob(claimMs = CLAIM_MS): Promise<MonitorJobClaim | null> {
+  if (!Number.isSafeInteger(claimMs) || claimMs <= 0 || claimMs > 2_147_483_647)
+    throw new Error("Invalid monitor claim duration.");
   const client = await db.connect();
   try {
     await client.query("BEGIN");
@@ -120,7 +122,7 @@ export async function claimMonitorJob(): Promise<MonitorJobClaim | null> {
         `UPDATE ctf.monitor_jobs SET status='reviewing',claim_token=$2,
          claim_until=now()+($3::int * interval '1 millisecond'),target_version=requested_version,
          attempts=attempts+1,updated_at=now() WHERE id=$1 RETURNING claim_until`,
-        [job.id, claimToken, CLAIM_MS],
+        [job.id, claimToken, claimMs],
       );
       await client.query("UPDATE ctf.games SET state_revision=state_revision+1 WHERE id=$1", [
         job.game_id,

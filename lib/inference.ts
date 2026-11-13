@@ -25,6 +25,10 @@ export type TrustedInferenceOptions = {
   pendingReviewId?: string;
   jobClaim?: MonitorJobClaim;
   stage?: string;
+  singleAttempt?: boolean;
+  providerEndpoint?: string;
+  // Bounded evaluations cap provider rates before dispatch and verify actual cost after settlement.
+  stopOnReservationOverrun?: boolean;
 };
 
 type CatalogModel = {
@@ -364,7 +368,20 @@ export async function infer(
     ...providerTranscript(messages, model.id),
     session_id: `${sessionId}:${role}${trusted.reviewId ? `:${trusted.reviewId}` : ""}`,
     ...(reasoning ? { reasoning } : {}),
-    provider: { require_parameters: true, ...(role === "agent" ? { sort: "price" } : {}) },
+    provider: {
+      require_parameters: true,
+      ...(role === "agent" ? { sort: "price" } : {}),
+      ...(trusted.providerEndpoint
+        ? { only: [trusted.providerEndpoint], allow_fallbacks: false }
+        : {}),
+      ...(trusted.stopOnReservationOverrun
+        ? {
+            // OpenRouter max_price and model.cost both use USD per million tokens.
+            // Fixed request fees are not covered by reserveInference.
+            max_price: { prompt: model.cost.input, completion: model.cost.output, request: 0 },
+          }
+        : {}),
+    },
     ...(onDelta ? { stream: true } : {}),
   };
   const ceiling = inputCeiling(payload);
@@ -441,7 +458,8 @@ export async function infer(
     requestSignal.throwIfAborted();
   };
   try {
-    for (let attempt = 1; attempt <= 5; attempt++) {
+    const attempts = trusted.singleAttempt ? 1 : 5;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       await assertDispatchPermit();
       response = undefined;
       providerError = undefined;
@@ -460,7 +478,7 @@ export async function infer(
       if (response.ok) break;
       providerError = providerErrorDetails(response, await response.json().catch(() => null));
       requestSignal.throwIfAborted();
-      if (response.status !== 429 || attempt === 5)
+      if (response.status !== 429 || attempt === attempts)
         throw new GameError(
           `Inference service returned ${response.status}. The command was not executed.`,
           503,
@@ -517,6 +535,8 @@ export async function infer(
       generationId: data.id,
     });
     settled = true;
+    if (trusted.stopOnReservationOverrun && Math.ceil(usage.cost * 1e6) > reservation.cost)
+      throw new Error("Inference usage exceeded its reserved allowance.");
     const choice = data.choices?.[0],
       source = choice?.message;
     if (!source) throw new Error("Inference service did not return a response.");
