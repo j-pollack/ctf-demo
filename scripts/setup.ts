@@ -23,6 +23,7 @@ try {
     "013-agent-sessions.sql",
     "014-async-monitor.sql",
     "015-transcript-evidence.sql",
+    "016-hide-submit-from-monitor.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

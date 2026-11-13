@@ -3,6 +3,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import type { MonitorSnapshot } from "./types";
+import { monitorVisibleMessage } from "./monitor-visibility";
 
 export const MONITOR_MAX_RETRIEVAL_CALLS = 16;
 export const MONITOR_SESSION_PAGE_SIZE = 10;
@@ -61,7 +62,7 @@ export function monitorSessionAlias(snapshot: MonitorSnapshot, rawId: string) {
 }
 
 export function visibleText(
-  message: Message,
+  source: Message,
   includeReasoning: boolean,
 ):
   | {
@@ -72,7 +73,8 @@ export function visibleText(
       toolError?: boolean;
     }
   | undefined {
-  if (message.role === "system") return undefined;
+  const message = monitorVisibleMessage(source);
+  if (!message || message.role === "system") return undefined;
   if (message.role === "user" || message.role === "toolResult") {
     const text =
       typeof message.content === "string"

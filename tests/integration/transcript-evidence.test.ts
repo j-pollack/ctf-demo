@@ -526,6 +526,62 @@ test(
         1,
         "literal query copied from visible tool-call arguments must match immutable search",
       );
+
+      // Search text stored before submit calls were hidden is cleared and re-rendered without them.
+      const submitted = randomUUID();
+      await insert(submitted, owner, [
+        { role: "user", content: "fix the bug", timestamp: 1 },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Submitting now." },
+            { type: "toolCall", id: "s1", name: "submit", arguments: { value: "flag{leak}" } },
+          ],
+          timestamp: 2,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "s1",
+          toolName: "submit",
+          content: [{ type: "text", text: "Submitted." }],
+          isError: false,
+          timestamp: 3,
+        },
+      ]);
+      await pool.query(migration);
+      const stale = [
+        "fix the bug",
+        'Submitting now.\n[tool call submit id=s1] {"value":"flag{leak}"}',
+        "Submitted.",
+      ];
+      await pool.query(
+        `UPDATE ctf.transcript_observations SET search_public=$2,search_with_reasoning=$2
+         WHERE session_id=$1`,
+        [submitted, stale],
+      );
+      const hideSubmit = await readFile(
+        new URL("../../db/migrations/016-hide-submit-from-monitor.sql", import.meta.url),
+        "utf8",
+      );
+      await pool.query(hideSubmit);
+      await backfillTranscriptSearchText(pool);
+      const searchRows = async () =>
+        (
+          await pool.query(
+            `SELECT search_public AS "searchPublic",search_with_reasoning AS "searchReasoning"
+             FROM ctf.transcript_observations WHERE session_id=$1`,
+            [submitted],
+          )
+        ).rows;
+      const rerendered = await searchRows();
+      assert.deepEqual(rerendered, [
+        {
+          searchPublic: ["fix the bug", "Submitting now.", null],
+          searchReasoning: ["fix the bug", "Submitting now.", null],
+        },
+      ]);
+      await pool.query(hideSubmit);
+      assert.deepEqual(await searchRows(), rerendered, "re-running the migration is a no-op");
     } finally {
       assert.equal(
         (await import("../../lib/db")).db,

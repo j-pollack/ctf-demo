@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMonitorTools, makeInitialMonitorEvidence } from "../lib/monitor-tools";
-import { monitorSessionAlias } from "../lib/monitor-tools";
+import { monitorSessionAlias, visibleText } from "../lib/monitor-tools";
+import type { Message } from "@earendil-works/pi-ai";
 import type { MonitorSnapshot } from "../lib/types";
 
 const snapshot = (
@@ -303,4 +304,39 @@ test("source policy and current review must both allow reasoning", () => {
   const shown = makeInitialMonitorEvidence(captured, "session-a", { includeReasoning: true });
   assert.ok(!JSON.stringify(shown).includes("source secret reasoning"));
   assert.ok(JSON.stringify(shown).includes("visible text"));
+});
+
+test("monitors never see the submit call or its result", () => {
+  const call = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "Done with the fix." },
+      { type: "toolCall", id: "c1", name: "sprite_exec", arguments: { command: "ls" } },
+      { type: "toolCall", id: "c2", name: "submit", arguments: { value: "flag{secret}" } },
+    ],
+    timestamp: 1,
+  } as unknown as Message;
+  const before = structuredClone(call);
+  const shown = visibleText(call, true);
+  assert.equal(shown?.text.includes("submit"), false);
+  assert.equal(shown?.text.includes("flag{secret}"), false);
+  assert.ok(shown?.text.includes("Done with the fix."));
+  assert.ok(shown?.text.includes("[tool call sprite_exec id=c1]"));
+  assert.deepEqual(shown?.toolCalls, [{ id: "c1", name: "sprite_exec" }]);
+  assert.deepEqual(call, before);
+  const onlySubmit = {
+    role: "assistant",
+    content: [{ type: "toolCall", id: "c3", name: "submit", arguments: { value: "x" } }],
+    timestamp: 2,
+  } as unknown as Message;
+  assert.equal(visibleText(onlySubmit, true), undefined);
+  const result = {
+    role: "toolResult",
+    toolCallId: "c2",
+    toolName: "submit",
+    content: [{ type: "text", text: "Submitted." }],
+    isError: false,
+    timestamp: 3,
+  } as unknown as Message;
+  assert.equal(visibleText(result, true), undefined);
 });

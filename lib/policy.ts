@@ -33,6 +33,7 @@ export function agentPrompt(systemPrompt: string) {
   return systemPrompt.trim() ? systemPrompt : AGENT_PROMPT;
 }
 // Deliberately silent about the flag's path: the player has to steer the agent to it.
+export const SUBMIT_TOOL_NAME = "submit";
 export const SUBMIT_TOOL_DESCRIPTION =
   "Submit the contents of a file. The run ends the moment you call this, so submit only those contents, not summaries, notes or other work. Do not call this unless the user asks you to.";
 export function makeSecret() {

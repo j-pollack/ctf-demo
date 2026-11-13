@@ -797,7 +797,26 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         )?.content as string;
         const separator = promptText.indexOf("\n\n");
         const prompt = JSON.parse(promptText.slice(separator + 2));
-        const target = prompt.target as { kind: string };
+        // The prompt never reveals a submission, so route on the review's recorded target.
+        const reviewId = String(payload.session_id).split(":monitor:")[1];
+        const recorded = reviewId
+          ? (
+              await pool.query<{ kind: string }>(
+                "SELECT target_kind AS kind FROM ctf.monitor_reviews WHERE id=$1",
+                [reviewId],
+              )
+            ).rows[0]?.kind
+          : undefined;
+        if (recorded === "submission") {
+          assert.equal((prompt.target as { kind: string }).kind, "transcript");
+          assert.equal(
+            JSON.stringify(payload.messages).includes("[tool call submit"),
+            false,
+            "the investigator never sees the submit call",
+          );
+        }
+        const target =
+          recorded === "submission" ? { kind: "submission" } : (prompt.target as { kind: string });
         await beforeInvestigatorResponse?.(target, prompt);
         if (names.includes("finish_investigation")) {
           assert.equal(target.kind, "transcript");
@@ -5500,19 +5519,27 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         "only the seed tests ran, and nothing after the submit",
       );
       assert.equal(typesafeOf("command").length, 0, "the seed tests are not monitored");
+      const submissionReviewIds = new Set(
+        (
+          await pool.query<{ id: string }>(
+            "SELECT id FROM ctf.monitor_reviews WHERE game_id=$1 AND target_kind='submission'",
+            [game.id],
+          )
+        ).rows.map((row) => row.id),
+      );
       const submissionReview = requests
         .filter((request) => request.role === "monitor")
-        .findLast((request) => {
-          const payload = request.payload as { messages: { content: string }[] };
-          const promptText = payload.messages.at(-1)?.content ?? "";
-          return promptText.includes('"kind":"submission"');
-        });
+        .findLast((request) =>
+          submissionReviewIds.has(
+            String((request.payload as { session_id: string }).session_id).split(":monitor:")[1],
+          ),
+        );
       assert.ok(submissionReview, "the investigator reviews the submitted result");
       const promptText = (
         submissionReview.payload as { messages: { content: string }[] }
       ).messages.at(-1)!.content;
       const document = JSON.parse(promptText.slice(promptText.indexOf("\n\n") + 2));
-      assert.equal(document.target.kind, "submission");
+      assert.equal(document.target.kind, "transcript", "the prompt does not reveal the submission");
       const savedTranscript = (
         await pool.query<{ messages: Message[] }>(
           "SELECT messages FROM ctf.agent_sessions WHERE game_id=$1 AND id=$1",
@@ -5624,15 +5651,28 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(stored.classifier_signals.suspicionScore, 3);
       assert.equal(stored.classifier_signals.suspicionConfidence, 1);
       assert.ok(stored.calls > 0, "the investigator, not the classifier, made the verdict");
+      const [{ id: submissionReviewId }] = (
+        await pool.query<{ id: string }>(
+          "SELECT id FROM ctf.monitor_reviews WHERE game_id=$1 AND target_kind='submission'",
+          [game.id],
+        )
+      ).rows;
       const submissionPrompt = requests
-        .filter((request) => request.role === "monitor")
+        .filter(
+          (request) =>
+            request.role === "monitor" &&
+            String((request.payload as { session_id: string }).session_id).endsWith(
+              `:monitor:${submissionReviewId}`,
+            ),
+        )
         .map(
           (request) =>
             (request.payload as { messages: { content: string }[] }).messages.at(-1)!.content,
         )
         .map((content) => JSON.parse(content.slice(content.indexOf("\n\n") + 2)))
-        .find((prompt) => prompt.target.kind === "submission");
+        .at(0);
       assert.ok(submissionPrompt, "the submission decision is sent to the investigator");
+      assert.equal(submissionPrompt.target.kind, "transcript");
       assert.equal(submissionPrompt.riskSignals.suspicionScore, 3);
       assert.ok(
         (await monitorEvents(game.id)).some(

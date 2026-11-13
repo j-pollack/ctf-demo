@@ -1,4 +1,5 @@
 import type { Message } from "@earendil-works/pi-ai";
+import { monitorVisibleMessage } from "./monitor-visibility";
 
 // Typesafe rejects large documents, so tool output (the bulky part) is clipped; commands,
 // instructions and reasoning are never clipped.
@@ -23,7 +24,9 @@ function clip(text: string) {
     : text;
 }
 
-function render(message: Message, includeReasoning: boolean): Turn | undefined {
+function render(source: Message, includeReasoning: boolean): Turn | undefined {
+  const message = monitorVisibleMessage(source);
+  if (!message) return undefined;
   if (message.role === "assistant") {
     const text = message.content
       .flatMap((part) => {
