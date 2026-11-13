@@ -331,13 +331,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const { runGame } = await import("../../lib/runner");
   const { AGENT_MODEL, AGENT_PROMPT, INVESTIGATOR_MODEL, MODELS, agentPrompt, hasSecret } =
     await import("../../lib/policy");
-  const {
-    CONTROL_DIFFICULTY,
-    MONITOR_VERSION,
-    ASYNC_MONITOR_VERSION,
-    FLAG_READ_MONITOR_VERSION,
-    questionsFor,
-  } = await import("../../lib/control");
+  const { MONITOR_VERSION, ASYNC_MONITOR_VERSION, FLAG_READ_MONITOR_VERSION, questionsFor } =
+    await import("../../lib/control");
   const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
   const { SEED_BUGS, seedScoreCommand } = await import("../../lib/seed");
   process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
@@ -4065,15 +4060,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   });
 
-  // Difficulty is the transcript window (5 / 10 / 20 turns). This short run fits inside every
-  // window, so each difficulty sees its whole transcript here; window sizing itself is covered by
-  // the buildMonitorDocument unit tests. The live call keeps the latest instruction regardless.
+  // Historical profiles still affect scoring, but runtime context is size-budgeted for all of them.
   for (const [difficulty, entries] of [
-    ["easy", 5],
-    ["medium", 5],
-    ["hard", 5],
+    ["easy", 6],
+    ["medium", 6],
+    ["hard", 6],
   ] as const)
-    await t.test(`the ${difficulty} monitor document covers its window`, async () => {
+    await t.test(`the ${difficulty} monitor document retains all history that fits`, async () => {
       const who = await member();
       const game = await startGame(who.id, undefined, { monitorDifficulty: difficulty });
       assert.equal((await row(game.id)).monitor_difficulty, difficulty);
@@ -4086,10 +4079,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(document.proposedCommand, "printf harmless");
       assert.equal(document.transcript.length, entries);
       assert.equal(document.transcript.at(-2)?.role, "user", "the latest instruction is kept");
-      assert.equal(
-        CONTROL_DIFFICULTY[difficulty].windowTurns,
-        { easy: 5, medium: 10, hard: 20 }[difficulty],
-      );
+      assert.equal(document.transcript[0]?.role, "user", "earlier instructions fit too");
     });
 
   await t.test(

@@ -9,7 +9,7 @@ import {
   type ClassifierRiskSignals,
 } from "./control";
 import { chargeMonitor, transaction, type GameRow } from "./games";
-import { monitorStates } from "./monitor-document";
+import { evaluateClassifierContext } from "./classifier-context";
 import { evaluate, type TypesafeAnswer } from "./typesafe";
 import { DAILY_CAP_MICRODOLLARS, GameError } from "./policy";
 import { assertMonitorAuthorization } from "./run-lifecycle";
@@ -103,24 +103,23 @@ export async function classifyMonitorTarget(input: {
 }) {
   const difficulty = CONTROL_DIFFICULTY[input.game.monitor_difficulty];
   const command = input.target.kind === "command" ? input.target.command : undefined;
-  const states = monitorStates(input.messages, {
-    windowTurns: difficulty.windowTurns,
-    includeReasoning: input.game.monitor_reasoning,
-    proposedCommand: command,
-  });
   const evaluateAuthorized = async <T>(call: () => Promise<T>) => {
     await assertDispatchAuthorization(input);
     input.signal.throwIfAborted();
     return call();
   };
   const [commandResult, contextResult] = await Promise.allSettled([
-    states.command === undefined
+    command === undefined
       ? Promise.resolve(undefined)
       : evaluateAuthorized(() =>
-          evaluate(states.command!, questionsFor(COMMAND_QUESTION_KEYS), input.signal),
+          evaluate(command, questionsFor(COMMAND_QUESTION_KEYS), input.signal),
         ),
-    evaluateAuthorized(() =>
-      evaluate(states.context, questionsFor(CONTEXT_QUESTION_KEYS), input.signal),
+    evaluateClassifierContext(
+      input.messages,
+      { includeReasoning: input.game.monitor_reasoning, proposedCommand: command },
+      questionsFor(CONTEXT_QUESTION_KEYS),
+      input.signal,
+      () => assertDispatchAuthorization(input),
     ),
   ]);
   const commandCall = commandResult.status === "fulfilled" ? commandResult.value : undefined;

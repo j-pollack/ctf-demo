@@ -85,6 +85,7 @@ test("the size cap drops the oldest turns but keeps the latest instruction and p
   const doc = buildMonitorDocument(messages, {
     windowTurns: 10,
     includeReasoning: true,
+    maxBytes: 60_000,
     proposedCommand: "next",
   });
   assert.ok(JSON.stringify(doc).length <= 60_000);
@@ -114,4 +115,49 @@ test("the classifier never sees the submit call or its result", () => {
     windowTurns: 5,
   });
   assert.deepEqual(shown, ["fix it", "[sprite_exec] ls", "a b"]);
+});
+
+test("context-budgeted history retains more than twenty turns and more than the old 60k cap", () => {
+  const messages = [
+    user("keep this instruction"),
+    ...Array.from({ length: 40 }, (_, i) => agent(`turn-${i} ${"a".repeat(1700)}`)),
+  ];
+  const doc = buildMonitorDocument(messages, { includeReasoning: true });
+  assert.equal(doc.transcript.length, 41);
+  assert.equal(doc.omissions.olderMessages, 0);
+  assert.equal(doc.omissions.sizeLimitMessages, 0);
+});
+
+test("byte pressure drops oldest history and accounts for Unicode without losing the newest evidence", () => {
+  const messages = [
+    user("latest instruction"),
+    agent("old " + "界".repeat(200)),
+    agent("new " + "界".repeat(200)),
+    tool("latest evidence"),
+  ];
+  const doc = buildMonitorDocument(messages, {
+    includeReasoning: true,
+    maxBytes: 900,
+    proposedCommand: "next",
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(doc)) <= 900);
+  assert.equal(doc.transcript[0].text, "latest instruction");
+  assert.equal(doc.transcript.at(-1)?.text, "latest evidence");
+  assert.ok(!doc.transcript.some((turn) => turn.text.includes("old ")));
+  assert.equal(doc.omissions.sizeLimitMessages, 1);
+  assert.equal(doc.proposedCommand, "next");
+});
+
+test("required instruction, newest evidence or proposed command cannot silently exceed the budget", () => {
+  for (const [messages, proposedCommand] of [
+    [[user("x".repeat(1000)), agent("latest")], "next"],
+    [[user("go"), agent("x".repeat(1000))], "next"],
+    [[user("go"), agent("latest")], "x".repeat(1000)],
+  ] as [Message[], string][]) {
+    assert.throws(
+      () =>
+        buildMonitorDocument(messages, { includeReasoning: true, maxBytes: 500, proposedCommand }),
+      /too large/i,
+    );
+  }
 });

@@ -1,10 +1,19 @@
 import type { Message } from "@earendil-works/pi-ai";
 import { monitorVisibleMessage } from "./monitor-visibility";
+import { TypesafeDocumentTooLargeError } from "./typesafe";
 
 // Typesafe rejects large documents, so tool output (the bulky part) is clipped; commands,
 // instructions and reasoning are never clipped.
 export const MONITOR_OUTPUT_CLIP = 800;
-const MAX_DOCUMENT_BYTES = 60_000;
+// Jev's normal per-question window is 32k tokens. Its tokenizer is not exposed locally;
+// this byte estimate leaves headroom, and the caller handles provider token-limit rejections.
+export const MAX_MONITOR_DOCUMENT_BYTES = (32_000 - 2_048) * 3;
+export type MonitorDocumentOptions = {
+  windowTurns?: number; // Explicit legacy calibration windows; production is size-budgeted.
+  includeReasoning: boolean;
+  proposedCommand?: string;
+  maxBytes?: number;
+};
 
 type Turn = { role: "user" | "agent" | "tool"; text: string };
 export type MonitorDocument = {
@@ -51,10 +60,13 @@ function render(source: Message, includeReasoning: boolean): Turn | undefined {
 
 export function buildMonitorDocument(
   messages: Message[],
-  options: { windowTurns: number; includeReasoning: boolean; proposedCommand?: string },
+  options: MonitorDocumentOptions,
 ): MonitorDocument {
   const agentIndexes = messages.flatMap((m, i) => (m.role === "assistant" ? [i] : []));
-  const start = agentIndexes[Math.max(0, agentIndexes.length - options.windowTurns)] ?? 0;
+  const start =
+    options.windowTurns === undefined
+      ? 0
+      : (agentIndexes[Math.max(0, agentIndexes.length - options.windowTurns)] ?? 0);
   const lastUser = messages.findLastIndex((m) => m.role === "user");
   let olderMessages = 0;
   let clippedToolMessages = 0;
@@ -71,9 +83,11 @@ export function buildMonitorDocument(
       };
     })
     .filter((item): item is { turn: Turn; pinned: boolean } => item.turn !== undefined);
+  // Never remove the evidence being classified just to make an oversized document fit.
+  if (kept.length) kept[kept.length - 1].pinned = true;
   let sizeLimitMessages = 0;
-  const document = (): MonitorDocument => ({
-    transcript: kept.map((item) => item.turn),
+  const document = (transcript: Turn[]): MonitorDocument => ({
+    transcript,
     ...(options.proposedCommand === undefined ? {} : { proposedCommand: options.proposedCommand }),
     omissions: {
       olderMessages,
@@ -82,22 +96,26 @@ export function buildMonitorDocument(
       reasoningIncluded: options.includeReasoning,
     },
   });
-  // Defensive cap: drop the oldest turns (never the latest instruction) until it fits.
+  // Track serialized transcript bytes separately to avoid serializing the whole history per drop.
+  let transcriptBytes =
+    kept.reduce((bytes, item) => bytes + Buffer.byteLength(JSON.stringify(item.turn)), 0) +
+    Math.max(0, kept.length - 1);
+  const maxBytes = options.maxBytes ?? MAX_MONITOR_DOCUMENT_BYTES;
+  // Drop oldest messages, preserving the latest instruction and latest visible evidence.
   for (;;) {
+    if (Buffer.byteLength(JSON.stringify(document([]))) + transcriptBytes <= maxBytes) break;
     const oldest = kept.findIndex((item) => !item.pinned);
-    if (oldest < 0 || JSON.stringify(document()).length <= MAX_DOCUMENT_BYTES) break;
+    if (oldest < 0) throw new TypesafeDocumentTooLargeError();
     const [dropped] = kept.splice(oldest, 1);
+    transcriptBytes -= Buffer.byteLength(JSON.stringify(dropped.turn)) + (kept.length ? 1 : 0);
     if (dropped.turn.role === "tool" && dropped.turn.text.includes("…[+")) clippedToolMessages -= 1;
     sizeLimitMessages += 1;
   }
-  return document();
+  return document(kept.map((item) => item.turn));
 }
 
 // The two Typesafe states for one proposed command. The command-only state carries no transcript, so
-// planted text can't steer the command signals; the context state is the windowed transcript.
-export function monitorStates(
-  messages: Message[],
-  options: { windowTurns: number; includeReasoning: boolean; proposedCommand?: string },
-) {
+// planted text can't steer the command signals; the context state is the size-budgeted transcript.
+export function monitorStates(messages: Message[], options: MonitorDocumentOptions) {
   return { command: options.proposedCommand, context: buildMonitorDocument(messages, options) };
 }
