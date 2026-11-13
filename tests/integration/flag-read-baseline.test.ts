@@ -1,0 +1,377 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import test from "node:test";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { Pool } from "pg";
+import { flagReadCases } from "../../scripts/flag-read-cases";
+import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
+import { AGENT_MODEL, INVESTIGATOR_MODEL } from "../../lib/policy";
+import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { main } from "../../scripts/flag-read-baseline-run";
+import { MONITOR_OUTPUT_TOKENS } from "../../lib/monitor-evidence";
+
+const base = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
+assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
+assert.equal(base.hostname, "127.0.0.1");
+assert.match(base.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
+
+await test(
+  "bounded baseline uses real reservations and single-attempt provider calls",
+  { timeout: 120_000 },
+  async (t) => {
+    const modes = [
+      "success",
+      "rounding",
+      "classifier-failure",
+      "classifier-usage",
+      "missing-usage",
+      "timeout",
+      "rate-limit",
+      "overrun",
+      "within-case-overrun",
+      "exhaustion",
+      "insufficient",
+      "callback-failure",
+      "wrapper",
+      "wrapper-failure",
+    ] as const;
+    if (!process.env.CTF_BASELINE_TEST_MODE) {
+      for (const mode of modes)
+        await t.test(mode, () => {
+          const result = spawnSync(
+            process.execPath,
+            ["--import", "tsx", "--test", fileURLToPath(import.meta.url)],
+            {
+              env: { ...process.env, NODE_TEST_CONTEXT: undefined, CTF_BASELINE_TEST_MODE: mode },
+              encoding: "utf8",
+              timeout: 90_000,
+            },
+          );
+          assert.match(
+            result.stdout,
+            /classifier reserves before HTTP dispatch|tests [1-9]/,
+            "child must execute tests",
+          );
+          assert.equal(result.status, 0, result.stdout + result.stderr);
+        });
+      return;
+    }
+    assert.ok(modes.some((mode) => mode === process.env.CTF_BASELINE_TEST_MODE));
+    for (const mode of modes.filter((mode) => mode === process.env.CTF_BASELINE_TEST_MODE))
+      await t.test(mode, async (t) => {
+        const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
+        const adminUrl = new URL(base);
+        adminUrl.pathname = "/postgres";
+        const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
+        await admin.query(`CREATE DATABASE "${database}"`);
+        const url = new URL(base);
+        url.pathname = `/${database}`;
+        const inspection = new Pool({ connectionString: url.toString(), max: 1 });
+        t.after(async () => {
+          await inspection.end();
+          // pg-pool end() can resolve before the backend socket has closed.
+          for (let attempt = 0; attempt < 50; attempt++) {
+            const { rows } = await admin.query(
+              "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=$1",
+              [database],
+            );
+            if (rows[0].count === 0) break;
+            await delay(20);
+          }
+          await admin.query(`DROP DATABASE "${database}"`);
+          await admin.end();
+        });
+        const old = process.env.TYPESAFE_API_KEY;
+        process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
+        t.after(() => {
+          if (old === undefined) delete process.env.TYPESAFE_API_KEY;
+          else process.env.TYPESAFE_API_KEY = old;
+        });
+        let classifier = 0,
+          investigator = 0;
+        const failures: unknown[] = [];
+        t.mock.method(
+          globalThis,
+          "fetch",
+          async (input: string | URL | Request, init?: RequestInit) => {
+            try {
+              const endpoint = String(input);
+              if (endpoint === "https://openrouter.ai/api/v1/models")
+                return Response.json({
+                  data: [...new Set([AGENT_MODEL, INVESTIGATOR_MODEL])].map((id) => ({
+                    id,
+                    context_length: 200_000,
+                    pricing: { prompt: "0.000001", completion: "0.000002" },
+                    supported_parameters: ["tools", "reasoning"],
+                  })),
+                });
+              assert.equal(init?.method, "POST");
+              const body = JSON.parse(String(init?.body));
+              if (endpoint === "https://api.typesafe.ai/v1/systemone") {
+                classifier++;
+                assert.equal(body.model, "jev-1.14.0");
+                assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
+                const { rows } = await inspection.query(
+                  "SELECT * FROM ctf.inference WHERE model='jev-1.14.0' AND settled_at IS NULL",
+                );
+                assert.equal(
+                  rows.length,
+                  mode.startsWith("classifier") ? classifier : 1,
+                  "classifier reserves before HTTP dispatch",
+                );
+                assert.ok(Number(rows[0].cost_ceiling) > 0);
+                if (mode === "classifier-failure")
+                  return new Response("unavailable", { status: 503 });
+                return Response.json({
+                  answers: {
+                    intent: { type: "noul", noul: 0 },
+                    suspicion: { type: "score", score: 0, confidence: 1 },
+                  },
+                  ...(mode === "classifier-usage"
+                    ? {}
+                    : { usage: { input_tokens: mode === "rounding" ? 2917 : 100 } }),
+                });
+              }
+              assert.equal(
+                endpoint,
+                "https://openrouter.ai/api/v1/chat/completions",
+                "unexpected network request",
+              );
+              investigator++;
+              assert.equal(body.model, INVESTIGATOR_MODEL);
+              assert.equal(body.reasoning.effort, "high");
+              assert.equal(body.messages[0].content, resolveFlagReadPolicy("current").systemPrompt);
+              assert.ok(body.max_tokens > 0 && body.max_tokens <= 8192);
+              if (mode === "rate-limit") return new Response("{}", { status: 429 });
+              if (mode === "timeout") throw new DOMException("synthetic timeout", "TimeoutError");
+              const {
+                rows: [reserved],
+              } = await inspection.query(
+                "SELECT cost_ceiling::int AS cost FROM ctf.inference WHERE model=$1 AND settled_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                [INVESTIGATOR_MODEL],
+              );
+              assert.ok(reserved.cost > 0, "investigator reserves before dispatch");
+              const nextTool =
+                mode === "within-case-overrun"
+                  ? {
+                      name: "query_transcripts",
+                      arguments: JSON.stringify({ sql: "SELECT count(*) FROM sessions" }),
+                    }
+                  : {
+                      name: "finish_investigation",
+                      arguments: JSON.stringify({
+                        flagReadDetected: false,
+                        reason: "No evidenced read.",
+                        evidence: [],
+                      }),
+                    };
+              return Response.json({
+                id: `fake-${randomUUID()}`,
+                choices: [
+                  {
+                    message: {
+                      role: "assistant",
+                      tool_calls: [{ id: randomUUID(), type: "function", function: nextTool }],
+                    },
+                    finish_reason: "tool_calls",
+                  },
+                ],
+                ...(mode === "missing-usage"
+                  ? {}
+                  : {
+                      usage: {
+                        prompt_tokens: 100,
+                        completion_tokens: 30,
+                        total_tokens: 130,
+                        cost: mode.includes("overrun")
+                          ? 1
+                          : mode === "exhaustion"
+                            ? reserved.cost / 1e6
+                            : 0.00001,
+                      },
+                    }),
+              });
+            } catch (error) {
+              failures.push(error);
+              throw error;
+            }
+          },
+        );
+        const budget =
+          mode === "insufficient"
+            ? 11
+            : mode === "within-case-overrun"
+              ? 5_000_000
+              : mode === "exhaustion"
+                ? 30_000
+                : 50_000;
+        const cases = flagReadCases.slice(
+          0,
+          mode === "missing-usage" || mode === "timeout" ? 3 : 2,
+        );
+        if (mode === "wrapper" || mode === "wrapper-failure") {
+          const parent = mkdtempSync(join(tmpdir(), "ctf-baseline-"));
+          t.after(() => rmSync(parent, { recursive: true, force: true }));
+          const output = join(parent, "run");
+          if (mode === "wrapper-failure") {
+            await inspection.query("CREATE SCHEMA ctf");
+            await assert.rejects(
+              main(["--live", "--budget-usd", "1", "--output-dir", output], {
+                ...process.env,
+                CTF_INTEGRATION_DATABASE_URL: url.toString(),
+              }),
+              /already has a ctf schema/,
+            );
+            const failed = JSON.parse(readFileSync(join(output, "summary.json"), "utf8"));
+            assert.equal(failed.status, "failed");
+            assert.equal(failed.accountingComplete, false);
+            assert.equal(failed.missing.length, 72);
+            assert.equal(classifier + investigator, 0);
+            return;
+          }
+          const summary = await main(["--live", "--budget-usd", "1", "--output-dir", output], {
+            ...process.env,
+            CTF_INTEGRATION_DATABASE_URL: url.toString(),
+          });
+          assert.ok(summary);
+          assert.deepEqual(failures, []);
+          const { INVESTIGATOR_EFFORT, MONITOR_CALL_LIMIT, MONITOR_DEADLINE_MS } =
+            await import("../../lib/investigator-driver");
+          const schedule = JSON.parse(readFileSync(join(output, "schedule.json"), "utf8"));
+          assert.equal(schedule.execution.investigatorCallsPerCase, MONITOR_CALL_LIMIT);
+          assert.equal(schedule.execution.investigatorOutputTokensPerCall, MONITOR_OUTPUT_TOKENS);
+          assert.equal(schedule.execution.investigatorDeadlineMs, MONITOR_DEADLINE_MS);
+          assert.equal(schedule.policy.effort, INVESTIGATOR_EFFORT);
+          const persisted = JSON.parse(readFileSync(join(output, "summary.json"), "utf8"));
+          const journal = readFileSync(join(output, "entries.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          assert.equal(journal.length, 72);
+          assert.deepEqual(
+            journal.map((entry) => entry.caseId),
+            schedule.cases.map((item: { id: string }) => item.id),
+          );
+          assert.deepEqual(persisted.entries, journal);
+          assert.equal(classifier, 72);
+          assert.equal(investigator, 72);
+          assert.ok(
+            journal.every(
+              (entry) => entry.investigationComplete && entry.trace && entry.inference.length === 2,
+            ),
+          );
+          assert.equal(persisted.status, "completed");
+          assert.equal(persisted.settledMicrodollars, 72 * 14);
+          await assert.rejects(
+            main(["--live", "--budget-usd", "1", "--output-dir", output], {
+              ...process.env,
+              CTF_INTEGRATION_DATABASE_URL: url.toString(),
+            }),
+            /EEXIST/,
+          );
+          assert.equal(classifier, 72, "refused overwrite dispatches nothing");
+          return;
+        }
+        if (mode === "callback-failure") {
+          await assert.rejects(
+            runFlagReadLiveEvaluation(
+              { databaseUrl: url.toString(), budgetMicrodollars: budget },
+              cases,
+              undefined,
+              {
+                boundedBaseline: true,
+                onEntry: () => {
+                  throw new Error("synthetic disk full");
+                },
+              },
+            ),
+            /synthetic disk full/,
+          );
+          assert.equal(classifier, 1);
+          assert.equal(investigator, 1);
+          assert.deepEqual(failures, []);
+          return;
+        }
+        const entries = await runFlagReadLiveEvaluation(
+          { databaseUrl: url.toString(), budgetMicrodollars: budget },
+          cases,
+          undefined,
+          { boundedBaseline: true } as Parameters<typeof runFlagReadLiveEvaluation>[3],
+        );
+        // The fake's deliberate timeout is an external failure, not an assertion failure.
+        assert.deepEqual(
+          failures.filter((e) => !(e instanceof DOMException && e.name === "TimeoutError")),
+          [],
+        );
+        assert.equal(entries.length, cases.length);
+        const {
+          rows: [totals],
+        } = await inspection.query(
+          "SELECT coalesce(sum(cost) FILTER(WHERE settled_at IS NOT NULL),0)::int AS settled, coalesce(sum(cost_ceiling) FILTER(WHERE settled_at IS NULL),0)::int AS held FROM ctf.inference",
+        );
+        assert.equal(
+          entries.reduce((s, e) => s + e.settledMicrodollars, 0),
+          totals.settled,
+        );
+        assert.equal(
+          entries.reduce((s, e) => s + e.heldMicrodollars, 0),
+          totals.held,
+        );
+        if (mode === "success" || mode === "rounding") {
+          assert.equal(classifier, 2);
+          assert.equal(investigator, 2);
+          assert.ok(entries.every((e) => e.investigationComplete === true));
+          assert.equal(
+            totals.settled,
+            mode === "rounding" ? 266 : 28,
+            "classifier rounds 100 × .042 to 4 microdollars per case",
+          );
+          assert.equal(totals.held, 0);
+        } else if (mode === "insufficient") {
+          assert.equal(classifier, 0);
+          assert.equal(investigator, 0);
+          assert.equal(totals.settled + totals.held, 0);
+        } else if (mode.includes("overrun")) {
+          assert.equal(investigator, 1);
+          assert.equal(classifier, 1);
+          if (mode === "overrun") assert.ok(totals.settled > budget);
+          else
+            assert.ok(
+              totals.settled < budget,
+              "per-call overrun stops even with overall budget available",
+            );
+          assert.equal(entries[0].accountingOverrun, true);
+          assert.equal(entries[1].skipped, true);
+        } else if (mode === "exhaustion") {
+          assert.equal(classifier, 1);
+          assert.equal(investigator, 1);
+          assert.equal(entries[1].skipped, true);
+          assert.ok(totals.settled <= budget && totals.settled >= budget - 10);
+        } else {
+          assert.ok(entries.every((e) => e.investigationComplete !== true));
+          if (mode.startsWith("classifier")) {
+            assert.equal(investigator, 0);
+            assert.ok(totals.held > 0);
+          }
+          if (mode === "rate-limit") {
+            assert.equal(investigator, 2, "no HTTP retries");
+            assert.equal(totals.held, 0);
+          }
+          if (mode === "missing-usage" || mode === "timeout") {
+            assert.ok(totals.held > 0);
+            assert.equal(
+              entries[2].skipped,
+              true,
+              "unknown holds consume the allowance for subsequent cases",
+            );
+          }
+          assert.ok(totals.settled + totals.held <= budget);
+        }
+      });
+  },
+);

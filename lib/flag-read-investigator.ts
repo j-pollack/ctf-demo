@@ -70,7 +70,11 @@ function contextLimit(
 
 export async function runFlagReadInvestigation(
   input: RunMonitorReviewInput,
-  options?: { observer?: InvestigationObserver; searchStrategy?: FlagReadSearchStrategy },
+  options?: {
+    observer?: InvestigationObserver;
+    searchStrategy?: FlagReadSearchStrategy;
+    boundedBaseline?: boolean;
+  },
 ): Promise<FlagReadInvestigationResult> {
   const policy = resolveFlagReadPolicy(options?.searchStrategy);
   const { target, snapshot } = validateReviewScope(input);
@@ -81,6 +85,7 @@ export async function runFlagReadInvestigation(
     finishName: "finish_investigation",
     observer: options?.observer,
     recoverToolSchemaErrors: true,
+    boundedBaseline: options?.boundedBaseline,
     prepare: async ({ model, signal, recordFailure, finish, onInvalid }) => {
       const visible = new Map<string, MonitorEvidenceMessage>();
       const retrievedRefs = new Set<string>();

@@ -1,0 +1,77 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import test from "node:test";
+import { buildSchedule } from "../scripts/flag-read-baseline";
+import { main, prepareBaseline } from "../scripts/flag-read-baseline-run";
+import { baselineSources } from "../scripts/flag-read-baseline-files";
+
+const corpus = readFileSync("evals/flag-read/cases.json", "utf8");
+const sources = { source: "frozen" };
+const schedule = buildSchedule(corpus, sources);
+
+test("live preflight rejects all frozen surface drift and invalid budgets", () => {
+  const prepared = prepareBaseline(corpus, schedule, sources, 10_000_000);
+  assert.equal(prepared.cases.length, 72);
+  assert.deepEqual(
+    prepared.cases.map((item) => item.id),
+    schedule.cases.map((item) => item.id),
+  );
+  assert.ok(prepared.cases.every((item) => item.observationTimes));
+  for (const budget of [0, -1, 0.5, Infinity, NaN, 10_000_001])
+    assert.throws(() => prepareBaseline(corpus, schedule, sources, budget));
+  assert.throws(() => prepareBaseline(corpus + " ", schedule, sources));
+  assert.throws(() => prepareBaseline(corpus, schedule, { source: "changed" }));
+  assert.throws(() => prepareBaseline(corpus, { ...schedule, sources: {} }, sources));
+  assert.throws(() =>
+    prepareBaseline(corpus, { ...schedule, cases: [...schedule.cases].reverse() }, sources),
+  );
+  assert.throws(() =>
+    prepareBaseline(
+      corpus,
+      { ...schedule, policy: { ...schedule.policy, effort: "low" } },
+      sources,
+    ),
+  );
+});
+
+test("live CLI rejects missing authorization and ambiguous arguments before network", async (t) => {
+  t.mock.method(globalThis, "fetch", () => {
+    assert.fail("unexpected network request");
+  });
+  await assert.rejects(main(["--live"]), /budget/);
+  await assert.rejects(main(["--live", "--budget-usd", "10"]), /output-dir/);
+  await assert.rejects(main(["--dry-run", "--output-dir", "unused"]), /output-dir/);
+  await assert.rejects(
+    main(["--live", "--budget-usd", "10", "--output-dir", "one", "--output-dir", "two"]),
+    /once/,
+  );
+});
+
+test("runner cannot validate another checkout while executing its own imports", (t) => {
+  const other = mkdtempSync(join(tmpdir(), "ctf-other-checkout-"));
+  t.after(() => rmSync(other, { recursive: true, force: true }));
+  const runtime = baselineSources();
+  for (const [path, content] of Object.entries({
+    ...runtime,
+    "evals/flag-read/cases.json": corpus,
+    "evals/flag-read/baseline-schedule.json": JSON.stringify(buildSchedule(corpus, runtime)),
+  })) {
+    mkdirSync(dirname(join(other, path)), { recursive: true });
+    writeFileSync(join(other, path), content);
+  }
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      import.meta.resolve("tsx"),
+      resolve("scripts/flag-read-baseline-run.ts"),
+      "--dry-run",
+    ],
+    { cwd: other, encoding: "utf8", env: { ...process.env, NODE_TEST_CONTEXT: undefined } },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /runner.*checkout/);
+});

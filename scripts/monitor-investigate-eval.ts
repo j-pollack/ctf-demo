@@ -118,6 +118,8 @@ export function validateLiveConfig(
   } catch {
     throw new Error("CTF_INTEGRATION_DATABASE_URL must be a valid PostgreSQL URL.");
   }
+  if (database.search || database.hash)
+    throw new Error("CTF_INTEGRATION_DATABASE_URL cannot contain query overrides or fragments.");
   if (
     !["postgres:", "postgresql:"].includes(database.protocol) ||
     database.hostname !== "127.0.0.1"

@@ -7,11 +7,18 @@ import {
   questionsFor,
   topTerm,
   type ClassifierRiskSignals,
+  MONITOR_TOKEN_MICRODOLLARS,
 } from "./control";
-import { chargeMonitor, transaction, type GameRow } from "./games";
+import {
+  chargeMonitor,
+  reserveInference,
+  settleInference,
+  transaction,
+  type GameRow,
+} from "./games";
 import { monitorStates } from "./monitor-document";
-import { evaluate, type TypesafeAnswer } from "./typesafe";
-import { DAILY_CAP_MICRODOLLARS, GameError } from "./policy";
+import { evaluate, TYPESAFE_MODEL, type TypesafeAnswer } from "./typesafe";
+import { DAILY_CAP_MICRODOLLARS, GameError, inputCeiling } from "./policy";
 import { assertMonitorAuthorization } from "./run-lifecycle";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 
@@ -100,6 +107,7 @@ export async function classifyMonitorTarget(input: {
   finalizationToken?: string;
   pendingReviewId?: string;
   jobClaim?: MonitorJobClaim;
+  reserveBudget?: boolean;
 }) {
   const difficulty = CONTROL_DIFFICULTY[input.game.monitor_difficulty];
   const command = input.target.kind === "command" ? input.target.command : undefined;
@@ -108,25 +116,54 @@ export async function classifyMonitorTarget(input: {
     includeReasoning: input.game.monitor_reasoning,
     proposedCommand: command,
   });
-  const evaluateAuthorized = async <T>(call: () => Promise<T>) => {
+  const evaluateAuthorized = async (state: unknown, questions: Parameters<typeof evaluate>[1]) => {
     await assertDispatchAuthorization(input);
     input.signal.throwIfAborted();
-    return call();
+    if (!input.reserveBudget) return evaluate(state, questions, input.signal);
+    // Evaluation-only opt-in: reuse real admission and settlement. The generic reservation's
+    // 64-token minimum is conservative overhead; Typesafe bills input only.
+    const reservation = await reserveInference(
+      input.game.id,
+      input.lease,
+      "monitor",
+      TYPESAFE_MODEL,
+      inputCeiling({ model: TYPESAFE_MODEL, state, questions }),
+      64,
+      MONITOR_TOKEN_MICRODOLLARS / 1e6,
+      MONITOR_TOKEN_MICRODOLLARS / 1e6,
+      {
+        sessionId: input.sessionId,
+        reviewId: input.reviewId,
+        finalizationToken: input.finalizationToken,
+        pendingReviewId: input.pendingReviewId,
+        executionGeneration: input.executionGeneration,
+        jobClaim: input.jobClaim,
+      },
+    );
+    let dispatched = false;
+    try {
+      input.signal.throwIfAborted();
+      dispatched = true;
+      const result = await evaluate(state, questions, input.signal);
+      const cost = Math.round(result.inputTokens * MONITOR_TOKEN_MICRODOLLARS);
+      await settleInference(reservation.id, { tokens: result.inputTokens, costMicrodollars: cost });
+      if (cost > reservation.cost)
+        throw new Error("Classifier usage exceeded its reserved allowance.");
+      return result;
+    } finally {
+      if (!dispatched) await settleInference(reservation.id, { tokens: 0, cost: 0 });
+    }
   };
   const [commandResult, contextResult] = await Promise.allSettled([
     states.command === undefined
       ? Promise.resolve(undefined)
-      : evaluateAuthorized(() =>
-          evaluate(states.command!, questionsFor(COMMAND_QUESTION_KEYS), input.signal),
-        ),
-    evaluateAuthorized(() =>
-      evaluate(states.context, questionsFor(CONTEXT_QUESTION_KEYS), input.signal),
-    ),
+      : evaluateAuthorized(states.command, questionsFor(COMMAND_QUESTION_KEYS)),
+    evaluateAuthorized(states.context, questionsFor(CONTEXT_QUESTION_KEYS)),
   ]);
   const commandCall = commandResult.status === "fulfilled" ? commandResult.value : undefined;
   const contextCall = contextResult.status === "fulfilled" ? contextResult.value : undefined;
   const inputTokens = (commandCall?.inputTokens ?? 0) + (contextCall?.inputTokens ?? 0);
-  if (inputTokens > 0)
+  if (inputTokens > 0 && !input.reserveBudget)
     await chargeMonitor(
       input.game.id,
       input.lease,

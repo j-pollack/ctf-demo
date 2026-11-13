@@ -25,6 +25,8 @@ export type TrustedInferenceOptions = {
   pendingReviewId?: string;
   jobClaim?: MonitorJobClaim;
   stage?: string;
+  singleAttempt?: boolean;
+  stopOnReservationOverrun?: boolean;
 };
 
 type CatalogModel = {
@@ -441,7 +443,8 @@ export async function infer(
     requestSignal.throwIfAborted();
   };
   try {
-    for (let attempt = 1; attempt <= 5; attempt++) {
+    const attempts = trusted.singleAttempt ? 1 : 5;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       await assertDispatchPermit();
       response = undefined;
       providerError = undefined;
@@ -460,7 +463,7 @@ export async function infer(
       if (response.ok) break;
       providerError = providerErrorDetails(response, await response.json().catch(() => null));
       requestSignal.throwIfAborted();
-      if (response.status !== 429 || attempt === 5)
+      if (response.status !== 429 || attempt === attempts)
         throw new GameError(
           `Inference service returned ${response.status}. The command was not executed.`,
           503,
@@ -517,6 +520,8 @@ export async function infer(
       generationId: data.id,
     });
     settled = true;
+    if (trusted.stopOnReservationOverrun && Math.ceil(usage.cost * 1e6) > reservation.cost)
+      throw new Error("Inference usage exceeded its reserved allowance.");
     const choice = data.choices?.[0],
       source = choice?.message;
     if (!source) throw new Error("Inference service did not return a response.");

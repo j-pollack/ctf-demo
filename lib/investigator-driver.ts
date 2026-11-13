@@ -176,6 +176,7 @@ export async function runInvestigatorDriver<T>(
     finishName: string;
     observer?: InvestigationObserver;
     recoverToolSchemaErrors?: boolean;
+    boundedBaseline?: boolean;
     prepare: (context: {
       model: Model<"openai-completions">;
       signal: AbortSignal;
@@ -260,6 +261,8 @@ export async function runInvestigatorDriver<T>(
       finalizationToken: input.finalizationToken,
       pendingReviewId: input.pendingReviewId,
       jobClaim: input.jobClaim,
+      singleAttempt: config.boundedBaseline,
+      stopOnReservationOverrun: config.boundedBaseline,
     } satisfies TrustedInferenceOptions);
     investigator.session.agent.streamFunction = guardInvestigatorStream(dispatch, {
       signal,

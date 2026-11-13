@@ -1076,15 +1076,20 @@ export async function chargeMonitor(
 }
 export async function settleInference(
   id: string,
-  usage?: { tokens: number; cost: number; generationId?: string },
+  usage?: { tokens: number; generationId?: string } & (
+    | { cost: number; costMicrodollars?: never }
+    | { costMicrodollars: number; cost?: never }
+  ),
 ) {
   // Unknown billing remains a pending hold, never a fabricated charge.
   if (!usage) return;
+  const cost = usage.costMicrodollars ?? Math.ceil(usage.cost! * 1_000_000);
   if (
     !Number.isFinite(usage.tokens) ||
     usage.tokens < 0 ||
-    !Number.isFinite(usage.cost) ||
-    usage.cost < 0
+    !Number.isSafeInteger(cost) ||
+    cost < 0 ||
+    (usage.cost !== undefined && (!Number.isFinite(usage.cost) || usage.cost < 0))
   )
     throw new Error("Invalid inference usage.");
   await transaction(async (client) => {
@@ -1092,7 +1097,6 @@ export async function settleInference(
       .rows[0];
     if (!call || call.settled_at) return;
     const tokens = Math.ceil(usage.tokens);
-    const cost = Math.ceil(usage.cost * 1_000_000);
     await client.query(
       "UPDATE ctf.daily_spend SET reserved=reserved-$2,charged=charged+$3 WHERE day=$1",
       [call.day, call.cost_ceiling, cost],

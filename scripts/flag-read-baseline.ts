@@ -7,6 +7,7 @@ import type { FlagReadEntry } from "./flag-read-eval";
 import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
 import { INVESTIGATOR_MODEL } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
+import { baselineSources } from "./flag-read-baseline-files";
 
 type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -41,8 +42,8 @@ export function selectBaseline(cases: readonly SplitCase[]) {
 export function buildSchedule(corpusText: string, sources: Record<string, string>) {
   const selected = selectBaseline(JSON.parse(corpusText));
   return {
-    version: 1,
-    mode: "offline-only",
+    version: 2,
+    mode: "planned",
     evaluationPerformed: false,
     corpusSha256: hash(corpusText),
     sources: Object.fromEntries(
@@ -70,19 +71,35 @@ export function buildSchedule(corpusText: string, sources: Record<string, string
       investigatorOutputTokensPerCall: 8192,
       investigatorDeadlineMs: 60000,
       scoring: ["strict", "presumption"],
-      note: "One investigation per case; the same outcome is scored under both standards. No live runner is enabled by this wrapper.",
+      note: "One investigation per case; both standards score the same outcome. Live execution requires explicit budget authorization, frozen source preflight and a fresh local database. No retries, including HTTP 429 retries.",
     },
     budget: {
       proposedMicrodollars: 10_000_000,
       perCasePlanningAllowanceMicrodollars: 125_000,
       contingencyMicrodollars: 1_000_000,
-      pricing: null,
+      pricing: {
+        checkedAt: "2026-11-13T03:46:27.539Z",
+        investigator: {
+          source: "https://openrouter.ai/api/v1/models",
+          model: "z-ai/glm-5.3",
+          canonicalSlug: "z-ai/glm-5.3-20260816",
+          inputUsdPerMillion: 0.084,
+          outputUsdPerMillion: 3.6,
+        },
+        classifier: {
+          source: "https://docs.typesafe.ai/models.md",
+          model: "jev-1.14.0",
+          inputUsdPerMillion: 0.042,
+          outputUsdPerMillion: 0,
+        },
+        note: "Public metadata snapshot, not a provider quote. Actual dispatch uses the provider catalog and persists actual charges; reservation overruns stop subsequent dispatch.",
+      },
       basis:
-        "72 × $0.125 allowance + $1 contingency = $10. This is a proposed stop budget, not a price-derived estimate or guarantee that all cases finish. Refresh provider pricing and verify enforcement before paid execution. Settled charges plus unresolved holds consume the budget.",
+        "72 × $0.125 allowance + $1 contingency = $10. This is a proposed stop budget, not a guarantee that all cases finish. At the observed rate, 576 calls each consuming all 8192 output tokens would cost $16.9869312 in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.",
     },
     artifacts: {
-      entries: ".artifacts/flag-read-baseline/entries.json",
-      summary: ".artifacts/flag-read-baseline/summary.json",
+      entries: "entries.jsonl",
+      summary: "summary.json",
       note: "Preserve raw entries including traces. Missing usage/completions are unknown, never zero-filled.",
     },
     cases: selected.map((item, index) => ({
@@ -153,23 +170,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     throw new Error(
       "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <schedule.json>",
     );
-  const paths = [
-    "scripts/flag-read-baseline.ts",
-    "scripts/flag-read-corpus.ts",
-    "scripts/flag-read-scenarios.ts",
-    "scripts/flag-read-eval-live.ts",
-    "scripts/monitor-investigate-eval-live.ts",
-    "lib/policy.ts",
-    "lib/flag-read-policy.ts",
-    "lib/monitor-evidence.ts",
-    "lib/investigator-driver.ts",
-    "lib/typesafe.ts",
-    "lib/monitor-classifier.ts",
-    "package-lock.json",
-  ];
   const schedule = buildSchedule(
     readFileSync("evals/flag-read/cases.json", "utf8"),
-    Object.fromEntries(paths.map((path) => [path, readFileSync(path, "utf8")])),
+    baselineSources(),
   );
   writeFileSync(output, `${JSON.stringify(schedule, null, 2)}\n`, { flag: "wx" });
   console.log(
