@@ -46,3 +46,17 @@ export function signInEmailError(error: {
     message: "Could not send your sign-in link. Please try again.",
   } as const;
 }
+
+// One account per mailbox: lowercases, drops any "+tag" and, for Gmail, the dots it ignores, so variants
+// of an address can't each claim a fresh budget and run allowance. The sign-in link goes to the result,
+// so only rewrites the provider itself honours are safe: dots stay significant on other domains.
+// An address with nothing before the plus stays invalid.
+export function canonicalEmail(email: string) {
+  const address = email.trim().toLowerCase();
+  const at = address.lastIndexOf("@");
+  if (at < 0) return address;
+  const local = address.slice(0, at).split("+")[0];
+  const domain = address.slice(at + 1);
+  return GMAIL.has(domain) ? `${local.replaceAll(".", "")}@gmail.com` : `${local}@${domain}`;
+}
+const GMAIL = new Set(["gmail.com", "googlemail.com"]);

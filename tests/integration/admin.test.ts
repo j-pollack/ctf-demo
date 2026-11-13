@@ -72,6 +72,57 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   assert.equal(isAdmin((await auth.api.getSession({ headers: session }))?.user), true);
   await pool.query(`DELETE FROM ctf."session"; DELETE FROM ctf."user"`);
 
+  // Budgets and run limits are per account, so every plus-variant must reach the same account.
+  process.env.RESEND_API_KEY = "re_integration_only";
+  process.env.RESEND_FROM = "ctf@example.invalid";
+  const mail: { to: string; link: string }[] = [];
+  const resend = t.mock.method(globalThis, "fetch", async (input: unknown, init?: RequestInit) => {
+    assert.equal(String(input), "https://api.resend.com/emails");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer re_integration_only");
+    const sent = JSON.parse(String(init?.body));
+    mail.push({ to: String(sent.to), link: sent.text.match(/https?:\/\/\S+/)[0] });
+    return Response.json({ id: randomUUID() });
+  });
+  const origin = "http://localhost";
+  const request = (email: string) =>
+    auth.handler(
+      new Request(`${origin}/api/auth/sign-in/magic-link`, {
+        method: "POST",
+        headers: { origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      }),
+    );
+  const accounts = [];
+  for (const email of [
+    "plus@example.invalid",
+    "plus+1@example.invalid",
+    "Plus+a+b@Example.invalid",
+  ]) {
+    assert.equal((await request(email)).status, 200);
+    const verified = await auth.handler(new Request(mail.at(-1)!.link));
+    assert.equal(verified.status, 302);
+    const cookie = verified.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    accounts.push((await auth.api.getSession({ headers: new Headers({ cookie }) }))?.user.id);
+  }
+  assert.ok(accounts[0]);
+  assert.deepEqual(accounts, [accounts[0], accounts[0], accounts[0]]);
+  assert.deepEqual(
+    mail.map((sent) => sent.to),
+    Array(3).fill("plus@example.invalid"),
+  );
+  assert.deepEqual((await pool.query(`SELECT email FROM ctf."user"`)).rows, [
+    { email: "plus@example.invalid" },
+  ]);
+  assert.equal((await request("+1@example.invalid")).status, 400);
+  assert.equal(mail.length, 3, "an address with nothing before the plus sends no email");
+  resend.mock.restore();
+  await pool.query(
+    `DELETE FROM ctf."session"; DELETE FROM ctf."verification"; DELETE FROM ctf."user"`,
+  );
+
   const empty = await adminStats();
   assert.equal(empty.totals.runs, 0);
   assert.equal(empty.totals.spend_avg, 0);
