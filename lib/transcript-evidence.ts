@@ -141,7 +141,14 @@ export async function persistTranscriptEvidence(client: PoolClient, write: Evide
   );
   const head = heads[0];
   const previous = head ? await reconstructTranscript(client, sessionId, Number(head.version)) : [];
-  const { appendOnly, changed } = diffTranscript(previous, messages);
+  // Compare stored form with stored form: live messages can hold values jsonb drops (such as
+  // undefined fields), which would otherwise look like a rewrite and start a new review epoch.
+  const {
+    rows: [normalized],
+  } = await client.query<{ messages: Message[] }>("SELECT $1::jsonb AS messages", [
+    JSON.stringify(messages),
+  ]);
+  const { appendOnly, changed } = diffTranscript(previous, normalized.messages);
   if (head && previous.length === messages.length && changed.length === 0)
     return {
       version: Number(head.version),
@@ -152,12 +159,8 @@ export async function persistTranscriptEvidence(client: PoolClient, write: Evide
   const start = changed[0] ?? messages.length;
   const version = head ? Number(head.version) + 1 : 1;
   const epoch = head ? Number(head.epoch) + (appendOnly ? 0 : 1) : 1;
-  const {
-    rows: [normalized],
-  } = await client.query<{ messages: Message[] }>("SELECT $1::jsonb AS messages", [
-    JSON.stringify(messages.slice(start)),
-  ]);
-  const rendered = searchText(normalized.messages);
+  const appendedMessages = normalized.messages.slice(start);
+  const rendered = searchText(appendedMessages);
   await client.query(
     `INSERT INTO ctf.transcript_observations
        (session_id,version,epoch,run_revision,message_count,changed_start,changed_indices,
@@ -171,7 +174,7 @@ export async function persistTranscriptEvidence(client: PoolClient, write: Evide
       messages.length,
       start,
       changed,
-      JSON.stringify(normalized.messages),
+      JSON.stringify(appendedMessages),
       rendered.publicText,
       rendered.reasoningText,
     ],

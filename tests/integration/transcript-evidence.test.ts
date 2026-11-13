@@ -135,13 +135,25 @@ test(
           ],
         });
         assert.deepEqual(first, { version: 2, epoch: 1, changed: true, appendOnly: true });
+        // Live messages can carry undefined fields that stored JSON drops; that is not a rewrite.
+        const appended = await persistTranscriptEvidence(client, {
+          gameId: old,
+          sessionId: old,
+          runRevision: 1,
+          messages: [
+            { role: "system", content: needle, timestamp: 1, details: undefined },
+            { role: "user", content: `${"x".repeat(2_498)}${needle} right`, timestamp: 2 },
+            { role: "user", content: "next", timestamp: 3 },
+          ] as Message[],
+        });
+        assert.deepEqual(appended, { version: 3, epoch: 1, changed: true, appendOnly: true });
         const repaired = await persistTranscriptEvidence(client, {
           gameId: old,
           sessionId: old,
           runRevision: 2,
           messages: [{ role: "user", content: "repaired away", timestamp: 3 }],
         });
-        assert.deepEqual(repaired, { version: 3, epoch: 2, changed: true, appendOnly: false });
+        assert.deepEqual(repaired, { version: 4, epoch: 2, changed: true, appendOnly: false });
         await client.query("COMMIT");
         assert.equal((await reconstructTranscript(client, old, 2))[1].role, "user");
       } finally {
@@ -171,7 +183,7 @@ test(
             [old],
           )
         ).rows.map((row) => row.version),
-        [1, 2, 3],
+        [1, 2, 3, 4],
       );
       const capturedSnapshot = await captureCommittedMonitorSnapshot({
         gameId: target,
@@ -265,8 +277,8 @@ test(
           .join("")
           .includes(needle),
       );
-      const version3 = await readCommittedTranscript(snapshot, oldAlias, 3, false);
-      assert.ok(version3.every((row) => !row.text.includes(needle)));
+      const repairedVersion = await readCommittedTranscript(snapshot, oldAlias, 4, false);
+      assert.ok(repairedVersion.every((row) => !row.text.includes(needle)));
       const targetClient = await pool.connect();
       try {
         await targetClient.query("BEGIN");
