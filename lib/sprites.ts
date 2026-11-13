@@ -2,6 +2,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SpritesClient, ExecError, type CheckpointStream, type RestoreStream } from "@fly/sprites";
 
+// Every command runs here, so it is also the working directory the agent is told about.
+export const SPRITE_WORKDIR = "/workspace";
+
 function client() {
   if (!process.env.SPRITE_TOKEN) throw new Error("Sprite access is not configured.");
   return new SpritesClient(process.env.SPRITE_TOKEN, { timeout: 20_000 });
@@ -39,7 +42,7 @@ export async function executeCommand(name: string, command: string, signal?: Abo
     const result = await client()
       .sprite(name)
       .execFile("timeout", ["-k", "2", "15", "bash", "-lc", command], {
-        cwd: "/workspace",
+        cwd: SPRITE_WORKDIR,
         timeout: 20_000,
         maxBuffer: 65536,
         signal,

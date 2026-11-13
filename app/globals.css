@@ -1640,9 +1640,6 @@ dialog::backdrop {
   max-height: 40dvh;
   resize: vertical;
 }
-.system-prompt > .fixed-suffix {
-  color: var(--muted);
-}
 .system-prompt > p {
   max-height: 30dvh;
   overflow: auto;

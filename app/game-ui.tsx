@@ -14,7 +14,6 @@ import {
   RUN_BUDGET_MICRODOLLARS,
   RUNS_PER_DAY,
   type AgentEffort,
-  SUBMIT_INSTRUCTION,
   type GameEvent,
   type GameStatus,
   type GameSummary,
@@ -2681,9 +2680,6 @@ export function SessionSettings({
           ) : (
             <p tabIndex={0}>{game?.systemPrompt}</p>
           )}
-          <p className="fixed-suffix">
-            Always added at the end: <em>{SUBMIT_INSTRUCTION}</em>
-          </p>
         </details>
       )}
     </details>

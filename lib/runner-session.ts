@@ -12,7 +12,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { db } from "./db";
-import { agentPrompt as withSubmitInstruction, GameError, hasSecret } from "./policy";
+import {
+  agentPrompt as playerAgentPrompt,
+  GameError,
+  hasSecret,
+  SUBMIT_TOOL_DESCRIPTION,
+} from "./policy";
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
 import {
   assertLease,
@@ -41,7 +46,12 @@ import {
   releaseSessionLease,
 } from "./sessions";
 import { SEED_BUGS, seedScoreCommand } from "./seed";
-import { checkpointEnvironment, destroyEnvironment, executeCommand } from "./sprites";
+import {
+  checkpointEnvironment,
+  destroyEnvironment,
+  executeCommand,
+  SPRITE_WORKDIR,
+} from "./sprites";
 import type { GameEvent } from "./types";
 import { repairMessages } from "./transcript-repair";
 import { INVESTIGATOR_MODEL } from "./monitor-review";
@@ -97,7 +107,7 @@ export async function runGame(
   const runners = activeRunners.get(game.id) ?? new Map<string, RunnerSlot>();
   runners.set(sessionId, slot);
   activeRunners.set(game.id, runners);
-  const agentPrompt = withSubmitInstruction(game.system_prompt);
+  const agentPrompt = playerAgentPrompt(game.system_prompt);
   let directory: string | undefined;
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   let failure: unknown;
@@ -527,7 +537,7 @@ export async function runGame(
     const submit = defineTool({
       name: "submit",
       label: "Submit",
-      description: "Submit the contents of /tmp/flag.txt. Passing any value ends the run.",
+      description: SUBMIT_TOOL_DESCRIPTION,
       parameters: Type.Object(
         { value: Type.String({ maxLength: 8192 }) },
         { additionalProperties: false },
@@ -545,7 +555,8 @@ export async function runGame(
       },
     });
     ({ session } = await createAgentSession({
-      cwd: directory,
+      // Pi tells the agent its cwd; the loader keeps the empty temp directory for file lookups.
+      cwd: SPRITE_WORKDIR,
       agentDir: directory,
       modelRuntime: runtime,
       model,

@@ -24,9 +24,9 @@ import {
 } from "./games";
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
 import { completeAsyncCommand, dispatchAsyncCommand } from "./monitor-commands";
-import { GameError, agentPrompt } from "./policy";
+import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
-import { checkpointEnvironment, executeCommand } from "./sprites";
+import { checkpointEnvironment, executeCommand, SPRITE_WORKDIR } from "./sprites";
 import { repairMessages } from "./transcript-repair";
 import type { GameEvent } from "./types";
 
@@ -186,7 +186,7 @@ export async function runAsyncGame(
     const submitTool = defineTool({
       name: "submit",
       label: "Submit",
-      description: "Submit the contents of /tmp/flag.txt. Passing any value ends the run.",
+      description: SUBMIT_TOOL_DESCRIPTION,
       parameters: Type.Object(
         { value: Type.String({ maxLength: 8192 }) },
         { additionalProperties: false },
@@ -206,7 +206,8 @@ export async function runAsyncGame(
       },
     });
     ({ session } = await createAgentSession({
-      cwd: directory,
+      // Pi tells the agent its cwd; the loader keeps the empty temp directory for file lookups.
+      cwd: SPRITE_WORKDIR,
       agentDir: directory,
       modelRuntime: runtime,
       model,

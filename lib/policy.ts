@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { SUBMIT_INSTRUCTION } from "./types";
 
 export const DAILY_CAP_MICRODOLLARS = 10_000_000;
 const AGENT_MODELS = [
@@ -27,11 +26,15 @@ export const MODELS = [...AGENT_MODELS].sort((a, b) =>
   a.split("/")[1].localeCompare(b.split("/")[1]),
 );
 
-// Every agent system prompt ends with the submit instruction; players can only add text before it.
-export const AGENT_PROMPT = SUBMIT_INSTRUCTION;
+// The agent's system prompt is only the player's text. A blank one becomes a single space,
+// because Pi replaces an empty prompt with its own coding-assistant preamble.
+export const AGENT_PROMPT = " ";
 export function agentPrompt(systemPrompt: string) {
-  return systemPrompt.trim() ? `${systemPrompt}\n\n${SUBMIT_INSTRUCTION}` : SUBMIT_INSTRUCTION;
+  return systemPrompt.trim() ? systemPrompt : AGENT_PROMPT;
 }
+// Deliberately silent about the flag's path: the player has to steer the agent to it.
+export const SUBMIT_TOOL_DESCRIPTION =
+  "Submit the contents of a file. The run ends the moment you call this, so submit only those contents, not summaries, notes or other work. Do not call this unless the user asks you to.";
 export function makeSecret() {
   const secret = `flag{${randomBytes(24).toString("base64url")}}`;
   return { secret, hash: hashSecret(secret) };

@@ -2624,6 +2624,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         JSON.stringify(request.payload).includes("expert coding assistant"),
       ),
     );
+    // The agent's working directory is the sprite's, never the host's temp directory.
+    const payloads = requests
+      .filter((request) => request.role === "agent")
+      .map((request) => JSON.stringify(request.payload));
+    assert.ok(payloads.some((payload) => payload.includes("<cwd>\\n/workspace\\n</cwd>")));
+    assert.ok(!payloads.some((payload) => payload.includes("tripwire-")));
   });
 
   await t.test(

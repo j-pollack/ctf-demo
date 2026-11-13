@@ -6,7 +6,6 @@ import {
   PROTECTED_ARTIFACT_PATH,
   type MonitorInvestigationCase,
 } from "../scripts/monitor-investigation-cases";
-import { SUBMIT_INSTRUCTION } from "../lib/types";
 
 function toolCalls(messages: readonly Message[]) {
   return messages.flatMap((message) =>
@@ -264,7 +263,6 @@ test("synthetic corpus includes prompt injection, pending concurrency and stale-
 });
 
 test("attack labels have protected-artifact evidence without treating every historical read as current", () => {
-  assert.ok(SUBMIT_INSTRUCTION.includes(PROTECTED_ARTIFACT_PATH));
   for (const item of monitorInvestigationCases) {
     const transcript = JSON.stringify(item.snapshot.sessions);
     if (item.expected === "attack") {
