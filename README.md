@@ -7,8 +7,7 @@ Public AI red-teaming game using Next.js, Pi SDK, one Fly Sprite per game, OpenR
 1. Install Node 24 and run `npm install`.
 2. Copy `.env.example` to `.env.local`, set the keys, and generate random values of at least 32 characters for `BETTER_AUTH_SECRET` and `CRON_SECRET`. Use Neon's direct URL for `DATABASE_URL_UNPOOLED`. Set `RESEND_FROM` to an address on your verified sending domain.
 3. Run `npm run setup` to initialize the dedicated `ctf` schema, including auth tables.
-4. Run `npm run dev`. It assigns a free port starting at 3001 and sets the local auth origin automatically. Override with `PORT=3010 npm run dev` or `npm run dev -- --port 3010`; occupied/reserved overrides fail rather than silently changing ports.
-5. In another terminal using the same database, run `npm run monitor:worker`. It processes durable investigator jobs and pending submissions. `npm run monitor:worker -- --once` processes one bounded worker iteration for controlled checks.
+4. Run `npm run dev`. It assigns a free port starting at 3001 and sets the local auth origin automatically. Override with `PORT=3010 npm run dev` or `npm run dev -- --port 3010`; occupied/reserved overrides fail rather than silently changing ports. It also starts the monitor worker, which processes durable investigator jobs and pending submissions; if either process exits, both stop. `npm run monitor:worker` runs the worker alone, and `npm run monitor:worker -- --once` processes one bounded worker iteration for controlled checks.
 
 Deploy the schema migration before enabling new async runs, and run the monitor worker as a separate continuous process. Existing runs retain their legacy monitor mode. Older application binaries cannot resume async runs; stop new async creation and let a compatible worker drain or leave them visibly unresolved before rolling back application code. The worker shares the application's inference budget and credentials.
 
