@@ -6,6 +6,23 @@ import { buildSchedule, selectBaseline, summarizeBaseline } from "../scripts/fla
 const text = readFileSync("evals/flag-read/cases.json", "utf8");
 const cases = JSON.parse(text);
 
+test("bounded schedules freeze DigitalOcean pricing and the 90-second investigation", () => {
+  for (const strategy of ["current", "closed-world-presumption-v1"] as const) {
+    const schedule = buildSchedule(text, {}, strategy);
+    assert.equal(schedule.execution.investigatorDeadlineMs, 90_000);
+    assert.equal(schedule.execution.classifierDeadlineMs, 15_000);
+    assert.equal(schedule.execution.reviewClaimMs, 120_000);
+    assert.deepEqual(schedule.execution.provider, {
+      only: ["digitalocean"],
+      allow_fallbacks: false,
+      require_parameters: true,
+      max_price: { prompt: 0.91, completion: 2.86, request: 0 },
+    });
+    assert.equal(schedule.budget.pricing.investigator.inputUsdPerMillion, 0.91);
+    assert.equal(schedule.budget.pricing.investigator.outputUsdPerMillion, 2.86);
+  }
+});
+
 test("candidate schedule changes policy only and summaries enforce the saved arm", () => {
   const current = buildSchedule(text, { source: "same" });
   const candidate = buildSchedule(text, { source: "same" }, "closed-world-presumption-v1");

@@ -8,6 +8,7 @@ import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
 import { INVESTIGATOR_MODEL } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { baselineSources } from "./flag-read-baseline-files";
+import { BOUNDED_INVESTIGATOR_POLICY } from "../lib/investigator-evaluation-policy";
 
 type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -80,7 +81,19 @@ export function buildSchedule(
       classifierCallsPerCase: 1,
       classifierCallsMaximum: 72,
       investigatorOutputTokensPerCall: 8192,
-      investigatorDeadlineMs: 60000,
+      investigatorDeadlineMs: BOUNDED_INVESTIGATOR_POLICY.deadlineMs,
+      classifierDeadlineMs: BOUNDED_INVESTIGATOR_POLICY.classifierDeadlineMs,
+      reviewClaimMs: BOUNDED_INVESTIGATOR_POLICY.claimMs,
+      provider: {
+        only: [BOUNDED_INVESTIGATOR_POLICY.providerEndpoint],
+        allow_fallbacks: false,
+        require_parameters: true,
+        max_price: {
+          prompt: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
+          completion: BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion,
+          request: 0,
+        },
+      },
       scoring: ["strict", "presumption"],
       note: "One investigation per case; both standards score the same outcome. Live execution requires explicit budget authorization, frozen source preflight and a fresh local database. No retries, including HTTP 429 retries.",
     },
@@ -89,13 +102,14 @@ export function buildSchedule(
       perCasePlanningAllowanceMicrodollars: 125_000,
       contingencyMicrodollars: 1_000_000,
       pricing: {
-        checkedAt: "2026-11-13T03:46:27.539Z",
+        checkedAt: "2026-11-13",
         investigator: {
-          source: "https://openrouter.ai/api/v1/models",
+          source: "https://openrouter.ai/api/v1/models/z-ai/glm-5.3/endpoints",
           model: "z-ai/glm-5.3",
           canonicalSlug: "z-ai/glm-5.3-20260816",
-          inputUsdPerMillion: 0.084,
-          outputUsdPerMillion: 3.6,
+          providerEndpoint: BOUNDED_INVESTIGATOR_POLICY.providerEndpoint,
+          inputUsdPerMillion: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
+          outputUsdPerMillion: BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion,
         },
         classifier: {
           source: "https://docs.typesafe.ai/models.md",
@@ -103,10 +117,9 @@ export function buildSchedule(
           inputUsdPerMillion: 0.042,
           outputUsdPerMillion: 0,
         },
-        note: "Public metadata snapshot, not a provider quote. Actual dispatch uses the provider catalog and persists actual charges; reservation overruns stop subsequent dispatch.",
+        note: "Frozen DigitalOcean endpoint rate ceilings feed reservations and max_price; no provider fallback. Price increases beyond these ceilings fail rather than expand the budget. Actual charges are persisted; reservation overruns stop subsequent dispatch.",
       },
-      basis:
-        "72 × $0.125 allowance + $1 contingency = $10. This is a proposed stop budget, not a guarantee that all cases finish. At the observed rate, 576 calls each consuming all 8192 output tokens would cost $16.9869312 in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.",
+      basis: `72 × $0.125 allowance + $1 contingency = $10. This is a proposed stop budget, not a guarantee that all cases finish. At the frozen rate, 576 calls each consuming all 8192 output tokens would cost $${((576 * 8192 * BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion) / 1e6).toFixed(7)} in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.`,
     },
     artifacts: {
       entries: "entries.jsonl",

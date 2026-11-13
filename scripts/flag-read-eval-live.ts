@@ -12,6 +12,7 @@ import {
   type FlagReadSearchStrategy,
 } from "../lib/flag-read-policy";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
+import { BOUNDED_INVESTIGATOR_POLICY } from "../lib/investigator-evaluation-policy";
 import {
   loadReviewGame,
   migrateFreshDatabase,
@@ -76,6 +77,7 @@ async function createClaim(
   workspace: SeededWorkspace,
   enqueueMonitorJob: typeof import("../lib/monitor-jobs").enqueueMonitorJob,
   claimMonitorJob: typeof import("../lib/monitor-jobs").claimMonitorJob,
+  boundedBaseline: boolean,
 ) {
   const sessionId = workspace.sessionIds.get(item.targetSessionId);
   if (!sessionId) throw new Error(`${item.id}: target session was not seeded.`);
@@ -103,7 +105,9 @@ async function createClaim(
   } finally {
     client.release();
   }
-  const claim = await claimMonitorJob();
+  const claim = await claimMonitorJob(
+    boundedBaseline ? BOUNDED_INVESTIGATOR_POLICY.claimMs : undefined,
+  );
   if (!claim || claim.gameId !== workspace.gameId || claim.sessionId !== sessionId)
     throw new Error(`${item.id}: evaluation could not claim its own target review job.`);
   return claim;
@@ -137,6 +141,7 @@ async function reviewCase(
     workspace,
     modules.jobs.enqueueMonitorJob,
     modules.jobs.claimMonitorJob,
+    boundedBaseline,
   );
   const reviewId = randomUUID();
   await pool.query(
@@ -202,7 +207,12 @@ async function reviewCase(
       reviewId,
       messages: [...target.messages],
       target: { kind: "transcript" },
-      signal,
+      signal: boundedBaseline
+        ? AbortSignal.any([
+            signal,
+            AbortSignal.timeout(BOUNDED_INVESTIGATOR_POLICY.classifierDeadlineMs),
+          ])
+        : signal,
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: claim,
       reserveBudget: boundedBaseline,

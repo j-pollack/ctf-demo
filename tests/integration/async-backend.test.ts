@@ -131,6 +131,36 @@ await test(
         });
       });
 
+    await t.test(
+      "claim durations preserve defaults and reject invalid overrides before admission",
+      async () => {
+        const id = await seed(`claim-duration-${randomUUID()}`);
+        await write(id, ["evidence"]);
+        for (const invalid of [0, -1, 0.5, NaN, Infinity, 2_147_483_648])
+          await assert.rejects(claimMonitorJob(invalid), /claim duration/i);
+        assert.equal(
+          (await pool.query("SELECT attempts FROM ctf.monitor_jobs WHERE game_id=$1", [id])).rows[0]
+            .attempts,
+          0,
+        );
+        for (const duration of [undefined, 120_000]) {
+          const claim = await claimMonitorJob(duration);
+          assert.equal(claim?.gameId, id);
+          const {
+            rows: [row],
+          } = await pool.query(
+            "SELECT extract(epoch FROM (claim_until-updated_at))*1000 AS duration,claim_until FROM ctf.monitor_jobs WHERE id=$1",
+            [claim!.jobId],
+          );
+          assert.equal(Number(row.duration), duration ?? 90_000);
+          assert.equal(row.claim_until.getTime(), claim!.claimUntil.getTime());
+          await transaction((client) => assertMonitorJobClaim(client, claim!));
+          await finishMonitorJob(claim!, { kind: "allow" });
+          if (duration === undefined) await write(id, ["evidence", "new evidence"]);
+        }
+      },
+    );
+
     await t.test("a newer append remains queued after the old claim completes", async () => {
       const id = await seed(`append-${randomUUID()}`);
       const first = await write(id, ["first"]);

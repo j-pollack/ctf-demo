@@ -24,7 +24,7 @@ assert.match(base.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
 
 await test(
   "bounded baseline uses real reservations and single-attempt provider calls",
-  { timeout: 120_000 },
+  { timeout: 360_000 },
   async (t) => {
     const modes = [
       "success",
@@ -47,6 +47,9 @@ await test(
       "candidate-overrun",
       "candidate-price-cap",
       "candidate-unavailable-provider",
+      "candidate-slow-success",
+      "candidate-deadline",
+      "candidate-classifier-timeout",
     ] as const;
     if (!process.env.CTF_BASELINE_TEST_MODE) {
       for (const mode of modes)
@@ -57,7 +60,7 @@ await test(
             {
               env: { ...process.env, NODE_TEST_CONTEXT: undefined, CTF_BASELINE_TEST_MODE: mode },
               encoding: "utf8",
-              timeout: 90_000,
+              timeout: 120_000,
             },
           );
           assert.match(
@@ -77,6 +80,7 @@ await test(
         const strategy = candidate ? "closed-world-presumption-v1" : "current";
         const policy = resolveFlagReadPolicy(strategy);
         const fractionalPricing = mode === "price-cap" || mode === "unavailable-provider";
+        const longScenario = ["slow-success", "deadline", "classifier-timeout"].includes(mode);
         const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
         const adminUrl = new URL(base);
         adminUrl.pathname = "/postgres";
@@ -140,6 +144,18 @@ await test(
                   "classifier reserves before HTTP dispatch",
                 );
                 assert.ok(Number(rows[0].cost_ceiling) > 0);
+                if (longScenario) {
+                  const { rows: claims } = await inspection.query(
+                    "SELECT extract(epoch FROM (claim_until-updated_at))*1000 AS duration FROM ctf.monitor_jobs WHERE status='reviewing'",
+                  );
+                  assert.equal(claims.length, 1);
+                  assert.equal(Number(claims[0].duration), 120_000);
+                }
+                if (mode === "classifier-timeout") {
+                  assert.ok(init?.signal);
+                  await delay(20_000, undefined, { signal: init.signal });
+                  assert.fail("classifier must abort before 20 seconds");
+                }
                 if (mode === "classifier-failure")
                   return new Response("unavailable", { status: 503 });
                 return Response.json({
@@ -162,10 +178,11 @@ await test(
               assert.equal(body.reasoning.effort, "high");
               assert.deepEqual(body.provider, {
                 require_parameters: true,
+                only: ["digitalocean"],
+                allow_fallbacks: false,
                 max_price: {
-                  // Preserve the catalog-to-model conversion's exact floating-point rates.
-                  prompt: fractionalPricing ? 0.000000084 * 1e6 : 1,
-                  completion: fractionalPricing ? 0.0000036 * 1e6 : 2,
+                  prompt: 0.91,
+                  completion: 2.86,
                   request: 0,
                 },
               });
@@ -192,6 +209,13 @@ await test(
                   Math.ceil(body.max_tokens * (body.provider.max_price.completion / 1e6) * 1e6),
                 "routing ceilings and the persisted reservation use the same rates",
               );
+              if (mode === "slow-success" || mode === "deadline") {
+                assert.ok(init?.signal);
+                await delay(mode === "slow-success" ? 65_000 : 95_000, undefined, {
+                  signal: init.signal,
+                });
+                if (mode === "deadline") assert.fail("investigation must abort before 95 seconds");
+              }
               if (mode === "unavailable-provider")
                 return Response.json(
                   {
@@ -248,8 +272,9 @@ await test(
             }
           },
         );
-        const budget =
-          mode === "insufficient"
+        const budget = longScenario
+          ? 250_000
+          : mode === "insufficient"
             ? 11
             : mode === "within-case-overrun"
               ? 5_000_000
@@ -258,7 +283,7 @@ await test(
                 : 50_000;
         const cases = flagReadCases.slice(
           0,
-          mode === "missing-usage" || mode === "timeout" ? 3 : 2,
+          longScenario ? 1 : mode === "missing-usage" || mode === "timeout" ? 3 : 2,
         );
         if (mode === "wrapper" || mode === "wrapper-failure") {
           const parent = mkdtempSync(join(tmpdir(), "ctf-baseline-"));
@@ -266,7 +291,7 @@ await test(
           const output = join(parent, "run");
           // The recorded baseline is immutable. Current-source tests use a fresh schedule.
           const schedulePath = candidate
-            ? "evals/flag-read/closed-world-presumption-v1-price-capped-schedule.json"
+            ? "evals/flag-read/closed-world-presumption-v1-digitalocean-90s-schedule.json"
             : join(parent, "current-schedule.json");
           if (!candidate)
             writeFileSync(
@@ -312,12 +337,12 @@ await test(
           });
           assert.ok(summary);
           assert.deepEqual(failures, []);
-          const { INVESTIGATOR_EFFORT, MONITOR_CALL_LIMIT, MONITOR_DEADLINE_MS } =
+          const { INVESTIGATOR_EFFORT, MONITOR_CALL_LIMIT } =
             await import("../../lib/investigator-driver");
           const schedule = JSON.parse(readFileSync(join(output, "schedule.json"), "utf8"));
           assert.equal(schedule.execution.investigatorCallsPerCase, MONITOR_CALL_LIMIT);
           assert.equal(schedule.execution.investigatorOutputTokensPerCall, MONITOR_OUTPUT_TOKENS);
-          assert.equal(schedule.execution.investigatorDeadlineMs, MONITOR_DEADLINE_MS);
+          assert.equal(schedule.execution.investigatorDeadlineMs, 90_000);
           assert.equal(schedule.policy.effort, INVESTIGATOR_EFFORT);
           assert.equal(schedule.policy.strategy, strategy);
           assert.equal(schedule.policy.promptHash, policy.promptHash);
@@ -391,7 +416,13 @@ await test(
         );
         // The fake's deliberate timeout is an external failure, not an assertion failure.
         assert.deepEqual(
-          failures.filter((e) => !(e instanceof DOMException && e.name === "TimeoutError")),
+          failures.filter(
+            (e) =>
+              !(
+                (e instanceof DOMException && e.name === "TimeoutError") ||
+                (longScenario && e instanceof Error && e.name === "AbortError")
+              ),
+          ),
           [],
         );
         assert.equal(entries.length, cases.length);
@@ -408,7 +439,33 @@ await test(
           entries.reduce((s, e) => s + e.heldMicrodollars, 0),
           totals.held,
         );
-        if (mode === "success" || mode === "rounding" || mode === "price-cap") {
+        if (longScenario) {
+          assert.equal(classifier, 1);
+          assert.equal(investigator, mode === "classifier-timeout" ? 0 : 1);
+          const entry = entries[0];
+          const expectedMs =
+            mode === "slow-success" ? 65_000 : mode === "deadline" ? 90_000 : 15_000;
+          assert.ok(entry.latencyMs! >= expectedMs - 500, `elapsed ${entry.latencyMs}ms`);
+          assert.ok(entry.latencyMs! < expectedMs + 10_000, `elapsed ${entry.latencyMs}ms`);
+          if (mode === "slow-success") {
+            assert.equal(entry.investigationComplete, true);
+            assert.equal(entry.jobStatus, "caught-up");
+            assert.equal(totals.held, 0);
+            assert.equal(totals.settled, 14);
+          } else {
+            assert.equal(entry.investigationComplete, null);
+            assert.match(entry.operationalError ?? "", /abort|time|deadline/i);
+            assert.equal(entry.jobStatus, "queued");
+            assert.equal(totals.settled, mode === "classifier-timeout" ? 0 : 4);
+            assert.ok(totals.held > 0);
+            const { rows: unresolved } = await inspection.query(
+              "SELECT model FROM ctf.inference WHERE settled_at IS NULL",
+            );
+            assert.deepEqual(unresolved, [
+              { model: mode === "classifier-timeout" ? "jev-1.14.0" : INVESTIGATOR_MODEL },
+            ]);
+          }
+        } else if (mode === "success" || mode === "rounding" || mode === "price-cap") {
           assert.equal(classifier, 2);
           assert.equal(investigator, 2);
           assert.ok(entries.every((e) => e.investigationComplete === true));
@@ -477,22 +534,14 @@ await test(
           }
           if (mode === "missing-usage" || mode === "timeout") {
             assert.ok(totals.held > 0);
-            if (candidate) {
-              // The larger prompt leaves a balance below investigator admission, rather
-              // than below the outer classifier skip threshold. Prove actual denial.
-              assert.equal(investigator, 1);
-              assert.ok(entries[0].heldMicrodollars > 0);
-              assert.equal(totals.held, entries[0].heldMicrodollars);
-              for (const entry of entries.slice(1)) {
-                assert.match(entry.operationalError ?? "", /budget/i);
-                assert.ok(entry.inference?.every((row) => row.model === "jev-1.14.0"));
-              }
-            } else {
-              assert.equal(
-                entries[2].skipped,
-                true,
-                "unknown holds consume the allowance for subsequent cases",
-              );
+            // Endpoint rates leave enough for classification but not another investigator.
+            // Prove retained holds and actual admission denial for both policy prompts.
+            assert.equal(investigator, 1);
+            assert.ok(entries[0].heldMicrodollars > 0);
+            assert.equal(totals.held, entries[0].heldMicrodollars);
+            for (const entry of entries.slice(1)) {
+              assert.match(entry.operationalError ?? "", /budget/i);
+              assert.ok(entry.inference?.every((row) => row.model === "jev-1.14.0"));
             }
           }
           assert.ok(totals.settled + totals.held <= budget);

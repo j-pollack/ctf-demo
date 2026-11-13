@@ -21,6 +21,20 @@ test("candidate preflight requires the selected arm and freezes its policy and s
   assert.throws(() => prepareBaseline(corpus, schedule, sources, 1_000_000, strategy), /differs/);
   assert.throws(() => prepareBaseline(corpus, candidate, { source: "drift" }, 1_000_000, strategy));
   assert.throws(() => prepareBaseline(corpus, candidate, sources, 10_000_001, strategy), /Budget/);
+  for (const execution of [
+    { ...candidate.execution, investigatorDeadlineMs: 60_000 },
+    { ...candidate.execution, reviewClaimMs: 90_000 },
+    { ...candidate.execution, classifierDeadlineMs: 90_000 },
+    { ...candidate.execution, provider: { ...candidate.execution.provider, only: ["wafer/us"] } },
+    {
+      ...candidate.execution,
+      provider: { ...candidate.execution.provider, allow_fallbacks: true },
+    },
+  ])
+    assert.throws(
+      () => prepareBaseline(corpus, { ...candidate, execution }, sources, 1_000_000, strategy),
+      /differs/,
+    );
 });
 
 test("candidate CLI rejects ambiguous selection before any network or output", async (t) => {

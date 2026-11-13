@@ -26,6 +26,7 @@ export type TrustedInferenceOptions = {
   jobClaim?: MonitorJobClaim;
   stage?: string;
   singleAttempt?: boolean;
+  providerEndpoint?: string;
   // Bounded evaluations cap provider rates before dispatch and verify actual cost after settlement.
   stopOnReservationOverrun?: boolean;
 };
@@ -370,6 +371,9 @@ export async function infer(
     provider: {
       require_parameters: true,
       ...(role === "agent" ? { sort: "price" } : {}),
+      ...(trusted.providerEndpoint
+        ? { only: [trusted.providerEndpoint], allow_fallbacks: false }
+        : {}),
       ...(trusted.stopOnReservationOverrun
         ? {
             // OpenRouter max_price and model.cost both use USD per million tokens.
