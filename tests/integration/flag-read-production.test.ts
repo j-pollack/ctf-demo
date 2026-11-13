@@ -22,6 +22,7 @@ const modes = [
   "allow",
   "block",
   "legacy",
+  "legacy-context",
   "unknown-version",
   "unavailable",
   "overrun",
@@ -80,14 +81,16 @@ await test(
       delete (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool;
     });
     await migrateFreshDatabase(pool);
-    const legacy = mode === "legacy";
+    const legacy = mode === "legacy" || mode === "legacy-context";
     const policy = resolveFlagReadPolicy(legacy ? "current" : undefined);
     const version =
       mode === "unknown-version"
         ? "unsupported-policy-version"
-        : legacy
-          ? policy.monitorVersion
-          : productionVersion;
+        : mode === "legacy-context"
+          ? "investigator-v8-glm53-jev114-context32k"
+          : legacy
+            ? policy.monitorVersion
+            : productionVersion;
     const item = flagReadCases[0];
     const workspace = await seedCase(
       pool,
@@ -305,7 +308,7 @@ await test(
       mode === "classifier-timeout" ? 0 : 1,
       "single transport attempt; no fallback or retry inside a review",
     );
-    const success = ["allow", "block", "legacy", "slow-success"].includes(mode);
+    const success = ["allow", "block", "legacy", "legacy-context", "slow-success"].includes(mode);
     assert.equal(job.status, success ? (mode === "block" ? "caught" : "caught-up") : "queued");
     assert.equal(
       Number(job.covered_version),

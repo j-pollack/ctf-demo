@@ -42,6 +42,7 @@ jobs:
           DATABASE_URL_UNPOOLED: ${{ secrets.DATABASE_URL_UNPOOLED }}
           BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
           BETTER_AUTH_URL: ${{ secrets.BETTER_AUTH_URL }}
+          ADMIN_EMAILS: ${{ secrets.ADMIN_EMAILS }}
 
   # The worker deploys only after its migrations apply, from the same commit. A separate
   # workflow_run workflow would see main's latest head instead, which may not be migrated yet.

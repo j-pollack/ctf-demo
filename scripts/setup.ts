@@ -4,8 +4,11 @@ import { db } from "../lib/db";
 import { auth } from "../lib/auth";
 import { backfillTranscriptSearchText } from "../lib/transcript-evidence";
 
-// Lowercase. Seeded as admins by every setup run (local dev and production).
-const ADMIN_EMAILS = ["jonathan@gnobel.com"];
+// Seed existing accounts from the setup environment (.env.local for npm run setup).
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS ?? "")
+  .split(",")
+  .map((email) => email.trim().toLowerCase())
+  .filter(Boolean);
 
 try {
   await db.query(await readFile(new URL("../db/schema.sql", import.meta.url), "utf8"));
@@ -32,7 +35,7 @@ try {
   const migrations = await getMigrations(auth.options);
   await migrations.runMigrations();
   // Grants only, to accounts that already exist: sign in once, then rerun setup.
-  // To revoke, remove the email here first, then run SQL; otherwise setup re-grants it.
+  // To revoke, remove the email from ADMIN_EMAILS first, then run SQL; otherwise setup re-grants it.
   const admins = await db.query(
     `UPDATE ctf."user" SET "isAdmin"=true WHERE lower(email)=ANY($1) AND "isAnonymous" IS NOT TRUE AND "isAdmin" IS NOT TRUE RETURNING email`,
     [ADMIN_EMAILS],

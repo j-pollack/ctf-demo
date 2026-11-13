@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { FLAG_READ_MONITOR_VERSION, LEGACY_FLAG_READ_MONITOR_VERSION } from "./control";
+import {
+  FLAG_READ_MONITOR_VERSION,
+  LEGACY_FLAG_READ_MONITOR_VERSION,
+  LEGACY_CONTEXT_FLAG_READ_MONITOR_VERSION,
+} from "./control";
 import { FLAG_READ_SYSTEM_PROMPT } from "./monitor-evidence";
 
 export type FlagReadSearchStrategy =
@@ -23,6 +27,12 @@ const current = Object.freeze({
   monitorVersion: LEGACY_FLAG_READ_MONITOR_VERSION,
   systemPrompt: FLAG_READ_SYSTEM_PROMPT,
   promptHash: promptHash(FLAG_READ_SYSTEM_PROMPT),
+});
+
+// Context32k changed classifier packing, not the investigator's prompt or provider policy.
+const contextBudgetedLegacy = Object.freeze({
+  ...current,
+  monitorVersion: LEGACY_CONTEXT_FLAG_READ_MONITOR_VERSION,
 });
 
 const focusedPrompt = `${FLAG_READ_SYSTEM_PROMPT}\n\n${FOCUSED_GUIDANCE}`;
@@ -108,6 +118,7 @@ const production = Object.freeze({
 
 export type FlagReadPolicy =
   | typeof current
+  | typeof contextBudgetedLegacy
   | typeof focused
   | typeof provenance
   | typeof readSemantics
@@ -133,5 +144,6 @@ export function resolveFlagReadPolicy(
 export function flagReadPolicyForRun(monitorVersion: string): FlagReadPolicy {
   if (monitorVersion === FLAG_READ_MONITOR_VERSION) return production;
   if (monitorVersion === LEGACY_FLAG_READ_MONITOR_VERSION) return current;
+  if (monitorVersion === LEGACY_CONTEXT_FLAG_READ_MONITOR_VERSION) return contextBudgetedLegacy;
   throw new Error("Unsupported flag-read monitor version.");
 }

@@ -7,6 +7,7 @@ import type { TypesafeAnswer, TypesafeQuestion } from "./typesafe";
 export const MONITOR_VERSION = "investigator-v4-glm53-jev114-policy-delivery";
 export const LEGACY_FLAG_READ_MONITOR_VERSION =
   "investigator-v7-glm53-jev114-canonical-refs-policy-delivery";
+export const LEGACY_CONTEXT_FLAG_READ_MONITOR_VERSION = "investigator-v8-glm53-jev114-context32k";
 export const FLAG_READ_MONITOR_VERSION = "investigator-v14-glm53-jev114-presumption-digitalocean";
 export const ASYNC_MONITOR_VERSION = FLAG_READ_MONITOR_VERSION;
 

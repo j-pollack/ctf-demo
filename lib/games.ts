@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
+import { isAdmin } from "./admin";
 import {
   ASYNC_MONITOR_VERSION,
   LEGACY_FLAG_READ_MONITOR_VERSION,
@@ -594,8 +595,15 @@ export async function startGame(
         "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours'",
         [ownerId],
       );
-      if (starts.rows[0].total >= RUNS_PER_DAY)
-        throw new GameError("You’ve reached your daily limit of new runs.", 429);
+      if (starts.rows[0].total >= RUNS_PER_DAY) {
+        // Read current privileges inside admission; request/session hints cannot grant an exemption.
+        const owner = await client.query<{ isAdmin: boolean | null; isAnonymous: boolean | null }>(
+          'SELECT "isAdmin","isAnonymous" FROM ctf."user" WHERE id=$1',
+          [ownerId],
+        );
+        if (!isAdmin(owner.rows[0]))
+          throw new GameError("You’ve reached your daily limit of new runs.", 429);
+      }
       const totalStarts = await client.query(
         "SELECT count(*)::int AS total FROM ctf.games WHERE new_run AND created_at>now()-interval '24 hours'",
       );

@@ -68,6 +68,17 @@ test("fresh-run production default promotes presumption with a distinct version"
   );
 });
 
+test("historical context32k runs retain their original investigator policy and attribution", () => {
+  const version = "investigator-v8-glm53-jev114-context32k";
+  const policy = flagReadPolicyForRun(version);
+  assert.equal(policy.monitorVersion, version);
+  assert.equal(policy.searchStrategy, "current");
+  assert.equal(policy.systemPrompt, resolveFlagReadPolicy("current").systemPrompt);
+  assert.equal(policy.promptHash, resolveFlagReadPolicy("current").promptHash);
+  assert.notEqual(policy, resolveFlagReadPolicy("current"));
+  assert.ok(Object.isFrozen(policy));
+});
+
 test("focused guidance appends one fixed strategy without changing the read policy", () => {
   const current = resolveFlagReadPolicy("current");
   const focused = resolveFlagReadPolicy("focused");

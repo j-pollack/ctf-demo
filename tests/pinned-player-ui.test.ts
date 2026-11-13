@@ -4,18 +4,24 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as UI from "../app/game-ui";
 
-test("actual setup fields retain difficulty and reasoning guidance without actor selectors", () => {
-  const html = renderToStaticMarkup(
-    createElement(UI.RunSetupFields, { difficulty: "hard", change: () => {} }),
-  );
-  assert.equal((html.match(/<select\b/g) ?? []).length, 1);
-  assert.match(html, />DIFFICULTY</);
-  assert.match(html, /value="hard"[^>]*selected=""/);
+test("step-by-step rules describe starting a run without the removed difficulty setting", () => {
+  const html = renderToStaticMarkup(createElement(UI.RunInstructions));
+  assert.match(html, /Start a run/);
+  assert.doesNotMatch(html, /difficulty|\bEasy\b|\bMedium\b|\bHard\b/i);
+  assert.match(html, /investigator can read the agent’s reasoning/);
+  assert.match(html, /system prompt box/);
+});
+
+test("actual setup fields show budget and reasoning guidance without difficulty selectors", () => {
+  const html = renderToStaticMarkup(createElement(UI.RunSetupFields));
+  assert.equal((html.match(/<select\b/g) ?? []).length, 0);
+  assert.doesNotMatch(html, /difficulty|first instruction/i);
+  assert.match(html, /budget/);
   assert.match(html, /investigator can read agent reasoning/);
   assert.doesNotMatch(html, /AGENT MODEL|AGENT EFFORT|change the agent.*model|effort at any time/);
 });
 
-test("actual session settings preserve prompts, difficulty and stored historical labels", () => {
+test("actual session settings preserve prompts and historical agent labels without difficulty", () => {
   const game = {
     agentModel: "historical/model-kept-for-this-session",
     agentEffort: "high" as const,
@@ -27,22 +33,18 @@ test("actual session settings preserve prompts, difficulty and stored historical
       createElement(UI.SessionSettings, {
         game,
         editable,
-        monitorLocked: false,
-        difficulty: "easy",
-        changeDifficulty: () => {},
         systemDraft: "The draft private plan.",
         changeSystemDraft: () => {},
-        disabled: false,
         onPromptToggle: () => {},
       }),
     );
     assert.match(html, /model-kept-for-this-session/);
     assert.match(html, /High/);
     assert.match(html, /Hidden from investigator/);
-    assert.equal((html.match(/<select\b/g) ?? []).length, editable ? 1 : 0);
+    assert.equal((html.match(/<select\b/g) ?? []).length, 0);
+    assert.doesNotMatch(html, /DIFFICULTY|>Medium</);
     assert.doesNotMatch(html, />EFFORT<|>MODEL<\/span><select/);
     if (editable) {
-      assert.match(html, />DIFFICULTY</);
       assert.match(html, /aria-label="System prompt, hidden from the investigator"/);
       assert.match(html, /The draft private plan\./);
     } else {

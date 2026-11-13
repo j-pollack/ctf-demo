@@ -19,7 +19,17 @@ Deploy the schema migration before enabling new async runs. Deployed environment
 UPDATE ctf."user" SET "isAdmin" = true WHERE email = 'you@example.com';
 ```
 
-Or add the email to `ADMIN_EMAILS` in `scripts/setup.ts`; every `npm run setup` (local and the production migrate workflow) grants it to existing accounts. Remove an email there before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
+Or set `ADMIN_EMAILS` in `.env.local` (comma-separated, for example `ADMIN_EMAILS=you@example.com,other@example.com`). `npm run setup` loads that file and grants admin to matching existing non-guest accounts; sign in once, then rerun setup. Whitespace and case are ignored. Unset or blank grants nobody, and removing an address does not revoke an existing grant. For production setup, supply the same variable in its environment. Remove an email from every setup environment's `ADMIN_EMAILS` before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
+
+List current admins, including manual grants:
+
+```sql
+SELECT id, email, name FROM ctf."user"
+WHERE "isAdmin" = true AND "isAnonymous" IS NOT TRUE
+ORDER BY email;
+```
+
+Admins are exempt from the personal three-new-runs-per-24-hours limit. Shared spend, global new-run and environment limits still apply. Admission checks the current database flag, so revocation takes effect on the next start request.
 
 ## Parallel worktrees
 
@@ -72,7 +82,7 @@ Before running the full integration suite locally, prepare its Docker images: `d
 
 GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not touch production or call paid/live providers. Green CI is not release approval: run explicitly approved provider-contract and browser smoke checks separately.
 
-The `migrate prod` workflow runs `scripts/setup.ts` against the production database after `ci` succeeds for a push to `main` (never for pull requests). It checks out the exact commit that passed, runs one migration at a time, and reads only the `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` repository secrets. Setup is idempotent and each SQL file applies atomically. Vercel's production alias waits for both the `ci` and `migrate prod` checks, so new code goes live only after its migrations apply. Old code keeps serving while they run, so migrations merged this way must still be additive; coordinate anything destructive or data-rewriting manually. If it fails, fix forward and push again; use Vercel Instant Rollback for bad code and Neon point-in-time restore only for damaged data. Code from before `009-monitor-choice` can't read runs started without a season (`season_id` NULL): before rolling back past it, end those runs (`UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE season_id IS NULL AND status IN ('creating','active')`) and expect their pages to fail until you roll forward.
+The `migrate prod` workflow runs `scripts/setup.ts` against the production database after `ci` succeeds for a push to `main` (never for pull requests). It checks out the exact commit that passed, runs one migration at a time, and reads the `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` and `ADMIN_EMAILS` repository secrets. Set `ADMIN_EMAILS` to comma-separated existing member emails to seed production admins; leaving it unset grants no new admins. Setup is idempotent and each SQL file applies atomically. Vercel's production alias waits for both the `ci` and `migrate prod` checks, so new code goes live only after its migrations apply. Old code keeps serving while they run, so migrations merged this way must still be additive; coordinate anything destructive or data-rewriting manually. If it fails, fix forward and push again; use Vercel Instant Rollback for bad code and Neon point-in-time restore only for damaged data. Code from before `009-monitor-choice` can't read runs started without a season (`season_id` NULL): before rolling back past it, end those runs (`UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE season_id IS NULL AND status IN ('creating','active')`) and expect their pages to fail until you roll forward.
 
 After this workflow is available, configure Vercel's GitHub-backed deployment checks to select the exact `ci` job and block production alias assignment only; retain existing native Lint/TypeCheck checks. This source workflow does not activate Vercel checks, block previews/builds, or provide GitHub branch protection. Do not force-promote when the required check is missing or failing. Private-repository merge protection requires GitHub Pro; Vercel's production alias gate is separate. The repository accepts squash merges only.
 

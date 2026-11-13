@@ -133,6 +133,279 @@ await test(
       });
 
     await t.test(
+      "classifier context retries preserve authorization and persisted accounting",
+      async (t) => {
+        const { classifyMonitorTarget } = await import("../../lib/monitor-classifier");
+        const { TYPESAFE_MODEL, TypesafeDocumentTooLargeError } =
+          await import("../../lib/typesafe");
+        const { MAX_MONITOR_DOCUMENT_BYTES } = await import("../../lib/monitor-document");
+        const { FLAG_READ_MONITOR_VERSION } = await import("../../lib/control");
+        const oldKey = process.env.TYPESAFE_API_KEY;
+        process.env.TYPESAFE_API_KEY = "synthetic-classifier-context";
+        t.after(() => {
+          if (oldKey === undefined) delete process.env.TYPESAFE_API_KEY;
+          else process.env.TYPESAFE_API_KEY = oldKey;
+        });
+        for (const reserveBudget of [false, true]) {
+          for (const scenario of [
+            "retry-success",
+            "claim-lost",
+            "abort",
+            "exhausted",
+            "unrelated-error",
+            "pinned-only",
+            ...(reserveBudget ? ["budget-denied" as const] : []),
+          ] as const) {
+            await t.test(`${reserveBudget ? "reserved" : "legacy"} ${scenario}`, async (t) => {
+              const id = await seed(`classifier-${randomUUID()}`);
+              const messages = [
+                { role: "user", content: "keep this instruction", timestamp: 0 },
+                ...Array.from({ length: scenario === "pinned-only" ? 1 : 40 }, (_, i) => ({
+                  role: "assistant",
+                  content: [{ type: "text", text: `turn-${i} ${"ordinary work ".repeat(140)}` }],
+                  timestamp: i + 1,
+                })),
+              ] as Parameters<typeof writeMessages>[1];
+              const evidence = await writeMessages(id, messages);
+              await transaction((client) =>
+                enqueueMonitorJob(client, {
+                  gameId: id,
+                  sessionId: id,
+                  epoch: evidence.epoch,
+                  version: evidence.version,
+                }),
+              );
+              const claim = await claimMonitorJob();
+              assert.equal(claim?.gameId, id);
+              t.after(() =>
+                pool.query(
+                  "UPDATE ctf.monitor_jobs SET status='unresolved',claim_token=NULL,claim_until=NULL WHERE id=$1",
+                  [claim!.jobId],
+                ),
+              );
+              const reviewId = randomUUID();
+              await pool.query(
+                `INSERT INTO ctf.monitor_reviews
+            (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,job_id,job_claim_token)
+            VALUES($1,$2,$2,1,'transcript','synthetic-monitor',$3,$4,$5)`,
+                [reviewId, id, FLAG_READ_MONITOR_VERSION, claim!.jobId, claim!.claimToken],
+              );
+              const game = (await pool.query("SELECT * FROM ctf.games WHERE id=$1", [id])).rows[0];
+              const controller = new AbortController();
+              let commandCalls = 0;
+              const documents: {
+                transcript: { role: string; text: string }[];
+                omissions: { sizeLimitMessages: number };
+              }[] = [];
+              let commandDone!: () => void;
+              const commandCompleted = new Promise<void>((resolve) => {
+                commandDone = resolve;
+              });
+              t.mock.method(
+                globalThis,
+                "fetch",
+                async (url: string | URL | Request, init?: RequestInit) => {
+                  assert.equal(String(url), "https://api.typesafe.ai/v1/systemone");
+                  assert.equal(init?.method, "POST");
+                  const headers = new Headers(init?.headers);
+                  assert.equal(headers.get("authorization"), "Bearer synthetic-classifier-context");
+                  assert.equal(headers.has("TypeSafe-Danger-Zone-Long-Context"), false);
+                  init?.signal?.throwIfAborted();
+                  const body = JSON.parse(String(init?.body));
+                  assert.equal(body.model, TYPESAFE_MODEL);
+                  if (typeof body.state === "string") {
+                    assert.equal(body.state, "printf harmless");
+                    assert.deepEqual(Object.keys(body.questions).sort(), [
+                      "reads_now",
+                      "stages_indirect",
+                    ]);
+                    assert.equal(
+                      ++commandCalls,
+                      1,
+                      "context retries must not repeat command evaluation",
+                    );
+                    commandDone();
+                    return Response.json({
+                      answers: {
+                        reads_now: { type: "noul", noul: 0 },
+                        stages_indirect: { type: "noul", noul: 0 },
+                      },
+                      usage: { input_tokens: 1000 },
+                    });
+                  }
+                  await commandCompleted;
+                  assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
+                  assert.ok(
+                    Buffer.byteLength(JSON.stringify(body.state)) <=
+                      MAX_MONITOR_DOCUMENT_BYTES -
+                        Buffer.byteLength(JSON.stringify(body.questions)),
+                  );
+                  documents.push(body.state);
+                  if (reserveBudget) {
+                    const { rows: reservations } = await pool.query(
+                      "SELECT cost_ceiling,settled_at FROM ctf.inference WHERE game_id=$1 AND review_id=$2",
+                      [id, reviewId],
+                    );
+                    assert.equal(
+                      reservations.length,
+                      documents.length + 1,
+                      "every context attempt reserves before dispatch",
+                    );
+                    assert.ok(
+                      reservations.some(
+                        (row) => row.settled_at === null && Number(row.cost_ceiling) > 0,
+                      ),
+                    );
+                  }
+                  assert.equal(body.state.transcript[0].text, "keep this instruction");
+                  assert.equal(
+                    body.state.transcript.at(-1).text,
+                    (messages.at(-1) as { content: { text: string }[] }).content[0].text,
+                  );
+                  if (documents.length === 1 && scenario !== "pinned-only")
+                    assert.equal(
+                      body.state.transcript.length,
+                      41,
+                      "production retains more than twenty turns",
+                    );
+                  if (documents.length > 1)
+                    assert.ok(
+                      body.state.transcript.length < documents.at(-2)!.transcript.length,
+                      "each rejected request loses older history",
+                    );
+                  if (scenario === "retry-success" && documents.length === 2) {
+                    assert.ok(body.state.omissions.sizeLimitMessages > 0);
+                    return Response.json({
+                      answers: {
+                        intent: { type: "noul", noul: 0 },
+                        suspicion: { type: "score", score: 0, confidence: 1 },
+                      },
+                      usage: { input_tokens: 2000 },
+                    });
+                  }
+                  if (scenario === "claim-lost") {
+                    assert.equal(documents.length, 1);
+                    await pool.query("UPDATE ctf.monitor_jobs SET claim_token=$2 WHERE id=$1", [
+                      claim!.jobId,
+                      randomUUID(),
+                    ]);
+                  }
+                  if (scenario === "abort")
+                    controller.abort(new Error("synthetic classifier abort"));
+                  if (scenario === "unrelated-error")
+                    return new Response("provider unavailable", { status: 503 });
+                  if (scenario === "budget-denied")
+                    await pool.query(
+                      "UPDATE ctf.games SET budget_microdollars=spent_microdollars+reserved_microdollars WHERE id=$1",
+                      [id],
+                    );
+                  return new Response("max_tokens_exceeded", { status: 400 });
+                },
+              );
+              const before = Number(
+                (
+                  await pool.query(
+                    "SELECT coalesce(sum(charged),0) AS charged FROM ctf.daily_spend",
+                  )
+                ).rows[0].charged,
+              );
+              const classification = classifyMonitorTarget({
+                game,
+                sessionId: id,
+                lease: "",
+                reviewId,
+                messages: [...messages],
+                target: { kind: "command", command: "printf harmless" },
+                signal: controller.signal,
+                executionGeneration: Number(game.execution_generation),
+                jobClaim: claim!,
+                reserveBudget,
+              });
+              if (scenario === "retry-success") assert.equal((await classification).suspicion, 0);
+              else
+                await assert.rejects(
+                  classification,
+                  scenario === "claim-lost"
+                    ? /no longer owns/
+                    : scenario === "abort"
+                      ? /synthetic classifier abort/
+                      : scenario === "unrelated-error"
+                        ? /status 503/
+                        : scenario === "budget-denied"
+                          ? /budget/
+                          : TypesafeDocumentTooLargeError,
+                );
+              assert.equal(
+                documents.length,
+                scenario === "retry-success" ? 2 : scenario === "exhausted" ? 5 : 1,
+              );
+              assert.equal(commandCalls, 1);
+              const expectedTokens = scenario === "retry-success" ? 3000 : 1000;
+              const expectedCost = scenario === "retry-success" ? 126 : 42;
+              const charges = (
+                await pool.query(
+                  "SELECT tokens,cost,cost_ceiling,settled_at FROM ctf.inference WHERE game_id=$1 AND review_id=$2",
+                  [id, reviewId],
+                )
+              ).rows;
+              const settled = charges.filter((charge) => charge.settled_at !== null);
+              const held = charges.filter((charge) => charge.settled_at === null);
+              assert.equal(charges.length, reserveBudget ? documents.length + 1 : 1);
+              assert.equal(settled.length, reserveBudget && scenario === "retry-success" ? 2 : 1);
+              assert.equal(
+                held.length,
+                reserveBudget ? documents.length - (scenario === "retry-success" ? 1 : 0) : 0,
+              );
+              assert.equal(
+                settled.reduce((sum, charge) => sum + Number(charge.tokens), 0),
+                expectedTokens,
+              );
+              assert.equal(
+                settled.reduce((sum, charge) => sum + Number(charge.cost), 0),
+                expectedCost,
+              );
+              const heldCost = held.reduce((sum, charge) => sum + Number(charge.cost_ceiling), 0);
+              if (reserveBudget)
+                assert.ok(heldCost > 0, "dispatched rejections retain unknown usage holds");
+              const balances = (
+                await pool.query("SELECT reserved_microdollars FROM ctf.games WHERE id=$1", [id])
+              ).rows[0];
+              assert.equal(Number(balances.reserved_microdollars), heldCost);
+              const dayReserved = (
+                await pool.query(
+                  "SELECT coalesce(sum(reserved),0) AS reserved FROM ctf.daily_spend",
+                )
+              ).rows[0];
+              const allHeld = (
+                await pool.query(
+                  "SELECT coalesce(sum(cost_ceiling),0) AS reserved FROM ctf.inference WHERE settled_at IS NULL",
+                )
+              ).rows[0];
+              assert.equal(Number(dayReserved.reserved), Number(allHeld.reserved));
+              assert.equal(
+                Number(
+                  (await pool.query("SELECT spent_microdollars FROM ctf.games WHERE id=$1", [id]))
+                    .rows[0].spent_microdollars,
+                ),
+                expectedCost,
+              );
+              assert.equal(
+                Number(
+                  (
+                    await pool.query(
+                      "SELECT coalesce(sum(charged),0) AS charged FROM ctf.daily_spend",
+                    )
+                  ).rows[0].charged,
+                ) - before,
+                expectedCost,
+              );
+            });
+          }
+        }
+      },
+    );
+
+    await t.test(
       "claim durations preserve defaults and reject invalid overrides before admission",
       async () => {
         const id = await seed(`claim-duration-${randomUUID()}`);

@@ -9,6 +9,7 @@ import {
   type ClassifierRiskSignals,
   MONITOR_TOKEN_MICRODOLLARS,
 } from "./control";
+import { evaluateClassifierContext } from "./classifier-context";
 import {
   chargeMonitor,
   reserveInference,
@@ -16,7 +17,6 @@ import {
   transaction,
   type GameRow,
 } from "./games";
-import { monitorStates } from "./monitor-document";
 import { evaluate, TYPESAFE_MODEL, type TypesafeAnswer } from "./typesafe";
 import { DAILY_CAP_MICRODOLLARS, GameError, inputCeiling } from "./policy";
 import { assertMonitorAuthorization } from "./run-lifecycle";
@@ -111,11 +111,6 @@ export async function classifyMonitorTarget(input: {
 }) {
   const difficulty = CONTROL_DIFFICULTY[input.game.monitor_difficulty];
   const command = input.target.kind === "command" ? input.target.command : undefined;
-  const states = monitorStates(input.messages, {
-    windowTurns: difficulty.windowTurns,
-    includeReasoning: input.game.monitor_reasoning,
-    proposedCommand: command,
-  });
   const evaluateAuthorized = async (state: unknown, questions: Parameters<typeof evaluate>[1]) => {
     await assertDispatchAuthorization(input);
     input.signal.throwIfAborted();
@@ -155,10 +150,16 @@ export async function classifyMonitorTarget(input: {
     }
   };
   const [commandResult, contextResult] = await Promise.allSettled([
-    states.command === undefined
+    command === undefined
       ? Promise.resolve(undefined)
-      : evaluateAuthorized(states.command, questionsFor(COMMAND_QUESTION_KEYS)),
-    evaluateAuthorized(states.context, questionsFor(CONTEXT_QUESTION_KEYS)),
+      : evaluateAuthorized(command, questionsFor(COMMAND_QUESTION_KEYS)),
+    evaluateClassifierContext(
+      input.messages,
+      { includeReasoning: input.game.monitor_reasoning, proposedCommand: command },
+      questionsFor(CONTEXT_QUESTION_KEYS),
+      input.signal,
+      evaluateAuthorized,
+    ),
   ]);
   const commandCall = commandResult.status === "fulfilled" ? commandResult.value : undefined;
   const contextCall = contextResult.status === "fulfilled" ? contextResult.value : undefined;
