@@ -12,8 +12,9 @@ import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main } from "../../scripts/flag-read-baseline-run";
-import { buildSchedule } from "../../scripts/flag-read-baseline";
+import { main, prepareBaseline } from "../../scripts/flag-read-baseline-run";
+import { buildSchedule, summarizeBaseline } from "../../scripts/flag-read-baseline";
+import { syntheticHeldoutCorpus } from "../fixtures/heldout-corpus";
 import { baselineSources } from "../../scripts/flag-read-baseline-files";
 import { MONITOR_OUTPUT_TOKENS } from "../../lib/monitor-evidence";
 
@@ -42,6 +43,7 @@ await test(
       "wrapper",
       "wrapper-failure",
       "candidate-wrapper",
+      "candidate-heldout",
       "candidate-rate-limit",
       "candidate-missing-usage",
       "candidate-overrun",
@@ -281,6 +283,50 @@ await test(
               : mode === "exhaustion"
                 ? 30_000
                 : 50_000;
+        if (mode === "heldout") {
+          const corpus = syntheticHeldoutCorpus(readFileSync("evals/flag-read/cases.json", "utf8"));
+          const sources = baselineSources();
+          const schedule = buildSchedule(corpus, sources, strategy, "test");
+          const prepared = prepareBaseline(corpus, schedule, sources, 1_000_000, strategy, "test");
+          const entries = await runFlagReadLiveEvaluation(
+            { databaseUrl: url.toString(), budgetMicrodollars: 1_000_000 },
+            prepared.cases,
+            undefined,
+            { boundedBaseline: true, searchStrategy: strategy },
+          );
+          assert.deepEqual(failures, []);
+          assert.equal(entries.length, 40);
+          assert.deepEqual(
+            entries.map((entry) => entry.caseId),
+            schedule.cases.map((item) => item.id),
+          );
+          assert.ok(
+            entries.every(
+              (entry) => entry.investigationComplete && entry.caseId.startsWith("test-"),
+            ),
+          );
+          const summary = summarizeBaseline(corpus, entries, schedule);
+          assert.equal(summary.scores.strict.incomplete, 0);
+          assert.equal(summary.scores.presumption.incomplete, 0);
+          assert.equal(summary.scores.strict.labelPositiveDetected, 0);
+          assert.equal(summary.scores.presumption.labelPositiveDetected, 0);
+          assert.deepEqual(summary.missing, []);
+          assert.equal(summary.settledMicrodollars, 40 * 14);
+          assert.equal(summary.heldMicrodollars, 0);
+          const {
+            rows: [accounting],
+          } = await inspection.query(
+            "SELECT count(*)::int AS requests,sum(cost)::int AS settled,count(*) FILTER(WHERE settled_at IS NULL)::int AS unresolved FROM ctf.inference",
+          );
+          assert.deepEqual(accounting, {
+            requests: 80,
+            settled: summary.settledMicrodollars,
+            unresolved: 0,
+          });
+          assert.equal(classifier, 40);
+          assert.equal(investigator, 40);
+          return;
+        }
         const cases = flagReadCases.slice(
           0,
           longScenario ? 1 : mode === "missing-usage" || mode === "timeout" ? 3 : 2,
@@ -290,20 +336,18 @@ await test(
           t.after(() => rmSync(parent, { recursive: true, force: true }));
           const output = join(parent, "run");
           // The recorded baseline is immutable. Current-source tests use a fresh schedule.
-          const schedulePath = candidate
-            ? "evals/flag-read/closed-world-presumption-v1-digitalocean-90s-schedule.json"
-            : join(parent, "current-schedule.json");
-          if (!candidate)
-            writeFileSync(
-              schedulePath,
-              JSON.stringify(
-                buildSchedule(
-                  readFileSync("evals/flag-read/cases.json", "utf8"),
-                  baselineSources(),
-                ),
+          const schedulePath = join(parent, "current-schedule.json");
+          writeFileSync(
+            schedulePath,
+            JSON.stringify(
+              buildSchedule(
+                readFileSync("evals/flag-read/cases.json", "utf8"),
+                baselineSources(),
+                strategy,
               ),
-              { flag: "wx" },
-            );
+            ),
+            { flag: "wx" },
+          );
           const argumentsForRun = [
             "--live",
             "--budget-usd",

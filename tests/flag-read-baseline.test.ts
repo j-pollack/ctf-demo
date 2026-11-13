@@ -2,9 +2,69 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { buildSchedule, selectBaseline, summarizeBaseline } from "../scripts/flag-read-baseline";
+import { syntheticHeldoutCorpus } from "./fixtures/heldout-corpus";
 
 const text = readFileSync("evals/flag-read/cases.json", "utf8");
 const cases = JSON.parse(text);
+
+test("explicit held-out selection freezes 40 cases and scores only that split", () => {
+  const corpus = syntheticHeldoutCorpus(text);
+  const items = JSON.parse(corpus);
+  const schedule = buildSchedule(corpus, {}, "closed-world-presumption-v1", "test");
+  assert.equal(schedule.split, "test");
+  assert.equal(schedule.cases.length, 40);
+  assert.equal(new Set(schedule.cases.map((item) => item.pair)).size, 20);
+  assert.ok(schedule.cases.every((item) => item.id.startsWith("test-")));
+  assert.deepEqual(
+    selectBaseline(items, "test").map((item) => item.id),
+    schedule.cases.map((item) => item.id),
+  );
+  assert.equal(selectBaseline(items).length, 72);
+  assert.equal(schedule.execution.cases, 40);
+  assert.equal(schedule.execution.investigatorCallsMaximum, 320);
+  assert.equal(schedule.execution.classifierCallsMaximum, 40);
+  assert.equal(schedule.budget.proposedMicrodollars, 6_000_000);
+  assert.match(schedule.budget.basis, /40 ×.*\$6.*320 calls/);
+  assert.throws(() => selectBaseline(items, "other" as "test"), /split/i);
+  assert.throws(() => selectBaseline(items.slice(0, -2), "test"));
+  const empty = summarizeBaseline(corpus, [], schedule);
+  assert.equal(empty.missing.length, 40);
+  assert.equal(empty.scores.presumption.incomplete, 40);
+  const entries = schedule.cases.map((item) => ({
+    caseId: item.id,
+    readOccurred: item.readOccurred,
+    observableSufficiency: "sufficient" as const,
+    flagReadDetected: item.presumption === "read",
+    investigationComplete: true,
+    latencyMs: 1,
+    settledMicrodollars: 1,
+    heldMicrodollars: 0,
+    searchStrategy: "closed-world-presumption-v1" as const,
+    ...schedule.policy,
+  }));
+  const summary = summarizeBaseline(corpus, entries, schedule);
+  assert.equal(
+    summary.scores.presumption.labelPositiveDetected,
+    schedule.cases.filter((x) => x.presumption === "read").length,
+  );
+  assert.equal(summary.scores.presumption.unsupportedFindings, 0);
+  assert.equal(
+    summary.scores.strict.unsupportedFindings,
+    schedule.cases.filter((x) => x.presumption === "read" && x.strict !== "read").length,
+  );
+  assert.equal(summary.settledMicrodollars, 40);
+  assert.deepEqual(summary.missing, []);
+  assert.equal(
+    Object.values(summary.perFamily).reduce((n, family) => n + family.presumption.labelPositive, 0),
+    summary.scores.presumption.labelPositive,
+  );
+  assert.throws(() => summarizeBaseline(corpus, [entries[0], entries[0]], schedule), /duplicate/);
+  assert.throws(
+    () =>
+      summarizeBaseline(corpus, [{ ...entries[0], caseId: selectBaseline(items)[0].id }], schedule),
+    /Unknown/,
+  );
+});
 
 test("bounded schedules freeze DigitalOcean pricing and the 90-second investigation", () => {
   for (const strategy of ["current", "closed-world-presumption-v1"] as const) {

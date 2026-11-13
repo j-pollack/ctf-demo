@@ -14,13 +14,20 @@ type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
 export type BaselineStrategy = "current" | "closed-world-presumption-v1";
+export type BaselineSplit = "dev" | "test";
+
+export function parseBaselineSplit(value: string): BaselineSplit {
+  if (value === "dev" || value === "test") return value;
+  throw new Error("Baseline split must be dev or test.");
+}
 
 export function parseBaselineStrategy(value: string): BaselineStrategy {
   if (value === "current" || value === "closed-world-presumption-v1") return value;
   throw new Error("Baseline strategy must be current or closed-world-presumption-v1.");
 }
 
-export function selectBaseline(cases: readonly SplitCase[]) {
+export function selectBaseline(cases: readonly SplitCase[], split: BaselineSplit = "dev") {
+  parseBaselineSplit(split);
   const ids = new Set<string>();
   const pairs = new Map<string, SplitCase[]>();
   for (const item of cases) {
@@ -39,9 +46,11 @@ export function selectBaseline(cases: readonly SplitCase[]) {
       throw new Error("Broken corpus pair.");
   }
   const selected = cases
-    .filter((x) => x.split === "dev")
+    .filter((x) => x.split === split)
     .sort((a, b) => a.id.localeCompare(b.id, "en"));
-  if (selected.length !== 72) throw new Error("Baseline requires exactly 72 dev cases.");
+  const count = split === "dev" ? 72 : 40;
+  if (selected.length !== count)
+    throw new Error(`Baseline requires exactly ${count} ${split} cases.`);
   selected.forEach((item) => toFlagReadCase(item, "strict"));
   return selected;
 }
@@ -50,13 +59,17 @@ export function buildSchedule(
   corpusText: string,
   sources: Record<string, string>,
   strategy: BaselineStrategy = "current",
+  split: BaselineSplit = "dev",
 ) {
   const policy = resolveFlagReadPolicy(parseBaselineStrategy(strategy));
-  const selected = selectBaseline(JSON.parse(corpusText));
+  const selected = selectBaseline(JSON.parse(corpusText), split);
+  const count = selected.length;
+  const proposedMicrodollars = count * 125_000 + 1_000_000;
   return {
     version: 2,
     mode: "planned",
     evaluationPerformed: false,
+    ...(split === "test" ? { split } : {}),
     corpusSha256: hash(corpusText),
     sources: Object.fromEntries(
       Object.entries(sources)
@@ -75,11 +88,11 @@ export function buildSchedule(
       concurrency: 1,
       attemptsPerCase: 1,
       retries: 0,
-      cases: 72,
+      cases: count,
       investigatorCallsPerCase: 8,
-      investigatorCallsMaximum: 576,
+      investigatorCallsMaximum: count * 8,
       classifierCallsPerCase: 1,
-      classifierCallsMaximum: 72,
+      classifierCallsMaximum: count,
       investigatorOutputTokensPerCall: 8192,
       investigatorDeadlineMs: BOUNDED_INVESTIGATOR_POLICY.deadlineMs,
       classifierDeadlineMs: BOUNDED_INVESTIGATOR_POLICY.classifierDeadlineMs,
@@ -98,7 +111,7 @@ export function buildSchedule(
       note: "One investigation per case; both standards score the same outcome. Live execution requires explicit budget authorization, frozen source preflight and a fresh local database. No retries, including HTTP 429 retries.",
     },
     budget: {
-      proposedMicrodollars: 10_000_000,
+      proposedMicrodollars,
       perCasePlanningAllowanceMicrodollars: 125_000,
       contingencyMicrodollars: 1_000_000,
       pricing: {
@@ -119,7 +132,7 @@ export function buildSchedule(
         },
         note: "Frozen DigitalOcean endpoint rate ceilings feed reservations and max_price; no provider fallback. Price increases beyond these ceilings fail rather than expand the budget. Actual charges are persisted; reservation overruns stop subsequent dispatch.",
       },
-      basis: `72 × $0.125 allowance + $1 contingency = $10. This is a proposed stop budget, not a guarantee that all cases finish. At the frozen rate, 576 calls each consuming all 8192 output tokens would cost $${((576 * 8192 * BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion) / 1e6).toFixed(7)} in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.`,
+      basis: `${count} × $0.125 allowance + $1 contingency = $${proposedMicrodollars / 1e6}. This is a proposed stop budget, not a guarantee that all cases finish. At the frozen rate, ${count * 8} calls each consuming all 8192 output tokens would cost $${((count * 8 * 8192 * BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion) / 1e6).toFixed(7)} in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.`,
     },
     artifacts: {
       entries: "entries.jsonl",
@@ -145,8 +158,12 @@ export function summarizeBaseline(
 ) {
   if (hash(corpusText) !== schedule.corpusSha256)
     throw new Error("Corpus differs from frozen schedule.");
-  const selected = selectBaseline(JSON.parse(corpusText));
-  if (JSON.stringify(buildSchedule(corpusText, {}).cases) !== JSON.stringify(schedule.cases))
+  const split = parseBaselineSplit(schedule.split ?? "dev");
+  const selected = selectBaseline(JSON.parse(corpusText), split);
+  if (
+    JSON.stringify(buildSchedule(corpusText, {}, schedule.policy.strategy, split).cases) !==
+    JSON.stringify(schedule.cases)
+  )
     throw new Error("Case selection differs from frozen schedule.");
   for (const entry of entries) {
     if (
@@ -189,23 +206,32 @@ export function summarizeBaseline(
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [command, output, selection, strategy] = process.argv.slice(2);
-  if (
-    command !== "--dry-run" ||
-    !output ||
-    output.startsWith("--") ||
-    !(process.argv.length === 4 || (process.argv.length === 6 && selection === "--strategy"))
-  )
+  const [command, output, ...options] = process.argv.slice(2);
+  if (command !== "--dry-run" || !output || output.startsWith("--"))
     throw new Error(
-      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--strategy current|closed-world-presumption-v1]",
+      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--strategy current|closed-world-presumption-v1] [--split dev|test]",
     );
+  const selections = new Map<string, string>();
+  for (let index = 0; index < options.length; index += 2) {
+    const option = options[index],
+      value = options[index + 1];
+    if (
+      !["--strategy", "--split"].includes(option) ||
+      selections.has(option) ||
+      !value ||
+      value.startsWith("--")
+    )
+      throw new Error("Supply --strategy or --split once with a value.");
+    selections.set(option, value);
+  }
   const schedule = buildSchedule(
     readFileSync("evals/flag-read/cases.json", "utf8"),
     baselineSources(),
-    parseBaselineStrategy(strategy ?? "current"),
+    parseBaselineStrategy(selections.get("--strategy") ?? "current"),
+    parseBaselineSplit(selections.get("--split") ?? "dev"),
   );
   writeFileSync(output, `${JSON.stringify(schedule, null, 2)}\n`, { flag: "wx" });
   console.log(
-    `Scheduled ${schedule.cases.length} cases; proposed cap $10; no evaluation performed.`,
+    `Scheduled ${schedule.cases.length} cases; proposed cap $${schedule.budget.proposedMicrodollars / 1e6}; no evaluation performed.`,
   );
 }
