@@ -518,7 +518,8 @@ aside.monitor {
   white-space: nowrap;
 }
 .stakes-detail {
-  position: relative;
+  flex: 1 1 100%;
+  min-width: 0;
   order: 6;
 }
 .stakes-detail > summary {
@@ -526,17 +527,23 @@ aside.monitor {
   white-space: nowrap;
 }
 .stakes-detail[open] {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% - 8px);
-  right: max(28px, calc((100vw - 1064px) / 2));
-  width: min(420px, calc(100vw - 32px));
-  max-height: min(70dvh, 640px);
-  overflow: auto;
   padding: 16px;
   border: 1px solid var(--line);
   background: var(--paper);
-  box-shadow: 0 12px 32px #20281f22;
+}
+.stakes-detail[open] > summary {
+  margin-bottom: 12px;
+}
+/* Opening details gives the console one scroll surface; the results remain below the panel. */
+.console:has(.stakes-detail[open]) {
+  overflow-y: auto;
+}
+.console:has(.stakes-detail[open]) > .transcript {
+  flex: none;
+}
+.console:has(.stakes-detail[open]) .thread {
+  flex: none;
+  overflow: visible;
 }
 .spend-breakdown {
   font-size: 11px;
@@ -991,13 +998,6 @@ dialog::backdrop {
   .monitor .new-run {
     min-height: 36px;
     padding: 6px 9px;
-  }
-  .stakes-detail {
-    order: 5;
-  }
-  .stakes-detail[open] {
-    top: calc(100% - 8px);
-    right: 16px;
   }
   .welcome {
     padding: 30px 0;

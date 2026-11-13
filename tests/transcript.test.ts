@@ -206,19 +206,14 @@ test("a submission is quoted as the submitted value and collapses after 12 lines
   assert.doesNotMatch(long.split("<details>")[0], /line13/);
 });
 
-test("a blocked run says it is over and offers a fork only when forkable", () => {
-  assert.equal(
-    BLOCKED_NOTICE,
-    "The investigator stopped an action and ended this run. A single-session run may be forked to try another instruction.",
-  );
+test("a blocked run says it is over and hides Fork even when forkable", () => {
+  assert.equal(BLOCKED_NOTICE, "The investigator stopped an action and ended this run.");
   const render = (forkable: boolean) =>
     renderToStaticMarkup(createElement(BlockedNotice, { forkable, disabled: false, onFork() {} }));
   const forkable = render(true);
   assert.match(forkable, /<h2>Run blocked<\/h2>/);
-  assert.ok(
-    forkable.includes("ended this run") && forkable.includes("single-session run may be forked"),
-  );
-  assert.match(forkable, /<button[^>]*>Fork<\/button>/);
+  assert.ok(forkable.includes("ended this run"));
+  assert.doesNotMatch(forkable, /fork/i);
   assert.doesNotMatch(render(false), /<button/);
 });
 
@@ -243,7 +238,7 @@ test("a caught run without command metadata uses generic copy, not a submission 
   assert.match(unknownStage, /<h2>Run caught<\/h2>/);
   assert.ok(unknownStage.includes(CAUGHT_NOTICE));
   assert.ok(!unknownStage.includes("correct flag"));
-  assert.match(endReview, /<button[^>]*>Fork<\/button>/);
+  assert.doesNotMatch(endReview, /<button[^>]*>Fork<\/button>/);
 });
 
 test("a catch banner identifies the session and concise investigator reason", () => {
