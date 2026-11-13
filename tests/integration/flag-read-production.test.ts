@@ -11,6 +11,7 @@ import { seedCase } from "../../scripts/flag-read-eval-live";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
 import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
 import { closePool } from "./postgres";
+import { fastMonitorTiming, fastMonitorDelays } from "./monitor-timing";
 
 const base = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test");
@@ -34,8 +35,9 @@ await test(
   { timeout: 360_000 },
   async (t) => {
     const mode = process.env.CTF_PRODUCTION_TEST_MODE;
+    const realTiming = process.env.CTF_REAL_MONITOR_TIMING === "1";
     if (!mode) {
-      for (const value of modes)
+      for (const value of realTiming ? ["deadline"] : modes)
         await t.test(value, () => {
           const result = spawnSync(
             process.execPath,
@@ -56,6 +58,8 @@ await test(
       return;
     }
     assert.ok(modes.some((value) => value === mode));
+    const timed = ["slow-success", "deadline", "classifier-timeout"].includes(mode);
+    const timing = timed && !realTiming ? fastMonitorTiming : undefined;
     const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
     const adminUrl = new URL(base);
     adminUrl.pathname = "/postgres";
@@ -170,7 +174,7 @@ await test(
             assert.equal(holds.length, legacy ? 0 : 1);
             if (!legacy) assert.ok(Number(holds[0].cost_ceiling) > 0);
             if (mode === "classifier-timeout")
-              await delay(20_000, undefined, { signal: init.signal! });
+              await delay(fastMonitorDelays.classifierMs, undefined, { signal: init.signal! });
             return Response.json({
               answers: {
                 intent: { type: "noul", noul: 0 },
@@ -210,9 +214,17 @@ await test(
               { status: 404 },
             );
           if (mode === "slow-success" || mode === "deadline")
-            await delay(mode === "slow-success" ? 65_000 : 95_000, undefined, {
-              signal: init.signal!,
-            });
+            await delay(
+              realTiming
+                ? 95_000
+                : mode === "slow-success"
+                  ? fastMonitorDelays.successMs
+                  : fastMonitorDelays.investigatorMs,
+              undefined,
+              {
+                signal: init.signal!,
+              },
+            );
           const prompt = String(body.messages.at(-1).content);
           const evidence = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2));
           const ref = evidence.snapshot.currentTranscript.find(
@@ -266,7 +278,7 @@ await test(
     );
     const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
     const started = Date.now();
-    assert.equal(await runMonitorWorkerOnce(), true);
+    assert.equal(await runMonitorWorkerOnce(timing), true);
     const elapsed = Date.now() - started;
     assert.deepEqual(failures, []);
     const {
@@ -329,15 +341,18 @@ await test(
     if (mode === "overrun") assert.match(job.reason, /reserved|allowance/i);
     const expectedMs =
       mode === "slow-success"
-        ? 65_000
+        ? fastMonitorDelays.successMs
         : mode === "deadline"
-          ? 90_000
+          ? realTiming
+            ? 90_000
+            : fastMonitorTiming.deadlineMs
           : mode === "classifier-timeout"
-            ? 15_000
+            ? fastMonitorTiming.classifierDeadlineMs
             : undefined;
     if (expectedMs)
       assert.ok(
-        elapsed >= expectedMs - 500 && elapsed < expectedMs + 10_000,
+        elapsed >= expectedMs - (realTiming ? 500 : 50) &&
+          elapsed < expectedMs + (realTiming ? 10_000 : 3_000),
         `elapsed ${elapsed}ms`,
       );
   },

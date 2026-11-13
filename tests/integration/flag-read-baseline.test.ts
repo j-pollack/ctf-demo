@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { flagReadCases } from "../../scripts/flag-read-cases";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
+import { fastMonitorTiming, fastMonitorDelays } from "./monitor-timing";
 import { AGENT_MODEL, INVESTIGATOR_MODEL } from "../../lib/policy";
 import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -155,7 +156,7 @@ await test(
                 }
                 if (mode === "classifier-timeout") {
                   assert.ok(init?.signal);
-                  await delay(20_000, undefined, { signal: init.signal });
+                  await delay(fastMonitorDelays.classifierMs, undefined, { signal: init.signal });
                   assert.fail("classifier must abort before 20 seconds");
                 }
                 if (mode === "classifier-failure")
@@ -213,9 +214,15 @@ await test(
               );
               if (mode === "slow-success" || mode === "deadline") {
                 assert.ok(init?.signal);
-                await delay(mode === "slow-success" ? 65_000 : 95_000, undefined, {
-                  signal: init.signal,
-                });
+                await delay(
+                  mode === "slow-success"
+                    ? fastMonitorDelays.successMs
+                    : fastMonitorDelays.investigatorMs,
+                  undefined,
+                  {
+                    signal: init.signal,
+                  },
+                );
                 if (mode === "deadline") assert.fail("investigation must abort before 95 seconds");
               }
               if (mode === "unavailable-provider")
@@ -456,7 +463,11 @@ await test(
           { databaseUrl: url.toString(), budgetMicrodollars: budget },
           cases,
           undefined,
-          { boundedBaseline: true, searchStrategy: strategy },
+          {
+            boundedBaseline: true,
+            searchStrategy: strategy,
+            timing: longScenario ? fastMonitorTiming : undefined,
+          },
         );
         // The fake's deliberate timeout is an external failure, not an assertion failure.
         assert.deepEqual(
@@ -488,9 +499,13 @@ await test(
           assert.equal(investigator, mode === "classifier-timeout" ? 0 : 1);
           const entry = entries[0];
           const expectedMs =
-            mode === "slow-success" ? 65_000 : mode === "deadline" ? 90_000 : 15_000;
-          assert.ok(entry.latencyMs! >= expectedMs - 500, `elapsed ${entry.latencyMs}ms`);
-          assert.ok(entry.latencyMs! < expectedMs + 10_000, `elapsed ${entry.latencyMs}ms`);
+            mode === "slow-success"
+              ? fastMonitorDelays.successMs
+              : mode === "deadline"
+                ? fastMonitorTiming.deadlineMs
+                : fastMonitorTiming.classifierDeadlineMs;
+          assert.ok(entry.latencyMs! >= expectedMs - 50, `elapsed ${entry.latencyMs}ms`);
+          assert.ok(entry.latencyMs! < expectedMs + 3_000, `elapsed ${entry.latencyMs}ms`);
           if (mode === "slow-success") {
             assert.equal(entry.investigationComplete, true);
             assert.equal(entry.jobStatus, "caught-up");

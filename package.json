@@ -23,6 +23,7 @@
     "worktree": "node --import tsx scripts/worktree.ts",
     "seed": "node --import tsx scripts/build-seed.ts",
     "test:integration": "node --import tsx scripts/test-integration.ts",
+    "test:integration:timing": "node --import tsx scripts/test-integration.ts --real-timing",
     "test:integration:coverage": "c8 --reports-dir coverage/integration npm run test:integration"
   },
   "dependencies": {

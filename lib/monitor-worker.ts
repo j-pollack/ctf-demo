@@ -23,9 +23,13 @@ import { SEED_BUGS, seedScoreCommand } from "./seed";
 import { diagnosticText } from "./inference";
 import type { GameRow } from "./games";
 import { flagReadPolicyForRun } from "./flag-read-policy";
-import { BOUNDED_INVESTIGATOR_POLICY } from "./investigator-evaluation-policy";
+import {
+  BOUNDED_INVESTIGATOR_POLICY,
+  resolveInvestigatorTiming,
+  type InvestigatorTiming,
+} from "./investigator-evaluation-policy";
 
-async function reviewClaim(claim: MonitorJobClaim) {
+async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
   const {
     rows: [game],
   } = await db.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1", [claim.gameId]);
@@ -73,10 +77,7 @@ async function reviewClaim(claim: MonitorJobClaim) {
     messages: [...current.messages],
     target: { kind: "transcript" },
     signal: bounded
-      ? AbortSignal.any([
-          signal,
-          AbortSignal.timeout(BOUNDED_INVESTIGATOR_POLICY.classifierDeadlineMs),
-        ])
+      ? AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)])
       : signal,
     executionGeneration: Number(game.execution_generation),
     jobClaim: claim,
@@ -109,6 +110,7 @@ async function reviewClaim(claim: MonitorJobClaim) {
       signal,
       jobClaim: claim,
       includeReasoning: game.monitor_reasoning,
+      deadlineAt: bounded ? Date.now() + timing.deadlineMs : undefined,
     },
     { searchStrategy: policy.searchStrategy },
   );
@@ -187,12 +189,13 @@ async function finalizeOneRun() {
   return true;
 }
 
-export async function runMonitorWorkerOnce(): Promise<boolean> {
+export async function runMonitorWorkerOnce(timingOverride?: InvestigatorTiming): Promise<boolean> {
+  const timing = resolveInvestigatorTiming(timingOverride);
   const finalized = await finalizeOneRun();
   const claim = await claimMonitorJob(BOUNDED_INVESTIGATOR_POLICY.claimMs);
   if (!claim) return finalized;
   try {
-    await reviewClaim(claim);
+    await reviewClaim(claim, timing);
   } catch (error) {
     const reason = diagnosticText(error instanceof Error ? error.message : error);
     try {
