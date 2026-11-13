@@ -26,6 +26,7 @@ export type TrustedInferenceOptions = {
   jobClaim?: MonitorJobClaim;
   stage?: string;
   singleAttempt?: boolean;
+  // Bounded evaluations cap provider rates before dispatch and verify actual cost after settlement.
   stopOnReservationOverrun?: boolean;
 };
 
@@ -366,7 +367,17 @@ export async function infer(
     ...providerTranscript(messages, model.id),
     session_id: `${sessionId}:${role}${trusted.reviewId ? `:${trusted.reviewId}` : ""}`,
     ...(reasoning ? { reasoning } : {}),
-    provider: { require_parameters: true, ...(role === "agent" ? { sort: "price" } : {}) },
+    provider: {
+      require_parameters: true,
+      ...(role === "agent" ? { sort: "price" } : {}),
+      ...(trusted.stopOnReservationOverrun
+        ? {
+            // OpenRouter max_price and model.cost both use USD per million tokens.
+            // Fixed request fees are not covered by reserveInference.
+            max_price: { prompt: model.cost.input, completion: model.cost.output, request: 0 },
+          }
+        : {}),
+    },
     ...(onDelta ? { stream: true } : {}),
   };
   const ceiling = inputCeiling(payload);

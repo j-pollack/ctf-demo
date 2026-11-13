@@ -734,8 +734,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(options?.method, "POST");
       const payload = JSON.parse(String(options.body));
       const role = String(payload.session_id).includes(":monitor:") ? "monitor" : "agent";
-      assert.equal(payload.provider?.require_parameters, true);
-      assert.equal(payload.provider?.sort, role === "agent" ? "price" : undefined);
+      assert.deepEqual(payload.provider, {
+        require_parameters: true,
+        ...(role === "agent" ? { sort: "price" } : {}),
+      });
       if (role === "agent" && agentModelOverride === AGENT_MODEL)
         assert.equal(payload.model, "deepseek/deepseek-v4.1-flash-1017");
       requests.push({ role, payload, at: performance.now() });

@@ -45,6 +45,8 @@ await test(
       "candidate-rate-limit",
       "candidate-missing-usage",
       "candidate-overrun",
+      "candidate-price-cap",
+      "candidate-unavailable-provider",
     ] as const;
     if (!process.env.CTF_BASELINE_TEST_MODE) {
       for (const mode of modes)
@@ -74,6 +76,7 @@ await test(
         const mode = name.replace(/^candidate-/, "");
         const strategy = candidate ? "closed-world-presumption-v1" : "current";
         const policy = resolveFlagReadPolicy(strategy);
+        const fractionalPricing = mode === "price-cap" || mode === "unavailable-provider";
         const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
         const adminUrl = new URL(base);
         adminUrl.pathname = "/postgres";
@@ -116,7 +119,9 @@ await test(
                   data: [...new Set([AGENT_MODEL, INVESTIGATOR_MODEL])].map((id) => ({
                     id,
                     context_length: 200_000,
-                    pricing: { prompt: "0.000001", completion: "0.000002" },
+                    pricing: fractionalPricing
+                      ? { prompt: "0.000000084", completion: "0.0000036" }
+                      : { prompt: "0.000001", completion: "0.000002" },
                     supported_parameters: ["tools", "reasoning"],
                   })),
                 });
@@ -155,6 +160,15 @@ await test(
               investigator++;
               assert.equal(body.model, INVESTIGATOR_MODEL);
               assert.equal(body.reasoning.effort, "high");
+              assert.deepEqual(body.provider, {
+                require_parameters: true,
+                max_price: {
+                  // Preserve the catalog-to-model conversion's exact floating-point rates.
+                  prompt: fractionalPricing ? 0.000000084 * 1e6 : 1,
+                  completion: fractionalPricing ? 0.0000036 * 1e6 : 2,
+                  request: 0,
+                },
+              });
               assert.equal(body.messages[0].content, policy.systemPrompt);
               assert.doesNotMatch(
                 JSON.stringify(body.messages),
@@ -167,10 +181,27 @@ await test(
               const {
                 rows: [reserved],
               } = await inspection.query(
-                "SELECT cost_ceiling::int AS cost FROM ctf.inference WHERE model=$1 AND settled_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                "SELECT cost_ceiling::int AS cost, token_ceiling FROM ctf.inference WHERE model=$1 AND settled_at IS NULL ORDER BY created_at DESC LIMIT 1",
                 [INVESTIGATOR_MODEL],
               );
               assert.ok(reserved.cost > 0, "investigator reserves before dispatch");
+              const inputTokens = reserved.token_ceiling - body.max_tokens;
+              assert.equal(
+                reserved.cost,
+                Math.ceil(inputTokens * (body.provider.max_price.prompt / 1e6) * 2 * 1e6) +
+                  Math.ceil(body.max_tokens * (body.provider.max_price.completion / 1e6) * 1e6),
+                "routing ceilings and the persisted reservation use the same rates",
+              );
+              if (mode === "unavailable-provider")
+                return Response.json(
+                  {
+                    error: {
+                      message: "No endpoints found matching your price constraints",
+                      code: 404,
+                    },
+                  },
+                  { status: 404 },
+                );
               const nextTool =
                 mode === "within-case-overrun"
                   ? {
@@ -235,7 +266,7 @@ await test(
           const output = join(parent, "run");
           // The recorded baseline is immutable. Current-source tests use a fresh schedule.
           const schedulePath = candidate
-            ? "evals/flag-read/closed-world-presumption-v1-schedule.json"
+            ? "evals/flag-read/closed-world-presumption-v1-price-capped-schedule.json"
             : join(parent, "current-schedule.json");
           if (!candidate)
             writeFileSync(
@@ -377,7 +408,7 @@ await test(
           entries.reduce((s, e) => s + e.heldMicrodollars, 0),
           totals.held,
         );
-        if (mode === "success" || mode === "rounding") {
+        if (mode === "success" || mode === "rounding" || mode === "price-cap") {
           assert.equal(classifier, 2);
           assert.equal(investigator, 2);
           assert.ok(entries.every((e) => e.investigationComplete === true));
@@ -416,6 +447,33 @@ await test(
           if (mode === "rate-limit") {
             assert.equal(investigator, 2, "no HTTP retries");
             assert.equal(totals.held, 0);
+          }
+          if (mode === "unavailable-provider") {
+            assert.equal(classifier, 2);
+            assert.equal(investigator, 2, "one capped dispatch per case, no relaxed fallback");
+            assert.equal(totals.settled, 8, "only the two classifier charges remain");
+            assert.equal(totals.held, 0);
+            for (const entry of entries) {
+              assert.match(entry.operationalError ?? "", /Inference service returned 404/);
+              assert.equal(entry.investigationComplete, null);
+            }
+            const { rows } = await inspection.query(
+              "SELECT cost::int, tokens, settled_at IS NOT NULL AS settled FROM ctf.inference WHERE model=$1",
+              [INVESTIGATOR_MODEL],
+            );
+            assert.deepEqual(rows, [
+              { cost: 0, tokens: 0, settled: true },
+              { cost: 0, tokens: 0, settled: true },
+            ]);
+            const { rows: balances } = await inspection.query(
+              "SELECT reserved_microdollars::int AS held FROM ctf.games",
+            );
+            assert.ok(balances.length > 0);
+            assert.ok(balances.every((row) => row.held === 0));
+            const { rows: daily } = await inspection.query(
+              "SELECT reserved::int FROM ctf.daily_spend",
+            );
+            assert.deepEqual(daily, [{ reserved: 0 }]);
           }
           if (mode === "missing-usage" || mode === "timeout") {
             assert.ok(totals.held > 0);

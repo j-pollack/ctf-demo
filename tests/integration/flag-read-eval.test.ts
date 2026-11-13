@@ -149,11 +149,13 @@ await test(
           const request = JSON.parse(String(init?.body)) as {
             model: string;
             max_tokens: number;
+            provider: unknown;
             reasoning?: { effort: string };
             messages: { role: string; content?: string }[];
             tools: { function: { name: string } }[];
           };
           assert.equal(request.model, "z-ai/glm-5.3");
+          assert.deepEqual(request.provider, { require_parameters: true });
           assert.equal(request.max_tokens, 8_192);
           assert.equal(request.reasoning?.effort, "high");
           const dispatchedPrompt = request.messages.find(
