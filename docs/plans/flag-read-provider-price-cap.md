@@ -64,6 +64,31 @@ After approval and provisioning, use Node 24 with only the two approved provider
 node --import tsx scripts/flag-read-baseline-run.ts --live --budget-usd 2 --output-dir candidate-run-002 --strategy closed-world-presumption-v1 --schedule evals/flag-read/closed-world-presumption-v1-price-capped-schedule.json
 ```
 
-Offline preflight uses `--dry-run` in place of `--live --budget-usd 2 --output-dir candidate-run-002`. No paid call was made for this fix.
+Offline preflight uses `--dry-run` in place of `--live --budget-usd 2 --output-dir candidate-run-002`. Implementation verification made no paid calls; the separately approved run results follow.
 
 For the real-provider contract check, retain catalog/endpoint price snapshots, inspect generation metadata from the capped run, and reconcile all persisted charges/holds against saved entries. Verify eligible provider selection and investigate any rejection/overrun; never relax caps or automatically retry/resume. Compare completed results with the saved baseline, reporting presumption and strict scores, paired-control regressions, incomplete cases, cost and latency. State explicitly that routing changed alongside the candidate prompt relative to the original baseline. Locked tests remain reserved for the final candidate.
+
+## Paid run 002 results
+
+Executed commit `1c6da208c303d3a1a15083b598d2fab3731bbe46` on November 13, 2026, 18:05:13–18:42:46 UTC (37m33s). All 72 cases were attempted; 63 completed and nine aborted at the 60-second investigation deadline. The runner's terminal status `completed` means dispatch finished, not that every investigation succeeded.
+
+| Measure                                       | Original baseline | Price-capped candidate |
+| --------------------------------------------- | ----------------- | ---------------------- |
+| Completed cases                               | 72/72             | 63/72                  |
+| Presumption positives detected, full schedule | 23/39             | 34/39                  |
+| Presumption unsupported findings              | 0                 | 0                      |
+| Strict positives detected, full schedule      | 16/29             | 27/29                  |
+| Strict unsupported findings                   | 7                 | 7                      |
+| Mean case latency, including failures         | 14.61s            | 31.25s                 |
+| Settled microdollars                          | 431,805           | 331,142                |
+| Unresolved held microdollars                  | 0                 | 302,821                |
+
+On the 63-case matched completed cohort, presumption positives improved from 19/34 to 34/34 with zero unsupported findings on 29 policy-negative cases: 15 recovered detections and no completed-case presumption regressions. All 29 completed pairs were correct under presumption; the remaining seven pairs were incomplete. Five policy-positive and four policy-negative cases timed out. Under strict scoring, matched-cohort unsupported findings increased from four to seven; the candidate explicitly implements presumption, so these standards must remain distinct.
+
+Real SQL accounting reconciles all 249 inference rows with saved entries, game balances and daily spend: 240 settled, nine unresolved, zero reservation overruns. Settled plus held is $0.633963, below the approved $2. The holds are not final charges or proven refunds. All nine aborted responses lack generation IDs, preventing reconciliation through the existing ID-based lookup; retain the database for follow-up rather than releasing holds speculatively.
+
+Preflight found eligible Wafer and InferenceNet endpoints. Three sampled completed capped generations used Wafer and their reported costs were within the catalog-rate envelope. Generation metadata identifies a provider, not a specific endpoint tag; this sample does not prove enforcement for every request. For two diagnostic cases, the uncapped candidate used DigitalOcean or Fireworks and completed in 3.9s/39.0s; the capped run generated longer reasoning sequences on Wafer before reaching the shared 60-second deadline. This is a routing/workload tradeoff, not evidence that the prompt alone caused a speed regression.
+
+Artifacts retained locally in this worktree's `candidate-run-002/`: `schedule.json`, `run.json`, `entries.jsonl`, `summary.json`, `comparison.json`, `verification.json`, `provider-pricing.json`, `latency-diagnosis.json`, `execution.json`, and `execution.log`. Database: `ctf_integration_candidate_7fe66ea4d6324dcea17c5c857532085f`, container `ctf-candidate-7fe66ea4d6324dcea17c5c857532085f`, loopback port `32830`. Earlier baseline and interrupted candidate artifacts remain in their original worktrees. No automatic retries/resume, locked-test evaluation or merge was performed.
+
+The intended integration target remains `feature/persistent-run-sessions`. At run time, this branch adds five commits beyond common ancestor `50f0c519fcf60f2b91f38b703dacb641a3c30546`; the target adds worker-deployment and submit-visibility changes. Integrating later must preserve those target changes and reverify the combined runtime. Frozen run schedules describe their original source commits and should not be overwritten to accommodate a merge. Address latency/reliability before considering the evaluation-only candidate for production selection.
