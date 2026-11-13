@@ -12,7 +12,11 @@ import {
   type FlagReadSearchStrategy,
 } from "../lib/flag-read-policy";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
-import { BOUNDED_INVESTIGATOR_POLICY } from "../lib/investigator-evaluation-policy";
+import {
+  BOUNDED_INVESTIGATOR_POLICY,
+  resolveInvestigatorTiming,
+  type InvestigatorTiming,
+} from "../lib/investigator-evaluation-policy";
 import {
   loadReviewGame,
   migrateFreshDatabase,
@@ -133,6 +137,7 @@ async function reviewCase(
   },
   testObserver?: InvestigationObserver,
   boundedBaseline = false,
+  timing: InvestigatorTiming = BOUNDED_INVESTIGATOR_POLICY,
 ): Promise<FlagReadEntry> {
   const started = Date.now();
   const claim = await createClaim(
@@ -208,10 +213,7 @@ async function reviewCase(
       messages: [...target.messages],
       target: { kind: "transcript" },
       signal: boundedBaseline
-        ? AbortSignal.any([
-            signal,
-            AbortSignal.timeout(BOUNDED_INVESTIGATOR_POLICY.classifierDeadlineMs),
-          ])
+        ? AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)])
         : signal,
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: claim,
@@ -229,6 +231,7 @@ async function reviewCase(
         signal,
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
+        deadlineAt: boundedBaseline ? Date.now() + timing.deadlineMs : undefined,
       },
       { observer, searchStrategy: selectedPolicy.searchStrategy, boundedBaseline },
     );
@@ -343,10 +346,12 @@ export async function runFlagReadLiveEvaluation(
   options: {
     searchStrategy?: FlagReadSearchStrategy;
     boundedBaseline?: boolean;
+    timing?: InvestigatorTiming;
     onEntry?: (entry: FlagReadEntry) => void | Promise<void>;
   } = {},
 ): Promise<FlagReadEntry[]> {
-  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy);
+  const timing = resolveInvestigatorTiming(options.timing);
+  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy ?? "current");
   const { Pool } = await import("pg");
   const pool = new Pool({
     connectionString: config.databaseUrl,
@@ -440,6 +445,7 @@ export async function runFlagReadLiveEvaluation(
         modules,
         testObserver,
         options.boundedBaseline,
+        timing,
       );
       entries.push(entry);
       usedMicrodollars += entry.settledMicrodollars + entry.heldMicrodollars;

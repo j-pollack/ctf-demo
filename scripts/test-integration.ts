@@ -9,7 +9,11 @@ const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
 const integrationFiles = readdirSync("tests/integration")
   .filter((file) => file.endsWith(".test.ts"))
   .map((file) => `tests/integration/${file}`);
-const requestedFiles = process.argv.slice(2);
+const args = process.argv.slice(2);
+const realTiming = args[0] === "--real-timing";
+if (realTiming && args.length !== 1)
+  throw new Error("--real-timing runs only the production deadline contract.");
+const requestedFiles = realTiming ? ["tests/integration/flag-read-production.test.ts"] : args;
 if (requestedFiles.some((file) => !integrationFiles.includes(file)))
   throw new Error(
     `Integration test selection must use an existing tests/integration/*.test.ts path: ${requestedFiles.find((file) => !integrationFiles.includes(file))}`,
@@ -77,6 +81,7 @@ try {
     env: {
       ...env,
       NODE_ENV: "test",
+      ...(realTiming ? { CTF_REAL_MONITOR_TIMING: "1" } : {}),
       SPRITE_TOKEN: "integration-sprite-token",
       OPENROUTER_API_KEY: "integration-router-key",
       CTF_INTEGRATION_DATABASE_URL: `postgresql://postgres@127.0.0.1:${port}/${database}`,

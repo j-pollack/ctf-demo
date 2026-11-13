@@ -42,7 +42,7 @@ test("bounded and default investigators respect caller cancellation and expired 
     const config = {
       systemPrompt: "",
       finishName: "finish",
-      boundedBaseline,
+      boundedInference: boundedBaseline,
       prepare: () => assert.fail("cancelled or expired work must not prepare an investigator"),
     };
     await assert.rejects(

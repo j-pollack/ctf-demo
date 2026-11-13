@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { FLAG_READ_MONITOR_VERSION } from "../lib/control";
 import { FLAG_READ_SYSTEM_PROMPT } from "../lib/monitor-evidence";
-import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
+import { resolveFlagReadPolicy, flagReadPolicyForRun } from "../lib/flag-read-policy";
 
 const digest = (prompt: string) => createHash("sha256").update(prompt).digest("hex");
 
@@ -15,11 +15,11 @@ test("closed-world candidate is explicit and hashes its trusted evaluation conte
   assert.ok(selected.systemPrompt.startsWith(resolveFlagReadPolicy("read-semantics").systemPrompt));
   assert.equal(selected.promptHash, digest(selected.systemPrompt));
   assert.notEqual(selected.promptHash, resolveFlagReadPolicy().promptHash);
-  assert.equal(resolveFlagReadPolicy().systemPrompt, FLAG_READ_SYSTEM_PROMPT);
+  assert.equal(resolveFlagReadPolicy("current").systemPrompt, FLAG_READ_SYSTEM_PROMPT);
 });
 
-test("current flag-read policy preserves the production prompt and version", () => {
-  const current = resolveFlagReadPolicy();
+test("explicit current policy preserves the original prompt and version", () => {
+  const current = resolveFlagReadPolicy("current");
   assert.equal(current, resolveFlagReadPolicy("current"));
   assert.ok(Object.isFrozen(current));
   assert.deepEqual(Object.keys(current).sort(), [
@@ -29,12 +29,42 @@ test("current flag-read policy preserves the production prompt and version", () 
     "systemPrompt",
   ]);
   assert.equal(current.searchStrategy, "current");
-  assert.equal(current.monitorVersion, FLAG_READ_MONITOR_VERSION);
+  assert.equal(
+    current.monitorVersion,
+    "investigator-v7-glm53-jev114-canonical-refs-policy-delivery",
+  );
   assert.equal(current.systemPrompt, FLAG_READ_SYSTEM_PROMPT);
   assert.equal(current.promptHash, digest(FLAG_READ_SYSTEM_PROMPT));
   assert.equal(
     current.promptHash,
     "8d68e174bdcc1e2eb103eeda6dedbaf9fe48265ec19a8b92073eb877e5c7ef15",
+  );
+});
+
+test("fresh-run production default promotes presumption with a distinct version", () => {
+  const policy = resolveFlagReadPolicy();
+  assert.equal(policy.searchStrategy, "closed-world-presumption");
+  assert.equal(policy.monitorVersion, FLAG_READ_MONITOR_VERSION);
+  assert.equal(policy.monitorVersion, "investigator-v14-glm53-jev114-presumption-digitalocean");
+  assert.ok(Object.isFrozen(policy));
+  assert.match(policy.systemPrompt, /Trusted game contract/);
+  assert.match(policy.systemPrompt, /fewest shared filesystems/);
+  assert.match(policy.systemPrompt, /fresh, seeded runs/);
+  assert.doesNotMatch(policy.systemPrompt, /Trusted evaluation contract|frozen owner transcripts/);
+  assert.equal(policy.promptHash, digest(policy.systemPrompt));
+  assert.equal(
+    resolveFlagReadPolicy("closed-world-presumption-v1").promptHash,
+    "d6fabff082ecd2b0529b1fb95c522a7b0c4391ae177707eae9b85bad80924e95",
+  );
+  assert.equal(flagReadPolicyForRun(policy.monitorVersion), policy);
+  assert.equal(
+    flagReadPolicyForRun(resolveFlagReadPolicy("current").monitorVersion),
+    resolveFlagReadPolicy("current"),
+  );
+  assert.throws(() => flagReadPolicyForRun("unknown"), /version/);
+  assert.throws(
+    () => flagReadPolicyForRun(resolveFlagReadPolicy("closed-world-presumption-v1").monitorVersion),
+    /version/,
   );
 });
 

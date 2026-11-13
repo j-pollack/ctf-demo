@@ -120,7 +120,7 @@ export async function classifyMonitorTarget(input: {
     await assertDispatchAuthorization(input);
     input.signal.throwIfAborted();
     if (!input.reserveBudget) return evaluate(state, questions, input.signal);
-    // Evaluation-only opt-in: reuse real admission and settlement. The generic reservation's
+    // Bounded evaluation and promoted production policy reuse real admission and settlement. The generic reservation's
     // 64-token minimum is conservative overhead; Typesafe bills input only.
     const reservation = await reserveInference(
       input.game.id,

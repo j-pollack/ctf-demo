@@ -1,5 +1,5 @@
 import { inputCeiling, INVESTIGATOR_MODEL } from "../lib/policy";
-import { FLAG_READ_MONITOR_VERSION, MONITOR_TOKEN_MICRODOLLARS } from "../lib/control";
+import { LEGACY_FLAG_READ_MONITOR_VERSION, MONITOR_TOKEN_MICRODOLLARS } from "../lib/control";
 import {
   evaluate,
   TYPESAFE_MODEL,
@@ -183,7 +183,7 @@ export function projectShadowState(entry: FlagReadEntry, strategy?: "evidence-ch
         entry.searchStrategy !== policy.searchStrategy ||
         entry.promptHash !== policy.promptHash ||
         entry.flagReadDetected !== true
-      : entry.monitorVersion !== FLAG_READ_MONITOR_VERSION)
+      : entry.monitorVersion !== LEGACY_FLAG_READ_MONITOR_VERSION)
   )
     return { skipReason: "unaccepted investigator version" };
   const trace = entry.trace;

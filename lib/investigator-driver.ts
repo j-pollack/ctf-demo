@@ -177,7 +177,7 @@ export async function runInvestigatorDriver<T>(
     finishName: string;
     observer?: InvestigationObserver;
     recoverToolSchemaErrors?: boolean;
-    boundedBaseline?: boolean;
+    boundedInference?: boolean;
     prepare: (context: {
       model: Model<"openai-completions">;
       signal: AbortSignal;
@@ -199,7 +199,7 @@ export async function runInvestigatorDriver<T>(
   const deadline = Math.min(
     input.deadlineAt ?? Number.POSITIVE_INFINITY,
     started +
-      (config.boundedBaseline ? BOUNDED_INVESTIGATOR_POLICY.deadlineMs : MONITOR_DEADLINE_MS),
+      (config.boundedInference ? BOUNDED_INVESTIGATOR_POLICY.deadlineMs : MONITOR_DEADLINE_MS),
   );
   if (input.signal.aborted) throw new Error("Investigator review was cancelled.");
   const timeLeft = deadline - Date.now();
@@ -207,7 +207,7 @@ export async function runInvestigatorDriver<T>(
   const deadlineSignal = AbortSignal.timeout(timeLeft);
   const signal = AbortSignal.any([input.signal, deadlineSignal]);
   const catalogModel = await getModel(INVESTIGATOR_MODEL, signal);
-  const model = config.boundedBaseline
+  const model = config.boundedInference
     ? {
         ...catalogModel,
         cost: {
@@ -274,9 +274,9 @@ export async function runInvestigatorDriver<T>(
       finalizationToken: input.finalizationToken,
       pendingReviewId: input.pendingReviewId,
       jobClaim: input.jobClaim,
-      singleAttempt: config.boundedBaseline,
-      stopOnReservationOverrun: config.boundedBaseline,
-      providerEndpoint: config.boundedBaseline
+      singleAttempt: config.boundedInference,
+      stopOnReservationOverrun: config.boundedInference,
+      providerEndpoint: config.boundedInference
         ? BOUNDED_INVESTIGATOR_POLICY.providerEndpoint
         : undefined,
     } satisfies TrustedInferenceOptions);

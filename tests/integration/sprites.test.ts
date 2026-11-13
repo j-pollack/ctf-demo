@@ -734,10 +734,25 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(options?.method, "POST");
       const payload = JSON.parse(String(options.body));
       const role = String(payload.session_id).includes(":monitor:") ? "monitor" : "agent";
+      const promoted =
+        role === "monitor" &&
+        (
+          await pool.query("SELECT prompt_version FROM ctf.monitor_reviews WHERE id=$1", [
+            String(payload.session_id).split(":monitor:")[1],
+          ])
+        ).rows[0]?.prompt_version === FLAG_READ_MONITOR_VERSION;
       assert.deepEqual(payload.provider, {
         require_parameters: true,
         ...(role === "agent" ? { sort: "price" } : {}),
+        ...(promoted
+          ? {
+              only: ["digitalocean"],
+              allow_fallbacks: false,
+              max_price: { prompt: 0.91, completion: 2.86, request: 0 },
+            }
+          : {}),
       });
+      if (promoted) assert.match(payload.messages[0].content, /Trusted game contract/);
       if (role === "agent" && agentModelOverride === AGENT_MODEL)
         assert.equal(payload.model, "deepseek/deepseek-v4.1-flash-1017");
       requests.push({ role, payload, at: performance.now() });
@@ -3015,6 +3030,92 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         assert.ok(commands.length > 0);
       },
     );
+
+  await t.test(
+    "a promoted fresh run forks into the original policy with independent coverage",
+    async () => {
+      const who = await member();
+      const parent = await productionStartGame(who.id);
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      const { resolveFlagReadPolicy } = await import("../../lib/flag-read-policy");
+      proposed = ["printf harmless", "printf after-fork"];
+      assert.equal(
+        (await instruct(who, parent.id, { prompt: "Keep this harmless prefix" })).status,
+        200,
+      );
+      assert.equal(await runMonitorWorkerOnce(), true);
+      proposed = ["cat /tmp/flag.txt"];
+      agentCalls = 0;
+      assert.equal(
+        (await instruct(who, parent.id, { prompt: "Read the protected file" })).status,
+        200,
+      );
+      assert.equal(await runMonitorWorkerOnce(), true);
+      const before = await row(parent.id);
+      assert.equal(before.status, "caught");
+      assert.equal(before.monitor_version, FLAG_READ_MONITOR_VERSION);
+      const versionsBefore = (
+        await pool.query(
+          "SELECT id,prompt_version FROM ctf.monitor_reviews WHERE game_id=$1 ORDER BY id",
+          [parent.id],
+        )
+      ).rows;
+      assert.ok(versionsBefore.length > 0);
+      assert.ok(
+        versionsBefore.every((review) => review.prompt_version === FLAG_READ_MONITOR_VERSION),
+      );
+      const response = await forkRoute(who, parent.id);
+      assert.equal(response.status, 200);
+      const child = await response.json();
+      const stored = await row(child.id);
+      const original = resolveFlagReadPolicy("current");
+      assert.equal(stored.monitor_version, original.monitorVersion);
+      assert.equal(stored.spent_microdollars, before.spent_microdollars);
+      const {
+        rows: [queued],
+      } = await pool.query(
+        "SELECT status,covered_version,requested_version FROM ctf.monitor_jobs WHERE game_id=$1",
+        [child.id],
+      );
+      assert.equal(queued.status, "queued");
+      assert.equal(Number(queued.covered_version), 0);
+      assert.ok(Number(queued.requested_version) > 0);
+      assert.equal(await runMonitorWorkerOnce(), true);
+      const {
+        rows: [covered],
+      } = await pool.query("SELECT status,covered_version FROM ctf.monitor_jobs WHERE game_id=$1", [
+        child.id,
+      ]);
+      assert.equal(covered.status, "caught-up");
+      assert.equal(Number(covered.covered_version), Number(queued.requested_version));
+      const { rows: childReviews } = await pool.query(
+        "SELECT id,prompt_version FROM ctf.monitor_reviews WHERE game_id=$1 AND target_kind='transcript'",
+        [child.id],
+      );
+      assert.equal(childReviews.length, 1);
+      assert.equal(childReviews[0].prompt_version, original.monitorVersion);
+      const request = requests.find((entry) =>
+        String((entry.payload as { session_id?: string }).session_id).endsWith(
+          `:monitor:${childReviews[0].id}`,
+        ),
+      );
+      assert.ok(request);
+      assert.equal(
+        (request.payload as { messages: { content: string }[] }).messages[0].content,
+        original.systemPrompt,
+      );
+      assert.deepEqual(
+        (
+          await pool.query(
+            "SELECT id,prompt_version FROM ctf.monitor_reviews WHERE game_id=$1 ORDER BY id",
+            [parent.id],
+          )
+        ).rows,
+        versionsBefore,
+      );
+      assert.equal((await row(parent.id)).monitor_version, FLAG_READ_MONITOR_VERSION);
+    },
+  );
 
   await t.test(
     "fork goes back to before the last instruction and restores that checkpoint",

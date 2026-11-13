@@ -85,7 +85,8 @@ export async function runFlagReadInvestigation(
     finishName: "finish_investigation",
     observer: options?.observer,
     recoverToolSchemaErrors: true,
-    boundedBaseline: options?.boundedBaseline,
+    boundedInference:
+      options?.boundedBaseline || policy.searchStrategy === "closed-world-presumption",
     prepare: async ({ model, signal, recordFailure, finish, onInvalid }) => {
       const visible = new Map<string, MonitorEvidenceMessage>();
       const retrievedRefs = new Set<string>();

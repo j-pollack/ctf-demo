@@ -29,7 +29,7 @@ const entry: FlagReadEntry = {
   flagReadDetected: true,
   investigationComplete: true,
   investigatorModel: "z-ai/glm-5.3",
-  monitorVersion: FLAG_READ_MONITOR_VERSION,
+  monitorVersion: "investigator-v7-glm53-jev114-canonical-refs-policy-delivery",
   reason: "The tool reported a successful read.",
   evidence: [{ ref: row.ref, excerpt: row.text, sha256: row.sha256 }],
   trace: {
@@ -90,7 +90,7 @@ const entry: FlagReadEntry = {
   heldMicrodollars: 0,
 };
 
-test("shadow projects accepted decision and canonical evidence only", () => {
+test("shadow preserves literal v7 acceptance and projects canonical evidence only", () => {
   const projection = projectShadowState(entry);
   assert.deepEqual(projection, {
     state: {
@@ -129,6 +129,9 @@ test("shadow projects accepted decision and canonical evidence only", () => {
 });
 
 test("shadow skips incomplete traces and unverified citations", () => {
+  assert.deepEqual(projectShadowState({ ...entry, monitorVersion: FLAG_READ_MONITOR_VERSION }), {
+    skipReason: "unaccepted investigator version",
+  });
   assert.deepEqual(projectShadowState({ ...entry, investigationComplete: null }), {
     skipReason: "unfinished decision",
   });

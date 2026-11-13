@@ -199,7 +199,7 @@ test("storage adapter maps every valid negative to coverage", () => {
     evidence: [],
     monitorVersion: FLAG_READ_MONITOR_VERSION,
     promptHash: resolveFlagReadPolicy().promptHash,
-    searchStrategy: "current",
+    searchStrategy: "closed-world-presumption",
     investigatorModel: INVESTIGATOR_MODEL,
     investigatorEffort: INVESTIGATOR_EFFORT,
     revision: 2,
