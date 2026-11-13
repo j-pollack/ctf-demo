@@ -13,6 +13,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   createIsolatedInvestigatorSession,
   guardInvestigatorStream,
+  promptForReview,
   runMonitorReview,
 } from "../lib/monitor-review";
 import {
@@ -728,4 +729,11 @@ test("replayed reasoning is counted once in the provider context", async () => {
   } finally {
     await runtime.dispose();
   }
+});
+
+test("a submission review reaches the investigator as an ordinary transcript review", () => {
+  const evidence = { targetSessionId: "s_a" } as never;
+  const prompt = promptForReview({ kind: "submission" }, evidence, quietRisk);
+  assert.ok(prompt.includes('"target":{"kind":"transcript"}'));
+  assert.equal(/submi/i.test(prompt), false);
 });

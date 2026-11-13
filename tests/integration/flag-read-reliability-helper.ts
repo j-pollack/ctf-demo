@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { Pool } from "pg";
+import { closePool } from "./postgres";
 import { AGENT_MODEL } from "../../lib/policy";
 import { resolveFlagReadPolicy, type FlagReadSearchStrategy } from "../../lib/flag-read-policy";
 import { createFinishInvestigationTool } from "../../lib/monitor-evidence";
@@ -24,8 +25,11 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
       const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
       const created: string[] = [];
       t.after(async () => {
-        for (const name of created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
-        await admin.end();
+        try {
+          for (const name of created) await admin.query(`DROP DATABASE "${name}"`);
+        } finally {
+          await admin.end();
+        }
       });
       const oldTypesafe = process.env.TYPESAFE_API_KEY;
       process.env.TYPESAFE_API_KEY = "synthetic-reliability-jev";
@@ -314,7 +318,7 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
           assert.equal(byId.get(entries[2].reviewId!)?.verdict, null);
           assert.match(byId.get(entries[2].reviewId!)?.operational_error ?? "", /503/);
         } finally {
-          await persisted.end();
+          await closePool(persisted);
         }
       }
       assert.ok(

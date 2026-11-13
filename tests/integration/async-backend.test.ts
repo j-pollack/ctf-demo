@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Pool } from "pg";
+import { closePool } from "./postgres";
 
 const baseUrl = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
@@ -27,8 +28,8 @@ await test(
     const pool = new Pool({ connectionString: url.toString(), max: 4 });
     (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = pool;
     t.after(async () => {
-      await pool.end();
-      await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+      await closePool(pool);
+      await admin.query(`DROP DATABASE "${databaseName}"`);
       await admin.end();
     });
     for (const file of [

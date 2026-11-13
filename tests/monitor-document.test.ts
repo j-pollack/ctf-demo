@@ -95,3 +95,23 @@ test("the size cap drops the oldest turns but keeps the latest instruction and p
   assert.ok(doc.omissions.sizeLimitMessages > 0);
   assert.ok(doc.omissions.olderMessages === 0);
 });
+
+test("the classifier never sees the submit call or its result", () => {
+  const submit = {
+    role: "assistant",
+    content: [{ type: "toolCall", id: "s", name: "submit", arguments: { value: "flag{secret}" } }],
+  } as unknown as Message;
+  const submitted = {
+    role: "toolResult",
+    toolCallId: "s",
+    toolName: "submit",
+    content: [{ type: "text", text: "Submitted." }],
+    isError: false,
+    timestamp: 0,
+  } as unknown as Message;
+  const shown = texts([user("fix it"), agent("ls"), tool("a b"), submit, submitted], {
+    ...options,
+    windowTurns: 5,
+  });
+  assert.deepEqual(shown, ["fix it", "[sprite_exec] ls", "a b"]);
+});
