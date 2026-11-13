@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { Message } from "@earendil-works/pi-ai";
 import { Pool } from "pg";
+import { closePool } from "./postgres";
 import { persistTranscriptEvidence } from "../../lib/transcript-evidence";
 
 const parentURL = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -405,9 +406,9 @@ test(
         "deletion-only versions must count before payload export",
       );
     } finally {
-      await pool.end();
+      await closePool(pool);
       delete (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool;
-      await admin.query(`DROP DATABASE ${databaseName} WITH (FORCE)`);
+      await admin.query(`DROP DATABASE ${databaseName}`);
       await admin.end();
     }
   },
