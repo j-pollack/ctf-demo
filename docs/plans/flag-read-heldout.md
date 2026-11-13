@@ -12,12 +12,12 @@
 
 ## Behavior contract
 
-| ID  | Criterion                                                                                                                                                                                                                                                          | Proof                                                                                                                                             | Status  |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| H1  | Explicit test split selects exactly 40 cases/20 intact pairs in stable ID order; omitted split selects the existing 72 dev cases. Reject unknown split, duplicate IDs, broken pairs, wrong counts.                                                                 | Synthetic selection regressions and unchanged dev case metadata                                                                                   | Passed  |
-| H2  | Test schedule records split, correct 40/320 classifier/investigator maxima and planning math; policy and runtime source files match run 003. Existing schedules stay byte-identical.                                                                               | Schedule tests, source comparison, frozen new schedule preflight                                                                                  | Passed  |
-| H3  | Runner requires explicit test split plus explicit schedule, rejects split/policy/source/budget drift before output/network, and summarizes only the selected cases under both label standards. No retries/resume; preserve fresh-output and fresh-database guards. | Offline CLI/preflight/scoring regressions, real Postgres/provider-fake held-out preflight→evaluation→summary run plus existing dev wrapper checks | Passed  |
-| H4  | One live 40-case run under $2 including unresolved holds; retain honest failures. Reconcile journal/summary/all inference rows/game balances/daily spend and sample provider metadata.                                                                             | Authorized live run on fresh loopback DB and new output directory                                                                                 | Pending |
+| ID  | Criterion                                                                                                                                                                                                                                                          | Proof                                                                                                                                             | Status |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| H1  | Explicit test split selects exactly 40 cases/20 intact pairs in stable ID order; omitted split selects the existing 72 dev cases. Reject unknown split, duplicate IDs, broken pairs, wrong counts.                                                                 | Synthetic selection regressions and unchanged dev case metadata                                                                                   | Passed |
+| H2  | Test schedule records split, correct 40/320 classifier/investigator maxima and planning math; policy and runtime source files match run 003. Existing schedules stay byte-identical.                                                                               | Schedule tests, source comparison, frozen new schedule preflight                                                                                  | Passed |
+| H3  | Runner requires explicit test split plus explicit schedule, rejects split/policy/source/budget drift before output/network, and summarizes only the selected cases under both label standards. No retries/resume; preserve fresh-output and fresh-database guards. | Offline CLI/preflight/scoring regressions, real Postgres/provider-fake held-out preflight→evaluation→summary run plus existing dev wrapper checks | Passed |
+| H4  | One live 40-case run under $2 including unresolved holds; retain honest failures. Reconcile journal/summary/all inference rows/game balances/daily spend and sample provider metadata.                                                                             | Authorized live run on fresh loopback DB and new output directory                                                                                 | Passed |
 
 ## Steps and ownership
 
@@ -39,3 +39,31 @@ Owned: `scripts/flag-read-baseline.ts`, `scripts/flag-read-baseline-run.ts`, `te
 - Full baseline integration suite passed 25/25, including the synthetic 40-case held-out component chain, both dev wrappers, fresh-database refusal and real timing regressions. Independent final implementation review approved H1–H3 with no P0–P2 findings. No additional abstraction or simplification was needed.
 
 Logs: `/private/var/folders/vv/0ncq7_rn70x5z37wt_j0lf1r0000gn/T/opencode/heldout-{red,check,coverage,integration}.log`. Paid execution follows this verified checkpoint under the approved $2 cap.
+
+## Held-out run 001 results
+
+Executed `4f59cbaae671f018e79a70e6d65faf9d8be411bf` on November 13, 2026, 20:38:04–20:41:43 UTC (3m39s), using the frozen candidate once on all 40 held-out cases. Public endpoint prices and eligibility matched the frozen DigitalOcean profile before dispatch.
+
+| Measure                                                   | Result                     |
+| --------------------------------------------------------- | -------------------------- |
+| Completed                                                 | 40/40                      |
+| Presumption positives detected                            | 18/18                      |
+| Presumption unsupported findings                          | 0/22 policy-negative cases |
+| Strict positives detected                                 | 18/18                      |
+| Strict unsupported findings                               | 0                          |
+| Correct pairs under presumption                           | 20/20                      |
+| Mean / median case latency                                | 5.43s / 4.66s              |
+| p95 / maximum case latency                                | 11.08s / 13.15s            |
+| Settled cost                                              | $0.202189                  |
+| Held cost                                                 | $0                         |
+| Operational errors / skipped cases / reservation overruns | 0 / 0 / 0                  |
+
+Every family has zero incomplete or misclassified cases. Independent score recomputation agrees with the summary. Every field of all 116 inference rows (40 classifier, 76 investigator) matches the saved journal; per-case charges, game balances and daily spend reconcile to $0.202189 with no unresolved reservations. Journal/summary equality, frozen schedule content/hash and ordered IDs also verified. Five generation metadata samples spread across the run all name DigitalOcean and match the rounded stored charges within reservation ceilings. These samples verify provider names for those calls, not endpoint tags or all requests.
+
+Independent read-only results review approved H4 with no blockers, confirming the recorded scores, journal, source/schedule hashes, latency, accounting evidence and provider samples.
+
+This held-out result supports proceeding to integration, but is one pass on a synthetic executed corpus. There was no current-policy held-out baseline or repeatability study. Crucially, strict and presumption detection labels agree on all 40 held-out cases: the held-out pass does not separately validate the presumption-specific distinction exercised on dev. The dev and held-out results are reported separately, without treating tuned dev performance as independent validation. No prompt or runtime policy was changed after opening the held-out results, and no retries were performed.
+
+Artifacts retained in `/Users/jonathan/Code/ctf/.worktrees/flag-read-heldout/heldout-run-001/`: `schedule.json`, `run.json`, `entries.jsonl`, `summary.json`, `verification.json`, `provider-verification.json`, `provenance.json`, `endpoint-snapshot.json`, `execution.json` and `execution.log`. Retained database: `ctf_integration_heldout_c153e31977dc465cabea132d1f8c322a`; container: `ctf-heldout-c153e31977dc465cabea132d1f8c322a`; loopback port: `32842`.
+
+Per the approved run scope, report before integration into `feature/persistent-run-sessions`. Production still uses `current`; no merge, push or deployment has occurred. Future tuning informed by these results must treat this split as already observed rather than an untouched holdout.
