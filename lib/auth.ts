@@ -1,9 +1,9 @@
 import { betterAuth } from "better-auth";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { anonymous, magicLink } from "better-auth/plugins";
 import { Resend } from "resend";
 import { db } from "./db";
-import { signInEmailError } from "./email";
+import { canonicalEmail, signInEmailError } from "./email";
 
 // Previews have no fixed origin: accept only this deployment's own Vercel hostnames.
 const vercelHosts = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filter(
@@ -27,6 +27,14 @@ export const auth = betterAuth({
     additionalFields: {
       isAdmin: { type: "boolean", required: false, defaultValue: false, input: false },
     },
+  },
+  // Magic links are the only way an email reaches an account, so canonicalizing here covers sign-up,
+  // sign-in and guest linking. Runs before body validation: a non-string is left for it to reject.
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      if (ctx.path !== "/sign-in/magic-link" || typeof ctx.body?.email !== "string") return;
+      return { context: { body: { ...ctx.body, email: canonicalEmail(ctx.body.email) } } };
+    }),
   },
   plugins: [
     anonymous({
