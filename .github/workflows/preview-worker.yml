@@ -1,0 +1,133 @@
+name: preview worker
+
+# Each Vercel preview gets a monitor worker: one machine in the ctf-monitor-worker-preview Fly app,
+# connected to the preview's own Neon branch (`preview/<git branch>`). The app holds the shared
+# preview API keys; each machine gets only its branch's database URL.
+on:
+  # Vercel reports a successful preview after its build has migrated the preview's Neon branch.
+  deployment_status:
+  delete:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+env:
+  FLY_APP: ctf-monitor-worker-preview
+
+jobs:
+  resolve:
+    name: resolve branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      (github.event_name == 'deployment_status' &&
+       github.event.deployment_status.state == 'success' &&
+       github.event.deployment.environment == 'Preview') ||
+      (github.event_name == 'delete' && github.event.ref_type == 'branch') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    outputs:
+      branch: ${{ steps.branch.outputs.branch }}
+      action: ${{ steps.branch.outputs.action }}
+    steps:
+      - name: Find the branch and what to do with it
+        id: branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.deployment.sha }}
+          DELETED_REF: ${{ github.event.ref }}
+          PR_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          case "$EVENT" in
+            deployment_status)
+              # Vercel deployments carry only a commit. Deploy only if it is still a branch head,
+              # so a late status for an older commit cannot replace a newer worker.
+              # ponytail: two branches at the same head take the first; previews of both share it.
+              branch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/branches-where-head" \
+                --jq '[.[].name | select(. != "main")][0] // empty')
+              action=deploy ;;
+            delete) branch="$DELETED_REF"; action=destroy ;;
+            pull_request) branch="$PR_REF"; action=destroy ;;
+          esac
+          if [ -z "$branch" ]; then echo "No current branch for this event; nothing to do."; fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: deploy preview worker
+    needs: resolve
+    if: needs.resolve.outputs.branch != '' && needs.resolve.outputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: preview-worker-${{ needs.resolve.outputs.branch }}
+      cancel-in-progress: false
+    env:
+      BRANCH: ${{ needs.resolve.outputs.branch }}
+      SHA: ${{ github.event.deployment.sha }}
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PREVIEW }}
+    steps:
+      - name: Checkout the deployed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.deployment.sha }}
+          persist-credentials: false
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - name: Look up the preview's Neon branch
+        id: neon
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          api="https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID"
+          name="preview/$BRANCH"
+          branch_id=$(curl -fsS -H "Authorization: Bearer $NEON_API_KEY" -G "$api/branches" \
+              --data-urlencode "search=$name" |
+            jq -r --arg name "$name" '.branches[] | select(.name == $name) | .id' | head -1)
+          if [ -z "$branch_id" ]; then echo "::error::Neon branch $name not found."; exit 1; fi
+          uri=$(curl -fsS -H "Authorization: Bearer $NEON_API_KEY" -G "$api/connection_uri" \
+              --data-urlencode "branch_id=$branch_id" --data-urlencode "database_name=neondb" \
+              --data-urlencode "role_name=neondb_owner" --data-urlencode "pooled=false" |
+            jq -r .uri)
+          echo "::add-mask::$uri"
+          echo "database-url=$uri" >> "$GITHUB_OUTPUT"
+      - name: Build and push the worker image
+        run: flyctl deploy --build-only --push --remote-only --app "$FLY_APP" --image-label "$SHA"
+      - name: Replace the branch's worker machine
+        env:
+          DATABASE_URL_UNPOOLED: ${{ steps.neon.outputs.database-url }}
+        run: |
+          set -euo pipefail
+          flyctl machine list --app "$FLY_APP" --json |
+            jq -r --arg b "$BRANCH" '.[] | select(.config.metadata.preview_branch == $b) | .id' |
+            xargs -r -n1 flyctl machine destroy --force --app "$FLY_APP"
+          flyctl machine run "registry.fly.io/$FLY_APP:$SHA" --app "$FLY_APP" --region sea \
+            --vm-size shared-cpu-1x --vm-memory 1024 --restart on-failure \
+            --metadata preview_branch="$BRANCH" --env DATABASE_URL_UNPOOLED="$DATABASE_URL_UNPOOLED" \
+            --detach
+
+  destroy:
+    name: destroy preview worker
+    needs: resolve
+    if: needs.resolve.outputs.branch != '' && needs.resolve.outputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: preview-worker-${{ needs.resolve.outputs.branch }}
+      cancel-in-progress: false
+    env:
+      BRANCH: ${{ needs.resolve.outputs.branch }}
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PREVIEW }}
+    steps:
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - name: Destroy the branch's worker machines
+        run: |
+          set -euo pipefail
+          flyctl machine list --app "$FLY_APP" --json |
+            jq -r --arg b "$BRANCH" '.[] | select(.config.metadata.preview_branch == $b) | .id' |
+            xargs -r -n1 flyctl machine destroy --force --app "$FLY_APP"

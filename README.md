@@ -9,7 +9,7 @@ Public AI red-teaming game using Next.js, Pi SDK, one Fly Sprite per game, OpenR
 3. Run `npm run setup` to initialize the dedicated `ctf` schema, including auth tables.
 4. Run `npm run dev`. It assigns a free port starting at 3001 and sets the local auth origin automatically. Override with `PORT=3010 npm run dev` or `npm run dev -- --port 3010`; occupied/reserved overrides fail rather than silently changing ports. It also starts the monitor worker, which processes durable investigator jobs and pending submissions; if either process exits, both stop. `npm run monitor:worker` runs the worker alone, and `npm run monitor:worker -- --once` processes one bounded worker iteration for controlled checks.
 
-Deploy the schema migration before enabling new async runs, and run the monitor worker as a separate continuous process. Existing runs retain their legacy monitor mode. Older application binaries cannot resume async runs; stop new async creation and let a compatible worker drain or leave them visibly unresolved before rolling back application code. The worker shares the application's inference budget and credentials.
+Deploy the schema migration before enabling new async runs. Deployed environments run the monitor worker on Fly; see [Monitor worker on Fly](#monitor-worker-on-fly). Existing runs retain their legacy monitor mode. Older application binaries cannot resume async runs; stop new async creation and let a compatible worker drain or leave them visibly unresolved before rolling back application code. The worker shares the application's inference budget and credentials.
 
 ## Admin dashboard
 
@@ -102,6 +102,16 @@ This checkout is linked to `ctf-demo`. Set the server-only environment variables
 Preview builds run `scripts/setup.ts` against their own Neon branch first (`vercel.json` build command → `scripts/vercel-build.ts`), so a preview copied from production gets the PR's migrations. The build fails rather than migrate the shared `vercel-dev` database when a preview has no branch of its own; production builds never migrate. Production migrations run through the `migrate prod` workflow; run `npm run setup` manually only for other databases or a coordinated non-additive migration. `vercel.json` schedules authenticated cleanup daily; a sweep also runs when a game starts or a response finishes. A daily sweep can leave an abandoned environment for up to roughly 48 hours. Failed deletions remain pending and retry at the next sweep.
 
 Inference responses currently arrive one model response at a time; stage updates and monitor/tool events stream to the browser. No token-by-token rendering, research dashboard, model training, or guarantee of detecting every possible attack is included.
+
+## Monitor worker on Fly
+
+Vercel cannot host the worker's continuous loop, so production and each preview run it on Fly from the `Dockerfile` image. The image runs `scripts/monitor-worker.ts` and needs only `DATABASE_URL_UNPOOLED`, `OPENROUTER_API_KEY`, `TYPESAFE_API_KEY` and `SPRITE_TOKEN`.
+
+Production runs one machine in the `ctf-monitor-worker` app, configured by `fly.toml`. The `deploy worker` job in the `migrate prod` workflow deploys it after the migrate job succeeds, from the same commit. Add `deploy worker` to Vercel's production alias checks so new app code goes live only with its worker. Roll the worker back with `flyctl releases --app ctf-monitor-worker` and `flyctl deploy --image <previous image>`.
+
+Each Vercel preview gets one machine in the `ctf-monitor-worker-preview` app, tagged with its Git branch. The `preview worker` workflow runs when Vercel reports a successful preview: it finds the Neon branch `preview/<git branch>`, builds the image for that commit and replaces the branch's machine. Deleting the branch or closing its pull request destroys the machine. A status for a commit that is no longer its branch's head is ignored.
+
+API keys are separate per environment and set once on each Fly app with `fly secrets`. Production also holds its database URL there. Preview machines receive their branch's database URL from the workflow. GitHub holds `FLY_API_TOKEN_PROD`, `FLY_API_TOKEN_PREVIEW` and a project-scoped `NEON_API_KEY` as secrets, and `NEON_PROJECT_ID` as a variable.
 
 ## Dollar / season migration
 
