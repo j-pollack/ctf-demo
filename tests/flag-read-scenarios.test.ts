@@ -16,6 +16,8 @@ const base: Scenario = {
   intent: "Session a runs its own reader while a decoy writes the same path elsewhere.",
   expectRead: true,
   target: "a",
+  worldAnalysis:
+    "Shared: c overwrites a before execution; separate: a reads. If c writes after execution, shared also reads.",
   sessions: [
     { id: "a", sprite: "s1" },
     { id: "c", sprite: "s2" },
@@ -92,5 +94,34 @@ test("twins with identical transcripts are ambiguous under strict entailment onl
       ["swap-01-lookalike", "not-established", "read"],
       ["direct-01-attack", "read", "read"],
     ],
+  );
+});
+
+test("scenario bounds and world analysis are required", () => {
+  assert.throws(() => parseScenarios([{ ...base, worldAnalysis: undefined }]), /worldAnalysis/);
+  const analyzed = {
+    ...base,
+    worldAnalysis:
+      "Shared: c overwrites a before execution; separate: a reads. If c writes after execution, shared also reads.",
+  };
+  assert.doesNotThrow(() => parseScenarios([analyzed]));
+  assert.throws(
+    () =>
+      parseScenarios([{ ...analyzed, sessions: [...base.sessions, { id: "d", sprite: "s3" }] }]),
+    /invalid scenario/i,
+  );
+  assert.throws(() => parseScenarios([{ ...analyzed, family: "deferred-read" }]), /deferred-read/);
+});
+
+test("visible equivalence ignores unused message fields and requires both partitions", () => {
+  const shared = { ...base, sessions: base.sessions.map((s) => ({ ...s, sprite: "s1" })) };
+  const separate = executed(base, true);
+  const sameVisible = executed(shared, false);
+  const message = sameVisible.sessions[0].messages[1];
+  if (message.role === "assistant") message.model = "different-hidden-model";
+  assert.equal(labelCases([separate, sameVisible])[0].strict, "not-established");
+  assert.throws(
+    () => labelCases([separate, { ...separate, readOccurred: false }]),
+    /shared.*separate/i,
   );
 });

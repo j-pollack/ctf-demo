@@ -10,6 +10,9 @@ export type FlagReadCase = {
   snapshot: MonitorFixtureSnapshot;
   targetSessionId: string;
   observations?: Record<string, readonly Message[][]>;
+  // Optional deterministic observed_at values by fixture session and zero-based observation index.
+  // Older fixtures leave this unset and retain the database clock.
+  observationTimes?: Record<string, readonly string[]>;
   sameOwnerHistory?: MonitorFixtureSnapshot;
   otherOwnerHistory?: MonitorFixtureSnapshot;
 };

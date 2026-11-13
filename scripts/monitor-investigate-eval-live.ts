@@ -96,6 +96,7 @@ export async function seedWorkspace(
   options: {
     activeSessionId?: string;
     observations?: Record<string, readonly Message[][]>;
+    observationTimes?: Record<string, readonly string[]>;
   } = {},
 ): Promise<SeededWorkspace> {
   const gameId = randomUUID();
@@ -155,13 +156,23 @@ export async function seedWorkspace(
   try {
     await evidenceClient.query("BEGIN");
     for (const session of source.sessions) {
-      for (const messages of options.observations?.[session.id] ?? [session.messages])
+      for (const [index, messages] of (
+        options.observations?.[session.id] ?? [session.messages]
+      ).entries()) {
+        const sessionId = sessionIds.get(session.id)!;
         await persistTranscriptEvidence(evidenceClient, {
           gameId,
-          sessionId: sessionIds.get(session.id)!,
+          sessionId,
           runRevision: source.revision,
           messages,
         });
+        const observedAt = options.observationTimes?.[session.id]?.[index];
+        if (observedAt)
+          await evidenceClient.query(
+            "UPDATE ctf.transcript_observations SET observed_at=$2 WHERE session_id=$1 AND version=$3",
+            [sessionId, observedAt, index + 1],
+          );
+      }
     }
     await evidenceClient.query("COMMIT");
   } catch (error) {

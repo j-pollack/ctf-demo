@@ -21,7 +21,7 @@ import {
 
 const CLASSIFIER_RESERVE_MICRODOLLARS = 10;
 
-async function seedCase(
+export async function seedCase(
   pool: Pool,
   item: FlagReadCase,
   remainingMicrodollars: number,
@@ -38,19 +38,25 @@ async function seedCase(
     agentModel,
     classifierModel,
     monitorVersion,
-    { activeSessionId: item.targetSessionId, observations: item.observations },
+    {
+      activeSessionId: item.targetSessionId,
+      observations: item.observations,
+      observationTimes: item.observationTimes,
+    },
   );
   await pool.query("UPDATE ctf.games SET monitor_mode='async' WHERE id=$1", [workspace.gameId]);
-  if (item.sameOwnerHistory)
-    await seedWorkspace(
-      pool,
-      item.sameOwnerHistory,
-      ownerId,
-      remainingMicrodollars,
-      agentModel,
-      classifierModel,
-      monitorVersion,
-    );
+  const historyWorkspace = item.sameOwnerHistory
+    ? await seedWorkspace(
+        pool,
+        item.sameOwnerHistory,
+        ownerId,
+        remainingMicrodollars,
+        agentModel,
+        classifierModel,
+        monitorVersion,
+        { observationTimes: item.observationTimes },
+      )
+    : undefined;
   if (item.otherOwnerHistory)
     await seedWorkspace(
       pool,
@@ -61,7 +67,7 @@ async function seedCase(
       classifierModel,
       monitorVersion,
     );
-  return workspace;
+  return { ...workspace, historyWorkspace };
 }
 
 async function createClaim(
