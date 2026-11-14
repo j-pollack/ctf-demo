@@ -863,6 +863,60 @@ await test(
         await releaseAndReview(id, lease);
       });
 
+    await t.test("unresolved before the release waits for the next response to end", async () => {
+      const { id, owner } = await seedOwned("turn-unresolved-early");
+      const first = await startResponse(id, owner);
+      await write(id, ["a1"]);
+      await endTurn(id, id, first);
+      const second = await startResponse(id, owner);
+      await write(id, ["a1", "a2"]);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.sessionId, id, "the first release marked the job");
+      await finishMonitorJob(claim!, { kind: "unknown" });
+      assert.equal((await jobOf(id)).status, "unresolved");
+      await endTurn(id, id, second);
+      const lease = await startResponse(id, owner);
+      await write(id, ["a1", "a2", "a3"]);
+      await assertGated(id, "a mark from before the job became unresolved is dropped");
+      await releaseAndReview(id, lease);
+    });
+
+    await t.test("an exhausted claim that expired during a response stays unresolved", async () => {
+      const { id, owner } = await seedOwned("turn-unresolved-expired");
+      const first = await startResponse(id, owner);
+      await write(id, ["a1"]);
+      await endTurn(id, id, first);
+      for (const outcome of ["error", "error", null] as const) {
+        await forceRetryDue(id);
+        const claim = await claimMonitorJob();
+        assert.equal(claim?.sessionId, id);
+        if (outcome) await finishMonitorJob(claim!, { kind: outcome });
+      }
+      await pool.query(
+        "UPDATE ctf.monitor_jobs SET claim_until=now()-interval '1 second' WHERE id=$1",
+        [(await jobOf(id)).id],
+      );
+      const lease = await startResponse(id, owner);
+      assert.equal(await claimMonitorJob(), null, "the exhausted job is retired, not reviewed");
+      assert.equal((await jobOf(id)).status, "unresolved");
+      await write(id, ["a1", "a2"]);
+      await assertGated(id, "a mark from before exhaustion is dropped");
+      await releaseAndReview(id, lease);
+    });
+
+    await t.test("a new instruction marks only its own session's job", async () => {
+      const { id, owner } = await seedOwned("turn-sibling");
+      const sibling = await addSession(id, 2);
+      await setLease(sibling, "1 minute");
+      await write(id, ["b1"], sibling);
+      const lease = await startResponse(id, owner);
+      assert.equal(Number((await jobOf(sibling)).ready_version), 0);
+      assert.equal(await claimMonitorJob(), null, "the sibling's response is still running");
+      await endTurn(id, id, lease);
+      await setLease(sibling, null);
+      await reviewOnce(sibling);
+    });
+
     await t.test("a review waiting to retry is claimable once in the next response", async () => {
       const { id, owner } = await seedOwned("turn-retry");
       const first = await startResponse(id, owner);

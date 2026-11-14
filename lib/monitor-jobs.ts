@@ -37,6 +37,11 @@ export async function enqueueMonitorJob(
          WHEN ctf.monitor_jobs.status='unresolved' AND
            excluded.requested_version>ctf.monitor_jobs.requested_version THEN 'queued'
          WHEN ctf.monitor_jobs.status='unresolved' THEN 'unresolved' ELSE 'queued' END,
+       -- An unresolved job that an append requeues waits for the response to end, so a mark
+       -- left from before it became unresolved is dropped.
+       ready_version=CASE WHEN ctf.monitor_jobs.status='unresolved' AND
+         excluded.requested_version>ctf.monitor_jobs.requested_version THEN 0
+         ELSE ctf.monitor_jobs.ready_version END,
        attempts=CASE WHEN ctf.monitor_jobs.status<>'reviewing' AND
          excluded.requested_version>ctf.monitor_jobs.requested_version THEN 0
          ELSE ctf.monitor_jobs.attempts END,
