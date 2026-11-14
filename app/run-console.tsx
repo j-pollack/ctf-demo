@@ -2,7 +2,7 @@
 import React, { useEffect, useRef } from "react";
 import type { GameEvent, PublicGame, SessionSummary } from "@/lib/types";
 import { runHasStarted, type SessionUIMap } from "@/app/session-ui-state";
-import { PENDING_SESSION, sessionTurns, type InspectorMode } from "@/app/session-layout";
+import { PENDING_SESSION, type InspectorMode } from "@/app/session-layout";
 import { hasRiskObservations, runPeakRisk, runRiskSeries } from "@/app/run-risk";
 import { money } from "@/app/run-format";
 import { BlockedNotice, endBanner } from "@/app/transcript";
@@ -319,10 +319,6 @@ export function RunConsole(props: RunConsoleProps) {
         {inspector !== "closed" && (
           <RunInspector
             game={game}
-            sessions={sessions.map((session) => ({
-              ...session,
-              turns: sessionTurns(session.turns, sessionViews[session.id]?.events ?? []),
-            }))}
             riskSeries={riskSeries}
             peak={peak}
             observed={observed}

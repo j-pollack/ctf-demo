@@ -1744,21 +1744,11 @@ dialog::backdrop {
     display: none;
   }
 }
-.session-table {
-  margin: 6px 0 0;
-  font-size: 11px;
-}
-.session-table :is(th, td) {
-  padding: 4px 8px 4px 0;
-}
-.session-table td[title] {
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.session-table tbody th {
-  color: var(--ink);
-  font-size: 11px;
+.inspector .run-model {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 /* One row needs the stats, about four chips with Add session, and the actions side by side. */
 @media (max-width: 1180px) {

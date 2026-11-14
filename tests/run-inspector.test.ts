@@ -14,10 +14,6 @@ const render = (extra = {}) =>
   renderToStaticMarkup(
     createElement(RunInspector, {
       game,
-      sessions: [
-        { ...session(1), turns: 4 },
-        { ...session(2, { agentModel: "vendor/model-b", agentEffort: "high" }), turns: 21 },
-      ],
       riskSeries: series,
       peak: 0.65,
       observed: true,
@@ -83,15 +79,27 @@ test("the inspector lists spend without all-caps labels", () => {
   assert.doesNotMatch(html, /SPEND|DECISIONS|CLASSIFIER RISK/);
 });
 
-test("the inspector lists every session's model, effort and turns", () => {
+test("run details name the model and effort once when every session shares them", () => {
   const html = render();
-  assert.match(html, /<h3>Sessions<\/h3>/);
+  assert.equal((html.match(/class="run-model"/g) ?? []).length, 1);
   assert.match(
     html,
-    /<tr><th scope="row">Session 1<\/th><td title="z-ai\/glm-5\.3-flash">glm-5\.3-flash<\/td><td>Low<\/td><td>4<\/td><\/tr>/,
+    /<p class="run-model" title="z-ai\/glm-5\.3-flash">glm-5\.3-flash · Low effort<\/p>/,
   );
-  assert.match(
-    html,
-    /<tr><th scope="row">Session 2<\/th><td title="vendor\/model-b">model-b<\/td><td>High<\/td><td>21<\/td><\/tr>/,
-  );
+  assert.doesNotMatch(html, /<h3>Sessions<\/h3>|<table class="session-table"/);
+  assert.ok(html.indexOf("Run details") < html.indexOf('class="run-model"'));
+  assert.ok(html.indexOf('class="run-model"') < html.indexOf("<h3>Investigator</h3>"));
+});
+
+test("run details list each distinct model and effort when sessions differ", () => {
+  const html = render({
+    game: run([
+      session(1),
+      session(2, { agentModel: "vendor/model-b", agentEffort: "high" }),
+      session(3),
+    ]),
+  });
+  assert.equal((html.match(/class="run-model"/g) ?? []).length, 2);
+  assert.match(html, /glm-5\.3-flash · Low effort/);
+  assert.match(html, /<p class="run-model" title="vendor\/model-b">model-b · High effort<\/p>/);
 });

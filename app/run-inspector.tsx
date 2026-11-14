@@ -1,6 +1,6 @@
 "use client";
 import React from "react";
-import type { GameEvent, PublicGame, SessionSummary } from "@/lib/types";
+import type { GameEvent, PublicGame } from "@/lib/types";
 import type { SessionRiskSeries } from "@/app/run-risk";
 import { RunRiskChart } from "@/app/run-risk-chart";
 import {
@@ -13,14 +13,8 @@ import {
 import { suspicionBand } from "@/app/transcript";
 
 export type SessionDecision = { ordinal: number; event: GameEvent };
-// A session with its turn count as the panes show it.
-export type SessionRow = Pick<SessionSummary, "id" | "ordinal" | "agentModel" | "agentEffort"> & {
-  turns: number;
-};
-
 export type RunInspectorProps = {
   game: PublicGame;
-  sessions: SessionRow[];
   riskSeries: SessionRiskSeries[];
   peak: number;
   observed: boolean;
@@ -57,32 +51,21 @@ function Investigator({ game }: { game: PublicGame }) {
   );
 }
 
-function Sessions({ sessions }: { sessions: SessionRow[] }) {
-  return (
-    <section>
-      <h3>Sessions</h3>
-      <table className="session-table">
-        <thead>
-          <tr>
-            <th scope="col">Session</th>
-            <th scope="col">Model</th>
-            <th scope="col">Effort</th>
-            <th scope="col">Turns</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sessions.map((session) => (
-            <tr key={session.id}>
-              <th scope="row">Session {session.ordinal}</th>
-              <td title={session.agentModel}>{label(session.agentModel)}</td>
-              <td>{EFFORT_NAMES[session.agentEffort]}</td>
-              <td>{session.turns}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+// Sessions normally share one model and effort. An admin change mid-run can leave them mixed,
+// so each distinct pair gets a line.
+function AgentSettings({ game }: { game: PublicGame }) {
+  const settings = game.sessions.length ? game.sessions : [game];
+  const distinct = new Map(
+    settings.map(({ agentModel, agentEffort }) => [
+      `${agentModel} ${agentEffort}`,
+      { agentModel, agentEffort },
+    ]),
   );
+  return [...distinct].map(([key, { agentModel, agentEffort }]) => (
+    <p className="run-model" key={key} title={agentModel}>
+      {label(agentModel)} · {EFFORT_NAMES[agentEffort]} effort
+    </p>
+  ));
 }
 
 function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDecision[] }) {
@@ -119,7 +102,6 @@ function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDe
 
 export function RunInspector({
   game,
-  sessions,
   riskSeries,
   peak,
   observed,
@@ -132,8 +114,8 @@ export function RunInspector({
       <h2 id="inspector-title" tabIndex={-1} ref={titleRef}>
         Run details
       </h2>
+      <AgentSettings game={game} />
       <Investigator game={game} />
-      <Sessions sessions={sessions} />
       <section>
         <div className="risk-heading">
           <h3>Classifier risk, advisory</h3>
