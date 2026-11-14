@@ -78,7 +78,7 @@ export async function claimMonitorJob(claimMs = CLAIM_MS): Promise<MonitorJobCla
       `SELECT game_id FROM ctf.monitor_jobs
        WHERE (status='queued' AND next_attempt_at<=now())
           OR (status='reviewing' AND claim_until<now())
-       ORDER BY next_attempt_at,updated_at,id LIMIT 10`,
+       ORDER BY last_reviewed_at NULLS FIRST,created_at,id LIMIT 10`,
     );
     for (const candidate of candidates) {
       const { rowCount } = await client.query(
@@ -99,7 +99,7 @@ export async function claimMonitorJob(claimMs = CLAIM_MS): Promise<MonitorJobCla
         `SELECT id,game_id,session_id,epoch,requested_version,attempts FROM ctf.monitor_jobs
          WHERE game_id=$1 AND ((status='queued' AND next_attempt_at<=now())
            OR (status='reviewing' AND claim_until<now()))
-         ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+         ORDER BY last_reviewed_at NULLS FIRST,created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`,
         [candidate.game_id],
       );
       if (!job) continue;

@@ -76,7 +76,17 @@ await test(
       );
       return id;
     };
-    const write = async (id: string, texts: string[]) =>
+    const addSession = async (gameId: string, ordinal: number) => {
+      const id = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions
+       (id,game_id,ordinal,agent_model,agent_effort,system_prompt)
+       VALUES($1,$2,$3,'synthetic-agent','medium','')`,
+        [id, gameId, ordinal],
+      );
+      return id;
+    };
+    const write = async (id: string, texts: string[], sessionId = id) =>
       transaction(async (client) => {
         const messages = texts.map((text, index) => ({
           role: "user" as const,
@@ -92,18 +102,18 @@ await test(
         );
         const evidence = await persistTranscriptEvidence(client, {
           gameId: id,
-          sessionId: id,
+          sessionId,
           runRevision: Number(run.observation_revision),
           messages: messages as Parameters<typeof persistTranscriptEvidence>[1]["messages"],
         });
         await client.query("UPDATE ctf.agent_sessions SET messages=$2 WHERE id=$1", [
-          id,
+          sessionId,
           JSON.stringify(messages),
         ]);
         if (evidence.changed)
           await enqueueMonitorJob(client, {
             gameId: id,
-            sessionId: id,
+            sessionId,
             epoch: evidence.epoch,
             version: evidence.version,
           });
@@ -465,6 +475,106 @@ await test(
       const next = await claimMonitorJob();
       assert.equal(next?.targetVersion, second.version);
       await finishMonitorJob(next!, { kind: "allow" });
+    });
+
+    // Earlier cases leave jobs behind; retire them so each ordering case controls what is ready.
+    const retireOtherJobs = () =>
+      pool.query(
+        `UPDATE ctf.monitor_jobs SET status='caught-up',claim_token=NULL,claim_until=NULL,
+         target_version=NULL WHERE status IN ('queued','reviewing')`,
+      );
+    const reviewOnce = async (expected: string) => {
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.sessionId, expected);
+      await finishMonitorJob(claim!, { kind: "allow" });
+    };
+
+    await t.test(
+      "a session reviewed last yields to a waiting sibling in the same run",
+      async () => {
+        await retireOtherJobs();
+        const id = await seed(`order-run-${randomUUID()}`);
+        const second = await addSession(id, 2);
+        await write(id, ["a1"]);
+        await write(id, ["b1"], second);
+        await reviewOnce(id);
+        await write(id, ["a1", "a2"]);
+        const claim = await claimMonitorJob();
+        assert.equal(claim?.gameId, id);
+        assert.equal(claim?.sessionId, second, "the never-reviewed sibling is claimed first");
+        await finishMonitorJob(claim!, { kind: "allow" });
+        await reviewOnce(id);
+        assert.equal(await claimMonitorJob(), null);
+      },
+    );
+
+    await t.test("a run reviewed last yields to a waiting run", async () => {
+      await retireOtherJobs();
+      const older = await seed(`order-old-${randomUUID()}`);
+      const newer = await seed(`order-new-${randomUUID()}`);
+      await write(older, ["a1"]);
+      await write(newer, ["b1"]);
+      await reviewOnce(older);
+      await write(older, ["a1", "a2"]);
+      await write(newer, ["b1", "b2"]);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.gameId, newer);
+      assert.equal(claim?.sessionId, newer);
+      await finishMonitorJob(claim!, { kind: "allow" });
+      await reviewOnce(older);
+    });
+
+    await t.test("a job still in backoff is skipped however long ago it was reviewed", async () => {
+      await retireOtherJobs();
+      const waiting = await seed(`order-backoff-${randomUUID()}`);
+      const ready = await seed(`order-ready-${randomUUID()}`);
+      await write(waiting, ["a1"]);
+      await write(ready, ["b1"]);
+      await pool.query(
+        `UPDATE ctf.monitor_jobs SET last_reviewed_at=now()-interval '1 hour',
+         next_attempt_at=now()+interval '1 minute' WHERE game_id=$1`,
+        [waiting],
+      );
+      await pool.query("UPDATE ctf.monitor_jobs SET last_reviewed_at=now() WHERE game_id=$1", [
+        ready,
+      ]);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.gameId, ready);
+      await finishMonitorJob(claim!, { kind: "allow" });
+      assert.equal(await claimMonitorJob(), null);
+    });
+
+    await t.test("three expired claims leave a job unresolved until a newer append", async () => {
+      await retireOtherJobs();
+      const id = await seed(`order-expiry-${randomUUID()}`);
+      await write(id, ["a1"]);
+      const row = async () =>
+        (
+          await pool.query("SELECT status,attempts,reason FROM ctf.monitor_jobs WHERE game_id=$1", [
+            id,
+          ])
+        ).rows[0];
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const claim = await claimMonitorJob();
+        assert.equal(claim?.gameId, id);
+        assert.equal((await row()).attempts, attempt);
+        await pool.query(
+          "UPDATE ctf.monitor_jobs SET claim_until=now()-interval '1 second' WHERE game_id=$1",
+          [id],
+        );
+      }
+      assert.equal(await claimMonitorJob(), null);
+      assert.deepEqual(await row(), {
+        status: "unresolved",
+        attempts: 3,
+        reason: "Review stopped before its outcome was verified.",
+      });
+      await write(id, ["a1", "a2"]);
+      assert.deepEqual(
+        { status: (await row()).status, attempts: (await row()).attempts },
+        { status: "queued", attempts: 0 },
+      );
+      await reviewOnce(id);
     });
 
     await t.test("an expired claimant cannot settle or catch; a replacement resumes", async () => {
