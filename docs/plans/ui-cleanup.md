@@ -86,6 +86,14 @@ The status line reads `{reviewedUpdates} of {totalUpdates} transcript updates re
   - `caught`: no line.
   - "session" is singular when total is 1. The line no longer shows update counts. The status label, last review time and reason are unchanged.
 
+### Difficulty parameter
+
+Added after the first review, at the user's request.
+
+- **D1.** Given a `POST /api/games` request or a prompt request whose body carries `monitorDifficulty` with a valid value, an unknown value or a non-string, then the request is handled as if the field were absent. It is not refused on that field's account. A new run records `hard`. An existing run's stored difficulty does not change. The neighbouring field is still validated: a body with `monitorReasoning: null` is refused with 400, takes no lease and runs nothing.
+- **D2.** `GET /api/leaderboard` does not read `difficulty`. With any value, or none, it returns the board for runs recorded as `hard` under the current monitor version. A captured run recorded as `easy` under the current version does not appear, whether the request sends `difficulty=easy` or no parameter. The agent filter is unchanged.
+- **D3.** The internal option is unchanged. `startGame` and `claimGameSession` still accept a difficulty from tests and evals, which use it to exercise the classifier profiles. `monitor_difficulty` stays in the database and in `PublicGame`.
+
 ## Criterion to check mapping
 
 | Criterion    | Check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Evidence                                                                                                                                                                                                                                                                              |
@@ -101,7 +109,8 @@ The status line reads `{reviewedUpdates} of {totalUpdates} transcript updates re
 | A2, A3 UI    | `tests/admin-agent-model.test.ts` SSR-tests an exported card component for the selected model, the changed-by line and the refusal text. `npm run build` proves the action and page wiring compile. Browser inspection of `/admin` is not run locally: `lib/db.ts` forces TLS, so the dev server cannot use the disposable Postgres, and the shared development database must not be migrated from a worktree. It is a gate before merge on the Vercel preview, which migrates its own database branch. Three cases need recorded evidence: an admin saves a model and sees it selected with the changed-by line; a refused value shows the fixed refusal text; a non-admin who posts gets 404 and the settings row is unchanged | Partly run. `tests/admin-agent-model.test.ts` passes and `npm run build` succeeds. The Vercel preview inspection is not run and remains a gate before merge                                                                                                                           |
 | M1, M1a, M1b | New cases in `tests/integration/async-backend.test.ts`. M1 is recorded red before the fix. M1a and M1b pin existing behavior and must pass before and after                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Pass. Eight ordering cases in `tests/integration/async-backend.test.ts`, 38 of 38. Against the original ordering the two yield cases fail with the older session or run claimed again. Against never-reviewed-first ordering the two queue-jump cases fail with the newer job claimed |
 | M2           | `tests/monitor-progress.test.ts` unit-tests the exported function for every status and for totals of 1 and 3                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pass. `tests/monitor-progress.test.ts`                                                                                                                                                                                                                                                |
-| All          | `npm run check`; `npm run test:integration`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Pass. On the final tree: `npm run check` 271 tests, lint, format and typecheck clean. `npm run test:integration` 284 of 284. `npm run build` succeeds                                                                                                                                 |
+| D1, D2, D3   | Route-handler cases in `tests/integration/sprites.test.ts`, `tests/integration/admin.test.ts` and `tests/integration/history.ts`, recorded red before the route change. D3: the existing cases that set a difficulty through `startGame` still pass                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Pass. Eight changed cases fail against the previous routes and pass now. The `monitorReasoning: null` refusal is still asserted with no lease and nothing run. The leaderboard case asserts the captured easy run is absent for every query. No `lib/` diff                           |
+| All          | `npm run check`; `npm run test:integration`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Pass. On the final tree, rerun after the difficulty parameter removal: `npm run check` 271 tests, lint, format and typecheck clean. `npm run test:integration` 284 of 284. `npm run build` succeeds                                                                                   |
 
 Prerequisite for integration checks: Docker running with `postgres:17-alpine` cached. Both hold on this machine. `getModel` caches the catalog per process for five minutes, so one fixture must carry both the accepted and the rejected model.
 
@@ -127,6 +136,14 @@ Two developers with disjoint file ownership. Each writes its regression first an
 
 The lead runs every gate itself, including `npm run build`, checkpoints, then requests simplification and independent review of the full diff.
 
+### Difficulty parameter steps
+
+**Developer backend** also owns `app/api/leaderboard/route.ts` for this step.
+
+1. Change the route-level cases in `tests/integration/sprites.test.ts` that assert the API honors or validates `monitorDifficulty`, and the leaderboard cases in `tests/integration/admin.test.ts`, `tests/integration/history.ts` and `tests/integration/sprites.test.ts` that pass `difficulty=`, so they assert D1 and D2. These tests assert the behavior being removed, so changing them is correct. Cases that set a difficulty through `startGame` or `claimGameSession` directly stay as they are. Verify: the changed cases fail against the current routes.
+2. `app/api/games/route.ts` and `app/api/games/[id]/prompt/route.ts` stop passing `monitorDifficulty`. `app/api/leaderboard/route.ts` stops reading `difficulty`, filters on `'hard'`, and loses its "per difficulty" comment and the unused import. Nothing under `lib/` changes.
+3. Verify: `npm run check`, the full `npm run test:integration`, `npm run build`.
+
 ## Deployment notes
 
 - `migrate prod` applies `017` before Vercel's production alias moves, so new code never runs without the table.
@@ -147,7 +164,9 @@ Two independent Opus reviewers read the full delta, one for correctness against 
 
 Re-review of the full feature at `4fd3897`: both reviewers found the P2 findings resolved and nothing new at P0 to P2. The preview gate is the only open item. One optional hardening item was raised and not taken: a job that reached the attempts limit through expired claims returns to the front when an append requeues it. Exploiting it needs a transcript that crashes the worker, and no such path was found.
 
-Reported and left alone: the leaderboard route still filters on `monitor_difficulty` with a stale comment (see Q4); `/admin` and the four player routes fail with 500 or 503 if `017` has not been applied, so a local database needs `npm run setup` after this merges; "Catches per turn" includes legacy per-command blocks in historical data.
+The difficulty parameter removal was reviewed separately at `9f89cb2`: D1 to D3 met, no assertion weakened beyond what they require, nothing at P0 to P2.
+
+Reported and left alone: `/admin` and the four player routes fail with 500 or 503 if `017` has not been applied, so a local database needs `npm run setup` after this merges; "Catches per turn" includes legacy per-command blocks in historical data.
 
 ## Checkpoints
 
@@ -156,16 +175,17 @@ Reported and left alone: the leaderboard route still filters on `monitor_difficu
 - `5ceb080` copy cleanup and the review status line.
 - `8f8ab69` follow-up: ordering case for two reviewed jobs, a redundant key, one README sentence.
 - `4fd3897` corrective pass: rank by last attention, no status line when nothing is pending, changed-by line only for the effective model.
+- `9f89cb2` difficulty parameter removed at the HTTP boundary.
 
 ## Decisions from the user
 
 - A model change applies at each session's next instruction, including runs in progress.
 - Worker concurrency is not part of this branch.
+- The `monitorDifficulty` API parameter is removed. See D1 to D3.
 
 ## Open questions for the user
 
 - Q2. Should a review wait until a session's turn goes quiet? It would cut repeat reviews and their cost, and it would delay catches made mid-turn.
-- Q4. The API still accepts `monitorDifficulty` from a hand-written request. It only changes the advisory classifier profile, and such runs do not appear on the leaderboard. Remove it if wanted.
 
 ## Known limitations
 

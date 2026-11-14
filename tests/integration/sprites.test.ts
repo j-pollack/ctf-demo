@@ -3494,7 +3494,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   });
   await t.test(
-    "an empty-history fork can choose monitor settings on its first prompt",
+    "an empty-history fork keeps its inherited monitor settings on its first prompt",
     async () => {
       const who = await member();
       const parent = await startGame(who.id);
