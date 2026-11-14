@@ -406,11 +406,17 @@ export async function releaseSessionLease(gameId: string, sessionId: string, lea
       "UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=$1 AND id=$2 AND lease=$3",
       [gameId, sessionId, lease],
     );
-    if (rowCount)
+    if (rowCount) {
       await client.query(
         "UPDATE ctf.games SET state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE id=$1",
         [gameId],
       );
+      // The agent finished responding: everything recorded so far is ready for review.
+      await client.query(
+        "UPDATE ctf.monitor_jobs SET ready_version=requested_version WHERE game_id=$1 AND session_id=$2",
+        [gameId, sessionId],
+      );
+    }
   });
 }
 export async function persistSessionMessages(

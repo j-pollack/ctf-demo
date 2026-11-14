@@ -88,6 +88,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       "utf8",
     ),
   );
+  await pool.query(
+    await readFile(new URL("../../db/migrations/018-monitor-ready.sql", import.meta.url), "utf8"),
+  );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
@@ -1473,8 +1476,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           [game.id],
         )
       ).rows;
-      // A caught multi-session run cannot be forked, so the worker deletes its Sprite at once;
-      // deletion marks the aborted command interrupted.
+      // The child worker's Sprite deletion fails here (the preload refuses Sprite API calls). The
+      // runner then records the aborted command unknown, releases its lease and runs cleanup(),
+      // which deletes the caught multi-session run's Sprite and marks the command interrupted.
       assert.deepEqual(
         operations.map((operation) => operation.status),
         ["completed", "interrupted"],
@@ -1522,8 +1526,22 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     child.stdout.on("data", (chunk) => (output += String(chunk)));
     child.stderr.on("data", (chunk) => (output += String(chunk)));
     const exited = once(child, "exit");
-    // Idle loops poll every second; let them start and poll at least once.
-    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    // Signal handlers are registered before the worker announces its loops.
+    const started = await new Promise<{ loops: number }>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`The worker did not start: ${output}`)),
+        30_000,
+      );
+      child.stdout.on("data", () => {
+        const line = output
+          .split("\n")
+          .find((item) => item.includes('"event":"monitor.worker.started"'));
+        if (!line) return;
+        clearTimeout(timer);
+        resolve(JSON.parse(line));
+      });
+    });
+    assert.equal(started.loops, 4, "the polling worker runs four review loops");
     assert.equal(child.exitCode, null, `the worker keeps polling until stopped: ${output}`);
     const stoppedAt = Date.now();
     child.kill("SIGTERM");
@@ -1745,6 +1763,68 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       state.jobs.map((job) => job.status),
       ["caught", "caught"],
     );
+  });
+
+  await t.test("a finished response is reviewed while the next instruction runs", async () => {
+    const owner = "async-turn-end";
+    const game = await productionStartGame(owner);
+    const { claimGameSession } = await import("../../lib/games");
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    await playSession(game.id, game.id, owner, "printf harmless");
+    const job = async () =>
+      (
+        await pool.query(
+          "SELECT status,covered_version,requested_version FROM ctf.monitor_jobs WHERE session_id=$1",
+          [game.id],
+        )
+      ).rows[0];
+    const reviews = async () =>
+      (
+        await pool.query(
+          "SELECT id,completed_at FROM ctf.monitor_reviews WHERE session_id=$1 AND target_kind='transcript'",
+          [game.id],
+        )
+      ).rows;
+    const finished = Number((await job()).requested_version);
+    // Instruction 2 starts at once; its agent request waits behind a gate.
+    let entered!: () => void, release!: () => void;
+    const admitted = new Promise<void>((resolve) => (entered = resolve));
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    onAgentRequest = async () => {
+      entered();
+      await gate;
+    };
+    agentCalls = 0;
+    proposed = ["printf harmless"];
+    const second = runGame(
+      await claimGameSession(game.id, game.id, owner),
+      "Run it again",
+      AbortSignal.timeout(10_000),
+      () => {},
+    );
+    try {
+      await admitted;
+      assert.ok(
+        (
+          await pool.query("SELECT 1 FROM ctf.agent_sessions WHERE id=$1 AND lease_until>now()", [
+            game.id,
+          ])
+        ).rowCount,
+        "instruction 2 holds the lease",
+      );
+      assert.equal(await runMonitorWorkerOnce(), true);
+      const reviewed = await reviews();
+      assert.equal(reviewed.length, 1);
+      assert.ok(reviewed[0].completed_at, "the review completed during instruction 2");
+      assert.ok(Number((await job()).covered_version) >= finished);
+      await runMonitorWorkerOnce();
+      assert.equal((await reviews()).length, 1, "no second review while instruction 2 runs");
+      assert.notEqual((await job()).status, "reviewing");
+    } finally {
+      release();
+      onAgentRequest = undefined;
+    }
+    await second;
   });
 
   await t.test("a worker covers a harmless transcript despite high classifier risk", async () => {

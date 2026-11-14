@@ -47,6 +47,7 @@ await test(
       "migrations/013-agent-sessions.sql",
       "migrations/014-async-monitor.sql",
       "migrations/015-transcript-evidence.sql",
+      "migrations/018-monitor-ready.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
@@ -622,7 +623,7 @@ await test(
     const jobOf = async (sessionId: string) =>
       (
         await pool.query(
-          "SELECT id,status,attempts,requested_version FROM ctf.monitor_jobs WHERE session_id=$1",
+          "SELECT id,status,attempts,requested_version,ready_version FROM ctf.monitor_jobs WHERE session_id=$1",
           [sessionId],
         )
       ).rows[0];
@@ -696,6 +697,83 @@ await test(
       assert.equal(second?.jobId, first!.jobId);
       assert.equal((await jobOf(id)).attempts, 2);
       await finishMonitorJob(second!, { kind: "allow" });
+    });
+
+    // A turn starts with a live lease (SQL) and ends through the real releaseSessionLease.
+    const beginTurn = async (sessionId: string) => {
+      const lease = randomUUID();
+      await pool.query(
+        "UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()+interval '1 minute' WHERE id=$1",
+        [sessionId, lease],
+      );
+      return lease;
+    };
+    const endTurn = async (gameId: string, sessionId: string, lease: string) =>
+      (await import("../../lib/sessions")).releaseSessionLease(gameId, sessionId, lease);
+    // Turn N appends and ends; turn N+1 starts at once and appends while it runs.
+    const nextTurnStarted = async (prefix: string) => {
+      await retireOtherJobs();
+      const id = await seed(`${prefix}-${randomUUID()}`);
+      const turnN = await beginTurn(id);
+      await write(id, ["a1"]);
+      await write(id, ["a1", "a2"]);
+      await endTurn(id, id, turnN);
+      const turnNext = await beginTurn(id);
+      await write(id, ["a1", "a2", "a3"]);
+      return { id, turnNext };
+    };
+
+    for (const kind of ["allow", "unknown", "error"] as const)
+      await t.test(
+        `a finished response is reviewed once during the next turn (${kind})`,
+        async () => {
+          const { id, turnNext } = await nextTurnStarted(`turn-ready-${kind}`);
+          const claim = await claimMonitorJob();
+          assert.equal(claim?.sessionId, id, "the ended response is claimed mid-turn");
+          assert.equal(claim?.targetVersion, Number((await jobOf(id)).requested_version));
+          await finishMonitorJob(claim!, { kind });
+          if (kind === "error")
+            await pool.query(
+              "UPDATE ctf.monitor_jobs SET next_attempt_at=now()-interval '1 second' WHERE session_id=$1",
+              [id],
+            );
+          await write(id, ["a1", "a2", "a3", "a4"]);
+          assert.equal(await claimMonitorJob(), null, "one claim per finished response");
+          await endTurn(id, id, turnNext);
+          const next = await claimMonitorJob();
+          assert.equal(next?.sessionId, id, "the next finished response is claimable");
+          await finishMonitorJob(next!, { kind: "allow" });
+        },
+      );
+
+    await t.test("a release with another lease value marks nothing", async () => {
+      await retireOtherJobs();
+      const id = await seed(`turn-wrong-lease-${randomUUID()}`);
+      await beginTurn(id);
+      await write(id, ["a1"]);
+      await endTurn(id, id, randomUUID());
+      assert.equal(Number((await jobOf(id)).ready_version), 0);
+      assert.equal(await claimMonitorJob(), null);
+      await setLease(id, null);
+      await reviewOnce(id);
+    });
+
+    await t.test("the ready-version migration applies twice", async () => {
+      const sql = await readFile(
+        new URL("../../db/migrations/018-monitor-ready.sql", import.meta.url),
+        "utf8",
+      );
+      await pool.query(sql);
+      await pool.query(sql);
+      assert.equal(
+        (
+          await pool.query(
+            `SELECT 1 FROM information_schema.columns
+             WHERE table_schema='ctf' AND table_name='monitor_jobs' AND column_name='ready_version'`,
+          )
+        ).rowCount,
+        1,
+      );
     });
 
     await t.test("a job still in backoff is skipped however long ago it was reviewed", async () => {

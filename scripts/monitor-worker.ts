@@ -24,8 +24,10 @@ async function reviewLoop() {
   }
 }
 
+const count = once ? 1 : REVIEW_LOOPS;
+console.log(JSON.stringify({ event: "monitor.worker.started", loops: count }));
 // The pool closes only after every loop has settled, so no review loses its connection mid-finish.
-const loops = await Promise.allSettled(Array.from({ length: once ? 1 : REVIEW_LOOPS }, reviewLoop));
+const loops = await Promise.allSettled(Array.from({ length: count }, reviewLoop));
 for (const loop of loops)
   if (loop.status === "rejected") {
     console.error(
