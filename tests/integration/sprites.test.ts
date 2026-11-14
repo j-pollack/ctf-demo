@@ -1772,62 +1772,141 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     },
   );
 
+  // A run with one finished response and a real monitor reservation held under a real job claim.
+  const runWithMonitorHold = async (owner: string) => {
+    const game = await productionStartGame(owner);
+    proposed = ["printf harmless"];
+    agentCalls = 0;
+    await runGame(
+      await claimGame(game.id, owner),
+      "Run a command",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    await reviewOnly([game.id]);
+    const { claimMonitorJob } = await import("../../lib/monitor-jobs");
+    const claim = await claimMonitorJob();
+    assert.equal(claim?.gameId, game.id);
+    const reviewId = randomUUID();
+    await pool.query(
+      `INSERT INTO ctf.monitor_reviews
+       (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,job_id,job_claim_token)
+       VALUES($1,$2,$3,0,'transcript','held-model','held',$4,$5)`,
+      [reviewId, game.id, game.id, claim!.jobId, claim!.claimToken],
+    );
+    const held = await reserveInference(
+      game.id,
+      null,
+      "monitor",
+      "held-model",
+      100,
+      64,
+      0.000001,
+      0.000001,
+      { sessionId: game.id, reviewId, jobClaim: claim! },
+    );
+    return { game, held };
+  };
+  const finishMonitorHold = async (gameId: string, held: { id: string; cost: number }) => {
+    await settleInference(held.id, { tokens: 164, cost: held.cost / 1_000_000 });
+    await pool.query(
+      "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version WHERE game_id=$1",
+      [gameId],
+    );
+  };
+  const sendInstruction = async (gameId: string, owner: string) => {
+    agentCalls = 0;
+    const requestsBefore = requests.length;
+    await runGame(
+      await claimGame(gameId, owner),
+      "One more instruction",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    assert.equal(agentCalls, 0, "the agent was not dispatched");
+    assert.equal(requests.length, requestsBefore);
+    return row(gameId);
+  };
+  const lastError = async (gameId: string) =>
+    (
+      await pool.query(
+        "SELECT data FROM ctf.events WHERE game_id=$1 AND data->>'kind'='error' ORDER BY id DESC LIMIT 1",
+        [gameId],
+      )
+    ).rows[0].data.text as string;
+
   await t.test(
     "an agent request over budget exhausts the run while a monitor reservation is held",
     async () => {
       const owner = "async-agent-over-budget";
-      const game = await productionStartGame(owner);
-      proposed = ["printf harmless"];
-      agentCalls = 0;
-      await runGame(
-        await claimGame(game.id, owner),
-        "Run a command",
-        AbortSignal.timeout(5000),
-        () => {},
-      );
-      await reviewOnly([game.id]);
-      const { claimMonitorJob } = await import("../../lib/monitor-jobs");
-      const claim = await claimMonitorJob();
-      assert.equal(claim?.gameId, game.id);
-      const reviewId = randomUUID();
+      const { game, held } = await runWithMonitorHold(owner);
+      await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+        game.id,
+      ]);
+      const finished = await sendInstruction(game.id, owner);
+      assert.equal(finished.status, "exhausted");
+      assert.equal(Number(finished.reserved_microdollars), held.cost, "the hold is untouched");
+      await assert.rejects(claimGame(game.id, owner), /has ended or is already responding/);
+      await finishMonitorHold(game.id, held);
+    },
+  );
+
+  await t.test(
+    "an agent request under budget keeps status 400 while a monitor reservation is held",
+    async () => {
+      const owner = "async-agent-short-budget-held";
+      const { game, held } = await runWithMonitorHold(owner);
       await pool.query(
-        `INSERT INTO ctf.monitor_reviews
-         (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,job_id,job_claim_token)
-         VALUES($1,$2,$3,0,'transcript','held-model','held',$4,$5)`,
-        [reviewId, game.id, game.id, claim!.jobId, claim!.claimToken],
+        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+100 WHERE id=$1",
+        [game.id],
       );
+      const finished = await sendInstruction(game.id, owner);
+      assert.equal(finished.status, "active");
+      assert.equal(Number(finished.reserved_microdollars), held.cost, "the hold is untouched");
+      assert.match(await lastError(game.id), /billing is still pending/);
+      await finishMonitorHold(game.id, held);
+    },
+  );
+
+  await t.test(
+    "a sibling's paid agent call keeps an over-budget run active until it settles",
+    async () => {
+      const owner = "async-agent-sibling-hold";
+      const game = await productionStartGame(owner);
+      const { claimGameSession } = await import("../../lib/games");
+      const sibling = await createSession(game.id, owner);
+      const siblingClaim = await claimGameSession(game.id, sibling.id, owner);
       const held = await reserveInference(
         game.id,
-        null,
-        "monitor",
-        "held-model",
+        siblingClaim.lease,
+        "agent",
+        siblingClaim.agent_model,
         100,
         64,
         0.000001,
         0.000001,
-        { sessionId: game.id, reviewId, jobClaim: claim! },
+        { sessionId: sibling.id },
       );
+      // Exempt reviews pushed settled spend to the budget while the sibling's call was in flight.
       await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
         game.id,
       ]);
-      agentCalls = 0;
-      const requestsBefore = requests.length;
-      await runGame(
-        await claimGame(game.id, owner),
-        "One more instruction",
-        AbortSignal.timeout(5000),
-        () => {},
-      );
-      const finished = await row(game.id);
-      assert.equal(finished.status, "exhausted");
-      assert.equal(agentCalls, 0, "the agent was not dispatched");
-      assert.equal(requests.length, requestsBefore);
-      assert.equal(Number(finished.reserved_microdollars), held.cost, "the hold is untouched");
-      await assert.rejects(claimGame(game.id, owner), /./);
-      await pool.query(
-        "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version WHERE game_id=$1",
-        [game.id],
-      );
+      const holdRow = async () =>
+        (
+          await pool.query(
+            "SELECT cost_ceiling::int AS cost,settled_at,role,session_id FROM ctf.inference WHERE id=$1",
+            [held.id],
+          )
+        ).rows[0];
+      const before = await holdRow();
+      const pending = await sendInstruction(game.id, owner);
+      assert.equal(pending.status, "active");
+      assert.match(await lastError(game.id), /billing is still pending/);
+      assert.deepEqual(await holdRow(), before, "the sibling's reservation is unchanged");
+      await settleInference(held.id, { tokens: 164, cost: held.cost / 1_000_000 });
+      const exhausted = await sendInstruction(game.id, owner);
+      assert.equal(exhausted.status, "exhausted");
+      assert.match(await lastError(game.id), /budget is exhausted/);
     },
   );
 

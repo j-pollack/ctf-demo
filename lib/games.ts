@@ -968,9 +968,16 @@ export async function reserveInference(
       ? { maxTokens: wantedOutput }
       : requestAllowance(input, wantedOutput, inputRate, outputRate, available);
     if (allowance.maxTokens < 64) {
-      // An agent past its budget is exhausted even while another call's reservation is held.
+      // An agent past its budget is exhausted unless a sibling's paid agent call is still unsettled.
       const spentOut =
-        role === "agent" && Number(game.spent_microdollars) >= Number(game.budget_microdollars);
+        role === "agent" &&
+        Number(game.spent_microdollars) >= Number(game.budget_microdollars) &&
+        !(
+          await client.query(
+            "SELECT 1 FROM ctf.inference WHERE game_id=$1 AND role='agent' AND settled_at IS NULL LIMIT 1",
+            [gameId],
+          )
+        ).rowCount;
       throw new GameError(
         spentOut
           ? "Your inference budget is exhausted."
