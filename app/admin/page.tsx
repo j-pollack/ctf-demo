@@ -2,6 +2,10 @@ import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { adminStats, isAdmin } from "@/lib/admin";
+import { agentModelSetting, currentAgentModel } from "@/lib/agent-model";
+import { MODELS } from "@/lib/policy";
+import { setAgentModel } from "./actions";
+import { AgentModelCard } from "./agent-model-card";
 import {
   Area,
   Bars,
@@ -62,9 +66,23 @@ async function requireAdmin() {
   if (!isAdmin(session?.user)) notFound();
 }
 
-export default async function Admin() {
+const changedBy = (setting: Awaited<ReturnType<typeof agentModelSetting>>) =>
+  setting &&
+  `Changed by ${setting.updatedBy ?? "an admin"} · ${setting.updatedAt.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+
+export default async function Admin({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   await requireAdmin();
-  const { totals: t, daily, monthly, outcomes, models, monitors, spenders } = await adminStats();
+  const refused = (await searchParams).model === "refused";
+  const [stats, setting, current] = await Promise.all([
+    adminStats(),
+    agentModelSetting(),
+    currentAgentModel(),
+  ]);
+  const { totals: t, daily, monthly, outcomes, models, monitors, spenders } = stats;
 
   const days = daily.map((d) => day(d.day));
   const runs = daily.map((d) => Number(d.runs)),
@@ -136,7 +154,7 @@ export default async function Admin() {
           <dd>{t.turns_avg.toFixed(1)}</dd>
         </div>
         <div>
-          <dt>Monitor block rate</dt>
+          <dt>Catches per turn</dt>
           <dd>{pct(t.blocks, t.turns)}</dd>
         </div>
         <div>
@@ -146,6 +164,13 @@ export default async function Admin() {
       </dl>
 
       <div className="cards">
+        <AgentModelCard
+          action={setAgentModel}
+          models={MODELS}
+          current={current}
+          changedBy={changedBy(setting)}
+          refused={refused}
+        />
         <Card title="Runs per day" note="Last 30 days">
           <Legend
             series={[
@@ -231,7 +256,10 @@ export default async function Admin() {
           />
         </Card>
 
-        <Card title="Capture rate by monitor" note="How beatable each monitor and difficulty is">
+        <Card
+          title="Capture rate by monitor"
+          note="By classifier model and recorded difficulty. New runs all record hard."
+        >
           <Bars
             color={RUNS}
             rows={monitors.map((s) => ({

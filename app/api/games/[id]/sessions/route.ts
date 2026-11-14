@@ -1,3 +1,4 @@
+import { currentAgentModel } from "@/lib/agent-model";
 import { createSession } from "@/lib/sessions";
 import { getPublicGameRow, publicGame } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
@@ -11,7 +12,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     checkOrigin(request);
     const user = await player(request);
     const data = await body(request);
-    const agent = publicAgentSettings(data);
+    const agent = publicAgentSettings(data, await currentAgentModel());
     if (data.systemPrompt !== undefined && typeof data.systemPrompt !== "string")
       throw new GameError("Enter a valid system prompt.");
     const { id } = await params;

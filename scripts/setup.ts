@@ -27,6 +27,7 @@ try {
     "014-async-monitor.sql",
     "015-transcript-evidence.sql",
     "016-hide-submit-from-monitor.sql",
+    "017-settings.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

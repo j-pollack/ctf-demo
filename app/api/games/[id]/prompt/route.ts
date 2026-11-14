@@ -1,3 +1,4 @@
+import { currentAgentModel } from "@/lib/agent-model";
 import { claimGameSession, getGame } from "@/lib/games";
 import { getSession } from "@/lib/sessions";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
@@ -13,7 +14,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       data = await body(request);
     if (typeof data.prompt !== "string" || !data.prompt.trim() || data.prompt.length > 8192)
       throw new GameError("Enter an instruction of up to 8,192 characters.");
-    const agent = publicAgentSettings(data);
+    const agent = publicAgentSettings(data, await currentAgentModel());
     const gameId = (await params).id;
     if (
       data.sessionId !== undefined &&

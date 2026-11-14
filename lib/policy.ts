@@ -17,7 +17,7 @@ const AGENT_MODELS = [
   "qwen/qwen3.8-flash",
   "qwen/qwen3.8-27b",
 ];
-// Fixed player model; keep older entries for historical runs and internal replay.
+// Default player model, used until an admin sets one; keep older entries for historical runs and internal replay.
 export const AGENT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 export const PLAYER_AGENT_EFFORT = "low" as const;
 export const INVESTIGATOR_MODEL = "z-ai/glm-5.3";
@@ -61,10 +61,10 @@ export class GameError extends Error {
   }
 }
 
-export function publicAgentSettings(data: Record<string, unknown>) {
-  if (data.agentModel !== undefined && data.agentModel !== AGENT_MODEL)
+export function publicAgentSettings(data: Record<string, unknown>, agentModel: string) {
+  if (data.agentModel !== undefined && data.agentModel !== agentModel)
     throw new GameError("The agent model cannot be changed.");
   if (data.agentEffort !== undefined && data.agentEffort !== PLAYER_AGENT_EFFORT)
     throw new GameError("The agent reasoning effort cannot be changed.");
-  return { agentModel: AGENT_MODEL, agentEffort: PLAYER_AGENT_EFFORT };
+  return { agentModel, agentEffort: PLAYER_AGENT_EFFORT };
 }

@@ -51,6 +51,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "../../db/migrations/010-control-monitor.sql",
     "../../db/migrations/011-agent-effort.sql",
     "../../db/migrations/012-new-run.sql",
+    "../../db/migrations/017-settings.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const legacyId = randomUUID();
@@ -2451,6 +2452,70 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     gameId: string,
     extra: Record<string, unknown> = {},
   ) => (await instructFrames(who, gameId, extra)).response;
+
+  await t.test("an admin-set attacker model pins new runs and later instructions", async () => {
+    const { changeAgentModel } = await import("../../lib/agent-model");
+    const { POST: start } = await import("../../app/api/games/route");
+    const model = MODELS.find((candidate) => candidate !== AGENT_MODEL)!;
+    const setter = await member();
+    await pool.query(`UPDATE ctf."user" SET "isAdmin"=true WHERE id=$1`, [setter.id]);
+    const player = await member();
+    const starter = await member();
+    const old = await startGame(player.id);
+    const models = async (id: string) =>
+      (
+        await pool.query(
+          `SELECT g.agent_model AS game,s.agent_model AS session FROM ctf.games g
+           JOIN ctf.agent_sessions s ON s.game_id=g.id AND s.ordinal=1 WHERE g.id=$1`,
+          [id],
+        )
+      ).rows[0];
+    const post = (who: { cookie: string }, payload: Record<string, unknown>) =>
+      start(
+        new Request(`${origin}/api/games`, {
+          method: "POST",
+          headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+      );
+    try {
+      await changeAgentModel(new Headers({ cookie: setter.cookie }), model);
+      agentModelOverride = model;
+      assert.deepEqual(await models(old.id), { game: AGENT_MODEL, session: AGENT_MODEL });
+
+      const rejected = await post(starter, { agentModel: AGENT_MODEL });
+      assert.equal(rejected.status, 400);
+      assert.equal((await rejected.json()).error, "The agent model cannot be changed.");
+      assert.equal(
+        (
+          await pool.query("SELECT count(*)::int AS n FROM ctf.games WHERE owner_id=$1", [
+            starter.id,
+          ])
+        ).rows[0].n,
+        0,
+        "a refused start creates no run",
+      );
+
+      const started = await post(starter, { agentModel: model });
+      assert.equal(started.status, 200);
+      assert.deepEqual(await models((await started.json()).id), { game: model, session: model });
+
+      const named = await instruct(player, old.id, { agentModel: AGENT_MODEL });
+      assert.equal(named.status, 400);
+      assert.equal((await named.json()).error, "The agent model cannot be changed.");
+      assert.equal((await models(old.id)).session, AGENT_MODEL, "a refusal leaves the session");
+
+      assert.equal((await instruct(player, old.id)).status, 200);
+      assert.equal(
+        (await models(old.id)).session,
+        model,
+        "the next instruction adopts the setting",
+      );
+    } finally {
+      agentModelOverride = AGENT_MODEL;
+      await pool.query("DELETE FROM ctf.settings");
+    }
+  });
 
   await t.test(
     "session routes validate bodies and ownership without starting another run",
