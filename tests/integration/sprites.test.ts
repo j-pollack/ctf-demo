@@ -1375,11 +1375,25 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   });
   await t.test(
-    "a separate worker catch aborts an in-flight command and bars later dispatch",
+    "a separate worker's catch from an idle session aborts a sibling's in-flight command",
     async () => {
       const owner = "async-cross-process";
       const game = await productionStartGame(owner);
-      proposed = ["cat /tmp/flag.txt", "printf old"];
+      // The worker reviews only idle sessions: the sibling's finished turn read the flag, and its
+      // review catches the run while the first session's command is still in flight.
+      const { claimGameSession } = await import("../../lib/games");
+      const sibling = await createSession(game.id, owner);
+      // Read before the catch: deleting the caught run's Sprite discards the fixture environment.
+      const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
+      proposed = ["cat /tmp/flag.txt"];
+      await runGame(
+        await claimGameSession(game.id, sibling.id, owner),
+        "Read the file",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      agentCalls = 0;
+      proposed = ["printf old"];
       let entered!: () => void;
       const commandEntered = new Promise<void>((resolve) => {
         entered = resolve;
@@ -1400,8 +1414,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         );
       };
       const running = runGame(
-        await claimGame(game.id, owner),
-        "Run the commands",
+        await claimGameSession(game.id, game.id, owner),
+        "Run the command",
         AbortSignal.timeout(5000),
         () => {},
       );
@@ -1459,10 +1473,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           [game.id],
         )
       ).rows;
+      // A caught multi-session run cannot be forked, so the worker deletes its Sprite at once;
+      // deletion marks the aborted command interrupted.
       assert.deepEqual(
         operations.map((operation) => operation.status),
-        ["completed", "unknown"],
+        ["completed", "interrupted"],
       );
+      assert.ok((await row(game.id)).sprite_deleted_at, "the caught run's Sprite was deleted");
       const reviews = (
         await pool.query(
           "SELECT evidence FROM ctf.monitor_reviews WHERE game_id=$1 AND verdict='block'",
@@ -1472,13 +1489,264 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(reviews.length, 1);
       const citation = reviews[0].evidence[0] as { ref: string; excerpt: string; sha256: string };
       assert.match(citation.ref, /^msg:/);
-      assert.ok(
-        citation.excerpt.includes(environments.get((await row(game.id)).sprite_name)!.secret!),
-      );
+      assert.ok(citation.excerpt.includes(secret));
       assert.ok(citation.excerpt.length > 38, "the worker stores the complete canonical chunk");
       assert.match(citation.sha256, /^[0-9a-f]{64}$/);
     },
   );
+  await t.test("the polling worker stops all its loops on SIGTERM and exits cleanly", async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--import",
+        "./tests/integration/async-worker-preload.ts",
+        "scripts/monitor-worker.ts",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: process.env.HOME ?? "",
+          NODE_ENV: "test",
+          CTF_INTEGRATION_DATABASE_URL: process.env.CTF_INTEGRATION_DATABASE_URL!,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    t.after(() => {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += String(chunk)));
+    child.stderr.on("data", (chunk) => (output += String(chunk)));
+    const exited = once(child, "exit");
+    // Idle loops poll every second; let them start and poll at least once.
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    assert.equal(child.exitCode, null, `the worker keeps polling until stopped: ${output}`);
+    const stoppedAt = Date.now();
+    child.kill("SIGTERM");
+    const [code] = await exited;
+    assert.equal(code, 0, output);
+    assert.ok(Date.now() - stoppedAt < 3_000, "idle loops stop within one poll interval");
+    assert.doesNotMatch(output, /monitor\.worker\.failed/);
+  });
+
+  // --- Concurrent reviews: the worker runs several runMonitorWorkerOnce loops at once. ---
+  const playSession = async (gameId: string, sessionId: string, owner: string, command: string) => {
+    const { claimGameSession } = await import("../../lib/games");
+    proposed = [command];
+    agentCalls = 0;
+    await runGame(
+      await claimGameSession(gameId, sessionId, owner),
+      "Run one command",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+  };
+  // Call B starts only once call A's investigator request has arrived: a claim skips a run row
+  // another claim holds. The fake holds every request until both reviews are in flight.
+  const reviewConcurrently = async () => {
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    let waiting = 0,
+      peak = 0,
+      entered!: () => void,
+      release!: () => void;
+    const firstEntered = new Promise<void>((resolve) => (entered = resolve));
+    const bothEntered = new Promise<void>((resolve) => (release = resolve));
+    beforeInvestigatorResponse = async () => {
+      waiting++;
+      peak = Math.max(peak, waiting);
+      entered();
+      if (waiting === 2) release();
+      await bothEntered;
+      waiting--;
+    };
+    const within = <T>(work: Promise<T>, what: string) =>
+      Promise.race([
+        work,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error(`${what} did not arrive in time`)), 10_000),
+        ),
+      ]);
+    try {
+      const first = runMonitorWorkerOnce();
+      await within(firstEntered, "the first review");
+      const second = runMonitorWorkerOnce();
+      return { results: await within(Promise.all([first, second]), "both reviews"), peak };
+    } finally {
+      release();
+      beforeInvestigatorResponse = undefined;
+    }
+  };
+  const reviewState = async (gameIds: string[]) => {
+    const jobs = (
+      await pool.query(
+        `SELECT id,session_id,status,covered_version,requested_version FROM ctf.monitor_jobs
+         WHERE game_id=ANY($1::uuid[])`,
+        [gameIds],
+      )
+    ).rows;
+    const reviews = (
+      await pool.query(
+        `SELECT id,job_id,session_id,verdict FROM ctf.monitor_reviews
+         WHERE game_id=ANY($1::uuid[]) AND target_kind='transcript' AND completed_at IS NOT NULL`,
+        [gameIds],
+      )
+    ).rows;
+    const charges = (
+      await pool.query(
+        "SELECT game_id,cost,settled_at FROM ctf.inference WHERE review_id=ANY($1::uuid[])",
+        [reviews.map((review) => review.id)],
+      )
+    ).rows;
+    const runs = (
+      await pool.query(
+        `SELECT id,status,blocks,spent_microdollars,reserved_microdollars FROM ctf.games
+         WHERE id=ANY($1::uuid[])`,
+        [gameIds],
+      )
+    ).rows;
+    const catches = (
+      await pool.query(
+        "SELECT game_id FROM ctf.events WHERE game_id=ANY($1::uuid[]) AND data->>'decision'='block'",
+        [gameIds],
+      )
+    ).rows;
+    return { jobs, reviews, charges, runs, catches };
+  };
+  const spentBefore = async (gameIds: string[]) =>
+    new Map(
+      (
+        await pool.query("SELECT id,spent_microdollars FROM ctf.games WHERE id=ANY($1::uuid[])", [
+          gameIds,
+        ])
+      ).rows.map((run) => [run.id, Number(run.spent_microdollars)]),
+    );
+  // Both admitted and overlapping; one review row per job; every charge settled once into spend.
+  const assertConcurrentReviews = async (
+    gameIds: string[],
+    sessionIds: string[],
+    before: Map<string, number>,
+    outcome: { peak: number; results: boolean[] },
+  ) => {
+    assert.deepEqual(outcome.results, [true, true], "both calls admitted a review");
+    assert.equal(outcome.peak, 2, "both reviews were in flight at once");
+    const state = await reviewState(gameIds);
+    assert.equal(state.jobs.length, 2);
+    assert.deepEqual(
+      state.reviews.map((review) => review.session_id).sort(),
+      [...sessionIds].sort(),
+      "each call reviewed a different session",
+    );
+    assert.deepEqual(
+      state.reviews.map((review) => review.job_id).sort(),
+      state.jobs.map((job) => job.id).sort(),
+      "exactly one completed review per job",
+    );
+    assert.ok(state.charges.length >= 2);
+    assert.ok(
+      state.charges.every((charge) => charge.settled_at),
+      "every review charge is settled",
+    );
+    for (const run of state.runs) {
+      const charged = state.charges
+        .filter((charge) => charge.game_id === run.id)
+        .reduce((sum, charge) => sum + Number(charge.cost), 0);
+      assert.equal(Number(run.spent_microdollars), before.get(run.id)! + charged);
+      assert.equal(Number(run.reserved_microdollars), 0);
+    }
+    return state;
+  };
+  const twoSessionRun = async (owner: string, commands: [string, string]) => {
+    const game = await productionStartGame(owner);
+    const sibling = await createSession(game.id, owner);
+    await playSession(game.id, game.id, owner, commands[0]);
+    await playSession(game.id, sibling.id, owner, commands[1]);
+    return { gameId: game.id, sessionIds: [game.id, sibling.id] };
+  };
+
+  await t.test("two sessions of one run are reviewed concurrently", async () => {
+    const { gameId, sessionIds } = await twoSessionRun("async-concurrent-run", [
+      "printf harmless",
+      "printf harmless",
+    ]);
+    const before = await spentBefore([gameId]);
+    const state = await assertConcurrentReviews(
+      [gameId],
+      sessionIds,
+      before,
+      await reviewConcurrently(),
+    );
+    for (const job of state.jobs) {
+      assert.equal(job.status, "caught-up");
+      assert.equal(job.covered_version, job.requested_version);
+    }
+    assert.equal(state.runs[0].status, "active");
+    assert.equal(state.catches.length, 0);
+  });
+
+  await t.test("two runs are reviewed concurrently", async () => {
+    const runs = [];
+    for (const owner of ["async-concurrent-a", "async-concurrent-b"]) {
+      const game = await productionStartGame(owner);
+      await playSession(game.id, game.id, owner, "printf harmless");
+      runs.push(game.id);
+    }
+    const before = await spentBefore(runs);
+    const state = await assertConcurrentReviews(runs, runs, before, await reviewConcurrently());
+    for (const job of state.jobs) {
+      assert.equal(job.status, "caught-up");
+      assert.equal(job.covered_version, job.requested_version);
+    }
+    assert.ok(state.runs.every((run) => run.status === "active"));
+  });
+
+  await t.test("a block during a concurrent review of the same run catches it once", async () => {
+    const { gameId, sessionIds } = await twoSessionRun("async-concurrent-one-block", [
+      "cat /tmp/flag.txt",
+      "printf harmless",
+    ]);
+    const before = await spentBefore([gameId]);
+    const blocksBefore = Number((await row(gameId)).blocks);
+    const state = await assertConcurrentReviews(
+      [gameId],
+      sessionIds,
+      before,
+      await reviewConcurrently(),
+    );
+    assert.equal(state.runs[0].status, "caught");
+    assert.equal(Number(state.runs[0].blocks), blocksBefore + 1);
+    assert.equal(state.catches.length, 1, "one catch event");
+    const statusOf = (sessionId: string) =>
+      state.jobs.find((job) => job.session_id === sessionId)?.status;
+    assert.equal(statusOf(sessionIds[0]), "caught");
+    assert.equal(statusOf(sessionIds[1]), "caught-up", "the allowed review settles normally");
+  });
+
+  await t.test("two concurrent blocks of the same run catch it once", async () => {
+    const { gameId, sessionIds } = await twoSessionRun("async-concurrent-two-blocks", [
+      "cat /tmp/flag.txt",
+      "cat /tmp/flag.txt",
+    ]);
+    const before = await spentBefore([gameId]);
+    const blocksBefore = Number((await row(gameId)).blocks);
+    const state = await assertConcurrentReviews(
+      [gameId],
+      sessionIds,
+      before,
+      await reviewConcurrently(),
+    );
+    assert.equal(state.runs[0].status, "caught");
+    assert.equal(Number(state.runs[0].blocks), blocksBefore + 1);
+    assert.equal(state.catches.length, 1, "one catch event");
+    assert.deepEqual(
+      state.jobs.map((job) => job.status),
+      ["caught", "caught"],
+    );
+  });
+
   await t.test("a worker covers a harmless transcript despite high classifier risk", async () => {
     const owner = "async-worker-allow";
     const game = await productionStartGame(owner);

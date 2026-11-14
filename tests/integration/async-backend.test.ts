@@ -612,6 +612,92 @@ await test(
       assert.equal(await claimMonitorJob(), null);
     });
 
+    // A live lease means the session's agent turn is in progress; null clears it.
+    const setLease = (sessionId: string, until: string | null) =>
+      pool.query(
+        `UPDATE ctf.agent_sessions SET lease=CASE WHEN $2::interval IS NULL THEN NULL
+           ELSE gen_random_uuid() END,lease_until=now()+$2::interval WHERE id=$1`,
+        [sessionId, until],
+      );
+    const jobOf = async (sessionId: string) =>
+      (
+        await pool.query(
+          "SELECT id,status,attempts,requested_version FROM ctf.monitor_jobs WHERE session_id=$1",
+          [sessionId],
+        )
+      ).rows[0];
+
+    await t.test("a session mid-turn is skipped while an idle sibling is claimed", async () => {
+      await retireOtherJobs();
+      const id = await seed(`turn-busy-${randomUUID()}`);
+      const idle = await addSession(id, 2);
+      await setLease(id, "1 minute");
+      await write(id, ["a1"]);
+      await write(id, ["a1", "a2"]);
+      await write(id, ["a1", "a2", "a3"]);
+      await write(id, ["b1"], idle);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.gameId, id);
+      assert.equal(claim?.sessionId, idle, "the idle sibling is admitted");
+      await finishMonitorJob(claim!, { kind: "allow" });
+      assert.equal(await claimMonitorJob(), null, "only the busy session is ready");
+      assert.equal((await jobOf(id)).status, "queued");
+      await setLease(id, null);
+      await reviewOnce(id);
+    });
+
+    await t.test("a turn's end makes one review cover every update of the turn", async () => {
+      await retireOtherJobs();
+      const id = await seed(`turn-end-${randomUUID()}`);
+      await setLease(id, "1 minute");
+      await write(id, ["a1"]);
+      await write(id, ["a1", "a2"]);
+      const last = await write(id, ["a1", "a2", "a3"]);
+      await setLease(id, null);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.sessionId, id);
+      assert.equal(claim?.targetVersion, last.version);
+      assert.equal(claim?.targetVersion, Number((await jobOf(id)).requested_version));
+      await finishMonitorJob(claim!, { kind: "allow" });
+      assert.equal((await jobOf(id)).status, "caught-up");
+      assert.equal(await claimMonitorJob(), null);
+    });
+
+    await t.test("an expired lease from a crashed turn does not block the review", async () => {
+      await retireOtherJobs();
+      const id = await seed(`turn-crashed-${randomUUID()}`);
+      await write(id, ["a1"]);
+      await setLease(id, "-1 second");
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.sessionId, id);
+      await finishMonitorJob(claim!, { kind: "allow" });
+      await setLease(id, null);
+    });
+
+    await t.test("an expired claim is not reclaimed while its session is mid-turn", async () => {
+      await retireOtherJobs();
+      const id = await seed(`turn-expired-claim-${randomUUID()}`);
+      await write(id, ["a1"]);
+      const first = await claimMonitorJob();
+      assert.equal(first?.sessionId, id);
+      await setLease(id, "1 minute");
+      await pool.query(
+        "UPDATE ctf.monitor_jobs SET claim_until=now()-interval '1 second' WHERE id=$1",
+        [first!.jobId],
+      );
+      assert.equal(await claimMonitorJob(), null);
+      assert.deepEqual(
+        { status: (await jobOf(id)).status, attempts: (await jobOf(id)).attempts },
+        { status: "reviewing", attempts: 1 },
+        "waiting does not spend an attempt",
+      );
+      await setLease(id, null);
+      const second = await claimMonitorJob();
+      assert.equal(second?.jobId, first!.jobId);
+      assert.equal((await jobOf(id)).attempts, 2);
+      await finishMonitorJob(second!, { kind: "allow" });
+    });
+
     await t.test("a job still in backoff is skipped however long ago it was reviewed", async () => {
       await retireOtherJobs();
       const waiting = await seed(`order-backoff-${randomUUID()}`);
@@ -1109,10 +1195,6 @@ await test(
         const id = await seed(`${status}-${randomUUID()}`);
         const lease = randomUUID();
         const operationSessionId = status === "running" ? randomUUID() : id;
-        await pool.query(
-          "UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()+interval '1 minute' WHERE id=$1",
-          [id, lease],
-        );
         if (operationSessionId !== id)
           await pool.query(
             `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
@@ -1138,6 +1220,11 @@ await test(
           }
           assert.equal(cleared, true);
         }
+        // The turn that submits holds the lease; the review above ran between turns.
+        await pool.query(
+          "UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()+interval '1 minute' WHERE id=$1",
+          [id, lease],
+        );
         await beginAsyncSubmission({ gameId: id, sessionId: id, lease, value: "incorrect flag" });
         const run = (await pool.query("SELECT * FROM ctf.games WHERE id=$1", [id])).rows[0];
         const publicRun = await publicGame(run);

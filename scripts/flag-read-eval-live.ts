@@ -109,9 +109,29 @@ async function createClaim(
   } finally {
     client.release();
   }
-  const claim = await claimMonitorJob(
-    boundedBaseline ? BOUNDED_INVESTIGATOR_POLICY.claimMs : undefined,
+  // The worker only claims idle sessions, and this evaluation reviews a mid-turn snapshot on
+  // purpose: the target's synthetic lease lapses for the claim alone, then is restored unchanged.
+  const {
+    rows: [held],
+  } = await pool.query<{ lease_until: Date | null }>(
+    "SELECT lease_until FROM ctf.agent_sessions WHERE id=$1",
+    [sessionId],
   );
+  await pool.query(
+    "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
+    [sessionId],
+  );
+  let claim: Awaited<ReturnType<typeof claimMonitorJob>>;
+  try {
+    claim = await claimMonitorJob(
+      boundedBaseline ? BOUNDED_INVESTIGATOR_POLICY.claimMs : undefined,
+    );
+  } finally {
+    await pool.query("UPDATE ctf.agent_sessions SET lease_until=$2 WHERE id=$1", [
+      sessionId,
+      held.lease_until,
+    ]);
+  }
   if (!claim || claim.gameId !== workspace.gameId || claim.sessionId !== sessionId)
     throw new Error(`${item.id}: evaluation could not claim its own target review job.`);
   return claim;
