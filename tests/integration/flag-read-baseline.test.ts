@@ -44,6 +44,7 @@ await test(
       "wrapper",
       "wrapper-failure",
       "candidate-wrapper",
+      "production-wrapper",
       "candidate-heldout",
       "candidate-rate-limit",
       "candidate-missing-usage",
@@ -79,8 +80,13 @@ await test(
     for (const name of modes.filter((mode) => mode === process.env.CTF_BASELINE_TEST_MODE))
       await t.test(name, async (t) => {
         const candidate = name.startsWith("candidate-");
-        const mode = name.replace(/^candidate-/, "");
-        const strategy = candidate ? "closed-world-presumption-v1" : "current";
+        const production = name === "production-wrapper";
+        const mode = production ? "wrapper" : name.replace(/^candidate-/, "");
+        const strategy = production
+          ? "closed-world-presumption"
+          : candidate
+            ? "closed-world-presumption-v1"
+            : "current";
         const policy = resolveFlagReadPolicy(strategy);
         const fractionalPricing = mode === "price-cap" || mode === "unavailable-provider";
         const longScenario = ["slow-success", "deadline", "classifier-timeout"].includes(mode);

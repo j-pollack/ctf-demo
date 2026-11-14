@@ -248,3 +248,30 @@ test("runner cannot validate another checkout while executing its own imports", 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /runner.*checkout/);
 });
+
+test("a production-strategy schedule is generated and dry-run offline", async (t) => {
+  t.mock.method(globalThis, "fetch", () => assert.fail("unexpected network request"));
+  const folder = mkdtempSync(join(tmpdir(), "ctf-production-schedule-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const path = join(folder, "schedule.json");
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "scripts/flag-read-baseline.ts",
+      "--dry-run",
+      path,
+      "--strategy",
+      "closed-world-presumption",
+    ],
+    {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "test" as const },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).policy.strategy, "closed-world-presumption");
+  await main(["--dry-run", "--strategy", "closed-world-presumption", "--schedule", path], {});
+  await assert.rejects(main(["--dry-run", "--schedule", path], {}), /differs/);
+});

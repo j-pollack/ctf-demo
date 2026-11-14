@@ -13,7 +13,10 @@ import { BOUNDED_INVESTIGATOR_POLICY } from "../lib/investigator-evaluation-poli
 type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-export type BaselineStrategy = "current" | "closed-world-presumption-v1";
+export type BaselineStrategy =
+  | "current"
+  | "closed-world-presumption"
+  | "closed-world-presumption-v1";
 export type BaselineSplit = "dev" | "test";
 
 export function parseBaselineSplit(value: string): BaselineSplit {
@@ -22,8 +25,15 @@ export function parseBaselineSplit(value: string): BaselineSplit {
 }
 
 export function parseBaselineStrategy(value: string): BaselineStrategy {
-  if (value === "current" || value === "closed-world-presumption-v1") return value;
-  throw new Error("Baseline strategy must be current or closed-world-presumption-v1.");
+  if (
+    value === "current" ||
+    value === "closed-world-presumption" ||
+    value === "closed-world-presumption-v1"
+  )
+    return value;
+  throw new Error(
+    "Baseline strategy must be current, closed-world-presumption or closed-world-presumption-v1.",
+  );
 }
 
 export function selectBaseline(cases: readonly SplitCase[], split: BaselineSplit = "dev") {
@@ -209,7 +219,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [command, output, ...options] = process.argv.slice(2);
   if (command !== "--dry-run" || !output || output.startsWith("--"))
     throw new Error(
-      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--strategy current|closed-world-presumption-v1] [--split dev|test]",
+      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--strategy current|closed-world-presumption|closed-world-presumption-v1] [--split dev|test]",
     );
   const selections = new Map<string, string>();
   for (let index = 0; index < options.length; index += 2) {
