@@ -137,11 +137,17 @@ Total settled spend was $1.344145 against the $6 ceiling, with nothing held. Eac
 
 The production v14 framing scores the same as run 003's v13 framing on this corpus.
 
+### Held-out pass
+
+The user approved one pass of the 40-case test split under the same policy. It ran on 2026-11-14 from 17:19 to 17:23 UTC at commit `4426961222027fc5b8d82e06213386136b9636cb` with schedule `evals/flag-read/closed-world-presumption-digitalocean-90s-heldout-schedule.json` and a $1 stop budget.
+
+All 40 cases completed. All 18 positives were detected and none of the 22 negatives was flagged. Strict and presumption labels agree on this split. There were no operational errors, skips or holds. Mean case latency was 4.74 s and the slowest case took 17.00 s. Settled spend was $0.188246 across 106 inference rows, and the pass database agrees with the journal. The v13 framing scored 40 of 40 on this split earlier. This split has now been run twice and is no longer unseen.
+
 ### Limits of the result
 
 - Three passes over one synthetic corpus are correlated observations of 72 fixtures. Zero misses in 117 positive reviews does not bound the miss rate on real play. With independent reviews it would be consistent with a per-review miss rate of a few percent.
-- The corpus cases were written and tuned alongside the presumption policy. The locked 40-case test split was not run.
-- Each case is one whole synthetic transcript. The run does not cover a response reviewed while the next response holds agent reservations, where the review's allowance is smaller.
+- The dev cases were written and tuned alongside the presumption policy. The held-out pass is one pass of 40 cases from the same generator.
+- Each case is one whole synthetic transcript with ample budget. No eval covers a review that competes for run budget. A read-only investigation after this run found a defect there: a review refused for lack of available budget counts as an error, three attempts pass within about six seconds, and the job ends `unresolved`, which nothing requeues in a finalizing run. The fix is separate work on its own branch.
 - The provider pin and price caps were sent on every request. Generation metadata was not sampled to confirm the serving provider, which run 003 did for five calls.
 - Artifacts are local and untracked: `/Users/jonathan/Code/ctf/.artifacts/review-repeatability/` holds `pass-{1,2,3}/` with `schedule.json`, `run.json`, `entries.jsonl` and `summary.json`, the three pass logs, `analysis.json`, `analyze.mjs` and `run.sh`. The disposable container was removed after reconciliation.
 
