@@ -4,9 +4,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as UI from "../app/game-ui";
 import { Entry } from "../app/transcript";
-import { SessionPane } from "../app/session-pane";
-import { createSessionUIState } from "../app/session-ui-state";
-import { session } from "./fixtures/console-runs";
+import { RunInspector } from "../app/run-inspector";
+import { run, session } from "./fixtures/console-runs";
 
 test("step-by-step rules describe starting a run without the removed difficulty setting", () => {
   const html = renderToStaticMarkup(createElement(UI.RunInstructions));
@@ -25,27 +24,21 @@ test("actual setup fields show budget and reasoning guidance without difficulty 
   assert.doesNotMatch(html, /AGENT MODEL|AGENT EFFORT|change the agent.*model|effort at any time/);
 });
 
-test("a pane header keeps the historical agent label and effort without difficulty", () => {
+test("the inspector keeps each session's historical agent label and effort without difficulty", () => {
+  const sessions = [
+    {
+      ...session(1, { agentModel: "historical/model-kept-for-this-session", agentEffort: "high" }),
+      turns: 3,
+    },
+  ];
   const html = renderToStaticMarkup(
-    createElement(SessionPane, {
-      session: session(1, {
-        agentModel: "historical/model-kept-for-this-session",
-        agentEffort: "high",
-      }),
-      view: createSessionUIState({ id: "session-1", events: [] }),
-      runStatus: "captured",
-      editable: false,
-      focused: true,
-      disabled: false,
-      streaming: false,
-      onFocus: () => {},
-      onDraftChange: () => {},
-      onSystemDraftChange: () => {},
-      onSend: () => {},
-      onStop: () => {},
-      onRetry: () => {},
-      onDismissError: () => {},
-      onCopy: () => {},
+    createElement(RunInspector, {
+      game: run(sessions, { status: "captured" }),
+      sessions,
+      riskSeries: [],
+      peak: 0,
+      observed: false,
+      decisions: [],
     }),
   );
   assert.match(html, /model-kept-for-this-session/);

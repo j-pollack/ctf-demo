@@ -10,6 +10,7 @@ test("run details drop the removed copy and keep the chart and legend", () => {
   const html = renderToStaticMarkup(
     createElement(RunInspector, {
       game: run([session(1)]),
+      sessions: [],
       riskSeries: [
         {
           id: "s1",

@@ -25,6 +25,7 @@ const render = (extra: Partial<SessionChipsProps> = {}) =>
       onActivate: () => {},
       onCreate: () => {},
       creating: false,
+      pendingOrdinal: null,
       ...extra,
     }),
   );
@@ -73,8 +74,8 @@ test("Add session sits outside the scrolling chips and only when a session can b
   const html = render();
   assert.match(
     html,
-    /<\/div><button type="button" class="session-add" aria-label="Add session">\+<span class="add-label"> Add session<\/span><\/button>/,
+    /<\/div><button type="button" class="chips-more" data-edge="end" aria-hidden="true" tabindex="-1" hidden="">›<\/button><\/div><button type="button" class="session-add" aria-label="Add session">\+<span class="add-label"> Add session<\/span><\/button>/,
   );
-  assert.match(render({ creating: true }), /class="session-add"[^>]*disabled=""/);
+  assert.match(render({ creating: true }), /class="session-add"[^>]*aria-disabled="true"/);
   assert.doesNotMatch(render({ onCreate: undefined }), /session-add/);
 });

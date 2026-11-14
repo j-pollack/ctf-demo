@@ -49,6 +49,7 @@ button {
   min-height: 44px;
 }
 button:disabled,
+button[aria-disabled="true"],
 select:disabled {
   opacity: 0.55;
   cursor: default;
@@ -218,8 +219,11 @@ i {
   overflow: hidden;
 }
 .welcome {
-  padding: 45px 0;
-  max-width: 650px;
+  padding: 45px var(--gutter);
+  max-width: 700px;
+}
+.console > p[role="status"] {
+  padding: 16px var(--gutter);
 }
 .welcome p {
   font-size: 15px;
@@ -585,7 +589,6 @@ form label {
 }
 .info {
   padding: 32px var(--gutter);
-  max-width: 1100px;
   min-height: 0;
   flex: 1;
   overflow: auto;
@@ -597,14 +600,17 @@ form label {
 }
 .info ol {
   padding-left: 22px;
-  max-width: 850px;
 }
 .info li {
   padding: 0 0 18px 10px;
 }
 .info > p:not(.eyebrow) {
-  max-width: 850px;
   margin-top: 16px;
+}
+@media (max-width: 720px) {
+  .info :is(td, th) {
+    padding-inline: 8px;
+  }
 }
 .filters {
   display: flex;
@@ -678,9 +684,6 @@ th {
   font-weight: 500;
 }
 /* The difficulty comparison on the rules page: cells hold sentences, so let them wrap. */
-.rules-table {
-  max-width: 850px;
-}
 .rules-table td,
 .rules-table th {
   white-space: normal;
@@ -740,8 +743,7 @@ dialog::backdrop {
 .dialog-content p {
   margin-bottom: 20px;
 }
-.dialog-content > .primary,
-.dialog-content form > .primary {
+.dialog-content > .primary {
   width: 100%;
 }
 .close {
@@ -753,7 +755,27 @@ dialog::backdrop {
   padding: 0;
   width: 44px;
 }
-.dialog-content input {
+.dialog-content .error {
+  font-size: 12px;
+  margin: 18px 0 0;
+}
+.dialog-content .eyebrow {
+  padding-right: 24px;
+}
+/* The sign-in page: one readable column at the shared gutter. */
+.sign-in-form,
+.sign-in > [role="status"],
+.sign-in > .error {
+  max-width: 28rem;
+}
+.sign-in-form p {
+  margin-bottom: 20px;
+}
+.sign-in-form label {
+  display: block;
+  font-size: 12px;
+}
+.sign-in-form input {
   display: block;
   width: 100%;
   margin: 8px 0 20px;
@@ -761,12 +783,11 @@ dialog::backdrop {
   background: var(--paper);
   border: 1px solid var(--line);
 }
-.dialog-content .error {
-  font-size: 12px;
-  margin: 18px 0 0;
+.sign-in-form .primary {
+  width: 100%;
 }
-.dialog-content .eyebrow {
-  padding-right: 24px;
+.sign-in > .error {
+  margin-top: 18px;
 }
 .workspace > .error[role="alert"] {
   padding-inline: var(--gutter);
@@ -859,7 +880,7 @@ dialog::backdrop {
     font-size: 16px;
   }
   .welcome {
-    padding: 30px 0;
+    padding-block: 30px;
   }
   .welcome p {
     font-size: 13px;
@@ -974,7 +995,8 @@ dialog::backdrop {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.markdown :not(pre) > code {
+.markdown :not(pre) > code,
+.mission-intro code {
   padding: 2px 4px;
   background: #dfe5d7;
   border-radius: 3px;
@@ -999,12 +1021,7 @@ dialog::backdrop {
   outline: 2px solid #557b1d;
   outline-offset: -2px;
 }
-.landing {
-  max-width: 1200px;
-  margin: auto;
-}
 .landing-main {
-  max-width: 850px;
   padding: 80px var(--gutter);
 }
 .landing h1 {
@@ -1015,9 +1032,8 @@ dialog::backdrop {
     sans-serif;
   margin: 20px 0 32px;
 }
-.landing-main > p:not(.eyebrow) {
+.landing-main > p {
   font-size: 16px;
-  max-width: 700px;
 }
 .landing-play {
   display: inline-block;
@@ -1268,7 +1284,7 @@ dialog::backdrop {
   padding: 4px 10px;
   white-space: nowrap;
 }
-.run-bar :is(.session-add, .run-actions button):hover:not(:disabled) {
+.run-bar :is(.session-add, .run-actions button):hover:not(:disabled, [aria-disabled="true"]) {
   background: var(--paper);
 }
 .run-stats {
@@ -1390,6 +1406,48 @@ dialog::backdrop {
   border-radius: 50%;
   background: #557b1d;
 }
+/* Chevrons page the strip; they show only at an edge with chips beyond it. They sit over the
+   strip's edges so showing one never resizes the strip. */
+.chips-frame {
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chips-frame > .chips {
+  flex: 1;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 24px;
+}
+.chips-frame > .chips > .chip {
+  scroll-snap-align: start;
+}
+.run-bar .chips-more {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  width: 24px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1;
+}
+.chips-more[data-edge="start"] {
+  left: 0;
+}
+.chips-more[data-edge="end"] {
+  right: 0;
+}
+.chips-more[hidden] {
+  display: none;
+}
+.run-bar .chip[data-pending] {
+  border-style: dotted;
+}
 .run-bar .session-add {
   flex: none;
   border-color: #9ab760;
@@ -1419,6 +1477,10 @@ dialog::backdrop {
 }
 .outcome > * + * {
   margin-top: 8px;
+}
+/* New run comes first in the strip but shows only on narrow screens; the next item keeps no gap. */
+.outcome > .outcome-new-run + * {
+  margin-top: 0;
 }
 .outcome .terminal {
   padding: 8px 14px;
@@ -1497,13 +1559,11 @@ dialog::backdrop {
   white-space: nowrap;
 }
 .pane-turns,
-.pane-running,
-.pane-model {
+.pane-running {
   font-size: 12px;
   white-space: nowrap;
 }
-.pane-turns,
-.pane-model {
+.pane-turns {
   color: var(--muted);
 }
 .pane-running {
@@ -1514,12 +1574,6 @@ dialog::backdrop {
   height: 6px;
   margin-right: 5px;
   animation: pulse 1.2s infinite;
-}
-.pane-model {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 :where(.thread > *) {
   max-width: 1064px;
@@ -1542,19 +1596,27 @@ dialog::backdrop {
     padding-block: 20px;
   }
 }
-/* Closed, the system prompt is one control in the pane header; open, it takes its own row. */
+/* The summary stays put in the pane header; open, the tray drops below the header across
+   the pane and covers the top of the transcript instead of pushing it. */
+.pane-head {
+  position: relative;
+}
 .system-prompt {
   flex: none;
   min-width: 0;
+  margin-left: auto;
 }
-.system-prompt[open] {
-  flex-basis: 100%;
-  margin-bottom: 6px;
+.system-prompt-tray {
+  position: absolute;
+  top: 100%;
+  inset-inline: 0;
+  z-index: 3;
   border: 1px solid var(--line);
   background: var(--panel);
   max-height: min(36dvh, 340px);
   overflow-y: auto;
   overscroll-behavior: contain;
+  box-shadow: 0 8px 24px #13200a1f;
 }
 .system-prompt summary {
   display: flex;
@@ -1566,9 +1628,6 @@ dialog::backdrop {
   white-space: nowrap;
   cursor: pointer;
   list-style: none;
-}
-.system-prompt[open] summary {
-  padding-inline: 12px;
 }
 .system-prompt summary::-webkit-details-marker {
   display: none;
@@ -1588,20 +1647,30 @@ dialog::backdrop {
   font-size: 10px;
   white-space: nowrap;
 }
-.system-prompt > .hidden-tag {
+.system-prompt-tray > .hidden-tag {
   display: inline-block;
-  margin: 0 12px 8px;
+  margin: 8px 12px;
 }
 .unsaved {
   color: #426f30;
   font-size: 10px;
   white-space: nowrap;
 }
+/* The unsaved dot sits over the summary's corner, so typing never moves the summary. */
+.system-prompt summary {
+  position: relative;
+}
+.system-prompt summary .unsaved {
+  position: absolute;
+  top: 0;
+  right: 0;
+  line-height: 1;
+}
 .unsaved::before {
   content: "● " / "";
 }
 .system-prompt textarea,
-.system-prompt > p {
+.system-prompt-tray > p {
   display: block;
   width: 100%;
   border: 0;
@@ -1615,7 +1684,7 @@ dialog::backdrop {
   max-height: 40dvh;
   resize: vertical;
 }
-.system-prompt > p {
+.system-prompt-tray > p {
   max-height: 30dvh;
   overflow: auto;
   white-space: pre-wrap;
@@ -1632,6 +1701,7 @@ dialog::backdrop {
   position: absolute;
   inset: 0 var(--gutter);
   z-index: 2;
+  padding-bottom: 0;
   padding-left: 0;
   border-left: 0;
   background: var(--paper);
@@ -1653,6 +1723,43 @@ dialog::backdrop {
 .inspector section > small {
   display: block;
 }
+/* Overlay mode: Close details (and New run on narrow screens) stay at the bottom. */
+.inspector-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+}
+.console:has(.workbench[data-inspector="overlay"]) .outcome-new-run {
+  display: none;
+}
+@media (min-width: 721px) {
+  .outcome-new-run,
+  .inspector-footer .new-run {
+    display: none;
+  }
+}
+.session-table {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+.session-table :is(th, td) {
+  padding: 4px 8px 4px 0;
+}
+.session-table td[title] {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-table tbody th {
+  color: var(--ink);
+  font-size: 11px;
+}
 /* One row needs the stats, about four chips with Add session, and the actions side by side. */
 @media (max-width: 1180px) {
   .run-bar {
@@ -1663,8 +1770,30 @@ dialog::backdrop {
   }
 }
 @media (max-width: 720px) {
+  /* Row one: stats and Details. Row two: the chip strip across the width, with Add session. */
   .run-bar {
+    grid-template-areas:
+      "stats actions"
+      "sessions sessions";
+    row-gap: 2px;
+    padding-block: 4px;
     font-size: 12px;
+  }
+  .run-sessions {
+    gap: 2px;
+  }
+  .chips {
+    gap: 1px;
+  }
+  /* A finished run's New run sits on the outcome's heading line, above the strip's fold. */
+  .outcome > .outcome-new-run {
+    float: right;
+    margin: 8px 8px 4px 12px;
+  }
+
+  .run-pending,
+  .run-actions .new-run {
+    display: none;
   }
   /* Run id, budget left with its pending charge, and risk fit one line at 390px. */
   .run-stats {
@@ -1683,7 +1812,7 @@ dialog::backdrop {
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  .system-prompt[open] {
+  .system-prompt-tray {
     max-height: min(22dvh, 220px);
   }
 }
@@ -1695,6 +1824,9 @@ dialog::backdrop {
   }
   .run-bar .session-add {
     min-width: 44px;
+  }
+  .pane-head {
+    padding-block: 0;
   }
   .run-bar .chip {
     min-width: 44px;
@@ -1743,9 +1875,6 @@ dialog::backdrop {
   font-size: 11px;
 }
 /* Rules page glossary: term on its own line, definition indented under it. */
-.glossary {
-  max-width: 850px;
-}
 .glossary dt {
   margin-top: 12px;
   font-weight: 600;
@@ -1798,7 +1927,7 @@ dialog::backdrop {
   min-width: 110px;
 }
 @media (max-width: 720px) and (max-height: 500px) {
-  .system-prompt[open] {
+  .system-prompt-tray {
     max-height: 18dvh;
   }
   .composer textarea {

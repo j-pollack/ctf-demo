@@ -29,6 +29,8 @@ test("navigation selection follows canonical route and whether a detail can cont
     ["/runs", continuable, "history"],
     ["/rank", null, "rank"],
     ["/rules", null, "rules"],
+    ["/signin", null, null],
+    ["/signin", continuable, null],
     ["/runs/run", continuable, "play"],
     ["/runs/run", { ...continuable, busy: true }, "play"],
     ["/runs/run", undefined, null],

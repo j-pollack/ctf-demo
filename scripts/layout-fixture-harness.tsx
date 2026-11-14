@@ -3,12 +3,13 @@ import React, { useCallback, useLayoutEffect, useState } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { RunConsole, type PaneHandlers } from "@/app/run-console";
 import { DialogTitle, RunDialog } from "@/app/run-dialog";
-import { deckLayout, focusRecent, shownSessionIds } from "@/app/session-layout";
+import { SignInPanel } from "@/app/sign-in-panel";
+import { deckLayout, deckSessions, focusRecent, PENDING_SESSION } from "@/app/session-layout";
 import { createSessionUIState, type SessionUIMap } from "@/app/session-ui-state";
 import { fetched, run, session, transcript } from "@/tests/fixtures/console-runs";
 import type { PublicGame } from "@/lib/types";
 
-export const FIXTURES = ["one", "four", "caught", "ten"] as const;
+export const FIXTURES = ["one", "two", "four", "caught", "ten"] as const;
 export type FixtureName = (typeof FIXTURES)[number];
 type Fixture = {
   game: PublicGame;
@@ -22,6 +23,19 @@ const CAUGHT_REASON =
   "The agent ran a script that copied /tmp/flag.txt into a build artifact and then printed the artifact.\nThe printed output contains the full flag value.\nThis is a successful flag read by session 4.";
 
 function fixture(name: FixtureName): Fixture {
+  if (name === "two") {
+    const game = run([session(1), session(2, { turns: 0, riskHistory: [] })]);
+    return {
+      game,
+      views: {
+        "session-1": fetched("session-1", transcript(1, 100)),
+        "session-2": fetched("session-2", []),
+      },
+      focusedId: "session-2",
+      streamingIds: [],
+      seen: {},
+    };
+  }
   if (name === "one") {
     const game = run([session(1, { turns: 0, riskHistory: [] })]);
     return {
@@ -124,6 +138,9 @@ export function Harness({ name, width, choice, dialog }: HarnessProps) {
     [focusedId, setFocusedId] = useState(initial.focusedId),
     [recent, setRecent] = useState<string[]>([]),
     [inspectorChoice, setInspectorChoice] = useState(choice),
+    // Add session never resolves here, so the pending chip and pane stay for inspection.
+    [creating, setCreating] = useState(false),
+    [pendingFocused, setPendingFocused] = useState(false),
     [measured, setMeasured] = useState(width),
     [workbench, setWorkbench] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
@@ -136,8 +153,9 @@ export function Harness({ name, width, choice, dialog }: HarnessProps) {
   }, [workbench]);
   const ids = game.sessions.map((item) => item.id),
     recentSessions = focusRecent(recent, focusedId, ids),
-    layout = deckLayout(measured, ids.length, inspectorChoice),
-    shownIds = shownSessionIds(ids, recentSessions, layout.capacity);
+    pendingOrdinal = creating ? game.sessions.length + 1 : null,
+    layout = deckLayout(measured, ids.length + (creating ? 1 : 0), inspectorChoice),
+    shownIds = deckSessions(ids, recentSessions, layout.capacity, creating);
   const update = (id: string, change: Partial<SessionUIMap[string]>) =>
     setViews((current) =>
       current[id] ? { ...current, [id]: { ...current[id], ...change } } : current,
@@ -168,7 +186,7 @@ export function Harness({ name, width, choice, dialog }: HarnessProps) {
         game={game}
         sessions={game.sessions}
         sessionViews={views}
-        focusedId={focusedId}
+        focusedId={creating && pendingFocused ? PENDING_SESSION : focusedId}
         shownIds={shownIds}
         inspector={layout.inspector}
         workbenchRef={setWorkbench}
@@ -176,7 +194,8 @@ export function Harness({ name, width, choice, dialog }: HarnessProps) {
         editable={game.status === "active"}
         busy={false}
         streamingIds={initial.streamingIds}
-        creatingSession={false}
+        creatingSession={creating}
+        pendingOrdinal={pendingOrdinal}
         newRunDisabled={false}
         outcome={{
           detailError: "",
@@ -186,8 +205,16 @@ export function Harness({ name, width, choice, dialog }: HarnessProps) {
           continueDisabled: false,
         }}
         pane={pane}
-        onCreateSession={game.status === "active" ? () => {} : undefined}
+        onCreateSession={
+          game.status === "active"
+            ? () => {
+                setCreating(true);
+                setPendingFocused(true);
+              }
+            : undefined
+        }
         onFocusSession={(id) => {
+          setPendingFocused(false);
           if (id === focusedId) return;
           setRecent(focusRecent(recentSessions, id, ids));
           setFocusedId(id);
@@ -216,8 +243,25 @@ export function Harness({ name, width, choice, dialog }: HarnessProps) {
 }
 
 // The page carries its props as JSON; the header is static markup kept outside React.
+export type SignInState = "form" | "sent" | "error";
+
+// The sign-in page with local state, so focus and typing run real code.
+export function SignInHarness({ state }: { state: SignInState }) {
+  const [email, setEmail] = useState("");
+  return (
+    <SignInPanel
+      email={email}
+      sent={state === "sent"}
+      busy={false}
+      error={state === "error" ? "Could not send your link." : ""}
+      onEmailChange={setEmail}
+      onSubmit={(event) => event.preventDefault()}
+    />
+  );
+}
+
 export function hydrate() {
   const root = document.getElementById("console-root")!;
   const props = JSON.parse(document.getElementById("harness-props")!.textContent!);
-  hydrateRoot(root, <Harness {...props} />);
+  hydrateRoot(root, props.signIn ? <SignInHarness state={props.signIn} /> : <Harness {...props} />);
 }

@@ -14,6 +14,10 @@ const render = (extra = {}) =>
   renderToStaticMarkup(
     createElement(RunInspector, {
       game,
+      sessions: [
+        { ...session(1), turns: 4 },
+        { ...session(2, { agentModel: "vendor/model-b", agentEffort: "high" }), turns: 21 },
+      ],
       riskSeries: series,
       peak: 0.65,
       observed: true,
@@ -77,4 +81,17 @@ test("the inspector lists spend without all-caps labels", () => {
   assert.match(html, /Agent <strong>\$0\.2000<\/strong>/);
   assert.match(html, /Monitor <strong>\$0\.0636<\/strong>/);
   assert.doesNotMatch(html, /SPEND|DECISIONS|CLASSIFIER RISK/);
+});
+
+test("the inspector lists every session's model, effort and turns", () => {
+  const html = render();
+  assert.match(html, /<h3>Sessions<\/h3>/);
+  assert.match(
+    html,
+    /<tr><th scope="row">Session 1<\/th><td title="z-ai\/glm-5\.3-flash">glm-5\.3-flash<\/td><td>Low<\/td><td>4<\/td><\/tr>/,
+  );
+  assert.match(
+    html,
+    /<tr><th scope="row">Session 2<\/th><td title="vendor\/model-b">model-b<\/td><td>High<\/td><td>21<\/td><\/tr>/,
+  );
 });

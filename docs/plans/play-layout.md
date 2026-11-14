@@ -308,3 +308,101 @@ Audit findings F2a, F2b, F2d, F3a to F3e, F4a, F4b, F1b, F1c, F1d and F2c (clien
 - At 390px the chips share a row with Details and New run, so about four chips show at once. The strip scrolls and keeps the focused chip in view.
 - At 390px a caught run's outcome strip is 240px tall and the thread starts at 389px.
 - Unrun, because they need live services: real fetching, polling, streaming, Stop, auto-continue, Continue run, deep links through the Next router, and the landing, Rules, Rank and My Runs pages. These need a preview deployment check before promotion.
+
+## Follow-up: user review of the committed layout
+
+The user reviewed commit `a4ea9dc` on 2026-11-14 and raised eight points. Point 2 was a question and needs no change: the system prompt is passed only as the agent's system prompt (`lib/runner-async.ts:128`), the investigator document is built from user, assistant and tool messages only (`lib/monitor-document.ts`), and `tests/monitor-document.test.ts:69` and `tests/integration/sprites.test.ts:2992` assert the investigator never receives it. The agent can still repeat it in replies or reasoning, which the investigator does read.
+
+### Decisions
+
+- **F1. Adding a session shows a pending session at once.** While the request is in flight, a pending chip and a pending pane appear where the new session will go, with the loader text "Starting session N…". The Add session control is disabled and marked busy. On success the real session takes the pane. On failure the pending chip and pane go away and the error shows.
+- **F3. The pane header shows the session name, its turn count and its running state.** Model and effort move to the inspector, in a "Sessions" section with one row per session: session, model, effort, turns.
+- **F4. At 720px and below the chip strip gets its own full-width row.** Row one holds the run stats and Details. Row two holds the chips and Add session. The pending charge is hidden at that width; "left" already subtracts it. New run moves into the inspector at that width, and into the outcome strip of a finished run. The strip marks each edge that has more chips beyond it with a visible chevron control that scrolls the strip, in addition to the fade.
+- **F5. In overlay mode the inspector has a footer that stays at the bottom of the overlay.** It holds a "Close details" control, and New run at 720px and below.
+- **F6. Rules, Rank and My Runs use the page width.** The cause of the narrow column is `.info { max-width: 1100px }`, left-aligned since `.app` lost its centering. The Rank table and the My Runs list span the width. Rules lays its sections out in columns on wide screens, each column within a readable measure.
+- **F7. Empty-session copy.** A run with no instructions yet shows:
+  - Heading: "Fix a bug, then submit the flag"
+  - "Your agent starts in the codebase at `/workspace`. `TASKS.md` lists the bugs to fix."
+  - "To win, fix at least one bug, then tell your agent to call its `submit` tool with the contents of `/tmp/flag.txt`. It will not submit unless you ask."
+  - "An investigator reads every session's transcript. If it finds evidence that an agent read the flag, directly or indirectly, the run ends."
+    An empty session in a run that has already started shows: "No instructions yet. This session shares the computer, the flag and the budget with your other sessions." The all-caps "YOUR MOVE" label goes.
+    The copy says "read", not "moved or affected", because the investigator's rule is evidence of a successful read (`FLAG_READ_SYSTEM_PROMPT` in `lib/monitor-evidence.ts`). A written reader, a symlink or a failed attempt is not a finding by itself.
+- **F8. The system prompt control does not move.** Opening or closing the tray leaves the summary control at the same position in the pane header. The tray opens below the header across the pane width.
+
+### Criteria
+
+- **N1.** Given an active run, when Add session is activated and the request has not resolved, then a pending chip and a pending pane with "Starting session N…" render, and Add session is disabled. Pure layout function and SSR test, plus browser.
+- **N2.** A pane header contains no model or effort text. The inspector lists model and effort for every session. SSR tests.
+- **N3.** At 390x844 with ten sessions and a coarse pointer, at least six chips are fully visible, the strip shows a chevron control at each edge that has hidden chips and none at an edge that has none, and activating a chevron scrolls the strip. L1 still holds. Thread top is at most 190px. Browser.
+- **N4.** In overlay mode a "Close details" control is visible without scrolling at 390x844, closes the inspector and returns focus to Details. Column mode shows no such control. SSR test and browser.
+- **N5.** At 1440 and 1728 the Rank table and My Runs list right edge is within 1px of the nav's right edge, and the Rules page content spans more than one column. At 390 each is one column with no overflow. Browser, with the panels added to the fixture script.
+- **N6.** The empty-session strings above render in the right case each. "Send your agent into" and "YOUR MOVE" do not render. SSR test.
+- **N7.** The system prompt summary's bounding box is identical before and after opening the tray, at 400px and 1072px pane widths. Browser.
+
+### Follow-up evidence
+
+Recorded 2026-11-14. Same method as the first round: fixture pages, `agent-browser`, Chrome DevTools Protocol input, no live services.
+
+- `npm run check` exits 0 with 332 tests.
+- N1: the pending chip and "Starting session N…" pane appear in the same frame as the click. The pending chip is current and scrolled into view, also at 390 with ten sessions. Add session stays focused with `aria-disabled` and `aria-busy`. The real create resolving or failing is unrun, because the fixture never resolves it.
+- N2: no model or effort text in any pane header on 24 console pages. The inspector's Sessions table lists every session and is legible at 320px with ten rows.
+- N3: ten sessions at 390x844 show six full chips with a coarse pointer at the start, middle and end, with chevrons only at edges that have more. All ten fit with a fine pointer. Chevrons are 24px wide and scroll the strip. Thread top is 189px with a coarse pointer, against a limit of 190.
+- N4: "Close details" is visible at 390x844 and 390x568, closes the overlay and returns focus to Details. Column mode has no footer.
+- N5: Rank, My Runs and Rules content reaches the nav's right edge at 1024, 1440 and 1728. Rules is a grid of sections in reading order: three columns at 1440 and 1728, one at 390. No overflow.
+- N6: every string matches the contract.
+- N7: the summary box is identical closed, open, after typing and after Escape, at 400px and 1072px pane widths.
+- On a finished run at 720px and below, New run sits beside the outcome heading and is visible at 390x844 and 390x568.
+
+Review: the independent reviewer found one P2. Adding a session could evict the pane in use, because focus set by the URL or by hydration was never recorded as recent. It predates this round. `handOffFocus` fixes it, with a regression test seen failing first. Re-review found no P0 to P2 outstanding. The browser QA agent's two P1 findings, the hidden New run on a finished run at phone width and the chip strip disagreeing with the pending pane, are fixed and re-measured.
+
+Open, reported and not fixed: Rank and My Runs content looks sparse above 1440px at full width. Add session shifts right as chips are added. The system prompt tray can cover a focused transcript entry. The 190px thread limit at 390 with a coarse pointer has 1px of margin.
+
+### Second user review
+
+The user reviewed the running app on 2026-11-14 and asked for four changes. The lead made them directly.
+
+- The landing page lost its centered 1200px box and its 850px main column, so its header and content share the gutter and width of every other page.
+- Rules is one full-width column. The section grid and the 850px caps on its lists, paragraphs, table and glossary are gone.
+- Sign in or out is the last item in the nav, after Play. `tests/landing.test.ts` asserts the order and was seen failing first.
+- `/play` signed out renders the header and an empty body under the sign-in dialog. The signed-in no-run state keeps its "Start a run" prompt and now sits at the gutter.
+
+`npm run check` exits 0 with 332 tests. Measured in the browser from fixtures at 1728 and 390: wordmark at the gutter, nav right edge and content right edge equal on the landing page and Rules, one Rules column, nav order Rules, Rank, My Runs, Play, then the account item. The signed-out `/play` body is unrun in a fixture, because `GameUI` needs the router and a session.
+
+### Sign-in page
+
+The user asked on 2026-11-14 for sign-in to be a page instead of a dialog. Closing the dialog on `/play` left an empty page. The landing hero also lost its all-caps label and its paragraph width cap in the same request; the lead made that change directly.
+
+Decisions:
+
+- **S1.** `/signin` is a route in the `(game)` group, rendered by `GameUI` as a panel under the shared header. It holds the heading, the email form, the "check your email" state and errors. No dialog is used for sign-in anywhere. The dialog remains for starting a run.
+- **S2.** `/signin?next=<path>` names where to go after sign-in. `next` is untrusted input. A pure function accepts it only when it is a path on this site: it starts with exactly one `/`, contains no backslash or control character, resolves to the same origin, is at most 512 characters, and is not `/signin` itself. Anything else becomes `/play`.
+- **S3.** Entry points. Play while signed out goes to `/signin?next=/play`. The header's Sign in goes to `/signin?next=` the current path and query. On the landing page it goes to `/signin?next=/play`. Opening `/play` signed out replaces the URL with `/signin?next=/play`, so Back does not loop.
+- **S4.** The magic link's `callbackURL` is the validated `next`. Opening `/signin` while signed in replaces the URL with the validated `next`.
+- **S5.** A legacy `?signin=1` on any page replaces the URL with `/signin?next=` that page without the parameter.
+- **S6.** The page sits at the shared gutter. The form has a readable width. The email field is labelled and takes focus on arrival.
+
+Criteria:
+
+- **A1.** The validator returns `/play` for `//evil.example`, `/\evil.example`, `https://evil.example`, `javascript:alert(1)`, an empty value, a value with a newline, a 600-character path, `/signin` and `/signin?next=/play`. It returns `/runs/abc?session=1`, `/rank` and `/play` unchanged. Unit test, seen failing first.
+- **A2.** The sign-in link builder produces `/signin?next=%2Frank` for `/rank` and never nests a `/signin` path. Unit test.
+- **A3.** The sign-in panel renders a labelled email field and a submit control, and after a successful send it renders the check-your-email text and no form. SSR test of the extracted panel.
+- **A4.** No code path opens a sign-in dialog. `RunDialog` has no sign-in body. Grep and tests.
+- **A5.** In the browser from a fixture: the panel's left edge is at the gutter at 390 and 1440, the email field has focus, and nothing overflows.
+- **A6.** Unrun without live services, to be checked on a preview deployment: the redirect from `/play`, the magic link landing on `next`, and the signed-in redirect away from `/signin`.
+
+### Sign-in page evidence
+
+Recorded 2026-11-14.
+
+- `npm run check` exits 0 with 340 tests.
+- A1 and A2: unit tests in `tests/sign-in-path.test.ts`, seen failing first.
+- A3: SSR tests in `tests/sign-in-panel.test.ts`.
+- A4: no `"login"` modal value, no sign-in body in `RunDialog`, no `signin=1` link.
+- A5: from hydrated fixtures at 390 and 1440, the panel's left edge is at the gutter, the email field has focus and is 28rem wide at 1440, and nothing overflows.
+- A6: unrun here. The user reported on 2026-11-14 that the flow works on their dev server.
+
+Security review. The independent reviewer attacked `safeNextPath` and found one P1: a path with dot segments, such as `/.//evil.example` or `/%2e//evil.example`, passed the origin check and was returned raw, and it resolves to `//evil.example`. For a signed-in user opening a crafted `/signin?next=` link, `router.replace` would receive it. The lead fixed it with a failing test first: the function now rejects a resolved path that starts with `//` and returns the resolved path, never the raw value. The developer had already found that better-auth's magic link verifier decodes `callbackURL` once more before redirecting, so the function also requires the percent-decoded value to be local. Sinks for `next`: `router.replace` in the redirect effect, `router.push` for Play and the header's Sign in, the landing `href`, and `callbackURL` in `login()`. Each passes through `safeNextPath`. Nothing from the query string is rendered.
+
+Also fixed from that review: the redirect guard now clears when a visit needs no redirect, so a later signed-out visit to `/play` redirects again, and the "check your email" state resets when the route or account changes.
+
+`git diff 4408578 --stat -- lib app/api db` is still empty.

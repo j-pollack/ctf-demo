@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import {
   chipLabel,
   deckLayout,
+  deckSessions,
+  PENDING_SESSION,
   focusRecent,
+  handOffFocus,
   nextSeenTurns,
   nextShownLoads,
   nextTabIndex,
@@ -11,6 +14,7 @@ import {
   sessionIsRunning,
   sessionTurns,
   shownSessionIds,
+  stripEdges,
 } from "../app/session-layout";
 import type { GameEvent } from "../lib/types";
 
@@ -174,4 +178,65 @@ test("a pane loads each time it becomes shown, and a missing run forgets what wa
     "keys are scoped by run",
   );
   assert.equal(first.loaded.has("run:s1"), true);
+});
+
+test("a pending session takes the pane its real session will take", () => {
+  const all = ids(4);
+  let recent = ["s2", "s3", "s4", "s1"].reduce(
+    (order, id) => focusRecent(order, id, all),
+    [] as string[],
+  );
+  assert.deepEqual(deckSessions(all, recent, 4, false), all);
+  const pending = deckSessions(all, recent, 4, true);
+  assert.deepEqual(
+    pending,
+    ["s1", "s3", "s4", PENDING_SESSION],
+    "evicts the least recently focused",
+  );
+  recent = focusRecent(recent, "s5", [...all, "s5"]);
+  const real = deckSessions([...all, "s5"], recent, 4, false);
+  assert.deepEqual(real, ["s1", "s3", "s4", "s5"], "the real session lands in the same slot");
+  assert.deepEqual(deckSessions(all, recent, 1, true), [PENDING_SESSION], "it is focused");
+  assert.deepEqual(deckSessions(ids(1), [], 2, true), ["s1", PENDING_SESSION]);
+});
+
+test("the chip strip marks each edge that has chips beyond it", () => {
+  assert.deepEqual(stripEdges({ scrollLeft: 0, clientWidth: 300, scrollWidth: 300 }), {
+    start: false,
+    end: false,
+  });
+  assert.deepEqual(stripEdges({ scrollLeft: 0, clientWidth: 300, scrollWidth: 500 }), {
+    start: false,
+    end: true,
+  });
+  assert.deepEqual(stripEdges({ scrollLeft: 100, clientWidth: 300, scrollWidth: 500 }), {
+    start: true,
+    end: true,
+  });
+  assert.deepEqual(
+    stripEdges({ scrollLeft: 199.5, clientWidth: 300, scrollWidth: 500 }),
+    { start: true, end: false },
+    "sub-pixel scroll counts as the end",
+  );
+});
+
+test("a pending session keeps the pane in use when recent focus was never recorded", () => {
+  const all = ids(3);
+  // Focus came from the URL, so nothing was recorded; the caller puts it at the head.
+  const recent = focusRecent([], "s3", all);
+  assert.deepEqual(deckSessions(all, recent, 2, false), ["s1", "s3"]);
+  const pending = deckSessions(all, recent, 2, true);
+  assert.deepEqual(pending, ["s3", PENDING_SESSION]);
+  const after = handOffFocus([], "s3", "s4", [...all, "s4"]);
+  assert.deepEqual(after, ["s4", "s3"], "the outgoing focus is recorded before the new one");
+  assert.deepEqual(
+    deckSessions([...all, "s4"], after, 2, false),
+    ["s3", "s4"],
+    "the real session takes the placeholder's slot and nothing else moves",
+  );
+  assert.deepEqual(
+    deckSessions([...all, "s4"], focusRecent([], "s4", [...all, "s4"]), 2, false),
+    ["s1", "s4"],
+    "dropping the outgoing focus is what evicted the pane in use",
+  );
 });

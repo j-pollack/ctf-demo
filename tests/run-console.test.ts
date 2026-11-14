@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { RunConsole, type RunConsoleProps } from "../app/run-console";
 import { createSessionUIState } from "../app/session-ui-state";
+import { PENDING_SESSION } from "../app/session-layout";
 import { fetched, run, session, transcript } from "./fixtures/console-runs";
 import type { PublicGame } from "../lib/types";
 
@@ -23,6 +24,7 @@ const props = (game: PublicGame, extra: Partial<RunConsoleProps> = {}): RunConso
   busy: false,
   streamingIds: [],
   creatingSession: false,
+  pendingOrdinal: null,
   newRunDisabled: false,
   outcome: {
     detailError: "",
@@ -112,4 +114,112 @@ test("an unfetched pane shows its loader beside loaded panes", () => {
   });
   assert.match(html, /Loading session 2…/);
   assert.equal(count(html, /mission-intro/g), 0);
+});
+
+test("a session being created shows a pending chip and pane at once", () => {
+  const game = run(sessions(4));
+  const html = render(game, {
+    shownIds: ["session-1", "session-3", "session-4", PENDING_SESSION],
+    focusedId: "session-1",
+    pendingOrdinal: 5,
+    creatingSession: true,
+    onCreateSession: noop,
+  });
+  assert.match(
+    html,
+    /<button type="button" class="chip" data-pending="true" aria-label="Session 5, starting" tabindex="-1" disabled="">5<\/button>/,
+  );
+  const pane = html.slice(html.indexOf('id="pane-pending-session"'));
+  assert.match(pane, /<h2 id="pane-title-pending-session">Session 5<\/h2>/);
+  assert.match(
+    pane,
+    /<p role="status" class="stage"><i aria-hidden="true"><\/i>Starting session 5…<\/p>/,
+  );
+  assert.doesNotMatch(pane.slice(0, pane.indexOf("</section>")), /<form|<textarea/);
+  assert.match(
+    html,
+    /<button type="button" class="session-add"[^>]*aria-disabled="true" aria-busy="true"/,
+  );
+  assert.equal(count(html, /<section class="pane"/g), 4);
+  assert.doesNotMatch(render(game), /data-pending|Starting session/);
+});
+
+test("only an overlay inspector has a footer to close it and start a new run", () => {
+  const overlay = render(run(sessions(2)), { inspector: "overlay" });
+  const footer = overlay.slice(overlay.indexOf('<footer class="inspector-footer">'));
+  assert.match(
+    footer,
+    /^<footer class="inspector-footer"><button type="button" class="close-details">Close details<\/button><button type="button" class="new-run">New run<\/button><\/footer>/,
+  );
+  assert.doesNotMatch(
+    render(run(sessions(2)), { inspector: "column" }),
+    /inspector-footer|Close details/,
+  );
+});
+
+test("a finished run offers New run in its outcome strip; an active run does not", () => {
+  const caught = render(
+    run(sessions(2), { status: "caught", caughtSessionOrdinal: 1, caughtSessionId: "session-1" }),
+  );
+  const strip = caught.slice(
+    caught.indexOf('<section class="outcome"'),
+    caught.indexOf('<div class="workbench"'),
+  );
+  assert.match(strip, /<button type="button" class="new-run outcome-new-run">New run<\/button>/);
+  assert.doesNotMatch(render(run(sessions(2))), /outcome-new-run/);
+});
+
+test("the current chip and the focused pane always name the same session while one is pending", () => {
+  const game = run(sessions(4));
+  const pendingProps = {
+    shownIds: ["session-1", "session-3", "session-4", PENDING_SESSION],
+    pendingOrdinal: 5,
+    creatingSession: true,
+    onCreateSession: noop,
+  };
+  const current = (html: string) =>
+    [...html.matchAll(/<button[^>]*class="chip"[^>]*aria-current="true"[^>]*>(\d+)/g)].map(
+      (m) => m[1],
+    );
+  const focused = (html: string) =>
+    [...html.matchAll(/<section class="pane" id="pane-([^"]+)"[^>]*data-focused="true"/g)].map(
+      (m) => m[1],
+    );
+  const pending = render(game, { ...pendingProps, focusedId: PENDING_SESSION });
+  assert.deepEqual(current(pending), ["5"], "the pending chip is current");
+  assert.deepEqual(focused(pending), [PENDING_SESSION]);
+  const moved = render(game, { ...pendingProps, focusedId: "session-3" });
+  assert.deepEqual(current(moved), ["3"]);
+  assert.deepEqual(focused(moved), ["session-3"], "the pending pane stays without the focus bar");
+  assert.match(moved, /id="pane-pending-session"/);
+});
+
+test("Add session stays focusable while a session is being created", () => {
+  const html = render(run(sessions(2)), {
+    creatingSession: true,
+    pendingOrdinal: 3,
+    onCreateSession: noop,
+  });
+  const add = html.match(/<button type="button" class="session-add"[^>]*>/)![0];
+  assert.match(add, /aria-disabled="true"/);
+  assert.match(add, /aria-busy="true"/);
+  assert.doesNotMatch(add, / disabled=""/);
+});
+
+test("while the first instruction is in flight, empty sibling panes no longer show the intro", () => {
+  const game = run([session(1, { turns: 0 }), session(2, { turns: 0 })], { turns: 0 });
+  const views = {
+    "session-1": {
+      ...fetched("session-1", [{ id: -1, kind: "user" as const, text: "go" }]),
+      busy: true,
+    },
+    "session-2": fetched("session-2", []),
+  };
+  const html = render(game, { sessionViews: views });
+  assert.doesNotMatch(html, /Fix a bug, then submit the flag/);
+  assert.match(html, /No instructions yet\./);
+  const fresh = render(game, {
+    sessionViews: { "session-1": fetched("session-1", []), "session-2": fetched("session-2", []) },
+  });
+  assert.equal(count(fresh, /Fix a bug, then submit the flag/g), 2);
 });

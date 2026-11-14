@@ -32,6 +32,12 @@ export function focusRecent(recent: string[], id: string, ids: string[]) {
   return [id, ...recent.filter((item) => item !== id && ids.includes(item))];
 }
 
+// Focus moves from one session to another. The outgoing one is recorded first, because focus
+// set by the URL or by hydration never went through here.
+export function handOffFocus(recent: string[], from: string | null, to: string, ids: string[]) {
+  return focusRecent(from === null ? recent : focusRecent(recent, from, ids), to, ids);
+}
+
 // Recently focused sessions keep their panes; free panes fill in ordinal order.
 export function shownSessionIds(ids: string[], recent: string[], capacity: number) {
   const kept = recent.filter((id) => ids.includes(id)).slice(0, capacity);
@@ -50,6 +56,28 @@ export function nextShownLoads(
   return {
     load: shown.filter((id) => !loaded.has(key(id))),
     loaded: new Set(shown.map(key)),
+  };
+}
+
+export const PENDING_SESSION = "pending-session";
+
+// While a new session is being created it is shown and focused under a placeholder id, after
+// every real session, so the real one later lands in the same pane.
+export function deckSessions(ids: string[], recent: string[], capacity: number, pending: boolean) {
+  if (!pending) return shownSessionIds(ids, recent, capacity);
+  const all = [...ids, PENDING_SESSION];
+  return shownSessionIds(all, focusRecent(recent, PENDING_SESSION, all), capacity);
+}
+
+// Which edges of a scrolling strip have content beyond them, ignoring sub-pixel scroll.
+export function stripEdges(strip: {
+  scrollLeft: number;
+  clientWidth: number;
+  scrollWidth: number;
+}) {
+  return {
+    start: strip.scrollLeft > 1,
+    end: strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1,
   };
 }
 
