@@ -102,19 +102,22 @@ export function visibleText(
   return text ? { role: "agent", text, ...(toolCalls.length ? { toolCalls } : {}) } : undefined;
 }
 
+const EMPTY_CHUNK_JSON_BYTES = Buffer.byteLength(JSON.stringify({ text: "" }), "utf8");
+
 function chunkText(text: string) {
   const chunks: string[] = [];
   let chunk = "";
+  let bytes = EMPTY_CHUNK_JSON_BYTES;
   for (const character of text) {
-    if (
-      chunk &&
-      Buffer.byteLength(JSON.stringify({ text: chunk + character }), "utf8") >
-        MONITOR_MESSAGE_CHUNK_JSON_BYTES
-    ) {
+    // JSON.stringify escapes each code point independently, so sizes add up.
+    const characterBytes = Buffer.byteLength(JSON.stringify(character), "utf8") - 2;
+    if (chunk && bytes + characterBytes > MONITOR_MESSAGE_CHUNK_JSON_BYTES) {
       chunks.push(chunk);
       chunk = "";
+      bytes = EMPTY_CHUNK_JSON_BYTES;
     }
     chunk += character;
+    bytes += characterBytes;
   }
   if (chunk || chunks.length === 0) chunks.push(chunk);
   return chunks;

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMonitorTools, makeInitialMonitorEvidence } from "../lib/monitor-tools";
+import {
+  createMonitorTools,
+  evidenceMessages,
+  makeInitialMonitorEvidence,
+  MONITOR_MESSAGE_CHUNK_JSON_BYTES,
+} from "../lib/monitor-tools";
 import { monitorSessionAlias, visibleText } from "../lib/monitor-tools";
 import type { Message } from "@earendil-works/pi-ai";
 import type { MonitorSnapshot } from "../lib/types";
@@ -339,4 +344,132 @@ test("monitors never see the submit call or its result", () => {
     timestamp: 3,
   } as unknown as Message;
   assert.equal(visibleText(result, true), undefined);
+});
+
+// Frozen pre-change chunking algorithm, the oracle for the linear version.
+// It must not be "fixed" or optimized: the chunks are model-visible evidence.
+function oracleChunkText(text: string) {
+  const chunks: string[] = [];
+  let chunk = "";
+  for (const character of text) {
+    if (
+      chunk &&
+      Buffer.byteLength(JSON.stringify({ text: chunk + character }), "utf8") >
+        MONITOR_MESSAGE_CHUNK_JSON_BYTES
+    ) {
+      chunks.push(chunk);
+      chunk = "";
+    }
+    chunk += character;
+  }
+  if (chunk || chunks.length === 0) chunks.push(chunk);
+  return chunks;
+}
+
+const chunksOf = (text: string) =>
+  evidenceMessages(snapshot(), "session-a", [message("user", text)], false).map((row) => row.text);
+
+const jsonBytes = (text: string) => Buffer.byteLength(JSON.stringify({ text }), "utf8");
+
+function assertChunking(text: string, label: string, compareOracle = true) {
+  const chunks = chunksOf(text);
+  assert.equal(chunks.join(""), text, `${label}: joined chunks`);
+  chunks.forEach((chunk, index) => {
+    assert.ok(
+      jsonBytes(chunk) <= MONITOR_MESSAGE_CHUNK_JSON_BYTES,
+      `${label}: chunk ${index} size`,
+    );
+    const next = chunks[index + 1];
+    if (next === undefined) return;
+    const first = String.fromCodePoint(next.codePointAt(0)!);
+    assert.ok(
+      jsonBytes(chunk + first) > MONITOR_MESSAGE_CHUNK_JSON_BYTES,
+      `${label}: chunk ${index} is not maximal`,
+    );
+    assert.ok(
+      !(/[\ud800-\udbff]$/.test(chunk) && /^[\udc00-\udfff]/.test(next)),
+      `${label}: chunk ${index} splits a surrogate pair`,
+    );
+  });
+  if (compareOracle)
+    assert.deepEqual(chunks, oracleChunkText(text), `${label}: matches the pre-change chunks`);
+}
+
+const BOUNDARY_CHARACTERS = ["a", "\n", '"', "é", "€", "\u2028", "😀", "\0", "\ud800"];
+
+test("chunking matches the pre-change algorithm at every escaped-size boundary", () => {
+  const room = MONITOR_MESSAGE_CHUNK_JSON_BYTES - jsonBytes("");
+  for (const character of BOUNDARY_CHARACTERS) {
+    const need = jsonBytes(character) - jsonBytes("");
+    for (const delta of [-1, 0, 1]) {
+      const text = `${"a".repeat(room - need + delta)}${character}bb`;
+      assertChunking(text, `${JSON.stringify(character)} delta ${delta}`);
+    }
+  }
+});
+
+test("chunking matches the pre-change algorithm on escape-dense and surrogate-edge text", () => {
+  const cases: Record<string, string> = {
+    quotes: '"'.repeat(5000),
+    backslashes: "\\".repeat(5000),
+    shortEscapes: "\n\t\r\b\f".repeat(1500),
+    longEscapes: "\0\x01\x1f".repeat(1500),
+    separators: "\u2028\u2029\x7f".repeat(1500),
+    lowFirst: `${"a".repeat(2488)}\udc00${"a".repeat(10)}`,
+    highLast: `${"a".repeat(2485)}\ud800${"a".repeat(10)}`,
+    loneNextToPairs: "😀\ud800😀\udc00😀".repeat(900),
+    pairsAtEdge: `${"a".repeat(2486)}😀${"a".repeat(2486)}😀`,
+  };
+  for (const [label, text] of Object.entries(cases)) assertChunking(text, label);
+});
+
+test("chunking matches the pre-change algorithm on seeded random text", () => {
+  let state = 0x9e3779b9;
+  const next = () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const alphabet = [
+    "a",
+    "b",
+    " ",
+    '"',
+    "\\",
+    "\n",
+    "\t",
+    "\0",
+    "\x1f",
+    "\x7f",
+    "é",
+    "€",
+    "\u2028",
+    "\u2029",
+    "😀",
+    "\ud800",
+    "\udc00",
+    "\ud83d",
+    "\ude00",
+  ];
+  for (let index = 0; index < 200; index += 1) {
+    const length = 1 + Math.floor(next() * 4000);
+    let text = "";
+    for (let i = 0; i < length; i += 1) text += alphabet[Math.floor(next() * alphabet.length)];
+    assertChunking(text, `random ${index}`, index < 20);
+  }
+});
+
+test("empty text yields no rows", () => {
+  assert.deepEqual(chunksOf(""), []);
+});
+
+test("a 1.5 MB message is chunked within two seconds", () => {
+  const text = 'x"\n€😀'.repeat(250_000);
+  const started = performance.now();
+  const rows = evidenceMessages(snapshot(), "session-a", [message("user", text)], false);
+  const elapsed = performance.now() - started;
+  console.log(`1.5 MB chunking: ${elapsed.toFixed(0)} ms, ${rows.length} rows`);
+  assert.ok(rows.length > 1);
+  assert.ok(elapsed < 2000, `took ${elapsed.toFixed(0)} ms`);
 });
