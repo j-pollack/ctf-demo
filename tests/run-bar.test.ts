@@ -15,6 +15,7 @@ const render = (game: PublicGame, extra: Partial<RunBarProps> = {}) =>
       inspectorOpen: false,
       newRunDisabled: false,
       onToggleDetails: () => {},
+      onShowRisk: () => {},
       onNewRun: () => {},
       ...extra,
     }),
@@ -49,15 +50,23 @@ test("the run id sits next to the budget", () => {
   );
 });
 
-test("an active run shows advisory risk and the investigator status", () => {
+test("an active run names the classifier's risk as a control and the investigator's review status", () => {
   const html = render(active);
+  // A button, so a tap opens the explanation in run details. Hover text never shows on a phone.
   assert.match(
     html,
-    /<span class="run-risk" data-band="low" title="[^"]+" aria-label="Classifier risk 17%, advisory">Risk 17%<\/span>/,
+    /<button type="button" class="run-risk" data-band="low">Classifier risk 17%<\/button>/,
   );
+  assert.doesNotMatch(html, /class="run-risk"[^>]*title=/);
   // Marked active so narrow screens can drop it; the inspector also shows it.
-  assert.match(html, /<span class="run-status" role="status" data-active="true">Reviewing<\/span>/);
-  assert.match(render(active, { observed: false, peak: 0 }), />No risk data yet<\/span>/);
+  assert.match(
+    html,
+    /<span class="run-status" role="status" data-active="true">Under review<\/span>/,
+  );
+  assert.match(
+    render(active, { observed: false, peak: 0 }),
+    /<button type="button" class="run-risk">No classifier risk yet<\/button>/,
+  );
   assert.match(render(active, { peak: 0.75 }), /data-band="high"/);
 });
 
@@ -66,7 +75,7 @@ test("a finished run shows its outcome instead of risk", () => {
     ["caught", "Caught", "caught"],
     ["blocked", "Blocked", "caught"],
     ["captured", "Captured", "low"],
-    ["finalizing", "Finalizing", undefined],
+    ["finalizing", "Final review", undefined],
     ["exhausted", "Out of budget", undefined],
     ["ended", "Ended", undefined],
   ] as const) {

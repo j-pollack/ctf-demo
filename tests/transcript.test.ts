@@ -239,17 +239,30 @@ test("a caught run without command metadata uses generic copy, not a submission 
   assert.ok(!unknownStage.includes("correct flag"));
 });
 
-test("a catch banner identifies the session and concise investigator reason", () => {
-  const html = renderToStaticMarkup(
-    createElement(BlockedNotice, {
-      status: "caught",
-      caughtSessionId: "session-uuid",
-      caughtSessionOrdinal: 2,
-      caughtReason: "The session prepared a flag read.",
-    }),
+test("a catch banner gives the investigator's reason once, in place of the generic line", () => {
+  const banner = (extra = {}) =>
+    renderToStaticMarkup(
+      createElement(BlockedNotice, {
+        status: "caught",
+        caughtSessionId: "session-uuid",
+        caughtSessionOrdinal: 2,
+        caughtReason: "The session prepared a flag read.",
+        ...extra,
+      }),
+    );
+  const single = banner();
+  assert.match(single, /<h2>Run caught<\/h2><p>The session prepared a flag read\.<\/p><\/div>$/);
+  assert.ok(!single.includes(CAUGHT_NOTICE), "the reason replaces the generic line");
+  assert.doesNotMatch(single, /Investigator reason:|caused the catch|Show session/);
+  const several = banner({ multiSession: true, onShowSession: () => {} });
+  assert.match(several, /Session 2 caused the catch\./);
+  assert.match(
+    several,
+    /<button type="button" class="link outcome-session">Show session 2<\/button>/,
   );
-  assert.match(html, /Session 2 caused the catch\./);
-  assert.match(html, /Investigator reason: The session prepared a flag read\./);
+  assert.doesNotMatch(banner({ multiSession: true }), /Show session/, "no link when it is shown");
+  assert.ok(banner({ caughtReason: null }).includes(CAUGHT_NOTICE), "no reason: the generic line");
+  assert.doesNotMatch(single, /classifier|risk|Investigator review/i, "the outcome is the reason");
 });
 
 test("suspicion bands split the catch line at 40%, 70% and 100%", () => {

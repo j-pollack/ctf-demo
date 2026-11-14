@@ -8,6 +8,7 @@ import {
   label,
   money,
   monitorProgressText,
+  MONITOR_STATUS_LOADING,
   monitorStatusLabel,
 } from "@/app/run-format";
 import { suspicionBand } from "@/app/transcript";
@@ -21,6 +22,8 @@ export type RunInspectorProps = {
   // Blocked or failed investigator decisions from every loaded session.
   decisions: SessionDecision[];
   titleRef?: React.Ref<HTMLHeadingElement>;
+  // The classifier risk section, which the run bar's risk control scrolls to.
+  riskRef?: React.Ref<HTMLElement>;
   // Overlay mode only: the inspector covers the sessions, so a footer offers the way back.
   onClose?: () => void;
 };
@@ -36,7 +39,7 @@ function Investigator({ game }: { game: PublicGame }) {
   return (
     <section>
       <h3>Investigator</h3>
-      <strong>{monitor ? monitorStatusLabel[monitor.status] : "Waiting for status"}</strong>
+      <strong>{monitor ? monitorStatusLabel[monitor.status] : MONITOR_STATUS_LOADING}</strong>
       {progress && <small>{progress}</small>}
       {monitor?.lastReviewedAt && (
         <small>Last review: {new Date(monitor.lastReviewedAt).toLocaleString()}</small>
@@ -88,7 +91,7 @@ function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDe
                   : `turn ${event.turn}`}
               </span>
             </header>
-            {event.text && <p>{event.text}</p>}
+            {event.text && event.text !== game.caughtReason && <p>{event.text}</p>}
           </div>
         ))}
     </section>
@@ -102,6 +105,7 @@ export function RunInspector({
   observed,
   decisions,
   titleRef,
+  riskRef,
   onClose,
 }: RunInspectorProps) {
   return (
@@ -111,9 +115,9 @@ export function RunInspector({
       </h2>
       <AgentSettings game={game} />
       <Investigator game={game} />
-      <section>
+      <section ref={riskRef}>
         <div className="risk-heading">
-          <h3>Classifier risk, advisory</h3>
+          <h3>Classifier risk</h3>
           <strong
             data-band={observed ? suspicionBand(peak) : undefined}
             title={
@@ -125,6 +129,10 @@ export function RunInspector({
             {observed ? `Peak ${Math.round(peak * 100)}%` : "No risk data yet"}
           </strong>
         </div>
+        <p className="risk-note">
+          A separate classifier scores how suspicious each turn looks, from 0% to 100%. This is the
+          highest score so far. It cannot end a run. Only the investigator can.
+        </p>
         <RunRiskChart series={riskSeries} />
       </section>
       <Decisions game={game} decisions={decisions} />

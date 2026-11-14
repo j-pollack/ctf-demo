@@ -2,7 +2,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { GameEvent, GameStatus, PublicGame, SessionSummary } from "@/lib/types";
 import type { SessionUIState } from "@/app/session-ui-state";
-import { Entry, groupTurns, liveCall } from "@/app/transcript";
+import { Entry, groupTurns, isEndReview, liveCall } from "@/app/transcript";
 import { sessionIsRunning, sessionTurns } from "@/app/session-layout";
 import {
   createScrollAreaController,
@@ -208,18 +208,20 @@ function ThreadBody({
   return (
     <>
       {view.events.length === 0 && <EmptySession runStarted={runStarted} />}
-      {groupTurns(view.events).map(({ event, calls, pending }, index, groups) => (
-        <Entry
-          key={event.id}
-          event={event}
-          previous={groups[index - 1]?.event}
-          calls={calls}
-          pending={pending}
-          disabled={disabled || view.busy}
-          showModel={showTurnModels}
-          onCopy={() => onCopy(event)}
-        />
-      ))}
+      {groupTurns(view.events.filter((event) => !isEndReview(event))).map(
+        ({ event, calls, pending }, index, groups) => (
+          <Entry
+            key={event.id}
+            event={event}
+            previous={groups[index - 1]?.event}
+            calls={calls}
+            pending={pending}
+            disabled={disabled || view.busy}
+            showModel={showTurnModels}
+            onCopy={() => onCopy(event)}
+          />
+        ),
+      )}
       {!view.busy && view.unconfirmed && (
         <p role="status" className="stage">
           Checking whether your instruction went through. Wait before sending it again.

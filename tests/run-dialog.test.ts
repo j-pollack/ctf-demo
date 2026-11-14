@@ -2,7 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DialogTitle, RunDialog, RunSetupNotes, runsLeftText } from "../app/run-dialog";
+import {
+  DialogTitle,
+  ReviewNotice,
+  reviewNoticeOpen,
+  RunDialog,
+  RunSetupNotes,
+  runsLeftText,
+} from "../app/run-dialog";
 
 const render = (open: boolean, busy: boolean) =>
   renderToStaticMarkup(
@@ -56,4 +63,51 @@ test("the setup notes say what starting ends and what is left, and nothing else"
     notes({ endsCurrent: true, runsLeft: 2, unusedRun: false }),
     /budget|investigator|difficulty/i,
   );
+});
+
+test("the review notice opens for a run awaiting its result until the player dismisses it", () => {
+  assert.equal(reviewNoticeOpen({ id: "run-1", status: "finalizing" }, null), true);
+  assert.equal(reviewNoticeOpen({ id: "run-1", status: "finalizing" }, "run-1"), false);
+  assert.equal(
+    reviewNoticeOpen({ id: "run-2", status: "finalizing" }, "run-1"),
+    true,
+    "dismissing one run's notice does not hide the next run's",
+  );
+  for (const status of ["active", "caught", "captured", "ended", "exhausted"] as const)
+    assert.equal(reviewNoticeOpen({ id: "run-1", status }, null), false, status);
+  assert.equal(reviewNoticeOpen(null, null), false);
+});
+
+test("the review notice says play has ended, who is reviewing what, and how to keep reading", () => {
+  const notice = (props: Partial<Parameters<typeof ReviewNotice>[0]> = {}) =>
+    renderToStaticMarkup(
+      createElement(RunDialog, {
+        open: true,
+        busy: false,
+        onClose: () => {},
+        children: createElement(ReviewNotice, {
+          unresolved: false,
+          progress: "1 of 4 sessions waiting for review.",
+          onClose: () => {},
+          ...props,
+        }),
+      }),
+    );
+  const pending = notice();
+  assert.match(pending, />The investigator is reviewing this run<\/h2>/);
+  assert.match(pending, /Your agent submitted, so play has ended\./);
+  assert.match(pending, /reading every session’s transcript before the result is confirmed/);
+  assert.match(
+    pending,
+    /<p role="status" class="stage"><i aria-hidden="true"><\/i>1 of 4 sessions waiting for review\.<\/p>/,
+  );
+  assert.match(
+    pending,
+    /<button type="button" class="primary">Read the transcripts while you wait<\/button>/,
+  );
+  assert.match(notice({ progress: null }), /<\/i>Review in progress\.<\/p>/);
+  const unresolved = notice({ unresolved: true });
+  assert.match(unresolved, />The review could not be completed<\/h2>/);
+  assert.match(unresolved, /the result is unconfirmed/);
+  assert.doesNotMatch(unresolved, /class="stage"|while you wait/);
 });

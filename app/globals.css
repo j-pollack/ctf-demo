@@ -461,6 +461,11 @@ form label {
 .risk-heading > * {
   white-space: nowrap;
 }
+.risk-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
 .risk-heading strong {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -1326,6 +1331,19 @@ dialog::backdrop {
   color: var(--band-ink, var(--band));
   font-weight: 600;
 }
+/* Reads as text in the stats line; the dotted underline says it opens something. */
+.run-bar .run-risk {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-decoration: underline dotted;
+  text-underline-offset: 4px;
+}
+.run-bar .run-risk:hover:not(:disabled) {
+  background: none;
+  text-decoration-style: solid;
+}
 .run-sessions {
   grid-area: sessions;
   display: flex;
@@ -1571,9 +1589,6 @@ dialog::backdrop {
   margin-right: 5px;
   animation: pulse 1.2s infinite;
 }
-:where(.thread > *) {
-  max-width: 1064px;
-}
 .pane .mission-intro h2 {
   font-size: clamp(22px, 5cqi, 39px);
 }
@@ -1738,7 +1753,7 @@ dialog::backdrop {
   overflow-wrap: anywhere;
 }
 /* One row needs the stats, about four chips with Add session, and the actions side by side. */
-@media (max-width: 1180px) {
+@media (max-width: 1260px) {
   .run-bar {
     grid-template-areas:
       "stats stats"
@@ -1764,6 +1779,10 @@ dialog::backdrop {
   }
   .run-pending {
     display: none;
+  }
+  /* Keeps the two stats lines no taller than the buttons beside them. */
+  .run-bar .run-risk {
+    min-height: 22px;
   }
   /* Run id and budget left share a line beside the actions; risk wraps under them. */
   .run-stats {

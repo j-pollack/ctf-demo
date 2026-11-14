@@ -15,6 +15,7 @@ const render = (status: GameStatus, observed = true, peak = 0.9) =>
       inspectorOpen: false,
       newRunDisabled: false,
       onToggleDetails: () => {},
+      onShowRisk: () => {},
       onNewRun: () => {},
     }),
   );
@@ -24,7 +25,7 @@ test("outcome headline uses the actual run status rather than the risk score", (
     caught: "Caught",
     blocked: "Blocked",
     captured: "Captured",
-    finalizing: "Finalizing",
+    finalizing: "Final review",
     exhausted: "Out of budget",
     ended: "Ended",
   })) {
@@ -38,7 +39,7 @@ test("outcome headline uses the actual run status rather than the risk score", (
 });
 
 test("active risk keeps measured zero, advisory percentages and missing observations distinct", () => {
-  assert.match(render("active"), /aria-label="Classifier risk 90%, advisory">Risk 90%<\/span>/);
-  assert.match(render("active", true, 0), />Risk 0%<\/span>/);
-  assert.match(render("active", false), />No risk data yet<\/span>/);
+  assert.match(render("active"), />Classifier risk 90%<\/button>/);
+  assert.match(render("active", true, 0), />Classifier risk 0%<\/button>/);
+  assert.match(render("active", false), />No classifier risk yet<\/button>/);
 });

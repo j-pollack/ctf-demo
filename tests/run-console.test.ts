@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { RunConsole, type RunConsoleProps } from "../app/run-console";
 import { createSessionUIState } from "../app/session-ui-state";
 import { PENDING_SESSION } from "../app/session-layout";
-import { fetched, run, session, transcript } from "./fixtures/console-runs";
+import { fetched, run, session, transcript, views } from "./fixtures/console-runs";
 import type { PublicGame } from "../lib/types";
 
 const noop = () => {};
@@ -83,11 +83,44 @@ test("a caught run shows one outcome strip with the caught session, and no pane 
   const html = render(game);
   assert.equal(count(html, /class="outcome"/g), 1);
   assert.equal(count(html, /Session 4 caused the catch\./g), 1);
-  assert.equal(count(html, /Investigator reason: The agent printed the flag\./g), 1);
-  assert.match(html, /<button type="button" class="link outcome-session">Show session 4<\/button>/);
+  assert.equal(count(html, /The agent printed the flag\./g), 1);
+  assert.doesNotMatch(html, /Investigator reason:|found evidence that an agent read the flag/);
+  assert.doesNotMatch(html, /Show session 4/, "the caught session is already shown");
+  assert.match(
+    render(game, { shownIds: ["session-1", "session-2"] }),
+    /<button type="button" class="link outcome-session">Show session 4<\/button>/,
+  );
   const panes = html.slice(html.indexOf('<div class="deck"'));
   assert.doesNotMatch(panes, /terminal loss|caused the catch/);
   assert.doesNotMatch(html, /<textarea id="prompt-/);
+});
+
+test("a caught single-session run states the reason once across the strip, transcript and details", () => {
+  const reason = "The agent printed the flag.";
+  const game = run(sessions(1), {
+    status: "caught",
+    caughtSessionId: "session-1",
+    caughtSessionOrdinal: 1,
+    caughtReason: reason,
+  });
+  const caughtEvent = { id: 9, kind: "monitor", decision: "block", suspicion: 0.9, text: reason };
+  const html = render(game, {
+    inspector: "column",
+    sessionViews: views([["session-1", fetched("session-1", [caughtEvent as never])]]),
+  });
+  assert.equal(count(html, /The agent printed the flag\./g), 1);
+  assert.doesNotMatch(html, /caused the catch|Show session/);
+  const strip = html.slice(
+    html.indexOf('<section class="outcome"'),
+    html.indexOf('class="workbench"'),
+  );
+  assert.doesNotMatch(strip, /classifier|Investigator review/i, "the outcome is the reason alone");
+  assert.doesNotMatch(
+    html.slice(html.indexOf('<div class="deck"')),
+    /Investigator review|entry monitor blocked/,
+    "the transcript does not repeat the end review",
+  );
+  assert.match(html, /Flag read detected|Investigator blocked/, "run details list the decision");
 });
 
 test("a captured run keeps the win line with its turn count in the strip", () => {
@@ -228,4 +261,31 @@ test("while the first instruction is in flight, empty sibling panes no longer sh
     sessionViews: { "session-1": fetched("session-1", []), "session-2": fetched("session-2", []) },
   });
   assert.equal(count(fresh, /Fix a bug, then submit the flag/g), 2);
+});
+
+test("a run awaiting its result says the investigator is reviewing it, with a progress mark", () => {
+  const strip = (monitorStatus: "reviewing" | "unresolved") => {
+    const html = render(
+      run(sessions(2), {
+        status: "finalizing",
+        monitor: {
+          status: monitorStatus,
+          pendingSessions: 1,
+          reviewedUpdates: 0,
+          totalUpdates: 1,
+          lastReviewedAt: null,
+        },
+      }),
+    );
+    return html.slice(html.indexOf('<section class="outcome"'), html.indexOf('class="workbench"'));
+  };
+  assert.match(
+    strip("reviewing"),
+    /<div role="status" class="stage"><i aria-hidden="true"><\/i>Play has ended\. The investigator is reviewing this run, and the result will appear here\.<\/div>/,
+  );
+  assert.match(
+    strip("unresolved"),
+    /The review could not be completed, so the result is unconfirmed\./,
+  );
+  assert.doesNotMatch(strip("unresolved"), /<i aria-hidden/);
 });

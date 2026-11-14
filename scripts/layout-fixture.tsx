@@ -183,6 +183,13 @@ async function main() {
       choice: true,
       dialog: true,
     });
+  for (const viewport of [390, 1440])
+    write(`review-${viewport}.html`, {
+      name: "four",
+      width: workbenchWidth(viewport),
+      choice: null,
+      review: true,
+    });
   for (const state of ["form", "sent", "error"] as const) {
     writeFileSync(join(out, `signin-${state}.html`), signInPage(state, css, script));
     files.push(`signin-${state}.html`);

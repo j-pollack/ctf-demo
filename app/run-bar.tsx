@@ -2,7 +2,7 @@
 import React from "react";
 import type { GameStatus, PublicGame } from "@/lib/types";
 import { Meter, MeterIndicator } from "@ui-sdk/react/meter";
-import { money, monitorStatusLabel, statusLabel } from "@/app/run-format";
+import { money, MONITOR_STATUS_LOADING, monitorStatusLabel, statusLabel } from "@/app/run-format";
 import { suspicionBand } from "@/app/transcript";
 
 export type RunBarProps = {
@@ -17,6 +17,8 @@ export type RunBarProps = {
   newRunDisabled: boolean;
   newRunTitle?: string;
   onToggleDetails: () => void;
+  // Opens run details at the classifier risk section.
+  onShowRisk: () => void;
   onNewRun: () => void;
 };
 
@@ -30,22 +32,29 @@ function runStatusText(game: PublicGame) {
   if (game.status === "captured") return "Captured";
   if (game.status !== "active") return statusLabel[game.status];
   if (game.monitorMode !== "async") return statusLabel.active;
-  return game.monitor ? monitorStatusLabel[game.monitor.status] : "Waiting for status";
+  return game.monitor ? monitorStatusLabel[game.monitor.status] : MONITOR_STATUS_LOADING;
 }
 
-function RunRisk({ peak, observed }: { peak: number; observed: boolean }) {
-  const percent = Math.round(peak * 100);
+// A control, so a tap opens run details, where the score is explained. Hover text would not show
+// on a phone.
+function RunRisk({
+  peak,
+  observed,
+  onShow,
+}: {
+  peak: number;
+  observed: boolean;
+  onShow: () => void;
+}) {
   return (
-    <span
+    <button
+      type="button"
       className="run-risk"
       data-band={observed ? suspicionBand(peak) : undefined}
-      title="Highest classifier risk across all sessions. The investigator decides whether the run is caught."
-      aria-label={
-        observed ? `Classifier risk ${percent}%, advisory` : "No classifier risk data yet"
-      }
+      onClick={onShow}
     >
-      {observed ? `Risk ${percent}%` : "No risk data yet"}
-    </span>
+      {observed ? `Classifier risk ${Math.round(peak * 100)}%` : "No classifier risk yet"}
+    </button>
   );
 }
 
@@ -59,6 +68,7 @@ export function RunBar({
   newRunDisabled,
   newRunTitle,
   onToggleDetails,
+  onShowRisk,
   onNewRun,
 }: RunBarProps) {
   const allowance = game.budgetMicrodollars,
@@ -87,7 +97,9 @@ export function RunBar({
             <small className="run-pending">{money(game.reservedMicrodollars)} pending</small>
           )}
         </span>
-        {game.status === "active" && <RunRisk peak={peak} observed={observed} />}
+        {game.status === "active" && (
+          <RunRisk peak={peak} observed={observed} onShow={onShowRisk} />
+        )}
         <span
           className="run-status"
           role="status"

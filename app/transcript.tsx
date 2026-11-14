@@ -151,6 +151,11 @@ export function groupTurns(events: GameEvent[]) {
   }
   return groups;
 }
+// The end-of-run review that caught a run: a block with no command. It is the run's outcome,
+// which the outcome strip states with the investigator's reason, so the transcript leaves it out.
+export function isEndReview(event: GameEvent) {
+  return event.kind === "monitor" && event.decision === "block" && !event.command;
+}
 export function Entry({
   event,
   previous,
@@ -323,6 +328,7 @@ export function BlockedNotice({
   caughtSessionId = null,
   caughtSessionOrdinal = null,
   caughtReason = null,
+  multiSession = false,
   onShowSession,
 }: {
   status?: GameStatus;
@@ -332,17 +338,21 @@ export function BlockedNotice({
   caughtSessionId?: string | null;
   caughtSessionOrdinal?: number | null;
   caughtReason?: string | null;
-  // Shows and focuses the session that caused the catch.
+  // A run with one session does not need to be told which session was caught.
+  multiSession?: boolean;
+  // Shows and focuses the session that caused the catch. Given only while that session is hidden.
   onShowSession?: () => void;
 }) {
   const caught = status === "caught";
   const heading = !caught ? "Run blocked" : blockedCommand ? "Caught in the act" : "Run caught";
-  const body = !caught ? BLOCKED_NOTICE : blockedCommand ? CAUGHT_IN_ACT_NOTICE : CAUGHT_NOTICE;
+  const generic = !caught ? BLOCKED_NOTICE : blockedCommand ? CAUGHT_IN_ACT_NOTICE : CAUGHT_NOTICE;
+  // The investigator's own reason says more than the generic line, so it replaces it.
+  const body = (caught && caughtReason) || generic;
   return (
     <div className="terminal loss">
       <h2>{heading}</h2>
       <p>{body}</p>
-      {caught && (caughtSessionOrdinal || caughtSessionId) && (
+      {caught && multiSession && (caughtSessionOrdinal || caughtSessionId) && (
         <p>
           Session {caughtSessionOrdinal ?? caughtSessionId!.slice(0, 8)} caused the catch.{" "}
           {onShowSession && (
@@ -352,7 +362,6 @@ export function BlockedNotice({
           )}
         </p>
       )}
-      {caught && caughtReason && <p>Investigator reason: {caughtReason}</p>}
     </div>
   );
 }

@@ -2,7 +2,7 @@
 import React, { useCallback, useLayoutEffect, useState } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { RunConsole, type PaneHandlers } from "@/app/run-console";
-import { DialogTitle, RunDialog } from "@/app/run-dialog";
+import { DialogTitle, ReviewNotice, RunDialog } from "@/app/run-dialog";
 import { SignInPanel } from "@/app/sign-in-panel";
 import { deckLayout, deckSessions, focusRecent, PENDING_SESSION } from "@/app/session-layout";
 import { createSessionUIState, type SessionUIMap } from "@/app/session-ui-state";
@@ -127,13 +127,16 @@ export type HarnessProps = {
   choice: boolean | null;
   // New run opens the real setup dialog shell, with a control that simulates a busy start.
   dialog?: boolean;
+  // The run is submitted and awaiting its result, under the review notice.
+  review?: boolean;
 };
 
-export function Harness({ name, width, choice, dialog }: HarnessProps) {
+export function Harness({ name, width, choice, dialog, review }: HarnessProps) {
   const [dialogOpen, setDialogOpen] = useState(false),
-    [dialogBusy, setDialogBusy] = useState(false);
+    [dialogBusy, setDialogBusy] = useState(false),
+    [reviewOpen, setReviewOpen] = useState(!!review);
   const [initial] = useState(() => fixture(name));
-  const game = initial.game;
+  const game = review ? { ...initial.game, status: "finalizing" as const } : initial.game;
   const [views, setViews] = useState(initial.views),
     [focusedId, setFocusedId] = useState(initial.focusedId),
     [recent, setRecent] = useState<string[]>([]),
@@ -236,6 +239,15 @@ export function Harness({ name, width, choice, dialog }: HarnessProps) {
           >
             {dialogBusy ? "Setting up…" : "Start run"}
           </button>
+        </RunDialog>
+      )}
+      {review && (
+        <RunDialog open={reviewOpen} busy={false} onClose={() => setReviewOpen(false)}>
+          <ReviewNotice
+            unresolved={false}
+            progress="1 of 4 sessions waiting for review."
+            onClose={() => setReviewOpen(false)}
+          />
         </RunDialog>
       )}
     </>

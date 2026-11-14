@@ -44,7 +44,7 @@ test("the inspector is a labelled region with a focusable heading", () => {
 
 test("the inspector shows investigator status, progress, last review and reason", () => {
   const html = render();
-  assert.match(html, /<strong>Reviewing<\/strong>/);
+  assert.match(html, /<strong>Under review<\/strong>/);
   assert.match(html, /1 of 2 sessions waiting for review\./);
   assert.match(html, /Last review: /);
   assert.match(html, /Reviewing the latest commands\./);
@@ -52,7 +52,12 @@ test("the inspector shows investigator status, progress, last review and reason"
 
 test("the inspector charts risk for every session", () => {
   const html = render();
-  assert.match(html, /class="risk-heading"/);
+  assert.match(html, /class="risk-heading"><h3>Classifier risk<\/h3>/);
+  assert.match(
+    html,
+    /<p class="risk-note">A separate classifier scores how suspicious each turn looks, from 0% to 100%\. This is the highest score so far\. It cannot end a run\. Only the investigator can\.<\/p>/,
+  );
+  assert.doesNotMatch(html, /advisory/i);
   assert.match(html, /Peak 65%/);
   assert.match(html, /Session 1 · peak 20%/);
   assert.match(html, /Session 2 · peak 65%/);

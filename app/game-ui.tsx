@@ -5,7 +5,13 @@ import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
 import { systemPromptChange } from "@/app/session-pane";
 import { RunConsole, type PaneHandlers } from "@/app/run-console";
-import { DialogTitle, RunDialog, RunSetupNotes } from "@/app/run-dialog";
+import {
+  DialogTitle,
+  ReviewNotice,
+  reviewNoticeOpen,
+  RunDialog,
+  RunSetupNotes,
+} from "@/app/run-dialog";
 import { SignInPanel } from "@/app/sign-in-panel";
 import { safeNextPath, signInPath } from "@/app/sign-in-path";
 import {
@@ -19,7 +25,14 @@ import {
   deckSessions,
 } from "@/app/session-layout";
 import { withDelta, type LiveDelta } from "@/app/transcript";
-import { label, money, number, RUN_BUDGET, statusLabel } from "@/app/run-format";
+import {
+  label,
+  money,
+  monitorProgressText,
+  number,
+  RUN_BUDGET,
+  statusLabel,
+} from "@/app/run-format";
 import { SEED_BUGS } from "@/lib/seed";
 import {
   RUNS_PER_DAY,
@@ -308,6 +321,8 @@ export default function GameUI({ models }: { models: string[] }) {
     setupOnPlay = useRef(true);
   // New runs left today: null is an admin with no limit, undefined is not loaded yet.
   const [runsLeft, setRunsLeft] = useState<number | null | undefined>(undefined);
+  // The run whose under-review notice the player closed to keep reading.
+  const [reviewDismissedFor, setReviewDismissedFor] = useState<string | null>(null);
   const [modal, setModal] = useState<"setup" | null>(null),
     [email, setEmail] = useState(""),
     [emailSent, setEmailSent] = useState(false);
@@ -936,6 +951,12 @@ export default function GameUI({ models }: { models: string[] }) {
     canCreateNewRun(game, currentRunReady || !member, currentRunStarted) &&
     canCreateNewRun(displayGame, true, displayRunStarted);
   const isExecutionView = !!displayGame && displayGame.id === game?.id;
+  // A submitted run on screen is covered by a notice until its result arrives or it is dismissed.
+  const reviewOpen =
+      modal === null &&
+      (panel === "play" || panel === "detail") &&
+      reviewNoticeOpen(displayGame, reviewDismissedFor),
+    dismissReview = () => setReviewDismissedFor(displayGame?.id ?? null);
   // Run-level actions wait for the live run's focused session, whichever run is on screen.
   const loading =
     busy || (!!game && !!liveSessionId && sessionLoading(game, sessionViews, liveSessionId));
@@ -1731,7 +1752,11 @@ export default function GameUI({ models }: { models: string[] }) {
           />
         )}
       </div>
-      <RunDialog open={modal !== null} busy={busy} onClose={() => setModal(null)}>
+      <RunDialog
+        open={modal !== null || reviewOpen}
+        busy={busy}
+        onClose={() => (modal ? setModal(null) : dismissReview())}
+      >
         {modal === "setup" ? (
           <>
             <DialogTitle>Start a run</DialogTitle>
@@ -1748,6 +1773,20 @@ export default function GameUI({ models }: { models: string[] }) {
               {busy ? "Setting up…" : "Start run"}
             </button>
           </>
+        ) : reviewOpen && displayGame ? (
+          <ReviewNotice
+            unresolved={displayGame.monitor?.status === "unresolved"}
+            progress={
+              displayGame.monitor
+                ? monitorProgressText(
+                    displayGame.monitor.status,
+                    displayGame.monitor.pendingSessions,
+                    displayGame.sessions.length,
+                  )
+                : null
+            }
+            onClose={dismissReview}
+          />
         ) : null}
         {error && (
           <p role="alert" className="error">

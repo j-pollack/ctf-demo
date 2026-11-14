@@ -1,11 +1,11 @@
 "use client";
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { GameEvent, PublicGame, SessionSummary } from "@/lib/types";
 import { runHasStarted, type SessionUIMap } from "@/app/session-ui-state";
 import { PENDING_SESSION, runModelsVary, type InspectorMode } from "@/app/session-layout";
 import { hasRiskObservations, runPeakRisk, runRiskSeries } from "@/app/run-risk";
 import { money } from "@/app/run-format";
-import { BlockedNotice, endBanner } from "@/app/transcript";
+import { BlockedNotice, endBanner, isEndReview } from "@/app/transcript";
 import { RunBar } from "@/app/run-bar";
 import { RunInspector, type SessionDecision } from "@/app/run-inspector";
 import { SessionChips } from "@/app/session-chips";
@@ -66,8 +66,9 @@ export type RunConsoleProps = {
 };
 
 const FINALIZING_COPY = {
-  unresolved: "Play has ended. Review could not be completed, so the result remains unconfirmed.",
-  pending: "Play has ended. The result is pending investigator review.",
+  unresolved: "Play has ended. The review could not be completed, so the result is unconfirmed.",
+  pending:
+    "Play has ended. The investigator is reviewing this run, and the result will appear here.",
   legacy: "Submission is under investigator review…",
 };
 
@@ -122,10 +123,11 @@ function OutcomeStrip({
           status={game.status}
           caughtSessionId={game.caughtSessionId}
           caughtSessionOrdinal={game.caughtSessionOrdinal}
-          caughtReason={game.caughtReason}
+          caughtReason={game.caughtReason ?? events.findLast(isEndReview)?.text ?? null}
           blockedCommand={events.some(
             (event) => event.kind === "monitor" && event.decision === "block" && !!event.command,
           )}
+          multiSession={game.sessions.length > 1}
           onShowSession={onShowCaught}
         />
       )}
@@ -141,11 +143,16 @@ function OutcomeStrip({
       )}
       {finalizing && (
         <div role="status" className="stage">
-          {game.monitorMode !== "async"
-            ? FINALIZING_COPY.legacy
-            : game.monitor?.status === "unresolved"
-              ? FINALIZING_COPY.unresolved
-              : FINALIZING_COPY.pending}
+          {game.monitorMode !== "async" ? (
+            FINALIZING_COPY.legacy
+          ) : game.monitor?.status === "unresolved" ? (
+            FINALIZING_COPY.unresolved
+          ) : (
+            <>
+              <i aria-hidden="true" />
+              {FINALIZING_COPY.pending}
+            </>
+          )}
         </div>
       )}
       {outcome.stage && (
@@ -188,6 +195,13 @@ function useInspectorFocus(inspector: InspectorMode, onClose: () => void) {
 export function RunConsole(props: RunConsoleProps) {
   const { game, sessions, sessionViews, shownIds, focusedId, inspector, pane } = props;
   const { detailsRef, titleRef } = useInspectorFocus(inspector, props.onCloseInspector);
+  // The run bar's risk control opens run details and brings the risk section into view.
+  const riskRef = useRef<HTMLElement | null>(null),
+    [riskRequest, setRiskRequest] = useState(0);
+  useEffect(() => {
+    if (riskRequest && inspector !== "closed")
+      riskRef.current?.scrollIntoView({ block: "nearest" });
+  }, [riskRequest, inspector]);
   const riskSeries = runRiskSeries(sessions, sessionViews),
     peak = runPeakRisk(riskSeries),
     observed = hasRiskObservations(riskSeries);
@@ -220,6 +234,10 @@ export function RunConsole(props: RunConsoleProps) {
         newRunDisabled={props.newRunDisabled}
         newRunTitle={props.newRunTitle}
         onToggleDetails={props.onToggleDetails}
+        onShowRisk={() => {
+          if (inspector === "closed") props.onToggleDetails();
+          setRiskRequest((count) => count + 1);
+        }}
         onNewRun={props.onNewRun}
         sessions={
           <SessionChips
@@ -246,7 +264,9 @@ export function RunConsole(props: RunConsoleProps) {
         events={events}
         outcome={props.outcome}
         onShowCaught={
-          caughtId && sessions.some((session) => session.id === caughtId)
+          caughtId &&
+          !shownIds.includes(caughtId) &&
+          sessions.some((session) => session.id === caughtId)
             ? () => props.onFocusSession(caughtId)
             : undefined
         }
@@ -307,6 +327,7 @@ export function RunConsole(props: RunConsoleProps) {
             observed={observed}
             decisions={decisions}
             titleRef={titleRef}
+            riskRef={riskRef}
             onClose={inspector === "overlay" ? props.onCloseInspector : undefined}
           />
         )}
