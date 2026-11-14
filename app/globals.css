@@ -526,50 +526,53 @@ aside.monitor {
   cursor: pointer;
   white-space: nowrap;
 }
-.stakes-detail[open] {
-  padding: 16px;
-  border: 1px solid var(--line);
+/* An overlay below the run header: opening it leaves the transcript's size and scroll alone. */
+.stakes-panel {
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: min(360px, 50dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px max(28px, calc((100vw - 1064px) / 2));
+  border-bottom: 1px solid var(--line);
   background: var(--paper);
 }
-.stakes-detail[open] > summary {
-  margin-bottom: 12px;
+.stakes-panel > .eyebrow {
+  margin-top: 12px;
 }
-/* Opening details gives the console one scroll surface; the results remain below the panel. */
-.console:has(.stakes-detail[open]) {
-  overflow-y: auto;
+.stakes-panel > .eyebrow:first-child {
+  margin-top: 0;
 }
-.console:has(.stakes-detail[open]) > .transcript {
-  flex: none;
+.details-model {
+  font-size: 11px;
 }
-.console:has(.stakes-detail[open]) .thread {
-  flex: none;
-  overflow: visible;
+.risk-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+.risk-heading strong {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--band-ink, var(--band));
 }
 .spend-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
   font-size: 11px;
 }
 .spend-breakdown p {
   display: flex;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
 }
 .spend-breakdown p + p {
-  margin-top: 6px;
-}
-.suspicion-peak {
-  padding: 16px 0;
-  border-top: 1px solid var(--line);
-}
-.suspicion-peak strong {
-  display: block;
-  font-size: 28px;
-  font-variant-numeric: tabular-nums;
-  color: var(--band-ink, var(--band));
-}
-.suspicion-peak small {
-  display: block;
-  color: var(--muted);
-  font-size: 10px;
+  margin-top: 0;
 }
 /* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 orange, caught red. */
 [data-band="low"] {
@@ -588,11 +591,14 @@ aside.monitor {
   --band: #c62828;
 }
 /* Shared turn axis for the session risk traces. */
+.run-risk-chart {
+  max-width: 420px;
+}
 .run-risk-chart svg {
   display: block;
   width: 100%;
   height: auto;
-  margin-top: 12px;
+  margin-top: 6px;
   overflow: visible;
 }
 .risk-grid {
@@ -656,13 +662,6 @@ aside.monitor {
 }
 .allow {
   color: #426f30;
-}
-.monitor-note {
-  border-top: 1px dashed #b3bda9;
-  margin-top: 18px;
-  padding-top: 20px;
-  font-size: 10px;
-  color: var(--muted);
 }
 .terminal {
   background: var(--accent);
@@ -1456,53 +1455,6 @@ dialog::backdrop {
   font-size: 13px;
   letter-spacing: 0.5px;
 }
-.run-settings {
-  margin-top: 2px;
-}
-.run-settings[open] {
-  max-height: min(36dvh, 340px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-.run-settings > summary {
-  width: fit-content;
-  cursor: pointer;
-  font-size: 11px;
-  color: var(--muted);
-}
-.run-settings[open] > summary {
-  position: sticky;
-  z-index: 1;
-  top: 0;
-  width: 100%;
-  padding: 4px 0;
-  background: var(--paper);
-}
-.run-settings > summary span {
-  color: #426f30;
-}
-.run-settings-fields {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 20px;
-  padding: 14px 0 4px;
-}
-.run-settings .model-select {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  letter-spacing: 1.4px;
-}
-.run-settings .model-select select {
-  width: auto;
-  min-height: 36px;
-  margin: 0;
-  padding: 6px 10px;
-  color: var(--ink);
-  letter-spacing: 0;
-}
 .session-strip {
   display: flex;
   flex: none;
@@ -1578,6 +1530,11 @@ dialog::backdrop {
   border: 1px solid var(--line);
   background: var(--panel);
 }
+.system-prompt[open] {
+  max-height: min(36dvh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .system-prompt summary {
   display: flex;
   align-items: center;
@@ -1649,18 +1606,12 @@ dialog::backdrop {
   .run-id {
     display: none;
   }
-  .run-settings[open] {
+  .system-prompt[open] {
     max-height: min(22dvh, 220px);
   }
-  .run-settings-fields {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .run-settings .model-select {
-    justify-content: space-between;
-  }
-  .run-settings .model-select select {
-    max-width: 65%;
+  .stakes-panel {
+    max-height: 40dvh;
+    padding: 12px 16px;
   }
   .system-prompt summary {
     flex-wrap: wrap;
@@ -1768,8 +1719,11 @@ dialog::backdrop {
   min-width: 110px;
 }
 @media (max-width: 720px) and (max-height: 500px) {
-  .run-settings[open] {
+  .system-prompt[open] {
     max-height: 18dvh;
+  }
+  .stakes-panel {
+    max-height: 30dvh;
   }
   .composer textarea {
     height: 56px;

@@ -21,37 +21,29 @@ test("actual setup fields show budget and reasoning guidance without difficulty 
   assert.doesNotMatch(html, /AGENT MODEL|AGENT EFFORT|change the agent.*model|effort at any time/);
 });
 
-test("actual session settings preserve prompts and historical agent labels without difficulty", () => {
-  const game = {
-    agentModel: "historical/model-kept-for-this-session",
-    agentEffort: "high" as const,
-    monitorDifficulty: "medium" as const,
-    systemPrompt: "The saved private plan.",
-  };
-  for (const editable of [true, false]) {
-    const html = renderToStaticMarkup(
-      createElement(UI.SessionSettings, {
-        game,
-        editable,
-        systemDraft: "The draft private plan.",
-        changeSystemDraft: () => {},
-        onPromptToggle: () => {},
-      }),
-    );
-    assert.match(html, /model-kept-for-this-session/);
-    assert.match(html, /High/);
-    assert.match(html, /Hidden from investigator/);
-    assert.equal((html.match(/<select\b/g) ?? []).length, 0);
-    assert.doesNotMatch(html, /DIFFICULTY|>Medium</);
-    assert.doesNotMatch(html, />EFFORT<|>MODEL<\/span><select/);
-    if (editable) {
-      assert.match(html, /aria-label="System prompt, hidden from the investigator"/);
-      assert.match(html, /The draft private plan\./);
-    } else {
-      assert.match(html, /The saved private plan\./);
-      assert.doesNotMatch(html, /<textarea/);
-    }
-  }
+test("run details keep the historical agent label and effort without difficulty", () => {
+  const html = renderToStaticMarkup(
+    createElement(UI.RunDetailsContent, {
+      game: {
+        agentModel: "historical/model-kept-for-this-session",
+        agentEffort: "high",
+        monitorMode: "async",
+        spentMicrodollars: 0,
+        agentSpendMicrodollars: 0,
+        monitorSpendMicrodollars: 0,
+      },
+      ordinal: 1,
+      riskSeries: [],
+      peak: 0,
+      observed: false,
+      decisions: [],
+    }),
+  );
+  assert.match(html, /model-kept-for-this-session/);
+  assert.match(html, /High/);
+  assert.equal((html.match(/<select\b/g) ?? []).length, 0);
+  assert.doesNotMatch(html, /DIFFICULTY|>Medium</);
+  assert.doesNotMatch(html, />EFFORT<|>MODEL<\/span><select/);
 });
 
 test("truncated replies preserve reasoning and historical model without unavailable effort advice", () => {

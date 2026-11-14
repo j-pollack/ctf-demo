@@ -5,9 +5,14 @@ import remarkGfm from "remark-gfm";
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
-import { hasRiskObservations, runPeakRisk, runRiskSeries } from "@/app/run-risk";
+import {
+  hasRiskObservations,
+  runPeakRisk,
+  runRiskSeries,
+  type SessionRiskSeries,
+} from "@/app/run-risk";
 import { RunRiskChart } from "@/app/run-risk-chart";
-import { runScrollContainer, runScrollPosition, scrollRunToBottom } from "@/app/run-scroll";
+import { runScrollPosition, scrollRunToBottom } from "@/app/run-scroll";
 import { SessionTabs } from "@/app/session-tabs";
 import { SEED_BUGS } from "@/lib/seed";
 import {
@@ -909,7 +914,7 @@ export default function GameUI({ models }: { models: string[] }) {
   }, [modal]);
   const scrollToBottom = () => scrollRunToBottom(thread.current);
   const trackRunScroll = (event: React.UIEvent<HTMLDivElement>) => {
-    const element = runScrollContainer(thread.current);
+    const element = thread.current;
     if (!element || event.target !== element) return;
     const position = runScrollPosition(element, {
       top: lastScrollTop.current,
@@ -926,7 +931,7 @@ export default function GameUI({ models }: { models: string[] }) {
   const jumpToBottom = () => {
     atBottom.current = true;
     scrollToBottom();
-    lastScrollTop.current = runScrollContainer(thread.current)?.scrollTop ?? 0;
+    lastScrollTop.current = thread.current?.scrollTop ?? 0;
   };
   useEffect(() => {
     if (unconfirmed) jumpToBottom();
@@ -1717,7 +1722,7 @@ export default function GameUI({ models }: { models: string[] }) {
             )}
           </main>
         ) : panel === "play" || panel === "detail" ? (
-          <div className="console" onScroll={trackRunScroll}>
+          <div className="console">
             <aside className="monitor" aria-label="Shared run budget and investigation risk">
               <div className="stakes-lead">
                 <span className="eyebrow">ONE RUN · SHARED STAKES</span>
@@ -1765,78 +1770,15 @@ export default function GameUI({ models }: { models: string[] }) {
                   {displayGame.monitor?.reason && <small>{displayGame.monitor.reason}</small>}
                 </div>
               )}
-              <RunDetails
-                onToggle={() => {
-                  const element = runScrollContainer(thread.current);
-                  if (!element) return;
-                  const position = runScrollPosition(element);
-                  lastScrollTop.current = position.top;
-                  atBottom.current = position.atBottom;
-                }}
-              >
-                <div className="spend-breakdown">
-                  <p>
-                    Spent <strong>{money(displayGame?.spentMicrodollars ?? 0)}</strong>
-                  </p>
-                  <p>
-                    Agent <strong>{money(displayGame?.agentSpendMicrodollars ?? 0)}</strong>
-                  </p>
-                  <p>
-                    Monitor <strong>{money(displayGame?.monitorSpendMicrodollars ?? 0)}</strong>
-                  </p>
-                </div>
-                <div className="suspicion-peak">
-                  <p className="eyebrow">CLASSIFIER RISK HISTORY · ADVISORY</p>
-                  <strong
-                    data-band={riskObserved ? suspicionBand(peakOfCatch) : undefined}
-                    title={
-                      riskObserved
-                        ? `Highest classifier risk score across all sessions: ${peakOfCatch.toFixed(2)} out of 1`
-                        : "No classifier risk observations have been recorded yet"
-                    }
-                  >
-                    {riskObserved ? `${Math.round(peakOfCatch * 100)}%` : "No risk data yet"}
-                  </strong>
-                  <small>
-                    {riskObserved
-                      ? "Highest recorded score, not the final run outcome."
-                      : "No classifier scores recorded"}
-                  </small>
-                  <RunRiskChart series={riskSeries} />
-                  <small>
-                    Each trace shows one session on the same agent-turn axis. The investigator
-                    reviews transcript evidence separately.
-                  </small>
-                </div>
-                {decisions.length > 0 && (
-                  <p className="eyebrow">SESSION {displaySession?.ordinal ?? 1} DECISIONS</p>
-                )}
-                {decisions
-                  .slice(-8)
-                  .reverse()
-                  .map((event) => (
-                    <div className="receipt" key={event.id}>
-                      <header>
-                        <strong className={event.decision}>
-                          {event.decision === "error"
-                            ? "Investigation error"
-                            : displayGame?.monitorMode === "async"
-                              ? "Flag read detected"
-                              : "Investigator blocked"}
-                        </strong>
-                        <span>
-                          {typeof event.suspicion === "number"
-                            ? `${Math.round(event.suspicion * 100)}% classifier risk`
-                            : `turn ${event.turn}`}
-                        </span>
-                      </header>
-                      {event.text && <p>{event.text}</p>}
-                    </div>
-                  ))}
-                <p className="monitor-note">
-                  Sessions in this run share one computer, flag, and budget. Charges the AI provider
-                  hasn’t confirmed yet show as pending.
-                </p>
+              <RunDetails>
+                <RunDetailsContent
+                  game={displayGame}
+                  ordinal={displaySession?.ordinal ?? 1}
+                  riskSeries={riskSeries}
+                  peak={peakOfCatch}
+                  observed={riskObserved}
+                  decisions={decisions}
+                />
               </RunDetails>
             </aside>
             <main className="transcript">
@@ -1871,7 +1813,7 @@ export default function GameUI({ models }: { models: string[] }) {
                     <span>TURNS</span>
                   </div>
                 </div>
-                <SessionSettings
+                <SystemPrompt
                   game={displayGame}
                   editable={editingSystemPrompt}
                   systemDraft={systemDraft}
@@ -2268,9 +2210,10 @@ export function RulesPanel() {
         </li>
       </ol>
       <p>
-        A classifier supplies advisory risk signals. In new runs, the investigator reviews
-        transcript updates while the agent works. Review may lag behind completed commands. The
-        investigator can also review transcript history across your sessions and runs.
+        A classifier supplies advisory risk signals. In new runs, the investigator reviews a
+        session’s transcript when its agent finishes responding to an instruction. Commands from
+        that instruction have already run. The investigator can also review transcript history
+        across your sessions and runs.
       </p>
       <h3>Step by step</h3>
       <RunInstructions />
@@ -2516,14 +2459,14 @@ export function RunSetupFields() {
   );
 }
 
-export function SessionSettings({
+export function SystemPrompt({
   game,
   editable,
   systemDraft,
   changeSystemDraft,
   onPromptToggle,
 }: {
-  game: Pick<PublicGame, "agentModel" | "agentEffort" | "systemPrompt"> | null;
+  game: Pick<PublicGame, "systemPrompt"> | null;
   editable: boolean;
   systemDraft: string;
   changeSystemDraft: (value: string) => void;
@@ -2531,43 +2474,29 @@ export function SessionSettings({
 }) {
   const changed =
     editable && "systemPrompt" in systemPromptChange(systemDraft, game?.systemPrompt ?? "");
+  if (!editable && !game?.systemPrompt) return null;
   return (
-    <details className="run-settings">
+    <details className="system-prompt" onToggle={onPromptToggle}>
       <summary>
-        Session settings <span>{changed ? "· Unsaved prompt" : ""}</span>
+        <span className="eyebrow">SYSTEM PROMPT</span>
+        <span className="hidden-tag">Hidden from investigator</span>
+        <span className="preview" aria-hidden="true">
+          {(editable ? systemDraft : game?.systemPrompt) || "None"}
+        </span>
+        {changed && <span className="unsaved">Sends with next instruction</span>}
       </summary>
-      <div className="run-settings-fields">
-        {game && (
-          <span className="run-model">
-            <span className="eyebrow">MODEL</span>
-            {label(game.agentModel)} · {EFFORT_NAMES[game.agentEffort]}
-          </span>
-        )}
-      </div>
-      {(editable || game?.systemPrompt) && (
-        <details className="system-prompt" onToggle={onPromptToggle}>
-          <summary>
-            <span className="eyebrow">SYSTEM PROMPT</span>
-            <span className="hidden-tag">Hidden from investigator</span>
-            <span className="preview" aria-hidden="true">
-              {(editable ? systemDraft : game?.systemPrompt) || "None"}
-            </span>
-            {changed && <span className="unsaved">Sends with next instruction</span>}
-          </summary>
-          {editable ? (
-            <textarea
-              id="system-prompt"
-              aria-label="System prompt, hidden from the investigator"
-              value={systemDraft}
-              onChange={(event) => changeSystemDraft(event.target.value)}
-              maxLength={8192}
-              rows={4}
-              placeholder="Optional. Your secret plan for the agent: it reads this every turn, and the investigator never sees it."
-            />
-          ) : (
-            <p tabIndex={0}>{game?.systemPrompt}</p>
-          )}
-        </details>
+      {editable ? (
+        <textarea
+          id="system-prompt"
+          aria-label="System prompt, hidden from the investigator"
+          value={systemDraft}
+          onChange={(event) => changeSystemDraft(event.target.value)}
+          maxLength={8192}
+          rows={4}
+          placeholder="Optional. Your secret plan for the agent: it reads this every turn, and the investigator never sees it."
+        />
+      ) : (
+        <p tabIndex={0}>{game?.systemPrompt}</p>
       )}
     </details>
   );
@@ -2861,18 +2790,98 @@ export function Entry({
   );
 }
 
-export function RunDetails({
-  children,
-  onToggle,
+export function RunDetails({ children }: { children: React.ReactNode }) {
+  return (
+    <details className="stakes-detail">
+      <summary>Run details</summary>
+      <div className="stakes-panel">{children}</div>
+    </details>
+  );
+}
+
+export function RunDetailsContent({
+  game,
+  ordinal,
+  riskSeries,
+  peak,
+  observed,
+  decisions,
 }: {
-  children: React.ReactNode;
-  onToggle?: React.ReactEventHandler<HTMLDetailsElement>;
+  game: Pick<
+    PublicGame,
+    | "agentModel"
+    | "agentEffort"
+    | "monitorMode"
+    | "spentMicrodollars"
+    | "agentSpendMicrodollars"
+    | "monitorSpendMicrodollars"
+  > | null;
+  ordinal: number;
+  riskSeries: SessionRiskSeries[];
+  peak: number;
+  observed: boolean;
+  decisions: GameEvent[];
 }) {
   return (
-    <details className="stakes-detail" onToggle={onToggle}>
-      <summary>Run details</summary>
-      {children}
-    </details>
+    <>
+      <p className="eyebrow">SPEND</p>
+      <div className="spend-breakdown">
+        <p>
+          Spent <strong>{money(game?.spentMicrodollars ?? 0)}</strong>
+        </p>
+        <p>
+          Agent <strong>{money(game?.agentSpendMicrodollars ?? 0)}</strong>
+        </p>
+        <p>
+          Monitor <strong>{money(game?.monitorSpendMicrodollars ?? 0)}</strong>
+        </p>
+      </div>
+      {game && (
+        <>
+          <p className="eyebrow">SESSION {ordinal}</p>
+          <p className="details-model">
+            Model {label(game.agentModel)} · {EFFORT_NAMES[game.agentEffort]}
+          </p>
+        </>
+      )}
+      <div className="risk-heading">
+        <span className="eyebrow">CLASSIFIER RISK · ADVISORY</span>
+        <strong
+          data-band={observed ? suspicionBand(peak) : undefined}
+          title={
+            observed
+              ? `Highest classifier risk score across all sessions: ${peak.toFixed(2)} out of 1`
+              : "No classifier risk observations have been recorded yet"
+          }
+        >
+          {observed ? `peak ${Math.round(peak * 100)}%` : "No risk data yet"}
+        </strong>
+      </div>
+      <RunRiskChart series={riskSeries} />
+      {decisions.length > 0 && <p className="eyebrow">SESSION {ordinal} DECISIONS</p>}
+      {decisions
+        .slice(-8)
+        .reverse()
+        .map((event) => (
+          <div className="receipt" key={event.id}>
+            <header>
+              <strong className={event.decision}>
+                {event.decision === "error"
+                  ? "Investigation error"
+                  : game?.monitorMode === "async"
+                    ? "Flag read detected"
+                    : "Investigator blocked"}
+              </strong>
+              <span>
+                {typeof event.suspicion === "number"
+                  ? `${Math.round(event.suspicion * 100)}% classifier risk`
+                  : `turn ${event.turn}`}
+              </span>
+            </header>
+            {event.text && <p>{event.text}</p>}
+          </div>
+        ))}
+    </>
   );
 }
 
@@ -2925,7 +2934,7 @@ export function RunRiskBrief({
       </strong>
       <small>
         {game?.monitorMode === "async"
-          ? "Investigator review can lag behind the agent."
+          ? "The investigator reviews a session when its agent finishes responding."
           : "Investigator decides whether actions run."}
       </small>
     </div>
