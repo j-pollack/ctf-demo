@@ -416,7 +416,7 @@ test("chunking matches the pre-change algorithm on escape-dense and surrogate-ed
     longEscapes: "\0\x01\x1f".repeat(1500),
     separators: "\u2028\u2029\x7f".repeat(1500),
     lowFirst: `${"a".repeat(2488)}\udc00${"a".repeat(10)}`,
-    highLast: `${"a".repeat(2485)}\ud800${"a".repeat(10)}`,
+    highLast: `${"a".repeat(2483)}\ud800${"a".repeat(10)}`,
     loneNextToPairs: "😀\ud800😀\udc00😀".repeat(900),
     pairsAtEdge: `${"a".repeat(2486)}😀${"a".repeat(2486)}😀`,
   };
@@ -464,12 +464,12 @@ test("empty text yields no rows", () => {
   assert.deepEqual(chunksOf(""), []);
 });
 
-test("a 1.5 MB message is chunked within two seconds", () => {
+test("a message of 1.5 million code units is chunked within two seconds", () => {
   const text = 'x"\n€😀'.repeat(250_000);
   const started = performance.now();
   const rows = evidenceMessages(snapshot(), "session-a", [message("user", text)], false);
   const elapsed = performance.now() - started;
-  console.log(`1.5 MB chunking: ${elapsed.toFixed(0)} ms, ${rows.length} rows`);
+  console.log(`1.5 M code unit chunking: ${elapsed.toFixed(0)} ms, ${rows.length} rows`);
   assert.ok(rows.length > 1);
   assert.ok(elapsed < 2000, `took ${elapsed.toFixed(0)} ms`);
 });
