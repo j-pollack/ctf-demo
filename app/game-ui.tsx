@@ -2231,7 +2231,7 @@ export default function GameUI({ models }: { models: string[] }) {
 }
 export function RunHistoryRow({ run, onOpen }: { run: GameSummary; onOpen: () => void }) {
   return (
-    <button key={run.id} className="run-row" onClick={onOpen}>
+    <button className="run-row" onClick={onOpen}>
       <strong>RUN {run.id.slice(0, 8).toUpperCase()}</strong>
       <span>
         {statusLabel[run.status]} · {new Date(run.createdAt).toLocaleString()}

@@ -508,6 +508,30 @@ await test(
       },
     );
 
+    await t.test("of two reviewed sessions, the one reviewed longer ago goes first", async () => {
+      await retireOtherJobs();
+      const id = await seed(`order-reviewed-${randomUUID()}`);
+      const second = await addSession(id, 2);
+      await write(id, ["a1"]);
+      await write(id, ["b1"], second);
+      await reviewOnce(id);
+      await reviewOnce(second);
+      // Explicit times: the older-created session was reviewed most recently.
+      await pool.query(
+        `UPDATE ctf.monitor_jobs SET last_reviewed_at=CASE session_id
+           WHEN $1::uuid THEN now() ELSE now()-interval '1 minute' END
+         WHERE game_id=$1`,
+        [id],
+      );
+      await write(id, ["a1", "a2"]);
+      await write(id, ["b1", "b2"], second);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.sessionId, second, "the less recently reviewed sibling is claimed");
+      await finishMonitorJob(claim!, { kind: "allow" });
+      await reviewOnce(id);
+      assert.equal(await claimMonitorJob(), null);
+    });
+
     await t.test("a run reviewed last yields to a waiting run", async () => {
       await retireOtherJobs();
       const older = await seed(`order-old-${randomUUID()}`);
