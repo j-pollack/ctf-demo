@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 
 export const DAILY_CAP_MICRODOLLARS = 10_000_000;
+// Settled spend past a run's budget up to which the worker's monitor reviews are still admitted.
+export const MONITOR_OVERAGE_MICRODOLLARS = 250_000;
 const AGENT_MODELS = [
   "meta/muse-spark-open",
   "qwen/qwen3.8-2.4t-a95b",

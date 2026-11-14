@@ -10,6 +10,7 @@ import { flagReadCases } from "../../scripts/flag-read-cases";
 import { seedCase } from "../../scripts/flag-read-eval-live";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
 import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
+import { DAILY_CAP_MICRODOLLARS } from "../../lib/policy";
 import { closePool } from "./postgres";
 import { fastMonitorTiming, fastMonitorDelays } from "./monitor-timing";
 
@@ -29,7 +30,22 @@ const modes = [
   "slow-success",
   "deadline",
   "classifier-timeout",
+  "budget-between",
+  "budget-equal",
+  "budget-two-call",
+  "sibling-hold",
+  "daily-cap",
+  "over-ceiling",
 ] as const;
+// Budget-exemption modes: the run budget must not refuse a review (B1, B2) except above the overage ceiling (B8)
+// or when the shared daily cap is reached (B4).
+const exemptModes = ["budget-between", "budget-equal", "budget-two-call", "sibling-hold"];
+const refusedModes = ["daily-cap", "over-ceiling"];
+// Remaining run budget, in microdollars, for the modes that seed a tight run.
+const TIGHT_REMAINING = 1_000;
+const SIBLING_REMAINING = 60_000;
+// Mirrors MONITOR_OVERAGE_MICRODOLLARS in lib/policy.ts, which is stated by the contract, not imported.
+const OVERAGE_CEILING = 250_000;
 
 await test(
   "production worker preserves policy attribution and bounded accounting",
@@ -92,10 +108,16 @@ await test(
             ? policy.monitorVersion
             : productionVersion;
     const item = flagReadCases[0];
+    const remaining =
+      mode === "budget-between" || mode === "budget-two-call"
+        ? TIGHT_REMAINING
+        : mode === "sibling-hold"
+          ? SIBLING_REMAINING
+          : 2_000_000;
     const workspace = await seedCase(
       pool,
       item,
-      2_000_000,
+      remaining,
       "deepseek/deepseek-v4.1-flash-1017",
       "jev-1.14.0",
       version,
@@ -188,6 +210,7 @@ await test(
           }
           assert.equal(endpoint, "https://openrouter.ai/api/v1/chat/completions");
           investigator++;
+          if (exemptModes.includes(mode)) assert.equal(body.max_tokens, 8192);
           assert.equal(body.messages[0].content, policy.systemPrompt);
           assert.equal(body.reasoning.effort, "high");
           assert.deepEqual(
@@ -228,14 +251,16 @@ await test(
                 signal: init.signal!,
               },
             );
-          const prompt = String(body.messages.at(-1).content);
+          const prompt = String(
+            body.messages.findLast((message: { role: string }) => message.role === "user").content,
+          );
           const evidence = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2));
           const ref = evidence.snapshot.currentTranscript.find(
             (row: { role: string }) => row.role === "tool",
           )?.ref;
           if (mode === "block") assert.ok(ref);
           const next =
-            mode === "overrun"
+            mode === "overrun" || (mode === "budget-two-call" && investigator === 1)
               ? {
                   name: "query_transcripts",
                   arguments: JSON.stringify({ sql: "SELECT count(*) FROM sessions" }),
@@ -295,6 +320,61 @@ await test(
       );
       assert.equal(classifier + investigator, 0);
     }
+    const {
+      rows: [before],
+    } = await pool.query(
+      "SELECT spent_microdollars::int AS spent,budget_microdollars::int AS budget FROM ctf.games WHERE id=$1",
+      [workspace.gameId],
+    );
+    let sibling: { id: string; cost: number } | undefined;
+    if (mode === "budget-equal")
+      await pool.query("UPDATE ctf.games SET spent_microdollars=budget_microdollars WHERE id=$1", [
+        workspace.gameId,
+      ]);
+    if (mode === "over-ceiling")
+      await pool.query(
+        "UPDATE ctf.games SET spent_microdollars=budget_microdollars+$2 WHERE id=$1",
+        [workspace.gameId, OVERAGE_CEILING],
+      );
+    if (mode === "daily-cap")
+      await pool.query(
+        `INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,$1)
+         ON CONFLICT (day) DO UPDATE SET charged=$1`,
+        [DAILY_CAP_MICRODOLLARS],
+      );
+    if (mode === "sibling-hold") {
+      // A second session of the run, with a live lease, holds a real agent reservation that takes the
+      // whole remaining budget.
+      const siblingSession = randomUUID();
+      const siblingLease = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions
+          (id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns,lease,lease_until)
+         SELECT $1,$2,coalesce(max(ordinal),0)+1,'deepseek/deepseek-v4.1-flash-1017','high','','[]',0,$3,
+           now()+interval '30 minutes' FROM ctf.agent_sessions WHERE game_id=$2`,
+        [siblingSession, workspace.gameId, siblingLease],
+      );
+      const { reserveInference } = await import("../../lib/games");
+      const held = await reserveInference(
+        workspace.gameId,
+        siblingLease,
+        "agent",
+        "sibling/agent-model",
+        100,
+        1_000_000,
+        1e-6,
+        2e-6,
+        { sessionId: siblingSession },
+      );
+      sibling = { id: held.id, cost: held.cost };
+      const {
+        rows: [state],
+      } = await pool.query(
+        "SELECT (budget_microdollars-spent_microdollars-reserved_microdollars)::int AS available FROM ctf.games WHERE id=$1",
+        [workspace.gameId],
+      );
+      assert.ok(state.available >= 0 && state.available < 64 * 2, "the sibling holds the budget");
+    }
     // The production worker reviews a session after its turn has ended.
     await pool.query(
       "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
@@ -319,6 +399,60 @@ await test(
       assert.equal(reviews.length, 0);
       assert.equal(job.status, "queued");
       assert.match(job.reason, /version/i);
+      return;
+    }
+    if (exemptModes.includes(mode)) {
+      assert.deepEqual(reviews, [{ prompt_version: version }]);
+      assert.equal(classifier, 1);
+      assert.equal(investigator, mode === "budget-two-call" ? 2 : 1);
+      assert.equal(job.status, "caught-up");
+      assert.equal(Number(job.covered_version), Number(head.version));
+      const {
+        rows: [review],
+      } = await pool.query("SELECT verdict FROM ctf.monitor_reviews WHERE game_id=$1", [
+        workspace.gameId,
+      ]);
+      assert.equal(review.verdict, "allow");
+      const {
+        rows: [after],
+      } = await pool.query(
+        "SELECT spent_microdollars::int AS spent,reserved_microdollars::int AS held FROM ctf.games WHERE id=$1",
+        [workspace.gameId],
+      );
+      const settled = mode === "budget-two-call" ? 24 : 14;
+      const start = mode === "budget-equal" ? before.budget : before.spent;
+      assert.equal(after.spent, start + settled);
+      if (mode === "budget-equal") assert.ok(after.spent > before.budget);
+      if (sibling) {
+        assert.equal(after.held, sibling.cost, "only the sibling's reservation remains held");
+        const {
+          rows: [hold],
+        } = await pool.query(
+          "SELECT cost_ceiling::int AS cost,settled_at,role FROM ctf.inference WHERE id=$1",
+          [sibling.id],
+        );
+        assert.deepEqual(hold, { cost: sibling.cost, settled_at: null, role: "agent" });
+      } else assert.equal(after.held, 0);
+      return;
+    }
+    if (refusedModes.includes(mode)) {
+      assert.equal(classifier + investigator, 0, "the review was refused before dispatch");
+      assert.equal(job.status, "queued");
+      assert.match(
+        job.reason,
+        mode === "daily-cap" ? /shared inference budget/i : /budget|allowance/i,
+      );
+      const {
+        rows: [after],
+      } = await pool.query(
+        "SELECT spent_microdollars::int AS spent,reserved_microdollars::int AS held FROM ctf.games WHERE id=$1",
+        [workspace.gameId],
+      );
+      assert.equal(after.held, 0);
+      assert.equal(
+        after.spent,
+        mode === "over-ceiling" ? before.budget + OVERAGE_CEILING : before.spent,
+      );
       return;
     }
     assert.deepEqual(reviews, [{ prompt_version: version }]);

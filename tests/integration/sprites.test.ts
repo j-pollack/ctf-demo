@@ -1705,6 +1705,161 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal(state.catches.length, 0);
   });
 
+  // Leave only the given runs' review jobs for the worker; other scenarios' leftovers are settled.
+  const reviewOnly = (gameIds: string[]) =>
+    pool.query(
+      `UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version,
+       claim_token=NULL,claim_until=NULL WHERE game_id<>ALL($1::uuid[])`,
+      [gameIds],
+    );
+
+  await t.test("an over-budget run's sessions are both reviewed concurrently", async () => {
+    const { gameId, sessionIds } = await twoSessionRun("async-over-budget-concurrent", [
+      "printf harmless",
+      "printf harmless",
+    ]);
+    await reviewOnly([gameId]);
+    await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+      gameId,
+    ]);
+    const before = await spentBefore([gameId]);
+    const state = await assertConcurrentReviews(
+      [gameId],
+      sessionIds,
+      before,
+      await reviewConcurrently(),
+    );
+    for (const job of state.jobs) assert.equal(job.status, "caught-up");
+    assert.ok(Number(state.runs[0].spent_microdollars) > Number(before.get(gameId)));
+  });
+
+  await t.test(
+    "a correct submission is confirmed when its review finds the run at its budget",
+    async () => {
+      const owner = "async-submit-at-budget";
+      const game = await productionStartGame(owner);
+      const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
+      proposed = [{ submit: `The flag is ${secret}` }];
+      agentCalls = 0;
+      await runGame(await claimGame(game.id, owner), "Submit", AbortSignal.timeout(5000), () => {});
+      assert.equal((await row(game.id)).status, "finalizing");
+      await reviewOnly([game.id]);
+      await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+        game.id,
+      ]);
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await pool.query(
+          `UPDATE ctf.monitor_jobs SET next_attempt_at=now()-interval '1 second'
+           WHERE game_id=$1 AND status='queued'`,
+          [game.id],
+        );
+        await runMonitorWorkerOnce();
+        if ((await row(game.id)).status !== "finalizing") break;
+      }
+      const {
+        rows: [job],
+      } = await pool.query("SELECT status,attempts FROM ctf.monitor_jobs WHERE game_id=$1", [
+        game.id,
+      ]);
+      assert.equal(job.status, "caught-up", `attempts ${job.attempts}`);
+      assert.equal((await row(game.id)).status, "captured");
+      assert.equal(
+        (await pool.query("SELECT status FROM ctf.finalization_jobs WHERE game_id=$1", [game.id]))
+          .rows[0].status,
+        "done",
+      );
+    },
+  );
+
+  await t.test(
+    "an agent request over budget exhausts the run while a monitor reservation is held",
+    async () => {
+      const owner = "async-agent-over-budget";
+      const game = await productionStartGame(owner);
+      proposed = ["printf harmless"];
+      agentCalls = 0;
+      await runGame(
+        await claimGame(game.id, owner),
+        "Run a command",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      await reviewOnly([game.id]);
+      const { claimMonitorJob } = await import("../../lib/monitor-jobs");
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.gameId, game.id);
+      const reviewId = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.monitor_reviews
+         (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,job_id,job_claim_token)
+         VALUES($1,$2,$3,0,'transcript','held-model','held',$4,$5)`,
+        [reviewId, game.id, game.id, claim!.jobId, claim!.claimToken],
+      );
+      const held = await reserveInference(
+        game.id,
+        null,
+        "monitor",
+        "held-model",
+        100,
+        64,
+        0.000001,
+        0.000001,
+        { sessionId: game.id, reviewId, jobClaim: claim! },
+      );
+      await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+        game.id,
+      ]);
+      agentCalls = 0;
+      const requestsBefore = requests.length;
+      await runGame(
+        await claimGame(game.id, owner),
+        "One more instruction",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      const finished = await row(game.id);
+      assert.equal(finished.status, "exhausted");
+      assert.equal(agentCalls, 0, "the agent was not dispatched");
+      assert.equal(requests.length, requestsBefore);
+      assert.equal(Number(finished.reserved_microdollars), held.cost, "the hold is untouched");
+      await assert.rejects(claimGame(game.id, owner), /./);
+      await pool.query(
+        "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version WHERE game_id=$1",
+        [game.id],
+      );
+    },
+  );
+
+  await t.test(
+    "an agent request under budget with too little available keeps status 400",
+    async () => {
+      const owner = "async-agent-short-budget";
+      const game = await productionStartGame(owner);
+      await pool.query(
+        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+100 WHERE id=$1",
+        [game.id],
+      );
+      agentCalls = 0;
+      await runGame(
+        await claimGame(game.id, owner),
+        "Run a command",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      const finished = await row(game.id);
+      assert.equal(finished.status, "active");
+      assert.equal(agentCalls, 0, "the agent was not dispatched");
+      const {
+        rows: [error],
+      } = await pool.query(
+        "SELECT data FROM ctf.events WHERE game_id=$1 AND data->>'kind'='error' ORDER BY id DESC LIMIT 1",
+        [game.id],
+      );
+      assert.match(error.data.text, /enough budget/);
+    },
+  );
+
   await t.test("two runs are reviewed concurrently", async () => {
     const runs = [];
     for (const owner of ["async-concurrent-a", "async-concurrent-b"]) {

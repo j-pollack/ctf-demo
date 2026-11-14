@@ -14,6 +14,7 @@ import {
   PLAYER_AGENT_EFFORT,
   MODELS,
   DAILY_CAP_MICRODOLLARS,
+  MONITOR_OVERAGE_MICRODOLLARS,
   GameError,
   makeSecret,
 } from "./policy";
@@ -880,6 +881,19 @@ export function requestAllowance(
     cost: inputCost + Math.ceil(Math.max(0, maxTokens) * outputRate * 1_000_000),
   };
 }
+// A worker-claimed monitor review is admitted without the run budget until settled spend passes the overage ceiling.
+export function monitorRunBudgetExempt(
+  role: "agent" | "monitor",
+  claim: MonitorJobClaim | undefined,
+  spent: number,
+  budget: number,
+) {
+  return (
+    role === "monitor" &&
+    claim?.runBudgetExempt === true &&
+    spent < budget + MONITOR_OVERAGE_MICRODOLLARS
+  );
+}
 export async function reserveInference(
   gameId: string,
   lease: string | null,
@@ -944,16 +958,30 @@ export async function reserveInference(
       Number(game.budget_microdollars) -
       Number(game.spent_microdollars) -
       Number(game.reserved_microdollars);
-    const allowance = requestAllowance(input, wantedOutput, inputRate, outputRate, available);
-    if (allowance.maxTokens < 64)
+    const exempt = monitorRunBudgetExempt(
+      role,
+      context.jobClaim,
+      Number(game.spent_microdollars),
+      Number(game.budget_microdollars),
+    );
+    const allowance = exempt
+      ? { maxTokens: wantedOutput }
+      : requestAllowance(input, wantedOutput, inputRate, outputRate, available);
+    if (allowance.maxTokens < 64) {
+      // An agent past its budget is exhausted even while another call's reservation is held.
+      const spentOut =
+        role === "agent" && Number(game.spent_microdollars) >= Number(game.budget_microdollars);
       throw new GameError(
-        Number(game.reserved_microdollars) > 0
-          ? "There isn’t enough available budget for this request. Some billing is still pending."
-          : available <= 0
-            ? "Your inference budget is exhausted."
-            : "There isn’t enough budget for this request. Start a new run.",
-        available <= 0 && Number(game.reserved_microdollars) === 0 ? 402 : 400,
+        spentOut
+          ? "Your inference budget is exhausted."
+          : Number(game.reserved_microdollars) > 0
+            ? "There isn’t enough available budget for this request. Some billing is still pending."
+            : available <= 0
+              ? "Your inference budget is exhausted."
+              : "There isn’t enough budget for this request. Start a new run.",
+        spentOut || (available <= 0 && Number(game.reserved_microdollars) === 0) ? 402 : 400,
       );
+    }
     const globalAllowance = requestAllowance(
       input,
       allowance.maxTokens,

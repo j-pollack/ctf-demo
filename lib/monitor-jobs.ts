@@ -11,6 +11,8 @@ export type MonitorJobClaim = {
   targetVersion: number;
   claimToken: string;
   claimUntil: Date;
+  // Set only by the monitor worker; the evaluation harness's claims stay under the run budget.
+  readonly runBudgetExempt?: boolean;
 };
 
 const CLAIM_MS = 90_000;
