@@ -41,7 +41,7 @@ test("public landing renders without database access and does not offer sign-in 
     html,
     /reviews every command before it runs|decides whether to allow or block|before allowing commands to execute/,
   );
-  assert.match(html, /Sign in to play · \$0\.50 per run · 3 new runs a day/);
+  assert.match(html, /Sign in to play · \$0\.50 AI budget per run · 3 new runs a day/);
   assert.doesNotMatch(html, /Tripwire|tripwire|<textarea/);
 });
 
