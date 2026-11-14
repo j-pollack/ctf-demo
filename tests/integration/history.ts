@@ -63,7 +63,8 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     await pool.query("INSERT INTO ctf.daily_spend(day) VALUES($1) ON CONFLICT DO NOTHING", [
       legacyDay,
     ]);
-    const difficulties = ["easy", "medium", "hard"];
+    // ids[1] is the ranked capture, so it records hard: the only difficulty the board ranks.
+    const difficulties = ["easy", "hard", "medium"];
     const difficultyOf = (id: string) => difficulties[ids.indexOf(id) % 3];
     for (let i = 0; i < ids.length; i++)
       await pool.query(
@@ -334,9 +335,7 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     );
     const { GET: leaderboard } = await import("../../app/api/leaderboard/route");
     const board = await leaderboard(
-      new Request(
-        `http://localhost/api/leaderboard?difficulty=${difficultyOf(ids[1])}&agent=${encodeURIComponent(actualModel)}`,
-      ),
+      new Request(`http://localhost/api/leaderboard?agent=${encodeURIComponent(actualModel)}`),
     );
     assert.equal((await board.json()).entries.length, 1);
 
@@ -373,9 +372,7 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       [randomUUID(), mixedParent, legacyDay, actualModel, randomUUID(), mixedChild, otherModel],
     );
     const mixedBoard = await leaderboard(
-      new Request(
-        `http://localhost/api/leaderboard?difficulty=${difficultyOf(ids[1])}&agent=${encodeURIComponent(actualModel)}`,
-      ),
+      new Request(`http://localhost/api/leaderboard?agent=${encodeURIComponent(actualModel)}`),
     );
     const mixedEntries = (await mixedBoard.json()).entries;
     assert.equal(

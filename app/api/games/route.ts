@@ -28,7 +28,6 @@ export async function POST(request: Request) {
     const agent = publicAgentSettings(data, await currentAgentModel());
     return Response.json(
       await startGame(user.id, agent.agentModel, {
-        monitorDifficulty: data.monitorDifficulty,
         monitorReasoning: data.monitorReasoning,
         agentEffort: agent.agentEffort,
       }),

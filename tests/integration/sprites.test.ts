@@ -2323,7 +2323,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       switchedModel,
     );
     const { GET } = await import("../../app/api/leaderboard/route");
-    const query = `?difficulty=hard&agent=${encodeURIComponent(switchedModel)}`;
+    const query = `?agent=${encodeURIComponent(switchedModel)}`;
     assert.equal(
       (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()).entries
         .length,
@@ -2337,9 +2337,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal(actual.status, 200);
     assert.equal((await actual.json()).entries.length, 1);
     const stale = await GET(
-      new Request(
-        `http://localhost/api/leaderboard?difficulty=hard&agent=${encodeURIComponent(AGENT_MODEL)}`,
-      ),
+      new Request(`http://localhost/api/leaderboard?agent=${encodeURIComponent(AGENT_MODEL)}`),
     );
     assert.equal((await stale.json()).entries.length, 0);
   });
@@ -3526,7 +3524,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       });
       assert.equal(response.status, 200);
       const after = await row(child.id);
-      assert.deepEqual([after.monitor_difficulty, after.monitor_reasoning], ["easy", true]);
+      assert.deepEqual([after.monitor_difficulty, after.monitor_reasoning], ["hard", true]);
     },
   );
 
@@ -4119,7 +4117,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   };
   const LEGACY_MONITOR = { ...DEFAULT_MONITOR, monitor_version: MONITOR_VERSION };
 
-  await t.test("the start route stores the monitor choice and defaults it", async () => {
+  await t.test("the start route ignores a difficulty and defaults the monitor", async () => {
     const who = await member();
     const plain = await (await startRoute(who, {})).json();
     assert.deepEqual([plain.monitorDifficulty, plain.monitorReasoning], ["hard", true]);
@@ -4130,24 +4128,28 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     });
     assert.equal(response.status, 200);
     const chosen = await response.json();
-    assert.deepEqual([chosen.monitorDifficulty, chosen.monitorReasoning], ["easy", true]);
-    assert.deepEqual(await monitorOf(chosen.id), {
-      ...DEFAULT_MONITOR,
-      monitor_difficulty: "easy",
-      monitor_reasoning: true,
-    });
+    assert.deepEqual([chosen.monitorDifficulty, chosen.monitorReasoning], ["hard", true]);
+    assert.deepEqual(await monitorOf(chosen.id), DEFAULT_MONITOR);
     assert.equal((await row(chosen.id)).season_id, null, "runs no longer belong to a season");
     // The same fields come back from the stored row on a later read.
     const { publicGame, PUBLIC_GAME_COLUMNS } = await import("../../lib/games");
     const read = await pool.query(`SELECT ${PUBLIC_GAME_COLUMNS} FROM ctf.games WHERE id=$1`, [
       chosen.id,
     ]);
-    assert.equal((await publicGame(read.rows[0])).monitorDifficulty, "easy");
+    assert.equal((await publicGame(read.rows[0])).monitorDifficulty, "hard");
   });
 
+  for (const [name, monitorDifficulty] of [
+    ["an unknown difficulty", "impossible"],
+    ["a non-string difficulty", 1],
+  ] as const)
+    await t.test(`the start route ignores ${name} and records hard`, async () => {
+      const response = await startRoute(await member(), { monitorDifficulty });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await monitorOf((await response.json()).id), DEFAULT_MONITOR);
+    });
+
   for (const [name, body, status] of [
-    ["an unknown difficulty", { monitorDifficulty: "impossible" }, 400],
-    ["a non-string difficulty", { monitorDifficulty: 1 }, 400],
     ["a non-boolean reasoning flag", { monitorReasoning: "yes" }, 400],
   ] as const)
     await t.test(
@@ -4169,7 +4171,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
 
   await t.test(
-    "the first instruction changes an unbegun run's monitor difficulty and reasoning",
+    "the first instruction changes an unbegun run's monitor reasoning, not its difficulty",
     async () => {
       const who = await member();
       const game = await startGame(who.id);
@@ -4178,11 +4180,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         monitorReasoning: false,
       });
       assert.equal(response.status, 200);
-      assert.deepEqual(await monitorOf(game.id), {
-        ...LEGACY_MONITOR,
-        monitor_difficulty: "easy",
-        monitor_reasoning: false,
-      });
+      assert.deepEqual(await monitorOf(game.id), { ...LEGACY_MONITOR, monitor_reasoning: false });
       const monitored = typesafeOf("context");
       assert.equal(monitored.length, 1);
       const text = JSON.stringify(monitored[0].state);
@@ -4211,9 +4209,24 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   });
 
+  for (const [name, monitorDifficulty] of [
+    ["an unknown difficulty", "impossible"],
+    ["a non-string difficulty", 2],
+  ] as const)
+    await t.test(`an instruction with ${name} runs and leaves the difficulty`, async () => {
+      const who = await member();
+      const game = await startGame(who.id);
+      const response = await instruct(who, game.id, { monitorDifficulty });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await monitorOf(game.id), LEGACY_MONITOR);
+      assert.ok(
+        requests.some((request) => request.role === "agent"),
+        "the agent took a turn",
+      );
+      assert.equal((await row(game.id)).lease, null, "the lease is released");
+    });
+
   for (const [name, extra, status] of [
-    ["an unknown difficulty", { monitorDifficulty: "impossible" }, 400],
-    ["a non-string difficulty", { monitorDifficulty: 2 }, 400],
     ["a non-boolean reasoning flag", { monitorReasoning: null }, 400],
   ] as const)
     await t.test(

@@ -31,7 +31,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       agent.agentModel,
       data.systemPrompt,
       {
-        monitorDifficulty: data.monitorDifficulty,
         monitorReasoning: data.monitorReasoning,
       },
       agent.agentEffort,
