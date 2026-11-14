@@ -1402,6 +1402,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         entered = resolve;
       });
       let interrupted = false;
+      let interruptedAt = 0;
       commandGate = async (commandSignal) => {
         if (commands.at(-1)?.command !== "printf old") return;
         entered();
@@ -1410,6 +1411,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
             "abort",
             () => {
               interrupted = true;
+              interruptedAt = Date.now();
               reject(commandSignal.reason);
             },
             { once: true },
@@ -1428,7 +1430,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           setTimeout(() => reject(new Error("The async command was not dispatched.")), 5000),
         ),
       ]);
-      const workerStartedAt = Date.now();
       const child = spawn(
         process.execPath,
         [
@@ -1461,11 +1462,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         output += String(chunk);
       });
       const [code] = await once(child, "exit");
+      // The catch is committed by the time the worker exits. Measured from here, the bound covers
+      // the runner's one-second heartbeat and not the time the worker process takes to start.
+      const workerExitedAt = Date.now();
       assert.equal(code, 0, output);
       await running;
       assert.equal((await row(game.id)).status, "caught", output);
       assert.equal(interrupted, true, "the runner's heartbeat aborts the remote call");
-      assert.ok(Date.now() - workerStartedAt < 3000, "revocation reaches the runner promptly");
+      assert.ok(
+        interruptedAt - workerExitedAt < 2000,
+        "revocation reaches the runner within two heartbeats of the catch",
+      );
       assert.deepEqual(
         commands.map(({ command }) => command),
         ["cat /tmp/flag.txt", "printf old"],
