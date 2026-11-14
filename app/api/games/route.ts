@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { PUBLIC_GAME_COLUMNS, publicGame, startGame, type PublicGameRow } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
+import { publicAgentSettings } from "@/lib/policy";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export async function GET(request: Request) {
@@ -23,11 +24,12 @@ export async function POST(request: Request) {
     checkOrigin(request);
     const user = await player(request),
       data = await body(request);
+    const agent = publicAgentSettings(data);
     return Response.json(
-      await startGame(user.id, typeof data.agentModel === "string" ? data.agentModel : undefined, {
+      await startGame(user.id, agent.agentModel, {
         monitorDifficulty: data.monitorDifficulty,
         monitorReasoning: data.monitorReasoning,
-        agentEffort: data.agentEffort,
+        agentEffort: agent.agentEffort,
       }),
     );
   } catch (error) {

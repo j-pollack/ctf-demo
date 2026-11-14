@@ -2,6 +2,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SpritesClient, ExecError, type CheckpointStream, type RestoreStream } from "@fly/sprites";
 
+// Every command runs here, so it is also the working directory the agent is told about.
+export const SPRITE_WORKDIR = "/workspace";
+
 function client() {
   if (!process.env.SPRITE_TOKEN) throw new Error("Sprite access is not configured.");
   return new SpritesClient(process.env.SPRITE_TOKEN, { timeout: 20_000 });
@@ -27,27 +30,28 @@ export async function createEnvironment(name: string, secret: string) {
     },
   );
 }
+// The text an agent sees for one finished command. A failed command lists stderr without the
+// [stderr] label. The flag-read scenario executor reuses this so generated transcripts match.
+export function commandOutput(stdout: string | Buffer, stderr: string | Buffer, exitCode: number) {
+  const body =
+    exitCode === 0 ? `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}` : `${stdout}\n${stderr}`;
+  return `${body}\n[exit ${exitCode}]`.slice(0, 16000);
+}
 export async function executeCommand(name: string, command: string, signal?: AbortSignal) {
   try {
     const result = await client()
       .sprite(name)
       .execFile("timeout", ["-k", "2", "15", "bash", "-lc", command], {
-        cwd: "/workspace",
+        cwd: SPRITE_WORKDIR,
         timeout: 20_000,
         maxBuffer: 65536,
         signal,
         maxRunAfterDisconnect: "1s",
       });
-    return `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}\n[exit ${result.exitCode}]`.slice(
-      0,
-      16000,
-    );
+    return commandOutput(result.stdout, result.stderr, result.exitCode);
   } catch (error) {
     if (error instanceof ExecError)
-      return `${error.stdout ?? ""}\n${error.stderr ?? ""}\n[exit ${error.exitCode}]`.slice(
-        0,
-        16000,
-      );
+      return commandOutput(error.stdout ?? "", error.stderr ?? "", error.exitCode);
     throw new Error("The command could not finish in this run’s environment.");
   }
 }

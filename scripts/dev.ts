@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { registerWorktree } from "./worktree";
 
@@ -14,33 +14,39 @@ try {
     requested === undefined ? undefined : Number(requested),
   );
   console.log(`Worktree: ${info.path}\nDev URL: ${info.origin}\nManifest: ${info.manifest}`);
-  const child = spawn(
-    process.execPath,
-    [
-      createRequire(import.meta.url).resolve("next/dist/bin/next"),
-      "dev",
-      "--port",
-      String(info.port),
-      ...args,
-    ],
-    {
+  const env = {
+    ...process.env,
+    PORT: String(info.port),
+    BETTER_AUTH_URL: info.origin,
+    TRIPWIRE_COOKIE_PREFIX: info.cookiePrefix,
+  };
+  const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
+  // The app and the monitor worker form one system: without the worker, async reviews and
+  // pending submissions never progress. If either process stops, stop the other.
+  const children: ChildProcess[] = [
+    spawn(process.execPath, [nextBin, "dev", "--port", String(info.port), ...args], {
       stdio: "inherit",
-      env: {
-        ...process.env,
-        PORT: String(info.port),
-        BETTER_AUTH_URL: info.origin,
-        TRIPWIRE_COOKIE_PREFIX: info.cookiePrefix,
-      },
-    },
-  );
-  for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => child.kill(signal));
-  child.on("error", (error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
-  child.on("exit", (code) => {
-    process.exitCode = code ?? 0;
-  });
+      env,
+    }),
+    spawn(
+      process.execPath,
+      ["--env-file=.env.local", "--import", "tsx", "scripts/monitor-worker.ts"],
+      { stdio: "inherit", env },
+    ),
+  ];
+  const stopAll = (signal: NodeJS.Signals) => children.forEach((child) => child.kill(signal));
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => stopAll(signal));
+  for (const child of children) {
+    child.on("error", (error) => {
+      console.error(error.message);
+      process.exitCode = 1;
+      stopAll("SIGTERM");
+    });
+    child.on("exit", (code) => {
+      process.exitCode ||= code ?? 0;
+      stopAll("SIGTERM");
+    });
+  }
 } catch (error) {
   console.error((error as Error).message);
   process.exitCode = 1;

@@ -2,12 +2,14 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   combineSuspicion,
+  classifierRiskSignals,
   CONTROL_DIFFICULTY,
   MONITOR_SCORE_MAX,
   questionsFor,
   topTerm,
 } from "../lib/control";
 import { evaluate, TypesafeDocumentTooLargeError, TYPESAFE_MODEL } from "../lib/typesafe";
+import type { TypesafeQuestion } from "../lib/typesafe";
 
 const quiet = {
   reads_now: 0,
@@ -64,6 +66,48 @@ test("topTerm names the signal that drove the suspicion", () => {
   );
 });
 
+test("classifier risk inputs are validated as advisory evidence only", () => {
+  const risk = classifierRiskSignals(
+    { reads_now: { type: "noul", noul: 0.2 }, stages_indirect: { type: "noul", noul: 0.8 } },
+    {
+      intent: { type: "noul", noul: 0.1 },
+      suspicion: { type: "score", score: 1.43, confidence: 0.9 },
+    },
+  );
+  assert.deepEqual(risk, {
+    reads_now: 0.2,
+    stages_indirect: 0.8,
+    intent: 0.1,
+    suspicionScore: 1.43,
+    suspicionConfidence: 0.9,
+  });
+  assert.throws(
+    () =>
+      classifierRiskSignals(
+        {
+          reads_now: { type: "noul", noul: Number.NaN },
+          stages_indirect: { type: "noul", noul: 0 },
+        },
+        {
+          intent: { type: "noul", noul: 0 },
+          suspicion: { type: "score", score: 0, confidence: 1 },
+        },
+      ),
+    /invalid reads_now/,
+  );
+  assert.throws(
+    () =>
+      classifierRiskSignals(
+        { reads_now: { type: "noul", noul: 0 }, stages_indirect: { type: "noul", noul: 0 } },
+        {
+          intent: { type: "noul", noul: 0 },
+          suspicion: { type: "score", score: 3.1, confidence: 1 },
+        },
+      ),
+    /invalid suspicion score/,
+  );
+});
+
 test("questionsFor subsets the monitor questions by name", () => {
   assert.deepEqual(Object.keys(questionsFor(["reads_now", "stages_indirect"])), [
     "reads_now",
@@ -117,4 +161,29 @@ test("evaluate fails clearly without a key, on HTTP errors, on oversized docs, a
   globalThis.fetch = (async () =>
     Response.json({ answers: {}, usage: { input_tokens: 1 } })) as typeof fetch;
   await assert.rejects(evaluate({}, questions), /omitted the answer/);
+});
+
+test("evaluate accepts probability-weighted scores and rejects malformed scores or usage", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  const scoreQuestions: Record<string, TypesafeQuestion> = {
+    suspicion: { type: "score", instructions: "i", criteria: ["a", "b", "c"] },
+  };
+  globalThis.fetch = (async () =>
+    Response.json({
+      answers: { suspicion: { type: "score", score: 1.43, confidence: 0.8 } },
+      usage: { input_tokens: 2 },
+    })) as typeof fetch;
+  assert.equal((await evaluate({}, scoreQuestions)).answers.suspicion.type, "score");
+  globalThis.fetch = (async () =>
+    Response.json({
+      answers: { suspicion: { type: "score", score: 3.1, confidence: 0.8 } },
+      usage: { input_tokens: 2 },
+    })) as typeof fetch;
+  await assert.rejects(evaluate({}, scoreQuestions), /invalid answer/);
+  globalThis.fetch = (async () =>
+    Response.json({
+      answers: { suspicion: { type: "score", score: 1, confidence: 0.8 } },
+      usage: { input_tokens: null },
+    })) as typeof fetch;
+  await assert.rejects(evaluate({}, scoreQuestions), /invalid usage/);
 });

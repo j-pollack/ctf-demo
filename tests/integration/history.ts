@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { Pool } from "pg";
 
@@ -56,13 +56,20 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       beforeAnonymousRequest,
     );
     const ids: string[] = Array.from({ length: 22 }, randomUUID);
+    const legacyDay = (await pool.query("SELECT (now() AT TIME ZONE 'UTC')::date::text AS day"))
+      .rows[0].day;
+    const { ASYNC_MONITOR_VERSION } = await import("../../lib/control");
+    const { MODELS } = await import("../../lib/policy");
+    await pool.query("INSERT INTO ctf.daily_spend(day) VALUES($1) ON CONFLICT DO NOTHING", [
+      legacyDay,
+    ]);
     const difficulties = ["easy", "medium", "hard"];
     const difficultyOf = (id: string) => difficulties[ids.indexOf(id) % 3];
     for (let i = 0; i < ids.length; i++)
       await pool.query(
         `INSERT INTO ctf.games
       (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,monitor_difficulty,created_at,messages)
-      VALUES($1,$2,$3,'never-select-this','agent','monitor','v1',100,$6,$7,$5,$4)`,
+      VALUES($1,$2,$3,'never-select-this',$8,'monitor','v1',100,$6,$7,$5,$4)`,
         [
           ids[i],
           session.user.id,
@@ -71,8 +78,29 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
           `2026-01-01 00:00:00.00000${i < 3 ? 3 : 1}+00`,
           ["active", "captured", "exhausted", "ended"][i % 4],
           difficulties[i % 3],
+          MODELS[0],
         ],
       );
+    await pool.query("UPDATE ctf.games SET monitor_version=$2 WHERE id=$1", [
+      ids[1],
+      ASYNC_MONITOR_VERSION,
+    ]);
+    await pool.query(
+      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
+      SELECT id,id,1,agent_model,agent_effort,system_prompt,messages,turns FROM ctf.games WHERE id=ANY($1::uuid[])`,
+      [ids],
+    );
+    const actualModel = MODELS[1];
+    const otherModel = MODELS.find((model) => model !== actualModel)!;
+    await pool.query("UPDATE ctf.agent_sessions SET agent_model=$2 WHERE game_id=$1", [
+      ids[1],
+      actualModel,
+    ]);
+    await pool.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,session_id)
+       VALUES($1,$2,$3,'agent',$4,100,0,$2)`,
+      [randomUUID(), ids[1], legacyDay, actualModel],
+    );
     const foreignId = randomUUID();
     await pool.query(
       `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget)
@@ -104,6 +132,18 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       .join("; ");
     assert.ok(memberCookie);
     cookie = memberCookie;
+    const signedIn = await auth.api.getSession({ headers: new Headers({ cookie: memberCookie }) });
+    assert.ok(signedIn);
+    assert.equal(signedIn.user.isAnonymous, false);
+    const leaderboardOwner = (
+      await pool.query(
+        `SELECT g.owner_id,u."isAnonymous" FROM ctf.games g
+         JOIN ctf."user" u ON u.id=g.owner_id WHERE g.id=$1`,
+        [ids[1]],
+      )
+    ).rows[0];
+    assert.equal(leaderboardOwner.owner_id, signedIn.user.id);
+    assert.equal(leaderboardOwner.isAnonymous, false);
     const first = await GET(request("?limit=2"));
     assert.equal(first.status, 200);
     const firstBody = await first.json();
@@ -185,7 +225,7 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     );
     assert.equal((await GET(request(`?cursor=${"a".repeat(600)}`))).status, 400);
     const { GET: detail } = await import("../../app/api/games/[id]/route");
-    await pool.query("INSERT INTO ctf.events(game_id,data) VALUES($1,$2)", [
+    await pool.query("INSERT INTO ctf.events(game_id,data,session_id) VALUES($1,$2,$1)", [
       ids[0],
       JSON.stringify({ kind: "agent", text: "persisted transcript" }),
     ]);
@@ -193,7 +233,7 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     assert.equal(ownDetail.status, 200);
     const fullEvents = (await ownDetail.json()).events;
     assert.equal(fullEvents[0].text, "persisted transcript");
-    await pool.query("INSERT INTO ctf.events(game_id,data) VALUES($1,$2)", [
+    await pool.query("INSERT INTO ctf.events(game_id,data,session_id) VALUES($1,$2,$1)", [
       ids[0],
       JSON.stringify({ kind: "tool", text: "newer event" }),
     ]);
@@ -275,6 +315,81 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       ).runs.map((run: { id: string }) => run.id),
       sorted,
     );
-    assert.equal((await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count, "23");
+    const attribution = await (
+      await GET(
+        new Request("http://localhost/api/games/history?limit=50", {
+          headers: { cookie: memberCookie },
+        }),
+      )
+    ).json();
+    assert.equal(
+      attribution.runs.find((run: { id: string }) => run.id === ids[1]).agentModel,
+      actualModel,
+      "history uses the model that generated the run's attacker inference",
+    );
+    assert.equal(
+      attribution.runs.find((run: { id: string }) => run.id === ids[0]).agentModel,
+      MODELS[0],
+      "history falls back to the configured session model before any attacker inference",
+    );
+    const { GET: leaderboard } = await import("../../app/api/leaderboard/route");
+    const board = await leaderboard(
+      new Request(
+        `http://localhost/api/leaderboard?difficulty=${difficultyOf(ids[1])}&agent=${encodeURIComponent(actualModel)}`,
+      ),
+    );
+    assert.equal((await board.json()).entries.length, 1);
+
+    const mixedOwner = randomUUID(),
+      mixedParent = randomUUID(),
+      mixedChild = randomUUID();
+    await pool.query(
+      `INSERT INTO ctf."user"(id,name,email,"emailVerified","isAnonymous","createdAt","updatedAt")
+       VALUES($1,$1,$2,true,false,now(),now())`,
+      [mixedOwner, `${mixedOwner}@example.invalid`],
+    );
+    await pool.query(
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+        token_budget,status,monitor_difficulty,forked_from)
+       VALUES($1::uuid,$2::uuid,($1::uuid)::text,'hash',$4,'monitor',$6,100,'ended',$5,NULL),
+             ($3::uuid,$2::uuid,($3::uuid)::text,'hash',$4,'monitor',$6,100,'captured',$5,$1::uuid)`,
+      [
+        mixedParent,
+        mixedOwner,
+        mixedChild,
+        actualModel,
+        difficultyOf(ids[1]),
+        ASYNC_MONITOR_VERSION,
+      ],
+    );
+    await pool.query(
+      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
+       VALUES($1,$1,1,$3,'medium',''),($2,$2,1,$4,'medium','')`,
+      [mixedParent, mixedChild, actualModel, otherModel],
+    );
+    await pool.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,session_id)
+       VALUES($1,$2,$3,'agent',$4,100,0,$2),($5,$6,$3,'agent',$7,100,0,$6)`,
+      [randomUUID(), mixedParent, legacyDay, actualModel, randomUUID(), mixedChild, otherModel],
+    );
+    const mixedBoard = await leaderboard(
+      new Request(
+        `http://localhost/api/leaderboard?difficulty=${difficultyOf(ids[1])}&agent=${encodeURIComponent(actualModel)}`,
+      ),
+    );
+    const mixedEntries = (await mixedBoard.json()).entries;
+    assert.equal(
+      mixedEntries.length,
+      1,
+      "a fork that used multiple models is not attributed to either",
+    );
+    assert.ok(
+      mixedEntries.every(
+        (entry: { name: string }) =>
+          entry.name !==
+          `Player ${createHash("sha256").update(mixedOwner).digest("hex").slice(0, 6)}`,
+      ),
+    );
+    assert.equal((await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count, "25");
   });
 }

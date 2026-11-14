@@ -1,7 +1,7 @@
 // Transport-only client for the Typesafe (Jev) System One API, the control-game monitor.
 // Docs: https://docs.typesafe.ai/api/system-one . Billing is per input token; no billing here.
 // Pin a versioned model so calibrated thresholds don't drift when the `jev-latest` alias moves.
-export const TYPESAFE_MODEL = "jev-1.13.0";
+export const TYPESAFE_MODEL = "jev-1.14.0";
 
 // A question is keyed by a name you choose; the answer comes back under the same name.
 export type TypesafeQuestion =
@@ -15,6 +15,50 @@ export type TypesafeAnswer =
   | { type: "noul"; noul: number }
   | { type: "score"; score: number; confidence: number }
   | { type: "choice"; choice: string; confidence: number; probabilities: Record<string, number> };
+
+function finiteRange(value: unknown, minimum: number, maximum: number): value is number {
+  return (
+    typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum
+  );
+}
+
+function validateAnswer(
+  name: string,
+  question: TypesafeQuestion,
+  answer: unknown,
+): asserts answer is TypesafeAnswer {
+  if (!answer || typeof answer !== "object")
+    throw new Error(`Typesafe returned an invalid answer for "${name}".`);
+  const value = answer as Record<string, unknown>;
+  if (question.type === "noul") {
+    if (value.type !== "noul" || !finiteRange(value.noul, 0, 1))
+      throw new Error(`Typesafe returned an invalid answer for "${name}".`);
+    return;
+  }
+  if (question.type === "score") {
+    if (
+      value.type !== "score" ||
+      !finiteRange(value.score, 0, question.criteria.length - 1) ||
+      !finiteRange(value.confidence, 0, 1)
+    )
+      throw new Error(`Typesafe returned an invalid answer for "${name}".`);
+    return;
+  }
+  const choices = Object.keys(question.criteria);
+  const probabilities = value.probabilities;
+  if (
+    value.type !== "choice" ||
+    !choices.includes(String(value.choice)) ||
+    !finiteRange(value.confidence, 0, 1) ||
+    !probabilities ||
+    typeof probabilities !== "object" ||
+    Array.isArray(probabilities) ||
+    Object.entries(probabilities).some(
+      ([key, probability]) => !choices.includes(key) || !finiteRange(probability, 0, 1),
+    )
+  )
+    throw new Error(`Typesafe returned an invalid answer for "${name}".`);
+}
 
 // Jev rejects a request longer than its context limit (400 max_tokens_exceeded); the caller must
 // shrink `state` and retry.
@@ -52,9 +96,13 @@ export async function evaluate(
     answers?: Record<string, TypesafeAnswer>;
     usage?: { input_tokens?: number };
   };
-  if (!data.answers || typeof data.answers !== "object")
+  if (!data.answers || typeof data.answers !== "object" || Array.isArray(data.answers))
     throw new Error("Typesafe returned no answers.");
   for (const name of Object.keys(questions))
     if (!(name in data.answers)) throw new Error(`Typesafe omitted the answer for "${name}".`);
-  return { answers: data.answers, inputTokens: Number(data.usage?.input_tokens ?? 0) };
+    else validateAnswer(name, questions[name], data.answers[name]);
+  const inputTokens = data.usage?.input_tokens;
+  if (!Number.isSafeInteger(inputTokens) || !finiteRange(inputTokens, 0, Number.MAX_SAFE_INTEGER))
+    throw new Error("Typesafe returned invalid usage.");
+  return { answers: data.answers, inputTokens };
 }

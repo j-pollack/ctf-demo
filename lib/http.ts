@@ -35,11 +35,15 @@ export async function body(request: Request) {
     }
     text += decoder.decode(chunk.value, { stream: true });
   }
+  let value: unknown;
   try {
-    return JSON.parse(text + decoder.decode()) as Record<string, unknown>;
+    value = JSON.parse(text + decoder.decode());
   } catch {
     throw new GameError("Invalid request.");
   }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new GameError("Request body must be a JSON object.", 400);
+  return value as Record<string, unknown>;
 }
 export function errorResponse(error: unknown) {
   return Response.json(

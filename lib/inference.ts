@@ -8,10 +8,28 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { setTimeout as sleep } from "node:timers/promises";
-import { assertLease, reserveInference, settleInference, type GameRow } from "./games";
+import { assertLease, reserveInference, settleInference, transaction, type GameRow } from "./games";
 import { db } from "./db";
-import { GameError, inputCeiling, MODELS } from "./policy";
+import { GameError, inputCeiling, MODELS, PLAYER_AGENT_EFFORT } from "./policy";
 import type { AgentEffort } from "./types";
+import { assertMonitorAuthorization } from "./run-lifecycle";
+import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
+
+export type TrustedInferenceOptions = {
+  role?: "agent" | "monitor";
+  sessionId?: string;
+  reviewId?: string;
+  effort?: AgentEffort;
+  maxOutputTokens?: number;
+  finalizationToken?: string;
+  pendingReviewId?: string;
+  jobClaim?: MonitorJobClaim;
+  stage?: string;
+  singleAttempt?: boolean;
+  providerEndpoint?: string;
+  // Bounded evaluations cap provider rates before dispatch and verify actual cost after settlement.
+  stopOnReservationOverrun?: boolean;
+};
 
 type CatalogModel = {
   id: string;
@@ -20,26 +38,30 @@ type CatalogModel = {
   supported_parameters: string[];
 };
 let catalog: { expires: number; models: CatalogModel[] } | undefined;
-export async function getModel(id: string): Promise<Model<"openai-completions">> {
+export async function getModel(
+  id: string,
+  signal?: AbortSignal,
+): Promise<Model<"openai-completions">> {
+  signal?.throwIfAborted();
   if (!MODELS.some((model) => model === id)) throw new GameError("Unsupported model.");
   if (!catalog || catalog.expires < Date.now()) {
     const response = await fetch("https://openrouter.ai/api/v1/models", {
-      signal: AbortSignal.timeout(15000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
+        : AbortSignal.timeout(15000),
       cache: "no-store",
     });
     if (!response.ok) throw new Error("Model catalog is unavailable.");
     const data = await response.json();
     catalog = { expires: Date.now() + 300000, models: data.data };
   }
+  signal?.throwIfAborted();
   const entry = catalog.models.find((model) => model.id === id);
   if (!entry || Number(entry.pricing.request ?? 0) !== 0)
     throw new GameError("The selected model is unavailable for this game.", 503);
   const reasoning = entry.supported_parameters.includes("reasoning");
   if (!reasoning)
-    throw new GameError(
-      "The selected agent model does not support readable reasoning. Choose a different agent.",
-      503,
-    );
+    throw new GameError("The configured model does not support readable reasoning.", 503);
   if (!entry.supported_parameters.includes("tools"))
     throw new GameError(
       "The selected agent model does not support the required request format.",
@@ -313,12 +335,11 @@ export async function collectStream(
   return data;
 }
 
-// The reasoning parameter sent to OpenRouter. Agents get capped-effort reasoning at the player's
-// chosen effort (high ≈ 80% of max_tokens) so thinking can never be uncapped and consume the whole
-// answer budget — the failure where an agent "thinks" until stopReason=length with no tool call.
+// Reasoning effort is a provider hint, not a hard token partition. Reasoning can consume
+// the entire output allowance, leaving a length-limited response without a tool call.
 export function reasoningParam(
   model: Pick<Model<"openai-completions">, "reasoning">,
-  effort: AgentEffort = "medium",
+  effort: AgentEffort = PLAYER_AGENT_EFFORT,
 ) {
   return model.reasoning ? { effort, exclude: false } : undefined;
 }
@@ -332,38 +353,70 @@ export async function infer(
   signal?: AbortSignal,
   onRetry?: (message: string) => void,
   onDelta?: (delta: AgentDelta) => void,
+  trusted: TrustedInferenceOptions = {},
 ): Promise<AssistantMessage> {
   signal?.throwIfAborted();
   if (!process.env.OPENROUTER_API_KEY) throw new Error("Inference is not configured.");
-  const reasoning = reasoningParam(model, game.agent_effort);
+  const role = trusted.role ?? "agent";
+  const sessionId = trusted.sessionId ?? game.session_id ?? game.id;
+  const effort = trusted.effort ?? game.agent_effort;
+  const outputCeiling =
+    role === "monitor" ? (trusted.maxOutputTokens ?? 4096) : AGENT_OUTPUT_TOKENS;
+  const reasoning = reasoningParam(model, effort);
   const payload = {
     model: model.id,
     ...providerTranscript(messages, model.id),
-    session_id: `${game.id}:agent`,
+    session_id: `${sessionId}:${role}${trusted.reviewId ? `:${trusted.reviewId}` : ""}`,
     ...(reasoning ? { reasoning } : {}),
-    provider: { require_parameters: true },
+    provider: {
+      require_parameters: true,
+      ...(role === "agent" ? { sort: "price" } : {}),
+      ...(trusted.providerEndpoint
+        ? { only: [trusted.providerEndpoint], allow_fallbacks: false }
+        : {}),
+      ...(trusted.stopOnReservationOverrun
+        ? {
+            // OpenRouter max_price and model.cost both use USD per million tokens.
+            // Fixed request fees are not covered by reserveInference.
+            max_price: { prompt: model.cost.input, completion: model.cost.output, request: 0 },
+          }
+        : {}),
+    },
     ...(onDelta ? { stream: true } : {}),
   };
   const ceiling = inputCeiling(payload);
   if (ceiling + 4096 > model.contextWindow)
-    throw new GameError(
-      "This conversation is too long for the selected model. Choose a model with a larger context window.",
-      400,
-    );
+    throw new GameError("This conversation is too long for the configured model.", 400);
   const reservation = await reserveInference(
     game.id,
     game.lease,
-    "agent",
+    role,
     model.id,
     ceiling,
-    Math.min(AGENT_OUTPUT_TOKENS, model.contextWindow - ceiling),
+    Math.min(outputCeiling, model.contextWindow - ceiling),
     model.cost.input / 1e6,
     model.cost.output / 1e6,
+    {
+      sessionId,
+      reviewId: trusted.reviewId,
+      finalizationToken: trusted.finalizationToken,
+      pendingReviewId: trusted.pendingReviewId,
+      executionGeneration: Number(game.execution_generation ?? 0),
+      jobClaim: trusted.jobClaim,
+    },
   );
   const started = Date.now(),
-    context = { gameId: game.id, requestId: reservation.id, role: "agent", model: model.id };
+    context = {
+      gameId: game.id,
+      requestId: reservation.id,
+      role,
+      model: model.id,
+      stage: trusted.stage,
+    };
   let settled = false;
-  let knownUnbilled = false;
+  // A reservation is still refundable until the provider transport is entered. Any failure in
+  // local authorization or cancellation before that point must release the hold.
+  let knownUnbilled = true;
   let response: Response | undefined,
     providerError: ReturnType<typeof providerErrorDetails> | undefined;
   // A streamed agent call may use whatever the response's lease has left while it keeps making
@@ -374,14 +427,43 @@ export async function infer(
       : 90000,
   );
   const requestSignal = AbortSignal.any([signal ?? new AbortController().signal, deadline]);
+  const assertDispatchPermit = async () => {
+    requestSignal.throwIfAborted();
+    if (role === "agent") {
+      await assertLease(game);
+      requestSignal.throwIfAborted();
+      return;
+    }
+    if (!trusted.jobClaim && (!game.lease || !trusted.reviewId))
+      throw new GameError("Monitor review authorization is required.", 409);
+    await transaction(async (client) => {
+      const { rows } = await client.query<{ execution_generation: string }>(
+        "SELECT execution_generation FROM ctf.games WHERE id=$1 FOR UPDATE",
+        [game.id],
+      );
+      if (
+        !rows[0] ||
+        (!trusted.jobClaim &&
+          Number(rows[0].execution_generation) !== Number(game.execution_generation ?? 0))
+      )
+        throw new GameError("This response has stopped.", 409);
+      if (trusted.jobClaim) await assertMonitorJobClaim(client, trusted.jobClaim);
+      else
+        await assertMonitorAuthorization(client, game.id, sessionId, game.lease!, {
+          reviewId: trusted.reviewId,
+          finalizationToken: trusted.finalizationToken,
+          pendingReviewId: trusted.pendingReviewId,
+        });
+    });
+    requestSignal.throwIfAborted();
+  };
   try {
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      requestSignal.throwIfAborted();
-      if (attempt > 1) await assertLease(game);
-      requestSignal.throwIfAborted();
-      knownUnbilled = false;
+    const attempts = trusted.singleAttempt ? 1 : 5;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      await assertDispatchPermit();
       response = undefined;
       providerError = undefined;
+      knownUnbilled = false;
       response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -396,7 +478,7 @@ export async function infer(
       if (response.ok) break;
       providerError = providerErrorDetails(response, await response.json().catch(() => null));
       requestSignal.throwIfAborted();
-      if (response.status !== 429 || attempt === 5)
+      if (response.status !== 429 || attempt === attempts)
         throw new GameError(
           `Inference service returned ${response.status}. The command was not executed.`,
           503,
@@ -405,8 +487,9 @@ export async function infer(
         1000 * 2 ** (attempt - 1),
         retryAfter(providerError.headers["retry-after"]),
       );
+      const caller = role === "monitor" ? "Investigator" : "Agent";
       onRetry?.(
-        `Agent rate limited; retrying attempt ${attempt + 1}/5 in ${Math.ceil(delay / 1000)}s`,
+        `${caller} rate limited; retrying attempt ${attempt + 1}/5 in ${Math.ceil(delay / 1000)}s`,
       );
       await sleep(Math.min(delay, 2_147_483_647), undefined, {
         signal: requestSignal,
@@ -452,6 +535,8 @@ export async function infer(
       generationId: data.id,
     });
     settled = true;
+    if (trusted.stopOnReservationOverrun && Math.ceil(usage.cost * 1e6) > reservation.cost)
+      throw new Error("Inference usage exceeded its reserved allowance.");
     const choice = data.choices?.[0],
       source = choice?.message;
     if (!source) throw new Error("Inference service did not return a response.");
@@ -505,11 +590,12 @@ export async function infer(
       model: model.id,
       responseId: data.id,
       timestamp: Date.now(),
-      stopReason: source.tool_calls?.length
-        ? "toolUse"
-        : choice.finish_reason === "length"
+      stopReason:
+        choice.finish_reason === "length"
           ? "length"
-          : "stop",
+          : source.tool_calls?.length
+            ? "toolUse"
+            : "stop",
       usage: {
         input: usage.prompt_tokens,
         output: usage.completion_tokens,
@@ -534,7 +620,7 @@ export async function infer(
         usageVerified: settled,
       }),
     );
-    if (onDelta && deadline.aborted && !signal?.aborted)
+    if (onDelta && (deadline.aborted || (error instanceof Error && error.name === "TimeoutError")))
       throw new GameError(
         "The agent ran out of time for this response. Any charge settles automatically; try again or ask for a shorter answer.",
         504,
@@ -551,10 +637,11 @@ export function agentStream(
   onFailure: (error: unknown) => void,
   onRetry?: (message: string) => void,
   onDelta?: (delta: AgentDelta) => void,
+  trustedOptions: TrustedInferenceOptions = {},
 ) {
   return (_model: Model<Api>, context: TranscriptContext, options?: { signal?: AbortSignal }) => {
     const stream = createAssistantMessageEventStream();
-    void infer(game, model, context.messages, options?.signal, onRetry, onDelta)
+    void infer(game, model, context.messages, options?.signal, onRetry, onDelta, trustedOptions)
       .then((message) =>
         stream.push({
           type: "done",

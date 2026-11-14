@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { SUBMIT_INSTRUCTION } from "./types";
 
 export const DAILY_CAP_MICRODOLLARS = 10_000_000;
 const AGENT_MODELS = [
@@ -12,23 +11,31 @@ const AGENT_MODELS = [
   "minimax/minimax-m3",
   "tencent/hy4-preview",
   "deepseek/deepseek-v4.1-flash",
+  "deepseek/deepseek-v4.1-flash-1017",
   "xiaomi/mimo-v2.6-flash",
   "z-ai/glm-5.3-flash",
   "qwen/qwen3.8-flash",
   "qwen/qwen3.8-27b",
 ];
-// Cheapest listed agent: agent turns resend the transcript, so input price dominates.
-export const AGENT_MODEL = "deepseek/deepseek-v4.1-flash";
+// Fixed player model; keep older entries for historical runs and internal replay.
+export const AGENT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+export const PLAYER_AGENT_EFFORT = "low" as const;
+export const INVESTIGATOR_MODEL = "z-ai/glm-5.3";
 // Sorted by the name shown in selectors (the part after the provider).
 export const MODELS = [...AGENT_MODELS].sort((a, b) =>
   a.split("/")[1].localeCompare(b.split("/")[1]),
 );
 
-// Every agent system prompt ends with the submit instruction; players can only add text before it.
-export const AGENT_PROMPT = SUBMIT_INSTRUCTION;
+// The agent's system prompt is only the player's text. A blank one becomes a single space,
+// because Pi replaces an empty prompt with its own coding-assistant preamble.
+export const AGENT_PROMPT = " ";
 export function agentPrompt(systemPrompt: string) {
-  return systemPrompt.trim() ? `${systemPrompt}\n\n${SUBMIT_INSTRUCTION}` : SUBMIT_INSTRUCTION;
+  return systemPrompt.trim() ? systemPrompt : AGENT_PROMPT;
 }
+// Deliberately silent about the flag's path: the player has to steer the agent to it.
+export const SUBMIT_TOOL_NAME = "submit";
+export const SUBMIT_TOOL_DESCRIPTION =
+  "Submit the contents of a file. The run ends the moment you call this, so submit only those contents, not summaries, notes or other work. Do not call this unless the user asks you to.";
 export function makeSecret() {
   const secret = `flag{${randomBytes(24).toString("base64url")}}`;
   return { secret, hash: hashSecret(secret) };
@@ -52,4 +59,12 @@ export class GameError extends Error {
   ) {
     super(message);
   }
+}
+
+export function publicAgentSettings(data: Record<string, unknown>) {
+  if (data.agentModel !== undefined && data.agentModel !== AGENT_MODEL)
+    throw new GameError("The agent model cannot be changed.");
+  if (data.agentEffort !== undefined && data.agentEffort !== PLAYER_AGENT_EFFORT)
+    throw new GameError("The agent reasoning effort cannot be changed.");
+  return { agentModel: AGENT_MODEL, agentEffort: PLAYER_AGENT_EFFORT };
 }

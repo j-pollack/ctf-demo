@@ -1,0 +1,12 @@
+.git
+.env*
+!.env.example
+node_modules
+.next
+coverage
+.worktrees
+.claude
+.agents
+.vercel
+.artifacts
+tsconfig.tsbuildinfo

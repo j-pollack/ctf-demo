@@ -9,12 +9,11 @@ import {
   type AgentDelta,
 } from "../lib/inference";
 
-test("agent reasoning is effort-capped so thinking can't eat the whole answer budget", () => {
+test("reasoning parameters default to the pinned player effort", () => {
   const reasoner = { reasoning: true };
-  // Agents always get a bounded effort, never uncapped {enabled:true} that can exhaust max_tokens;
-  // medium unless the player chose otherwise.
-  assert.deepEqual(reasoningParam(reasoner), { effort: "medium", exclude: false });
+  assert.deepEqual(reasoningParam(reasoner), { effort: "low", exclude: false });
   assert.deepEqual(reasoningParam(reasoner, "low"), { effort: "low", exclude: false });
+  assert.deepEqual(reasoningParam(reasoner, "medium"), { effort: "medium", exclude: false });
   assert.deepEqual(reasoningParam(reasoner, "high"), { effort: "high", exclude: false });
   // A model without reasoning support sends no reasoning parameter at all.
   assert.equal(reasoningParam({ reasoning: false }), undefined);

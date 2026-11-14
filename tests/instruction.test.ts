@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { refreshedGame } from "../app/game-ui";
+import { canEditRun, refreshedGame } from "../app/game-ui";
 import type { PublicGame } from "../lib/types";
 
 const current = {
@@ -86,4 +86,97 @@ test("a delayed same-run snapshot cannot reject or erase a newer optimistic subm
     events: [...current.events, { id: -1, kind: "user" as const, text: nextPending.text }],
   };
   assert.equal(refreshedGame(optimistic, current, nextPending, 1, 2), optimistic);
+});
+
+test("an older async progress snapshot cannot rewind review or reopen submitted play", () => {
+  const ahead = {
+    ...current,
+    status: "finalizing" as const,
+    monitorMode: "async" as const,
+    stateRevision: "12",
+    monitor: {
+      status: "reviewing" as const,
+      pendingSessions: 1,
+      reviewedUpdates: 2,
+      totalUpdates: 3,
+      lastReviewedAt: "2026-11-10T00:00:00.000Z",
+    },
+  };
+  const behind = {
+    ...ahead,
+    status: "active" as const,
+    stateRevision: "11",
+    monitor: { ...ahead.monitor, status: "queued" as const, reviewedUpdates: 1 },
+  };
+  assert.equal(refreshedGame(ahead, behind), ahead);
+  assert.equal(refreshedGame(ahead, { ...ahead, stateRevision: "13" })?.stateRevision, "13");
+});
+
+test("a held stale session fetch cannot reopen a caught run or enable the composer", async () => {
+  const active = { ...current, status: "active" } as PublicGame;
+  for (const staleStatus of ["active", "finalizing", "creating"] as const) {
+    let state = active;
+    let release!: (snapshot: PublicGame) => void;
+    const response = new Promise<PublicGame>((resolve) => (release = resolve));
+    const applying = response.then((snapshot) => {
+      state = refreshedGame(state, snapshot) ?? state;
+    });
+
+    state = {
+      ...state,
+      status: "caught",
+      busy: false,
+      sessionBusy: false,
+      caughtSessionId: "session-a",
+      caughtSessionOrdinal: 2,
+      caughtReason: "The investigator found the prepared flag read.",
+      forkable: false,
+      turns: 1,
+      tokensUsed: 12,
+      blocks: 1,
+      spentMicrodollars: 31,
+      reservedMicrodollars: 0,
+      agentSpendMicrodollars: 27,
+      monitorSpendMicrodollars: 4,
+    };
+    release({
+      ...active,
+      status: staleStatus,
+      busy: true,
+      sessionBusy: true,
+      caughtSessionId: null,
+      caughtSessionOrdinal: null,
+      caughtReason: null,
+      forkable: true,
+      turns: 0,
+      tokensUsed: 0,
+      blocks: 0,
+      spentMicrodollars: 0,
+      reservedMicrodollars: 9,
+      agentSpendMicrodollars: 0,
+      monitorSpendMicrodollars: 0,
+    });
+    await applying;
+
+    assert.equal(state.status, "caught", `stale ${staleStatus} snapshot`);
+    assert.equal(canEditRun(state.status, true), false, `composer after stale ${staleStatus}`);
+    assert.equal(state.caughtSessionId, "session-a");
+    assert.equal(state.caughtSessionOrdinal, 2);
+    assert.equal(state.caughtReason, "The investigator found the prepared flag read.");
+    assert.equal(state.forkable, false);
+    assert.equal(state.busy, false);
+    assert.equal(state.sessionBusy, false);
+    assert.equal(state.turns, 1);
+    assert.equal(state.tokensUsed, 12);
+    assert.equal(state.blocks, 1);
+    assert.equal(state.spentMicrodollars, 31);
+    assert.equal(state.reservedMicrodollars, 0);
+    assert.equal(state.agentSpendMicrodollars, 27);
+    assert.equal(state.monitorSpendMicrodollars, 4);
+  }
+  assert.equal(
+    refreshedGame({ ...active, status: "finalizing" }, active)?.status,
+    "active",
+    "an authoritative active fetch can recover a failed finalization",
+  );
 });

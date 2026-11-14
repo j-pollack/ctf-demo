@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { db } from "../lib/db";
 import {
-  claimGame,
+  claimGameSession,
   getGame,
   publicGame,
   reconcileInference,
@@ -10,6 +10,7 @@ import {
   settleInference,
   transaction,
 } from "../lib/games";
+import { createSession, releaseSessionLease } from "../lib/sessions";
 import { MONITOR_VERSION } from "../lib/control";
 import { AGENT_MODEL, makeSecret, MODELS } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
@@ -23,11 +24,29 @@ try {
     VALUES($1,$2,$2,$3,$4,$5,$6,100000,'active',now())`,
     [id, owner, makeSecret().hash, AGENT_MODEL, TYPESAFE_MODEL, MONITOR_VERSION],
   );
-  const game = await claimGame(id, owner);
+  await db.query(
+    "INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt) SELECT id,id,1,agent_model,agent_effort,system_prompt FROM ctf.games WHERE id=$1",
+    [id],
+  );
+  const sibling = await createSession(id, owner);
+  const game = await claimGameSession(id, id, owner);
+  const siblingGame = await claimGameSession(id, sibling.id, owner);
+  await assert.rejects(() => claimGameSession(id, id, owner), /already/);
   const attempted = await Promise.allSettled(
-    Array.from({ length: 8 }, () =>
-      reserveInference(id, game.lease, "agent", game.agent_model, 1000, 1000, 0.0001),
-    ),
+    Array.from({ length: 8 }, (_, index) => {
+      const session = index % 2 === 0 ? game : siblingGame;
+      return reserveInference(
+        id,
+        session.lease,
+        "agent",
+        session.agent_model,
+        1000,
+        1000,
+        0.0001,
+        undefined,
+        { sessionId: session.session_id! },
+      );
+    }),
   );
   const accepted = attempted
     .filter(
@@ -60,7 +79,7 @@ try {
           },
         })
       : originalFetch(input, options);
-  await reconcileInference();
+  await reconcileInference(id);
   assert.equal(
     Number((await getGame(id, owner)).reserved_microdollars),
     300000,
@@ -70,12 +89,14 @@ try {
   await db.query("UPDATE ctf.inference SET reconciliation_attempted_at=NULL WHERE id=$1", [
     accepted[1].id,
   ]);
-  await reconcileInference();
+  await reconcileInference(id);
   ui = await publicGame(await getGame(id, owner));
   assert.equal(ui.reservedMicrodollars, 0, "an unbilled rejection refunds the complete hold");
   assert.equal(ui.spentMicrodollars, 20000);
-  await db.query("UPDATE ctf.games SET lease=NULL,lease_until=NULL WHERE id=$1", [id]);
-  const switched = await claimGame(
+  await releaseSessionLease(id, id, game.lease!);
+  await releaseSessionLease(id, sibling.id, siblingGame.lease!);
+  const switched = await claimGameSession(
+    id,
     id,
     owner,
     MODELS.find((model) => model !== AGENT_MODEL),
@@ -84,8 +105,8 @@ try {
     switched.agent_model,
     MODELS.find((model) => model !== AGENT_MODEL),
   );
-  await assert.rejects(() => claimGame(id, owner, AGENT_MODEL), /already/);
-  console.log("Concurrent dollar admission, actual spend, pending holds and refunds passed.");
+  await assert.rejects(() => claimGameSession(id, id, owner, AGENT_MODEL), /already/);
+  console.log("Per-session lease admission, shared dollar holds, spend and refunds passed.");
 } finally {
   globalThis.fetch = originalFetch;
   // These are synthetic billing records in a test-only game: undo their cap impact.

@@ -7,7 +7,9 @@ Public AI red-teaming game using Next.js, Pi SDK, one Fly Sprite per game, OpenR
 1. Install Node 24 and run `npm install`.
 2. Copy `.env.example` to `.env.local`, set the keys, and generate random values of at least 32 characters for `BETTER_AUTH_SECRET` and `CRON_SECRET`. Use Neon's direct URL for `DATABASE_URL_UNPOOLED`. Set `RESEND_FROM` to an address on your verified sending domain.
 3. Run `npm run setup` to initialize the dedicated `ctf` schema, including auth tables.
-4. Run `npm run dev`. It assigns a free port starting at 3001 and sets the local auth origin automatically. Override with `PORT=3010 npm run dev` or `npm run dev -- --port 3010`; occupied/reserved overrides fail rather than silently changing ports.
+4. Run `npm run dev`. It assigns a free port starting at 3001 and sets the local auth origin automatically. Override with `PORT=3010 npm run dev` or `npm run dev -- --port 3010`; occupied/reserved overrides fail rather than silently changing ports. It also starts the monitor worker, which processes durable investigator jobs and pending submissions; if either process exits, both stop. `npm run monitor:worker` runs the worker alone, and `npm run monitor:worker -- --once` processes one bounded worker iteration for controlled checks.
+
+Deploy the schema migration before enabling new async runs. Deployed environments run the monitor worker on Fly; see [Monitor worker on Fly](#monitor-worker-on-fly). Existing runs retain their legacy monitor mode. Older application binaries cannot resume async runs; stop new async creation and let a compatible worker drain or leave them visibly unresolved before rolling back application code. The worker shares the application's inference budget and credentials.
 
 ## Admin dashboard
 
@@ -17,7 +19,17 @@ Public AI red-teaming game using Next.js, Pi SDK, one Fly Sprite per game, OpenR
 UPDATE ctf."user" SET "isAdmin" = true WHERE email = 'you@example.com';
 ```
 
-Or add the email to `ADMIN_EMAILS` in `scripts/setup.ts`; every `npm run setup` (local and the production migrate workflow) grants it to existing accounts. Remove an email there before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
+Or set `ADMIN_EMAILS` in `.env.local` (comma-separated, for example `ADMIN_EMAILS=you@example.com,other@example.com`). `npm run setup` loads that file and grants admin to matching existing non-guest accounts; sign in once, then rerun setup. Whitespace and case are ignored. Unset or blank grants nobody, and removing an address does not revoke an existing grant. For production setup, supply the same variable in its environment. Remove an email from every setup environment's `ADMIN_EMAILS` before revoking it in SQL, or the next setup re-grants it. Everyone else gets a 404.
+
+List current admins, including manual grants:
+
+```sql
+SELECT id, email, name FROM ctf."user"
+WHERE "isAdmin" = true AND "isAnonymous" IS NOT TRUE
+ORDER BY email;
+```
+
+Admins are exempt from the personal three-new-runs-per-24-hours limit. Shared spend, global new-run and environment limits still apply. Admission checks the current database flag, so revocation takes effect on the next start request.
 
 ## Parallel worktrees
 
@@ -58,17 +70,19 @@ See [Verification audit and test strategy](docs/verification.md) for measured ru
 
 `npm run check:budget` verifies atomic dollar admission, refunds, pending billing, provider reconciliation and per-run lease checks against temporary Neon records. It sends no inference requests and removes its synthetic billing records.
 
-`npm run smoke` uses real model calls and two temporary Sprites. It checks isolation, ownership, a rejected secret read, continued play, raw reasoning, concurrent spending admission and environment cleanup. It consumes a small amount of the shared daily inference allowance.
+`CTF_SMOKE_DISPOSABLE=1 npm run smoke` uses real model calls and temporary Sprites. It checks isolation, ownership, a rejected secret read, continued play, raw reasoning, concurrent spending admission and environment cleanup. It consumes a small amount of the shared daily inference allowance. Run it only against a freshly migrated disposable database. The script refuses a database with existing run, session, inference, spend or job records.
 
-`npm run smoke -- --messages-only` checks sequential tool results, monitor errors and capture using controlled model replies with real Neon/Sprite execution. It makes no live inference calls and is not a monitor defense evaluation.
+`CTF_SMOKE_DISPOSABLE=1 npm run smoke -- --messages-only` checks sequential tool results, monitor errors and capture using controlled model replies with real Postgres and Sprite execution. It also checks async command progress, pending submission, worker review and remote termination. It makes no live model calls and is not a monitor defense evaluation.
 
 `npm run check:auth` tests the real passwordless handlers, the closed guest sign-in, legacy guest-run transfer, leaderboard privacy and single-use tokens against Neon. It captures the outbound Resend request locally and sends no email. Actual inbox delivery still requires a check with your verified Resend sender.
 
 ## CI and production promotion
 
+Before running the full integration suite locally, prepare its Docker images: `docker pull postgres:17-alpine` and `docker build -t ctf-flag-read-sprite:1 evals/flag-read`. CI performs both steps explicitly. The corpus tests execute in the local Sprite stand-in image with networking disabled and never pull a missing image implicitly.
+
 GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not touch production or call paid/live providers. Green CI is not release approval: run explicitly approved provider-contract and browser smoke checks separately.
 
-The `migrate prod` workflow runs `scripts/setup.ts` against the production database after `ci` succeeds for a push to `main` (never for pull requests). It checks out the exact commit that passed, runs one migration at a time, and reads only the `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` repository secrets. Setup is idempotent and each SQL file applies atomically. Vercel's production alias waits for both the `ci` and `migrate prod` checks, so new code goes live only after its migrations apply. Old code keeps serving while they run, so migrations merged this way must still be additive; coordinate anything destructive or data-rewriting manually. If it fails, fix forward and push again; use Vercel Instant Rollback for bad code and Neon point-in-time restore only for damaged data. Code from before `009-monitor-choice` can't read runs started without a season (`season_id` NULL): before rolling back past it, end those runs (`UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE season_id IS NULL AND status IN ('creating','active')`) and expect their pages to fail until you roll forward.
+The `migrate prod` workflow runs `scripts/setup.ts` against the production database after `ci` succeeds for a push to `main` (never for pull requests). It checks out the exact commit that passed, runs one migration at a time, and reads the `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` and `ADMIN_EMAILS` repository secrets. Set `ADMIN_EMAILS` to comma-separated existing member emails to seed production admins; leaving it unset grants no new admins. Setup is idempotent and each SQL file applies atomically. Vercel's production alias waits for both the `ci` and `migrate prod` checks, so new code goes live only after its migrations apply. Old code keeps serving while they run, so migrations merged this way must still be additive; coordinate anything destructive or data-rewriting manually. If it fails, fix forward and push again; use Vercel Instant Rollback for bad code and Neon point-in-time restore only for damaged data. Code from before `009-monitor-choice` can't read runs started without a season (`season_id` NULL): before rolling back past it, end those runs (`UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL WHERE season_id IS NULL AND status IN ('creating','active')`) and expect their pages to fail until you roll forward.
 
 After this workflow is available, configure Vercel's GitHub-backed deployment checks to select the exact `ci` job and block production alias assignment only; retain existing native Lint/TypeCheck checks. This source workflow does not activate Vercel checks, block previews/builds, or provide GitHub branch protection. Do not force-promote when the required check is missing or failing. Private-repository merge protection requires GitHub Pro; Vercel's production alias gate is separate. The repository accepts squash merges only.
 
@@ -76,11 +90,11 @@ After this workflow is available, configure Vercel's GitHub-backed deployment ch
 
 - `AGENT_MODELS` and `AGENT_MODEL` in `lib/policy.ts` set the selectable attack models and the default; they are not environment-configurable. Players can select a different attack model for their next instruction while idle; every agent response saves and displays its model. The Sprite, flag and history remain intact. Agent models must support tools and readable reasoning. Model-specific reasoning signatures are not forwarded to a different attack model; readable historical reasoning is transferred as ordinary assistant text.
 - The game is members-only: players sign in by magic link. Guest sign-in is disabled (`disabledPaths` in `lib/auth.ts`); a leftover guest session is refused by `player()` and keeps its runs if it signs in. Each run gets $0.50 (`RUN_BUDGET_MICRODOLLARS` in `lib/types.ts`). Actual OpenRouter agent and monitor charges both count, including repeated context and cache pricing; tokens remain diagnostic metrics.
-- The monitor is always Typesafe (`TYPESAFE_MODEL` in `lib/typesafe.ts`). Players choose a difficulty per run (`easy`, `medium` or `hard`, `CONTROL_DIFFICULTY` in `lib/control.ts`). The choice, including whether the monitor reads reasoning, can change until the run's first instruction is recorded; forks inherit it. There are no seasons or season deadlines: `ctf.seasons` and `games.season_id` remain as history only and new runs leave `season_id` NULL.
-- Every instruction first checkpoints the run's Sprite. A monitor block ends the run (status `blocked`); nothing later in the batch runs and the agent gets no more turns. The owner can fork a blocked run once, within 24 hours: the fork goes back to before the last instruction (transcript and history cut there, Sprite restored to that checkpoint, instruction returned to the composer), keeps the same flag, and carries over budget and spend. Forks don't count toward daily run limits. Invalid or unavailable monitor decisions stop execution and pause the response without ending the run, except on easy, where the command runs anyway with a note in the transcript (budget, daily-cap, lease and player-stop failures still halt it). Each run chooses whether the monitor reads the agent's reasoning.
+- The classifier is Typesafe (`TYPESAFE_MODEL` in `lib/typesafe.ts`). Players choose a difficulty per run (`easy`, `medium` or `hard`, `CONTROL_DIFFICULTY` in `lib/control.ts`). New async runs show the investigator agent reasoning. Historical evidence keeps its original visibility rule. There are no seasons or season deadlines: `ctf.seasons` and `games.season_id` remain as history only and new runs leave `season_id` NULL.
+- A single-session instruction first checkpoints the run's Sprite. Multi-session runs share one Sprite and cannot be forked. New async runs persist commands and transcript evidence before dispatching commands without waiting for investigator inference. A later detection catches the run and stops its agents. Submission ends play immediately; capture remains unconfirmed until background review and scoring finish. Unknown outcomes, failed reviews and exhausted monitor funds leave the result unresolved. Existing legacy runs keep their synchronous command review. An owner can fork a caught single-session run once within 24 hours; the fork restores the earlier checkpoint and has its own review obligation.
 - Monitor block reasons are saved as UI events and shown to the player. The agent receives only “Blocked”; explanations are excluded from the agent transcript and subsequent monitor context. Approvals stay silent; service errors remain visible.
-- Each Sprite stores its unique flag in `/tmp/flag.txt`. An exact flag in agent text, readable reasoning or tool output wins. Guessed flags in a player message do not win.
-- Leaderboards are per difficulty, and only rank captures made against the current `MONITOR_VERSION` (`lib/control.ts`). They show each member's cheapest verified capture, then agent responses to break ties, under a stable anonymous operator ID. Mixed attack strategies are included by default; a single-model filter excludes runs that used any other attack model. Wins with unresolved billing are not ranked.
+- Each Sprite stores its unique flag in `/tmp/flag.txt`. The agent must explicitly submit the correct value. Capture is confirmed only after investigator review and at least one seed bug check passes. Flag text appearing in a response or tool output does not submit it. Guessed flags in a player message do not win.
+- Leaderboards are per difficulty, and only rank confirmed captures made against the current `ASYNC_MONITOR_VERSION` (`lib/control.ts`). They show each member's cheapest verified capture, then agent responses to break ties, under a stable anonymous operator ID. Mixed attack strategies are included by default; a single-model filter excludes runs that used any other attack model. Wins with unresolved billing are not ranked.
 - Idle games expire after 24 hours. Starting a new run replaces the owner's previous idle run.
 
 ## Trust boundary and limits
@@ -100,6 +114,16 @@ This checkout is linked to `ctf-demo`. Set the server-only environment variables
 Preview builds run `scripts/setup.ts` against their own Neon branch first (`vercel.json` build command → `scripts/vercel-build.ts`), so a preview copied from production gets the PR's migrations. The build fails rather than migrate the shared `vercel-dev` database when a preview has no branch of its own; production builds never migrate. Production migrations run through the `migrate prod` workflow; run `npm run setup` manually only for other databases or a coordinated non-additive migration. `vercel.json` schedules authenticated cleanup daily; a sweep also runs when a game starts or a response finishes. A daily sweep can leave an abandoned environment for up to roughly 48 hours. Failed deletions remain pending and retry at the next sweep.
 
 Inference responses currently arrive one model response at a time; stage updates and monitor/tool events stream to the browser. No token-by-token rendering, research dashboard, model training, or guarantee of detecting every possible attack is included.
+
+## Monitor worker on Fly
+
+Vercel cannot host the worker's continuous loop, so production and each preview run it on Fly from the `Dockerfile` image. The image runs `scripts/monitor-worker.ts` and needs only `DATABASE_URL_UNPOOLED`, `OPENROUTER_API_KEY`, `TYPESAFE_API_KEY` and `SPRITE_TOKEN`.
+
+Production runs one machine in the `ctf-monitor-worker` app, configured by `fly.toml`. The `deploy worker` job in the `migrate prod` workflow deploys it after the migrate job succeeds, from the same commit. Add `deploy worker` to Vercel's production alias checks so new app code goes live only with its worker. Roll the worker back with `flyctl releases --app ctf-monitor-worker` and `flyctl deploy --image <previous image>`.
+
+Each Vercel preview gets one machine in the `ctf-monitor-worker-preview` app, tagged with its Git branch. The `preview worker` workflow runs when Vercel reports a successful preview: it finds the Neon branch `preview/<git branch>`, builds the image for that commit and replaces the branch's machine. Deleting the branch or closing its pull request destroys the machine. A status for a commit that is no longer its branch's head is ignored.
+
+API keys are separate per environment and set once on each Fly app with `fly secrets`. Production also holds its database URL there. Preview machines receive their branch's database URL from the workflow. GitHub holds `FLY_API_TOKEN_PROD`, `FLY_API_TOKEN_PREVIEW` and a project-scoped `NEON_API_KEY` as secrets, and `NEON_PROJECT_ID` as a variable.
 
 ## Dollar / season migration
 

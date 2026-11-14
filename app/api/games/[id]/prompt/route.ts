@@ -1,6 +1,7 @@
-import { claimGame } from "@/lib/games";
+import { claimGameSession, getGame } from "@/lib/games";
+import { getSession } from "@/lib/sessions";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
-import { GameError } from "@/lib/policy";
+import { GameError, publicAgentSettings } from "@/lib/policy";
 import { runGame } from "@/lib/runner";
 import { getModel } from "@/lib/inference";
 export const runtime = "nodejs";
@@ -12,22 +13,31 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       data = await body(request);
     if (typeof data.prompt !== "string" || !data.prompt.trim() || data.prompt.length > 8192)
       throw new GameError("Enter an instruction of up to 8,192 characters.");
-    if (data.agentModel !== undefined && typeof data.agentModel !== "string")
-      throw new GameError("Choose an agent model.");
-    if (typeof data.agentModel === "string") await getModel(data.agentModel);
-    const game = await claimGame(
-      (await params).id,
+    const agent = publicAgentSettings(data);
+    const gameId = (await params).id;
+    if (
+      data.sessionId !== undefined &&
+      (typeof data.sessionId !== "string" || !/^[a-f0-9-]{36}$/i.test(data.sessionId))
+    )
+      throw new GameError("Choose a valid session.");
+    await getGame(gameId, user.id);
+    if (data.sessionId !== undefined) await getSession(gameId, data.sessionId as string, user.id);
+    await getModel(agent.agentModel);
+    const game = await claimGameSession(
+      gameId,
+      (data.sessionId as string | undefined) ?? gameId,
       user.id,
-      data.agentModel as string | undefined,
+      agent.agentModel,
       data.systemPrompt,
       {
         monitorDifficulty: data.monitorDifficulty,
         monitorReasoning: data.monitorReasoning,
       },
-      data.agentEffort,
+      agent.agentEffort,
     );
     const cancel = new AbortController();
-    const signal = AbortSignal.any([cancel.signal, request.signal, AbortSignal.timeout(230000)]);
+    const responseDeadline = AbortSignal.timeout(230000);
+    const signal = AbortSignal.any([cancel.signal, request.signal, responseDeadline]);
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
@@ -40,7 +50,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         };
         const heartbeat = setInterval(() => send("heartbeat", null), 15000);
         try {
-          await runGame(game, data.prompt as string, signal, send);
+          await runGame(game, data.prompt as string, signal, send, {
+            deadlineSignal: responseDeadline,
+          });
         } catch {
           send("error", "This response was interrupted. Reload to recover your run.");
         } finally {

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import { Pool } from "pg";
 
 // Only the runner's fresh loopback container is accepted; never read .env.local.
@@ -45,7 +47,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   await (await getMigrations(auth.options)).runMigrations();
   const { adminStats, isAdmin } = await import("../../lib/admin");
   const { MODELS } = await import("../../lib/policy");
-  const { MONITOR_VERSION } = await import("../../lib/control");
+  const { MONITOR_VERSION, ASYNC_MONITOR_VERSION } = await import("../../lib/control");
 
   // The flag is SQL-granted only: real Better Auth handlers must refuse it from users.
   const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });
@@ -71,6 +73,77 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   await pool.query(`UPDATE ctf."user" SET "isAnonymous"=false WHERE id=$1`, [userId]);
   assert.equal(isAdmin((await auth.api.getSession({ headers: session }))?.user), true);
   await pool.query(`DELETE FROM ctf."session"; DELETE FROM ctf."user"`);
+
+  await t.test(
+    "setup seeds only configured member emails and preserves existing grants",
+    async () => {
+      const fixtures = [
+        ["seed-one", "One@example.invalid", false],
+        ["seed-two", "two@example.invalid", false],
+        ["seed-guest", "guest@example.invalid", true],
+        ["seed-former", "jonathan@gnobel.com", false],
+      ];
+      for (const [id, email, anonymous] of fixtures)
+        await pool.query(
+          `INSERT INTO ctf."user"(id,name,email,"emailVerified","isAnonymous","createdAt","updatedAt") VALUES($1,$1,$2,true,$3,now(),now())`,
+          [id, email, anonymous],
+        );
+      const setup = async (emails?: string) => {
+        await promisify(execFile)(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            "--input-type=module",
+            "--eval",
+            `import { Pool } from 'pg';
+           globalThis.ctfPool = new Pool({ connectionString: process.env.CTF_INTEGRATION_DATABASE_URL, options: '-c search_path=ctf,public' });
+           await import('./scripts/setup.ts');`,
+          ],
+          {
+            timeout: 30_000,
+            env: {
+              PATH: process.env.PATH,
+              NODE_ENV: "test",
+              BETTER_AUTH_SECRET: "integration-only-secret-long-enough-for-better-auth",
+              BETTER_AUTH_URL: "http://localhost",
+              CTF_INTEGRATION_DATABASE_URL: connection.toString(),
+              ...(emails === undefined ? {} : { ADMIN_EMAILS: emails }),
+            },
+          },
+        );
+      };
+      const grants = async () =>
+        (
+          await pool.query('SELECT id FROM ctf."user" WHERE "isAdmin" IS TRUE ORDER BY id')
+        ).rows.map((row) => row.id);
+      try {
+        await setup();
+        assert.deepEqual(await grants(), [], "unset configuration must not grant a fallback admin");
+        await setup(" ,  , ");
+        assert.deepEqual(await grants(), [], "blank entries grant nothing");
+        const configured =
+          " ONE@EXAMPLE.INVALID, two@example.invalid, , guest@example.invalid, missing@example.invalid, one@example.invalid ";
+        await setup(configured);
+        assert.deepEqual(await grants(), ["seed-one", "seed-two"]);
+        await setup(configured);
+        assert.deepEqual(await grants(), ["seed-one", "seed-two"], "reruns are idempotent");
+        await setup("");
+        assert.deepEqual(
+          await grants(),
+          ["seed-one", "seed-two"],
+          "omissions do not revoke grants",
+        );
+        assert.equal(
+          (await pool.query('SELECT count(*)::int AS n FROM ctf."user"')).rows[0].n,
+          fixtures.length,
+          "setup does not create missing accounts",
+        );
+      } finally {
+        await pool.query('DELETE FROM ctf."user" WHERE id = ANY($1)', [fixtures.map(([id]) => id)]);
+      }
+    },
+  );
 
   // Budgets and run limits are per account, so every plus-variant must reach the same account.
   process.env.RESEND_API_KEY = "re_integration_only";
@@ -158,7 +231,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
           turns,
           blocks,
           pick.monitor ?? "mon/a",
-          pick.version ?? MONITOR_VERSION,
+          pick.version ?? ASYNC_MONITOR_VERSION,
           pick.difficulty ?? "hard",
         ],
       )
@@ -268,7 +341,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   // Runs against another monitor model and difficulty; one against an old monitor version never ranks.
   await game("m3", "captured", 500_000, 0, 2, 0, { monitor: "mon/b" });
   await game("m3", "captured", 400_000, 0, 3, 0, { difficulty: "easy" });
-  await game("m3", "captured", 100_000, 0, 1, 0, { version: "secret-v1" });
+  await game("m3", "captured", 100_000, 0, 1, 0, { version: MONITOR_VERSION });
   await game("m3", "captured", 300_000, 0, 5, 0, { monitor: "mon/c" });
 
   await t.test("capture rate is grouped by monitor model and difficulty", async () => {
