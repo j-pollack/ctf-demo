@@ -12,6 +12,7 @@ import {
 import { evaluateClassifierContext } from "./classifier-context";
 import {
   chargeMonitor,
+  monitorRunBudgetExempt,
   reserveInference,
   settleInference,
   transaction,
@@ -74,8 +75,14 @@ async function assertDispatchAuthorization(input: {
         429,
       );
     if (
+      !monitorRunBudgetExempt(
+        "monitor",
+        input.jobClaim,
+        Number(rows[0].spent_microdollars),
+        Number(rows[0].budget_microdollars),
+      ) &&
       Number(rows[0].spent_microdollars) + Number(rows[0].reserved_microdollars) >=
-      Number(rows[0].budget_microdollars)
+        Number(rows[0].budget_microdollars)
     ) {
       const pending = Number(rows[0].reserved_microdollars) > 0;
       throw new GameError(

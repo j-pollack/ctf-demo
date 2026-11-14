@@ -75,7 +75,7 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   if (options.mode === "help") {
     if (selections.size) throw new Error("--help cannot be combined with other options.");
     console.log(
-      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--strategy current|closed-world-presumption-v1 --schedule FILE] [--split dev|test]. Candidate and test-split runs require an explicit schedule.",
+      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--strategy current|closed-world-presumption|closed-world-presumption-v1 --schedule FILE] [--split dev|test]. Candidate and test-split runs require an explicit schedule.",
     );
     return;
   }

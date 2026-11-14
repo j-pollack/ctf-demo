@@ -746,6 +746,196 @@ await test(
         },
       );
 
+    // Responses that start through the real claimSession and end through the real release.
+    const { claimSession } = await import("../../lib/sessions");
+    const { GameError } = await import("../../lib/policy");
+    const startResponse = async (id: string, owner: string) =>
+      (await claimSession(id, id, owner)).lease;
+    const seedOwned = async (prefix: string) => {
+      await retireOtherJobs();
+      const owner = `${prefix}-${randomUUID()}`;
+      return { id: await seed(owner), owner };
+    };
+    const forceRetryDue = (id: string) =>
+      pool.query(
+        "UPDATE ctf.monitor_jobs SET next_attempt_at=now()-interval '1 second' WHERE session_id=$1",
+        [id],
+      );
+    // The lease gate is the only thing between the worker and this job.
+    const assertGated = async (id: string, message: string) => {
+      const {
+        rows: [gate],
+      } = await pool.query(
+        `SELECT j.status,j.requested_version>j.covered_version AS unreviewed,
+           j.next_attempt_at<=now() AS due,
+           EXISTS(SELECT 1 FROM ctf.agent_sessions s
+             WHERE s.id=j.session_id AND s.lease_until>now()) AS live
+         FROM ctf.monitor_jobs j WHERE j.session_id=$1`,
+        [id],
+      );
+      assert.deepEqual(gate, { status: "queued", unreviewed: true, due: true, live: true });
+      assert.equal(await claimMonitorJob(), null, message);
+    };
+    const releaseAndReview = async (id: string, lease: string) => {
+      await endTurn(id, id, lease);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.sessionId, id, "the finished response is claimable");
+      await finishMonitorJob(claim!, { kind: "allow" });
+    };
+    // A response whose updates were recorded but whose lease never reached release.
+    const killedResponse = async (prefix: string, lapse: "-1 second" | null) => {
+      const { id, owner } = await seedOwned(prefix);
+      await startResponse(id, owner);
+      await write(id, ["a1"]);
+      await setLease(id, lapse);
+      return { id, owner };
+    };
+
+    for (const [name, lapse] of [
+      ["lease lapsed", "-1 second"],
+      ["lease swept", null],
+    ] as const)
+      await t.test(
+        `a new instruction makes a killed response's updates ready (${name})`,
+        async () => {
+          const { id, owner } = await killedResponse("turn-killed", lapse);
+          const lease = await startResponse(id, owner);
+          const marked = await jobOf(id);
+          assert.equal(Number(marked.ready_version), Number(marked.requested_version));
+          const appended = await write(id, ["a1", "a2"]);
+          const claim = await claimMonitorJob();
+          assert.equal(claim?.sessionId, id, "claimable while the new response runs");
+          assert.equal(claim?.targetVersion, appended.version);
+          assert.equal(claim?.targetVersion, Number((await jobOf(id)).requested_version));
+          await finishMonitorJob(claim!, { kind: "allow" });
+          await endTurn(id, id, lease);
+        },
+      );
+
+    await t.test("a response's own updates are not exposed by the mark at its start", async () => {
+      const { id, owner } = await seedOwned("turn-own");
+      await write(id, ["a1"]);
+      await reviewOnce(id);
+      const lease = await startResponse(id, owner);
+      await write(id, ["a1", "a2"]);
+      await assertGated(id, "the covered content leaves the new update unready");
+      await releaseAndReview(id, lease);
+    });
+
+    for (const kind of ["allow", "unknown", "error"] as const)
+      await t.test(`one mark yields one claim (${kind})`, async () => {
+        const { id, owner } = await killedResponse(`turn-once-${kind}`, "-1 second");
+        const lease = await startResponse(id, owner);
+        await write(id, ["a1", "a2"]);
+        const claim = await claimMonitorJob();
+        assert.equal(claim?.sessionId, id);
+        await finishMonitorJob(claim!, { kind });
+        if (kind === "error") await forceRetryDue(id);
+        await write(id, ["a1", "a2", "a3"]);
+        await assert.rejects(
+          claimSession(id, id, owner),
+          (error) => error instanceof GameError && error.status === 409,
+        );
+        assert.equal(Number((await jobOf(id)).ready_version), 0, "the refused claim marks nothing");
+        await assertGated(id, "the mark is spent until the response ends");
+        await releaseAndReview(id, lease);
+      });
+
+    for (const variant of ["one unknown review", "three error reviews"] as const)
+      await t.test(`unresolved content waits for the response to end (${variant})`, async () => {
+        const { id, owner } = await seedOwned("turn-unresolved");
+        const first = await startResponse(id, owner);
+        await write(id, ["a1"]);
+        await endTurn(id, id, first);
+        const attempts = variant === "one unknown review" ? 1 : 3;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          if (attempt > 1) await forceRetryDue(id);
+          const claim = await claimMonitorJob();
+          assert.equal(claim?.sessionId, id);
+          await finishMonitorJob(claim!, {
+            kind: variant === "one unknown review" ? "unknown" : "error",
+          });
+        }
+        assert.equal((await jobOf(id)).status, "unresolved");
+        const lease = await startResponse(id, owner);
+        await write(id, ["a1", "a2"]);
+        await assertGated(id, "inconclusive content costs no extra review");
+        await releaseAndReview(id, lease);
+      });
+
+    await t.test("unresolved before the release waits for the next response to end", async () => {
+      const { id, owner } = await seedOwned("turn-unresolved-early");
+      const first = await startResponse(id, owner);
+      await write(id, ["a1"]);
+      await endTurn(id, id, first);
+      const second = await startResponse(id, owner);
+      await write(id, ["a1", "a2"]);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.sessionId, id, "the first release marked the job");
+      await finishMonitorJob(claim!, { kind: "unknown" });
+      assert.equal((await jobOf(id)).status, "unresolved");
+      await endTurn(id, id, second);
+      const lease = await startResponse(id, owner);
+      await write(id, ["a1", "a2", "a3"]);
+      await assertGated(id, "a mark from before the job became unresolved is dropped");
+      await releaseAndReview(id, lease);
+    });
+
+    await t.test("an exhausted claim that expired during a response stays unresolved", async () => {
+      const { id, owner } = await seedOwned("turn-unresolved-expired");
+      const first = await startResponse(id, owner);
+      await write(id, ["a1"]);
+      await endTurn(id, id, first);
+      for (const outcome of ["error", "error", null] as const) {
+        await forceRetryDue(id);
+        const claim = await claimMonitorJob();
+        assert.equal(claim?.sessionId, id);
+        if (outcome) await finishMonitorJob(claim!, { kind: outcome });
+      }
+      await pool.query(
+        "UPDATE ctf.monitor_jobs SET claim_until=now()-interval '1 second' WHERE id=$1",
+        [(await jobOf(id)).id],
+      );
+      const lease = await startResponse(id, owner);
+      assert.equal(await claimMonitorJob(), null, "the exhausted job is retired, not reviewed");
+      assert.equal((await jobOf(id)).status, "unresolved");
+      await write(id, ["a1", "a2"]);
+      await assertGated(id, "a mark from before exhaustion is dropped");
+      await releaseAndReview(id, lease);
+    });
+
+    await t.test("a new instruction marks only its own session's job", async () => {
+      const { id, owner } = await seedOwned("turn-sibling");
+      const sibling = await addSession(id, 2);
+      await setLease(sibling, "1 minute");
+      await write(id, ["b1"], sibling);
+      const lease = await startResponse(id, owner);
+      assert.equal(Number((await jobOf(sibling)).ready_version), 0);
+      assert.equal(await claimMonitorJob(), null, "the sibling's response is still running");
+      await endTurn(id, id, lease);
+      await setLease(sibling, null);
+      await reviewOnce(sibling);
+    });
+
+    await t.test("a review waiting to retry is claimable once in the next response", async () => {
+      const { id, owner } = await seedOwned("turn-retry");
+      const first = await startResponse(id, owner);
+      await write(id, ["a1"]);
+      await endTurn(id, id, first);
+      const failed = await claimMonitorJob();
+      assert.equal(failed?.sessionId, id);
+      await finishMonitorJob(failed!, { kind: "error" });
+      const lease = await startResponse(id, owner);
+      await write(id, ["a1", "a2"]);
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.sessionId, id, "the pending retry runs during the response");
+      await finishMonitorJob(claim!, { kind: "error" });
+      await forceRetryDue(id);
+      await write(id, ["a1", "a2", "a3"]);
+      await assertGated(id, "one mark yields one claim");
+      await releaseAndReview(id, lease);
+    });
+
     await t.test("a release with another lease value marks nothing", async () => {
       await retireOtherJobs();
       const id = await seed(`turn-wrong-lease-${randomUUID()}`);

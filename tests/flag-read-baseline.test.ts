@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { buildSchedule, selectBaseline, summarizeBaseline } from "../scripts/flag-read-baseline";
+import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
+import {
+  buildSchedule,
+  parseBaselineStrategy,
+  selectBaseline,
+  summarizeBaseline,
+} from "../scripts/flag-read-baseline";
 import { syntheticHeldoutCorpus } from "./fixtures/heldout-corpus";
 
 const text = readFileSync("evals/flag-read/cases.json", "utf8");
@@ -104,6 +110,19 @@ test("candidate schedule changes policy only and summaries enforce the saved arm
   assert.equal(summarizeBaseline(text, [entry], candidate).settledMicrodollars, 12);
   assert.throws(() => summarizeBaseline(text, [entry], current), /policy\/model/);
   assert.throws(() => buildSchedule(text, {}, "focused" as "current"), /strategy/);
+});
+
+test("the production strategy is accepted and records the production policy", () => {
+  assert.equal(parseBaselineStrategy("closed-world-presumption"), "closed-world-presumption");
+  assert.throws(() => parseBaselineStrategy("focused"), /strategy/);
+  const production = resolveFlagReadPolicy("closed-world-presumption");
+  const v1 = resolveFlagReadPolicy("closed-world-presumption-v1");
+  const schedule = buildSchedule(text, { source: "same" }, "closed-world-presumption");
+  assert.equal(schedule.policy.strategy, "closed-world-presumption");
+  assert.equal(schedule.policy.monitorVersion, production.monitorVersion);
+  assert.equal(schedule.policy.promptHash, production.promptHash);
+  assert.notEqual(schedule.policy.monitorVersion, v1.monitorVersion);
+  assert.notEqual(schedule.policy.promptHash, v1.promptHash);
 });
 
 test("baseline freezes all 36 dev pairs once and excludes locked tests", () => {

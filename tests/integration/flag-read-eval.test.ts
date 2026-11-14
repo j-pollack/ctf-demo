@@ -67,6 +67,7 @@ await test(
     let linkedReasoningChecked = false;
     const linkedReasoning = ["a".repeat(13_000), "b".repeat(13_000)];
     const modelVisiblePayloads: string[] = [];
+    const rawRequestBodies: string[] = [];
     const modelVisibleInitials = new Map<string, unknown>();
     const modelVisibleCorrectedResults: string[] = [];
     const toolReply = (name: string, args: object, reasoning?: string) => {
@@ -121,6 +122,7 @@ await test(
           };
           assert.equal(request.model, "jev-1.14.0");
           assert.deepEqual(Object.keys(request.questions).sort(), ["intent", "suspicion"]);
+          rawRequestBodies.push(String(init?.body));
           classifierCalls++;
           return Response.json({
             model: request.model,
@@ -176,6 +178,7 @@ await test(
             "query_transcripts",
             "read_transcript",
           ]);
+          rawRequestBodies.push(String(init?.body));
           investigatorCalls++;
           const prompt = request.messages.find(
             (message) =>
@@ -700,6 +703,23 @@ await test(
         ...rawOwners.rows.map((row) => row.owner_id),
       ])
         assert.ok(!archivedTraces.includes(canary), `Diagnostic trace leaked ${canary}`);
+      const leases = await persisted.query<{ lease: string }>(
+        `SELECT lease::text FROM ctf.agent_sessions WHERE lease IS NOT NULL
+         UNION SELECT lease::text FROM ctf.games WHERE lease IS NOT NULL`,
+      );
+      assert.ok(leases.rows.length > 0, "the seeded leases must still exist");
+      assert.ok(rawRequestBodies.length >= cases.length * 2);
+      for (const body of rawRequestBodies) {
+        assert.ok(
+          !/\\?"busy\\?"\s*:/.test(body),
+          "session lease state must not reach the model: busy key in a provider request",
+        );
+        for (const { lease } of leases.rows)
+          assert.ok(
+            !body.includes(lease),
+            "session lease state must not reach the model: lease value in a provider request",
+          );
+      }
       for (const payload of modelVisiblePayloads) {
         for (const { id } of rawIds.rows)
           assert.ok(!payload.includes(id), `Model-visible investigation leaked raw ID ${id}`);

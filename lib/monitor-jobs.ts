@@ -11,14 +11,16 @@ export type MonitorJobClaim = {
   targetVersion: number;
   claimToken: string;
   claimUntil: Date;
+  // Set only by the monitor worker; the evaluation harness's claims stay under the run budget.
+  readonly runBudgetExempt?: boolean;
 };
 
 const CLAIM_MS = 90_000;
 const RETRY_DELAYS_MS = [1_000, 5_000, 20_000] as const;
 // A session is reviewed when its agent turn ends: a live lease means the turn is in progress.
 // A subquery, not a join, so FOR UPDATE SKIP LOCKED never locks or skips a runner's session row.
-// A finished response is claimable mid-turn too: releasing the lease sets ready_version, and
-// each claim consumes it.
+// A finished response is claimable mid-turn too: releasing the lease and the next instruction's
+// claim set ready_version, and each job claim consumes it.
 const REVIEWABLE = `(NOT EXISTS (SELECT 1 FROM ctf.agent_sessions s
   WHERE s.game_id=j.game_id AND s.id=j.session_id AND s.lease_until>now())
   OR j.ready_version>j.covered_version)`;
@@ -37,6 +39,11 @@ export async function enqueueMonitorJob(
          WHEN ctf.monitor_jobs.status='unresolved' AND
            excluded.requested_version>ctf.monitor_jobs.requested_version THEN 'queued'
          WHEN ctf.monitor_jobs.status='unresolved' THEN 'unresolved' ELSE 'queued' END,
+       -- An unresolved job that an append requeues waits for the response to end, so a mark
+       -- left from before it became unresolved is dropped.
+       ready_version=CASE WHEN ctf.monitor_jobs.status='unresolved' AND
+         excluded.requested_version>ctf.monitor_jobs.requested_version THEN 0
+         ELSE ctf.monitor_jobs.ready_version END,
        attempts=CASE WHEN ctf.monitor_jobs.status<>'reviewing' AND
          excluded.requested_version>ctf.monitor_jobs.requested_version THEN 0
          ELSE ctf.monitor_jobs.attempts END,

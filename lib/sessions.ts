@@ -361,6 +361,12 @@ export async function claimSession(
       ],
     );
     if (!rows[0]) throw new GameError("This session is already responding.", 409);
+    // A new instruction makes everything recorded so far reviewable: a response that ended without
+    // a release never set the mark. Unresolved jobs wait for this response to end.
+    await client.query(
+      "UPDATE ctf.monitor_jobs SET ready_version=requested_version WHERE game_id=$1 AND session_id=$2 AND status<>'unresolved'",
+      [gameId, sessionId],
+    );
     if (monitorRows[0].monitor_mode === "async")
       await client.query("UPDATE ctf.games SET state_revision=state_revision+1 WHERE id=$1", [
         gameId,

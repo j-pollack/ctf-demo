@@ -1,0 +1,57 @@
+# Chunking without per-character reserialization
+
+Worktree: `/Users/jonathan/Code/ctf/.worktrees/chunk-text-linear`
+Branch: `perf/chunk-text-linear`
+Baseline: `ad78671`, the head of `feature/review-hardening-eval` (PR 28, open). Clean index and worktree at the start.
+
+Roles: lead is Claude Fable 5.2. Plan verifier and code reviewer are independent Claude Opus agents at high reasoning effort, read-only. The developer is a Claude Sonnet 5.5 agent at medium reasoning effort, created through Paseo.
+
+## Problem
+
+`chunkText` in `lib/monitor-tools.ts:105` splits a message into chunks whose JSON form `{"text": chunk}` is at most `MONITOR_MESSAGE_CHUNK_JSON_BYTES` (2,500) bytes. For every character it serializes the whole current chunk again. The cost is linear in the text length with a constant of about one chunk per character, roughly 100 times the cost of counting incrementally.
+
+`evidenceMessages` calls it for every visible message. The flag-read investigator runs that over the whole target transcript at setup (`lib/transcript-query.ts:115`) and again on every `read_transcript` (`:292`). Other callers are the legacy review tools (`lib/monitor-tools.ts:247`, `:395`), `lib/transcript-search.ts:199` and `scripts/flag-read-semantic-controls.ts:115`. `lib/monitor-evidence.ts:90` rejects a cited row above the same limit, and refs carry the chunk index.
+
+A local load run on 2026-11-14 measured the cost with the real worker and provider fakes. In a CPU profile of four reviews of 1.5 MB transcripts, `chunkText` took 39.1 of 42.4 seconds of non-idle CPU, about 10 seconds per review. It blocked the event loop for up to 6 seconds. SQLite queries then hit their 1-second limit in 7 to 9 of 60 queries and some reviews retried. The measurement is in `/Users/jonathan/Code/ctf/.artifacts/worker-capacity/`.
+
+## Design
+
+Keep a running byte count. The serialized size of `{"text": chunk}` is 11 bytes plus the sum over the chunk's code points of each one's escaped size, `Buffer.byteLength(JSON.stringify(character)) - 2`. `JSON.stringify` escapes each code point independently: a surrogate pair is written raw, a lone surrogate is written as a six-byte escape, and iteration by code point never splits a pair or joins two lone surrogates. The plan verifier confirmed that additivity by reasoning, on all 65,536 BMP code units, and on 3,000 seeded random strings with no mismatch.
+
+The output must be identical to the current function for every input. The chunks are model-visible evidence and feed the refs that reviews cite. The largest escaped code point is six bytes, so one character can never exceed the limit by itself. The `chunk &&` guard only keeps an empty chunk from being pushed, and it stays. The `chunks.length === 0` branch stays unchanged. Empty text never reaches `chunkText` through `evidenceMessages`, which emits no row for it.
+
+## Criteria
+
+| ID  | Given / when / then                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | Given any message text. When `evidenceMessages` chunks it. Then four properties hold: the chunks joined equal the text; each chunk's JSON form is at most 2,500 bytes; each chunk except the last, extended by the first code point of the next chunk, is above 2,500 bytes; no boundary splits a surrogate pair. The chunks also equal those of the pre-change algorithm, kept in the test and labelled as the frozen oracle. Inputs: a boundary sweep that appends one character of each escaped size (`a`, newline, a quote, `é`, `€`, U+2028, an emoji, NUL, a lone high surrogate) to an ASCII prefix leaving one byte less than, exactly, and one byte more than the room it needs; text dense in quotes, backslashes, short-form control escapes and six-byte control escapes; U+2028, U+2029 and DEL; a lone low surrogate as the first code point of a chunk and a lone high as the last; lone surrogates adjacent to pairs; 200 seeded random strings drawn from those classes. Empty text yields no rows. |
+| C2  | Given a 1.5 MB message. When `evidenceMessages` chunks it. Then it returns within 2 seconds. The current function took 8.4 seconds on the verifier's machine and an incremental version 85 ms.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| C3  | Every existing unit and integration test passes unchanged, including the suites that assert model-visible payloads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+## Non-goals
+
+- The chunk size, the ref format, and the callers of `evidenceMessages`.
+- Caching chunks across `read_transcript` calls.
+- Memory use of large transcripts and the SQLite child processes.
+
+## Checks
+
+| Criterion | Check                                                                                    | Evidence                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1, C2    | New cases in `tests/monitor-tools.test.ts`.                                              | Red: 284 of 285 pass on the old function, and the only failure is C2 at 8,006 ms. Green: 285 of 285. Mutation of `>` to `>=` in the new function: three chunking tests fail with "not maximal" (the boundary sweep, the named classes and the random strings), then reverted. The oracle is compared on the sweep, the named classes and the first 20 random strings. The properties run on all 200. |
+| C3        | `npm run check`; `npm run test:integration`; `npm run build`; worker import probe.       | Lead runs: `npm run check` 285 of 285, `npm run test:integration` 324 of 324, build exit 0, probe exit 0.                                                                                                                                                                                                                                                                                            |
+| Timing    | Before and after timing of one 1.5 MB message through `evidenceMessages`, recorded here. | One 1.5 MB message through `evidenceMessages`, 1,206 rows: 8,006 ms before, 86 ms after.                                                                                                                                                                                                                                                                                                             |
+
+## Review outcomes
+
+- Plan verification by an independent Opus agent: design approved, additivity confirmed. It required a boundary sweep and property assertions in C1 and a corrected description of the cost.
+- Code review by the same agent: no P0 or P1. One P2 in this document, a Checks row that the lead had overwritten. Two P3 in the test file, fixed by the lead: a mislabelled lone-surrogate case and the name of the timing case.
+
+## Steps and ownership
+
+1. Plan verification.
+2. Developer adds the cases and records the red run. Owns `tests/monitor-tools.test.ts`.
+3. Developer rewrites `chunkText`. Owns that function only.
+4. Lead reruns every gate, commits, and sends the delta against `ad78671` to the code reviewer.
+
+The change touches a hashed eval source, so the frozen schedules reject it, as they do after any source change. No push or deployment without the user's authorization.
