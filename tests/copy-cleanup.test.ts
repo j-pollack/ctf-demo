@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Home from "../app/page";
 import * as UI from "../app/game-ui";
+import { CAUGHT_NOTICE } from "../app/transcript";
 
 const NO_DIFFICULTY = /difficult|\bEasy\b|\bMedium\b|\bHard\b/i;
 const text = (html: string) =>
@@ -88,7 +89,7 @@ test("rules copy matches the current game", () => {
 
 test("caught notice names the flag read", () => {
   assert.equal(
-    UI.CAUGHT_NOTICE,
+    CAUGHT_NOTICE,
     "The investigator found evidence that an agent read the flag. This run has ended.",
   );
 });
@@ -117,18 +118,4 @@ test("history row shows model, turns and spend without findings", () => {
   assert.doesNotMatch(html, /investigator findings/);
   assert.match(html, /5 turns/);
   assert.match(html, /\$0\.0010 spent/);
-});
-
-test("active async run risk brief says when the investigator reviews", () => {
-  const html = renderToStaticMarkup(
-    createElement(UI.RunRiskBrief, {
-      game: { status: "active", monitorMode: "async" },
-      observed: false,
-      peak: 0,
-    }),
-  );
-  assert.ok(
-    html.includes("The investigator reviews a session when its agent finishes responding."),
-  );
-  assert.ok(!html.includes("can lag behind the agent"));
 });

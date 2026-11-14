@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   canCreateNewRun,
   modelLabel,
+  refreshedDetailRun,
   refreshedHistoricalGame,
   hasActiveRun,
   lastEventId,
@@ -212,4 +213,41 @@ test("Play opens the new-run dialog unless a run can still be continued", () => 
   assert.equal(hasActiveRun(game()), true);
   for (const status of ["captured", "exhausted", "ended", "creating"] as const)
     assert.equal(hasActiveRun(game({ status })), false, status);
+});
+
+test("a My Runs poll of another shown session still updates the run but keeps its session", () => {
+  const current = game({
+    status: "finalizing",
+    sessionId: "s1",
+    stateRevision: "5",
+    spentMicrodollars: 100,
+    monitor: { status: "reviewing" } as PublicGame["monitor"],
+    events: [{ id: 1, kind: "user", text: "s1 instruction" }],
+    sessions: [],
+  });
+  const sibling = game({
+    status: "caught",
+    sessionId: "s2",
+    stateRevision: "6",
+    spentMicrodollars: 250,
+    monitor: { status: "caught" } as PublicGame["monitor"],
+    events: [{ id: 2, kind: "user", text: "s2 instruction" }],
+    sessions: [],
+  });
+  const next = refreshedDetailRun(current, sibling, "run", "s2")!;
+  assert.equal(next.status, "caught");
+  assert.equal(next.spentMicrodollars, 250);
+  assert.equal(next.monitor?.status, "caught");
+  assert.equal(next.sessionId, "s1", "focus is not moved by a sibling poll");
+  assert.deepEqual(next.events, current.events);
+
+  const own = refreshedDetailRun(current, { ...sibling, sessionId: "s1" }, "run", "s1")!;
+  assert.equal(own.status, "caught");
+  assert.deepEqual(own.events, sibling.events, "the run's own session replaces its events");
+
+  assert.equal(
+    refreshedDetailRun(current, { ...sibling, stateRevision: "4" }, "run", "s2"),
+    current,
+  );
+  assert.equal(refreshedDetailRun(current, { ...sibling, id: "other" }, "run", "s2"), current);
 });

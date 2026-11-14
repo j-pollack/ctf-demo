@@ -1,4 +1,5 @@
 import type { AgentEffort, GameEvent, PublicGame, SessionSummary } from "@/lib/types";
+import type { LiveTurn } from "@/app/transcript";
 
 export type SessionUIState = {
   id: string;
@@ -6,11 +7,17 @@ export type SessionUIState = {
   agentModel?: string;
   agentEffort?: AgentEffort;
   systemPromptDraft?: string;
+  // The stored system prompt the draft was last based on.
+  systemPrompt?: string;
   busy: boolean;
   cursor: number;
   stage: string;
   error: string;
   events: GameEvent[];
+  // Whether a fetch has loaded this session's events. Stream events alone do not count.
+  fetched: boolean;
+  // The agent turn being streamed; the recorded agent event replaces it.
+  live?: LiveTurn;
   pending?: { gameId: string; text: string; afterId: number };
   unconfirmed: boolean;
 };
@@ -116,13 +123,40 @@ export function createSessionUIState(
     agentModel: session.agentModel,
     agentEffort: session.agentEffort,
     systemPromptDraft: session.systemPrompt,
+    systemPrompt: session.systemPrompt,
     busy: session.busy ?? false,
     cursor: events.reduce((maximum, event) => Math.max(maximum, event.id), 0),
     stage: "",
     error: "",
     events,
+    fetched: session.events !== undefined,
     unconfirmed: false,
   };
+}
+
+// Only the run's own session arrives with its events; siblings start unfetched.
+export function newSessionView(
+  run: Pick<PublicGame, "sessionId" | "events">,
+  summary: Pick<SessionSummary, "id"> & Partial<SessionSummary>,
+): SessionUIState {
+  return createSessionUIState({
+    ...summary,
+    events: summary.id === run.sessionId ? run.events : undefined,
+  });
+}
+
+// The requested session when it belongs to this run, otherwise the run's own session.
+export function pickSession(run: PublicGame, requested: string | null): string {
+  const ids = run.sessions?.length
+    ? run.sessions.map((session) => session.id)
+    : [run.sessionId || run.id];
+  return requested && ids.includes(requested) ? requested : (run.sessionId ?? run.id);
+}
+
+export function sessionLoading(run: PublicGame, views: SessionUIMap, id: string): boolean {
+  const view = views[id],
+    summary = run.sessions?.find((session) => session.id === id);
+  return (view?.busy ?? summary?.busy ?? run.sessionBusy ?? false) || !!view?.unconfirmed;
 }
 
 export function setSessionBusy(
@@ -177,6 +211,7 @@ export function applySessionSnapshot(
       ...session,
       events: [...events.values()].sort((left, right) => left.id - right.id),
       cursor: Math.max(session.cursor, confirmedCursor),
+      fetched: true,
     },
   };
 }
@@ -185,13 +220,16 @@ export function stopAllSessions(state: SessionUIMap): SessionUIMap {
   return Object.fromEntries(
     Object.entries(state).map(([id, session]) => [
       id,
-      { ...session, busy: false, stage: "", pending: undefined, unconfirmed: false },
+      {
+        ...session,
+        busy: false,
+        stage: "",
+        live: undefined,
+        pending: undefined,
+        unconfirmed: false,
+      },
     ]),
   );
-}
-
-export function isVisibleSessionStream(selectedSessionId: string | null, sessionId: string) {
-  return selectedSessionId === sessionId;
 }
 
 export function keepSelectedSessionProjection(

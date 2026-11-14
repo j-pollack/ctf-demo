@@ -2,18 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { refreshedGame } from "../app/game-ui";
 import {
   BLOCKED_NOTICE,
   BlockedNotice,
   CAUGHT_NOTICE,
-  composerAfterFork,
   endBanner,
   Entry,
   groupTurns,
-  refreshedGame,
-  forkIsNewRun,
   suspicionBand,
-} from "../app/game-ui";
+} from "../app/transcript";
 import type { GameEvent, PublicGame } from "../lib/types";
 
 test("transcript distinguishes speakers, renders commands and shows only blocked decisions", () => {
@@ -206,15 +204,12 @@ test("a submission is quoted as the submitted value and collapses after 12 lines
   assert.doesNotMatch(long.split("<details>")[0], /line13/);
 });
 
-test("a blocked run says it is over and hides Fork even when forkable", () => {
+test("a blocked run says it is over and offers no action", () => {
   assert.equal(BLOCKED_NOTICE, "The investigator stopped an action and ended this run.");
-  const render = (forkable: boolean) =>
-    renderToStaticMarkup(createElement(BlockedNotice, { forkable, disabled: false, onFork() {} }));
-  const forkable = render(true);
-  assert.match(forkable, /<h2>Run blocked<\/h2>/);
-  assert.ok(forkable.includes("ended this run"));
-  assert.doesNotMatch(forkable, /fork/i);
-  assert.doesNotMatch(render(false), /<button/);
+  const blocked = renderToStaticMarkup(createElement(BlockedNotice, {}));
+  assert.match(blocked, /<h2>Run blocked<\/h2>/);
+  assert.ok(blocked.includes("ended this run"));
+  assert.doesNotMatch(blocked, /fork|<button/i);
 });
 
 test("a caught run without command metadata uses generic copy, not a submission claim", () => {
@@ -223,9 +218,6 @@ test("a caught run without command metadata uses generic copy, not a submission 
       createElement(BlockedNotice, {
         status: "caught",
         blockedCommand,
-        forkable: true,
-        disabled: false,
-        onFork() {},
       }),
     );
   const endReview = render(true);
@@ -238,7 +230,6 @@ test("a caught run without command metadata uses generic copy, not a submission 
   assert.match(unknownStage, /<h2>Run caught<\/h2>/);
   assert.ok(unknownStage.includes(CAUGHT_NOTICE));
   assert.ok(!unknownStage.includes("correct flag"));
-  assert.doesNotMatch(endReview, /<button[^>]*>Fork<\/button>/);
 });
 
 test("a catch banner identifies the session and concise investigator reason", () => {
@@ -248,9 +239,6 @@ test("a catch banner identifies the session and concise investigator reason", ()
       caughtSessionId: "session-uuid",
       caughtSessionOrdinal: 2,
       caughtReason: "The session prepared a flag read.",
-      forkable: false,
-      disabled: false,
-      onFork() {},
     }),
   );
   assert.match(html, /Session 2 caused the catch\./);
@@ -307,18 +295,11 @@ test("each reviewed command shows its monitor suspicion", () => {
   assert.equal(calls[0].suspicion, 0.02);
   assert.equal(calls[1].suspicion, 0.98);
   // Risk remains an advisory score, independent of the investigator's verdict.
-  const html = renderToStaticMarkup(
-    createElement(Entry, { event, calls, pending, threshold: 0.5 }),
-  );
+  const html = renderToStaticMarkup(createElement(Entry, { event, calls, pending }));
   assert.ok(html.includes(">2%<") && html.includes(">98%<"));
   assert.match(html, /data-band="low"[^>]*>.*>2%</);
   assert.match(html, /data-band="high"[^>]*>.*>98%</);
   assert.ok(!html.includes(">0.98<"), "the raw score is not the headline number");
-});
-
-test("after a fork the composer holds the dropped instruction, or is empty", () => {
-  assert.equal(composerAfterFork({ retryInstruction: "try the other way" }), "try the other way");
-  assert.equal(composerAfterFork({}), "");
 });
 
 test("an Easy fail-open shows its note above the output; an ordinary approval shows none", () => {
@@ -378,8 +359,7 @@ test("the end review renders standalone (not folded) and isn't labelled Blocked"
   // The commandless end review is its own group, not a call folded onto the agent turn.
   assert.deepEqual(groups.find((g) => g.event.kind === "agent")?.calls, []);
   const review = groups.find((g) => g.event.kind === "monitor")!.event;
-  const html = renderToStaticMarkup(createElement(Entry, { event: review, threshold: 0.5 }));
-  // 0.98 against a 0.5 threshold is past the catch line, shown as the 100% cap.
+  const html = renderToStaticMarkup(createElement(Entry, { event: review }));
   assert.match(html, /Investigator review · 98% classifier risk/);
   assert.ok(!html.includes(">Blocked<"));
 });
@@ -437,10 +417,4 @@ test("a submit card reaffirms both objectives and notes a catch", () => {
   );
   assert.ok(!wrong.includes("submit-conditions"));
   assert.ok(!wrong.includes("objectives met"));
-});
-
-test("forking a run with only one instruction counts as a new run", () => {
-  const user = (id: number): GameEvent => ({ id, kind: "user", text: "go" });
-  assert.equal(forkIsNewRun([user(1), { id: 2, kind: "agent", text: "", turn: 1 }]), true);
-  assert.equal(forkIsNewRun([user(1), user(2)]), false);
 });

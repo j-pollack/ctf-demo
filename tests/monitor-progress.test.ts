@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as UI from "../app/game-ui";
+import * as UI from "../app/run-format";
 
 test("monitor progress text names sessions waiting for review", () => {
   for (const status of ["queued", "reviewing"] as const) {

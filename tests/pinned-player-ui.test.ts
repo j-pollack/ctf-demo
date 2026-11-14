@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as UI from "../app/game-ui";
+import { Entry } from "../app/transcript";
+import { SessionPane } from "../app/session-pane";
+import { createSessionUIState } from "../app/session-ui-state";
+import { session } from "./fixtures/console-runs";
 
 test("step-by-step rules describe starting a run without the removed difficulty setting", () => {
   const html = renderToStaticMarkup(createElement(UI.RunInstructions));
@@ -21,22 +25,27 @@ test("actual setup fields show budget and reasoning guidance without difficulty 
   assert.doesNotMatch(html, /AGENT MODEL|AGENT EFFORT|change the agent.*model|effort at any time/);
 });
 
-test("run details keep the historical agent label and effort without difficulty", () => {
+test("a pane header keeps the historical agent label and effort without difficulty", () => {
   const html = renderToStaticMarkup(
-    createElement(UI.RunDetailsContent, {
-      game: {
+    createElement(SessionPane, {
+      session: session(1, {
         agentModel: "historical/model-kept-for-this-session",
         agentEffort: "high",
-        monitorMode: "async",
-        spentMicrodollars: 0,
-        agentSpendMicrodollars: 0,
-        monitorSpendMicrodollars: 0,
-      },
-      ordinal: 1,
-      riskSeries: [],
-      peak: 0,
-      observed: false,
-      decisions: [],
+      }),
+      view: createSessionUIState({ id: "session-1", events: [] }),
+      runStatus: "captured",
+      editable: false,
+      focused: true,
+      disabled: false,
+      streaming: false,
+      onFocus: () => {},
+      onDraftChange: () => {},
+      onSystemDraftChange: () => {},
+      onSend: () => {},
+      onStop: () => {},
+      onRetry: () => {},
+      onDismissError: () => {},
+      onCopy: () => {},
     }),
   );
   assert.match(html, /model-kept-for-this-session/);
@@ -48,7 +57,7 @@ test("run details keep the historical agent label and effort without difficulty"
 
 test("truncated replies preserve reasoning and historical model without unavailable effort advice", () => {
   const html = renderToStaticMarkup(
-    createElement(UI.Entry, {
+    createElement(Entry, {
       event: {
         id: 1,
         kind: "agent",
