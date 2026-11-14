@@ -15,6 +15,7 @@ import {
   sessionTurns,
   shownSessionIds,
   stripEdges,
+  runModelsVary,
 } from "../app/session-layout";
 import type { GameEvent } from "../lib/types";
 
@@ -239,4 +240,23 @@ test("a pending session keeps the pane in use when recent focus was never record
     ["s1", "s4"],
     "dropping the outgoing focus is what evicted the pane in use",
   );
+});
+
+test("turn model labels are needed only when the run used more than one agent model", () => {
+  const session = (id: string, agentModel: string) => ({ id, agentModel });
+  const agent = (model?: string) => ({ id: 1, kind: "agent" as const, text: "", turn: 1, model });
+  const same = [session("a", "vendor/one"), session("b", "vendor/one")];
+  assert.equal(runModelsVary(same, {}), false);
+  assert.equal(runModelsVary(same, { a: { events: [agent("vendor/one"), agent()] } }), false);
+  assert.equal(
+    runModelsVary([session("a", "vendor/one"), session("b", "vendor/two")], {}),
+    true,
+    "sessions on different models",
+  );
+  assert.equal(
+    runModelsVary(same, { b: { events: [agent("vendor/old"), agent("vendor/one")] } }),
+    true,
+    "an earlier turn used another model",
+  );
+  assert.equal(runModelsVary([], {}), false);
 });

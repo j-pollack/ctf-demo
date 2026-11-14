@@ -15,15 +15,6 @@ test("step-by-step rules describe starting a run without the removed difficulty 
   assert.match(html, /system prompt box/);
 });
 
-test("actual setup fields show budget and reasoning guidance without difficulty selectors", () => {
-  const html = renderToStaticMarkup(createElement(UI.RunSetupFields));
-  assert.equal((html.match(/<select\b/g) ?? []).length, 0);
-  assert.doesNotMatch(html, /difficulty|first instruction/i);
-  assert.match(html, /budget/);
-  assert.match(html, /investigator can read agent reasoning/);
-  assert.doesNotMatch(html, /AGENT MODEL|AGENT EFFORT|change the agent.*model|effort at any time/);
-});
-
 test("the inspector keeps each session's historical agent label and effort without difficulty", () => {
   const sessions = [
     {
@@ -58,6 +49,7 @@ test("truncated replies preserve reasoning and historical model without unavaila
         model: "historical/previous-model",
         truncated: true,
       },
+      showModel: true,
     }),
   );
   assert.match(html, /Reasoning retained for the next turn\./);

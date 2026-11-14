@@ -166,3 +166,13 @@ test("an empty session in a new run explains the goal; a later empty session say
   assert.doesNotMatch(later, /Fix a bug, then submit/);
   for (const html of [first, later]) assert.doesNotMatch(html, /YOUR MOVE|Send your agent into/);
 });
+
+test("agent turns name their model only when the run used more than one", () => {
+  const events: GameEvent[] = [{ ...agent(1, 1), model: "vendor/model-a" }];
+  const view = createSessionUIState({ ...summary("s1", 1, 1), events });
+  const plain = render(summary("s1", 1, 1), view);
+  assert.match(plain, /TURN 1/);
+  assert.doesNotMatch(plain, /turn-model|vendor\/model-a/);
+  const mixed = render(summary("s1", 1, 1), view, { showTurnModels: true });
+  assert.match(mixed, /<span class="turn-model"> · vendor\/model-a<\/span>/);
+});

@@ -456,6 +456,22 @@ function checkEffort(effort: unknown) {
     throw new GameError("Choose an agent effort.", 400);
   return effort as AgentEffort | undefined;
 }
+// New runs the owner can still start in the rolling day that admission counts; null for an admin,
+// who has no limit. Admission in startGame stays the authority, so this is for display only.
+export async function newRunsLeft(ownerId: string): Promise<number | null> {
+  const { rows } = await db.query<{
+    total: number;
+    isAdmin: boolean | null;
+    isAnonymous: boolean | null;
+  }>(
+    `SELECT (SELECT count(*)::int FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours') AS total,
+       (SELECT "isAdmin" FROM ctf."user" WHERE id=$1) AS "isAdmin",
+       (SELECT "isAnonymous" FROM ctf."user" WHERE id=$1) AS "isAnonymous"`,
+    [ownerId],
+  );
+  if (isAdmin(rows[0])) return null;
+  return Math.max(0, RUNS_PER_DAY - rows[0].total);
+}
 export async function startGame(
   ownerId: string,
   agentModel?: string,

@@ -16,7 +16,7 @@ import type { GameEvent, PublicGame } from "../lib/types";
 
 test("transcript distinguishes speakers, renders commands and shows only blocked decisions", () => {
   const render = (event: GameEvent, previous?: GameEvent) =>
-    renderToStaticMarkup(createElement(Entry, { event, previous }));
+    renderToStaticMarkup(createElement(Entry, { event, previous, showModel: true }));
   assert.match(render({ id: 1, kind: "user", text: "Where are you?" }), />USER</);
   const agent = render({
     id: 2,
@@ -34,6 +34,13 @@ test("transcript distinguishes speakers, renders commands and shows only blocked
   assert.doesNotMatch(agent, /<\/article><div class="entry-actions">|entry-action-label/);
   assert.match(agent, /TURN 3/);
   assert.match(agent, /model-used-on-turn-3/);
+  assert.doesNotMatch(
+    renderToStaticMarkup(
+      createElement(Entry, { event: { id: 2, kind: "agent", text: "", turn: 3, model: "qwen/m" } }),
+    ),
+    /turn-model|qwen\/m/,
+    "a turn does not name its model unless asked to",
+  );
   assert.ok(agent.indexOf("Agent reasoning") < agent.indexOf("<p>Checking</p>"));
   assert.match(agent, /<pre>pwd\necho hello<\/pre>/);
   assert.doesNotMatch(agent, /sprite_exec|&quot;command&quot;/);

@@ -141,3 +141,16 @@ export function nextTabIndex(key: string, current: number, length: number): numb
   if (key === "End") return length - 1;
   return null;
 }
+
+// Turns name their model only when the run used more than one: sessions on different models, or
+// an earlier turn that ran on another.
+export function runModelsVary(
+  sessions: { id: string; agentModel: string }[],
+  views: Record<string, { events: GameEvent[] } | undefined>,
+) {
+  const models = new Set(sessions.map((session) => session.agentModel));
+  for (const session of sessions)
+    for (const event of views[session.id]?.events ?? [])
+      if (event.kind === "agent" && event.model) models.add(event.model);
+  return models.size > 1;
+}

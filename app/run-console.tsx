@@ -2,7 +2,7 @@
 import React, { useEffect, useRef } from "react";
 import type { GameEvent, PublicGame, SessionSummary } from "@/lib/types";
 import { runHasStarted, type SessionUIMap } from "@/app/session-ui-state";
-import { PENDING_SESSION, type InspectorMode } from "@/app/session-layout";
+import { PENDING_SESSION, runModelsVary, type InspectorMode } from "@/app/session-layout";
 import { hasRiskObservations, runPeakRisk, runRiskSeries } from "@/app/run-risk";
 import { money } from "@/app/run-format";
 import { BlockedNotice, endBanner } from "@/app/transcript";
@@ -78,7 +78,6 @@ function OutcomeStrip({
   onShowCaught,
   onContinue,
   onRetryDetail,
-  newRun,
 }: {
   game: PublicGame;
   // Events from every loaded session.
@@ -87,8 +86,6 @@ function OutcomeStrip({
   onShowCaught?: () => void;
   onContinue: () => void;
   onRetryDetail: () => void;
-  // Narrow screens have no New run in the run bar, so a finished run offers it here.
-  newRun: { onClick: () => void; disabled: boolean; title?: string };
 }) {
   const caught = game.status === "blocked" || game.status === "caught",
     finalizing = game.status === "finalizing",
@@ -111,17 +108,6 @@ function OutcomeStrip({
     : null;
   return (
     <section className="outcome" aria-label="Run outcome">
-      {(caught || ended) && (
-        <button
-          type="button"
-          className="new-run outcome-new-run"
-          onClick={newRun.onClick}
-          disabled={newRun.disabled}
-          title={newRun.title}
-        >
-          New run
-        </button>
-      )}
       {outcome.detailError && (
         <div role="alert" className="error">
           {outcome.detailError}
@@ -222,6 +208,7 @@ export function RunConsole(props: RunConsoleProps) {
         const view = sessionViews[session.id];
         return !!view && (view.busy || view.events.length > 0);
       });
+  const modelsVary = runModelsVary(sessions, sessionViews);
   return (
     <div className="console">
       <RunBar
@@ -265,11 +252,6 @@ export function RunConsole(props: RunConsoleProps) {
         }
         onContinue={props.onContinue}
         onRetryDetail={props.onRetryDetail}
-        newRun={{
-          onClick: props.onNewRun,
-          disabled: props.newRunDisabled,
-          title: props.newRunTitle,
-        }}
       />
       <div
         className="workbench"
@@ -302,6 +284,7 @@ export function RunConsole(props: RunConsoleProps) {
                 editable={props.editable}
                 focused={id === focusedId}
                 runStarted={started}
+                showTurnModels={modelsVary}
                 disabled={props.busy}
                 streaming={props.streamingIds.includes(id)}
                 onFocus={() => props.onFocusSession(id)}
@@ -324,16 +307,7 @@ export function RunConsole(props: RunConsoleProps) {
             observed={observed}
             decisions={decisions}
             titleRef={titleRef}
-            footer={
-              inspector === "overlay"
-                ? {
-                    onClose: props.onCloseInspector,
-                    onNewRun: props.onNewRun,
-                    newRunDisabled: props.newRunDisabled,
-                    newRunTitle: props.newRunTitle,
-                  }
-                : undefined
-            }
+            onClose={inspector === "overlay" ? props.onCloseInspector : undefined}
           />
         )}
       </div>

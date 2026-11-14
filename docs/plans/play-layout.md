@@ -406,3 +406,20 @@ Security review. The independent reviewer attacked `safeNextPath` and found one 
 Also fixed from that review: the redirect guard now clears when a visit needs no redirect, so a later signed-out visit to `/play` redirects again, and the "check your email" state resets when the route or account changes.
 
 `git diff 4408578 --stat -- lib app/api db` is still empty.
+
+### Third user review
+
+Requested on 2026-11-14. The lead made these changes directly.
+
+- Run details name the model and effort in one line. The Sessions table is gone. Committed as `76876fa`.
+- At phone width New run sits next to Details in the run bar. It is no longer in the details overlay footer or the outcome strip, so one New run control exists at every width.
+- Header links are 12px at phone width, up from 10px, and from 9px at 360px and below.
+- The instruction box grows with its text up to 40% of the viewport height, then scrolls. A native resize handle was not used: the box is anchored to the bottom of the pane, so its handle can only be dragged a few pixels before reaching the screen edge.
+- A turn names its agent model only when the run used more than one: sessions on different models, or an earlier turn on another model. `runModelsVary` decides, with a unit test seen failing first.
+- The New run dialog says "Starting a new run ends your current one." when a run is active, then how many new runs are left today. At zero it says so and Start run is disabled.
+
+The last item needed the first server change on this branch, which lifts the "no backend change" non-goal for it alone. `GET /api/games` now also returns `runsLeft`, from the new `newRunsLeft(ownerId)` in `lib/games.ts`. It counts the same rows admission counts, new runs by the owner in the last 24 hours, and returns null for an admin. The query is owner-scoped and parameterized. Admission in `startGame` is unchanged and stays the authority. The existing quota scenario in `tests/integration/sprites.test.ts` now asserts the count through the route: 3, then 2, 1 and 0 as a member starts runs, null for an admin, and 0 after admin is revoked. It was seen failing first.
+
+Checks: `npm run check` exits 0 with 344 tests. `npm run test:integration -- tests/integration/sprites.test.ts` exits 0 with 181 tests on disposable Postgres. Browser, from fixtures: at 390 Details and New run share the stats row, the thread starts at 165px, nav text is 12px and fits, the instruction box grows from 78px to 291px with twelve lines and returns to 78px when cleared, and no turn names a model on a single-model run. The dialog with real counts is unrun in a browser.
+
+"Today" in the dialog follows the existing copy. The limit is a rolling 24 hours.

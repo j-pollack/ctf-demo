@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { GameEvent, GameStatus, PublicGame, SessionSummary } from "@/lib/types";
 import type { SessionUIState } from "@/app/session-ui-state";
 import { Entry, groupTurns, liveCall } from "@/app/transcript";
@@ -86,6 +86,8 @@ export type SessionPaneProps = {
   focused: boolean;
   // Whether any session of the run has an instruction or a turn yet.
   runStarted: boolean;
+  // The run used more than one agent model, so each turn names its own.
+  showTurnModels?: boolean;
   // A run-level action (starting or continuing a run) is in progress.
   disabled: boolean;
   // This session has a local stream that Stop can abort.
@@ -163,13 +165,21 @@ function ThreadBody({
   session,
   view,
   runStarted,
+  showTurnModels,
   disabled,
   onRetry,
   onDismissError,
   onCopy,
 }: Pick<
   SessionPaneProps,
-  "session" | "view" | "runStarted" | "disabled" | "onRetry" | "onDismissError" | "onCopy"
+  | "session"
+  | "view"
+  | "runStarted"
+  | "showTurnModels"
+  | "disabled"
+  | "onRetry"
+  | "onDismissError"
+  | "onCopy"
 >) {
   const fetched = !!view?.fetched;
   const error = view?.error ? (
@@ -206,6 +216,7 @@ function ThreadBody({
           calls={calls}
           pending={pending}
           disabled={disabled || view.busy}
+          showModel={showTurnModels}
           onCopy={() => onCopy(event)}
         />
       ))}
@@ -240,7 +251,16 @@ function Composer({
 >) {
   const draft = view?.draft ?? "",
     loading = disabled || !view?.fetched || !!view?.busy || !!view?.unconfirmed,
-    id = `prompt-${session.id}`;
+    id = `prompt-${session.id}`,
+    field = useRef<HTMLTextAreaElement>(null);
+  // Fit the box to the instruction. The stylesheet sets the smallest and largest height.
+  useLayoutEffect(() => {
+    const element = field.current;
+    if (!element) return;
+    element.style.height = "auto";
+    const borders = element.offsetHeight - element.clientHeight;
+    element.style.height = `${element.scrollHeight + borders}px`;
+  }, [draft]);
   return (
     <form
       className="composer"
@@ -254,6 +274,7 @@ function Composer({
       </label>
       <textarea
         id={id}
+        ref={field}
         value={draft}
         onChange={(event) => onDraftChange(event.target.value)}
         maxLength={8192}

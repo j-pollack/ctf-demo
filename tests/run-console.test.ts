@@ -144,12 +144,12 @@ test("a session being created shows a pending chip and pane at once", () => {
   assert.doesNotMatch(render(game), /data-pending|Starting session/);
 });
 
-test("only an overlay inspector has a footer to close it and start a new run", () => {
+test("only an overlay inspector has a footer, and it only closes the inspector", () => {
   const overlay = render(run(sessions(2)), { inspector: "overlay" });
   const footer = overlay.slice(overlay.indexOf('<footer class="inspector-footer">'));
   assert.match(
     footer,
-    /^<footer class="inspector-footer"><button type="button" class="close-details">Close details<\/button><button type="button" class="new-run">New run<\/button><\/footer>/,
+    /^<footer class="inspector-footer"><button type="button" class="close-details">Close details<\/button><\/footer>/,
   );
   assert.doesNotMatch(
     render(run(sessions(2)), { inspector: "column" }),
@@ -157,16 +157,22 @@ test("only an overlay inspector has a footer to close it and start a new run", (
   );
 });
 
-test("a finished run offers New run in its outcome strip; an active run does not", () => {
-  const caught = render(
-    run(sessions(2), { status: "caught", caughtSessionOrdinal: 1, caughtSessionId: "session-1" }),
-  );
-  const strip = caught.slice(
-    caught.indexOf('<section class="outcome"'),
-    caught.indexOf('<div class="workbench"'),
-  );
-  assert.match(strip, /<button type="button" class="new-run outcome-new-run">New run<\/button>/);
-  assert.doesNotMatch(render(run(sessions(2))), /outcome-new-run/);
+test("New run is offered once, in the run bar, whatever the run state or inspector mode", () => {
+  const caught = run(sessions(2), {
+    status: "caught",
+    caughtSessionOrdinal: 1,
+    caughtSessionId: "session-1",
+  });
+  for (const html of [
+    render(run(sessions(2))),
+    render(run(sessions(2)), { inspector: "overlay" }),
+    render(caught),
+    render(caught, { inspector: "overlay" }),
+  ]) {
+    assert.equal((html.match(/>New run<\/button>/g) ?? []).length, 1);
+    const bar = html.slice(html.indexOf('class="run-actions"'), html.indexOf('class="workbench"'));
+    assert.match(bar, /class="new-run"[^>]*>New run<\/button>/);
+  }
 });
 
 test("the current chip and the focused pane always name the same session while one is pending", () => {

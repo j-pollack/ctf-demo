@@ -21,13 +21,8 @@ export type RunInspectorProps = {
   // Blocked or failed investigator decisions from every loaded session.
   decisions: SessionDecision[];
   titleRef?: React.Ref<HTMLHeadingElement>;
-  // Overlay mode only: a footer with Close details and, on narrow screens, New run.
-  footer?: {
-    onClose: () => void;
-    onNewRun: () => void;
-    newRunDisabled: boolean;
-    newRunTitle?: string;
-  };
+  // Overlay mode only: the inspector covers the sessions, so a footer offers the way back.
+  onClose?: () => void;
 };
 
 const DECISIONS_SHOWN = 8;
@@ -107,7 +102,7 @@ export function RunInspector({
   observed,
   decisions,
   titleRef,
-  footer,
+  onClose,
 }: RunInspectorProps) {
   return (
     <aside className="inspector" id="run-inspector" aria-labelledby="inspector-title">
@@ -147,19 +142,10 @@ export function RunInspector({
           </p>
         </div>
       </section>
-      {footer && (
+      {onClose && (
         <footer className="inspector-footer">
-          <button type="button" className="close-details" onClick={footer.onClose}>
+          <button type="button" className="close-details" onClick={onClose}>
             Close details
-          </button>
-          <button
-            type="button"
-            className="new-run"
-            onClick={footer.onNewRun}
-            disabled={footer.newRunDisabled}
-            title={footer.newRunTitle}
-          >
-            New run
           </button>
         </footer>
       )}

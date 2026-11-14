@@ -157,6 +157,7 @@ export function Entry({
   calls,
   pending,
   disabled = false,
+  showModel = false,
   onCopy,
 }: {
   event: GameEvent;
@@ -164,6 +165,8 @@ export function Entry({
   calls?: Call[];
   pending?: string[];
   disabled?: boolean;
+  // Name the agent model on the turn. Wanted only when a run used more than one.
+  showModel?: boolean;
   onCopy?: () => void;
 }) {
   if (
@@ -221,7 +224,7 @@ export function Entry({
         {event.kind === "agent" && (
           <span className="turn-label">
             TURN {event.turn}
-            {event.model && <span className="turn-model"> · {event.model}</span>}
+            {showModel && event.model && <span className="turn-model"> · {event.model}</span>}
           </span>
         )}
         {event.kind === "agent" && (

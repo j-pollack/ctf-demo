@@ -4335,6 +4335,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const { monitor_model, monitor_version, monitor_difficulty, monitor_reasoning } = await row(id);
     return { monitor_model, monitor_version, monitor_difficulty, monitor_reasoning };
   };
+  const runsLeft = async (who: { cookie: string }) => {
+    const { GET } = await import("../../app/api/games/route");
+    const response = await GET(
+      new Request(`${origin}/api/games`, { headers: { cookie: who.cookie } }),
+    );
+    assert.equal(response.status, 200);
+    return (await response.json()).runsLeft;
+  };
   for (const admin of [false, true])
     await t.test(
       `personal run quota ${admin ? "exempts persisted admins and respects revocation" : "rejects member privilege hints"}`,
@@ -4344,11 +4352,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         const anotherAdmin = await member();
         await pool.query('UPDATE ctf."user" SET "isAdmin"=true WHERE id=$1', [anotherAdmin.id]);
         let currentId = "";
+        assert.equal(await runsLeft(who), admin ? null : 3, "a fresh account has its whole day");
         for (let i = 0; i < 3; i++) {
           const response = await startRoute(who, {});
           assert.equal(response.status, 200);
           currentId = (await response.json()).id;
+          assert.equal(await runsLeft(who), admin ? null : 2 - i, "each new run takes one");
         }
+        assert.equal(await runsLeft(anotherAdmin), null, "an admin has no daily limit");
         const fourth = await startRoute(who, {
           isAdmin: true,
           ownerId: anotherAdmin.id,
@@ -4361,6 +4372,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           assert.equal(created.owner_id, who.id);
           assert.equal(created.new_run, true);
           await pool.query('UPDATE ctf."user" SET "isAdmin"=false WHERE id=$1', [who.id]);
+          assert.equal(await runsLeft(who), 0, "a revoked admin is counted like any member");
           const revoked = await startRoute(who, { isAdmin: true });
           assert.equal(revoked.status, 429, "same cookie must not retain revoked quota privileges");
           assert.match((await revoked.json()).error, /daily limit of new runs/);

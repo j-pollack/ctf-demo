@@ -5,7 +5,7 @@ import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
 import { systemPromptChange } from "@/app/session-pane";
 import { RunConsole, type PaneHandlers } from "@/app/run-console";
-import { DialogTitle, RunDialog } from "@/app/run-dialog";
+import { DialogTitle, RunDialog, RunSetupNotes } from "@/app/run-dialog";
 import { SignInPanel } from "@/app/sign-in-panel";
 import { safeNextPath, signInPath } from "@/app/sign-in-path";
 import {
@@ -306,6 +306,8 @@ export default function GameUI({ models }: { models: string[] }) {
     userStopped = useRef(new Set<string>()),
     // Armed on arriving at /play and on each Play click; opens setup once if there's no active run.
     setupOnPlay = useRef(true);
+  // New runs left today: null is an admin with no limit, undefined is not loaded yet.
+  const [runsLeft, setRunsLeft] = useState<number | null | undefined>(undefined);
   const [modal, setModal] = useState<"setup" | null>(null),
     [email, setEmail] = useState(""),
     [emailSent, setEmailSent] = useState(false);
@@ -553,6 +555,23 @@ export default function GameUI({ models }: { models: string[] }) {
       return next;
     });
   }
+  // The count can change in another tab, so opening the dialog reads it again. It is display
+  // only: a failed read keeps the last count, and Start run reports the server's own answer.
+  useEffect(() => {
+    if (modal !== "setup" || !member) return;
+    const epoch = accountEpoch.current,
+      owner = historyOwner.current;
+    let active = true;
+    api("/api/games")
+      .then((data) => {
+        if (active && epoch === accountEpoch.current && owner === historyOwner.current)
+          setRunsLeft(data.runsLeft);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [modal, member?.user.id]);
   // Sign-in is a page. Signed out, /play and the legacy ?signin=1 go there; a member leaves it
   // for its validated next. Every target passes through safeNextPath (via signInPath).
   useEffect(() => {
@@ -613,6 +632,7 @@ export default function GameUI({ models }: { models: string[] }) {
       setHistoryCursor(null);
       setHistorySelected(null);
       setRememberedPlayId(null);
+      setRunsLeft(undefined);
       setHistoryError("");
       setHistoryLoading(false);
       setDetailError("");
@@ -841,6 +861,7 @@ export default function GameUI({ models }: { models: string[] }) {
         )
           return;
         setRememberedPlayId(data.game?.id ?? null);
+        setRunsLeft(data.runsLeft);
         setCurrentRunReady(true);
         if (request !== liveRequest.current) return;
         if (data.game) {
@@ -1135,6 +1156,7 @@ export default function GameUI({ models }: { models: string[] }) {
       startEpoch = accountEpoch.current;
       const latest = await api("/api/games");
       if (startEpoch !== accountEpoch.current || startId !== startRequest.current) return;
+      setRunsLeft(latest.runsLeft);
       setCurrentRunReady(true);
       if (
         !canCreateNewRun(
@@ -1162,6 +1184,7 @@ export default function GameUI({ models }: { models: string[] }) {
       sessionPending.current.clear();
       updateSessionViews(stopAllSessions);
       setGame(next);
+      setRunsLeft((left) => (typeof left === "number" ? Math.max(0, left - 1) : left));
       setCurrentRunReady(true);
       playRequest.current++;
       setPlayError("");
@@ -1711,16 +1734,15 @@ export default function GameUI({ models }: { models: string[] }) {
       <RunDialog open={modal !== null} busy={busy} onClose={() => setModal(null)}>
         {modal === "setup" ? (
           <>
-            <p className="eyebrow">NEW RUN</p>
             <DialogTitle>Start a run</DialogTitle>
-            <RunSetupFields />
-            {game?.status === "active" && <p>Starting a new run ends your current one.</p>}
-            {!canStartNewRun && (
-              <p>You already have an unused run. Send it an instruction first.</p>
-            )}
+            <RunSetupNotes
+              endsCurrent={game?.status === "active"}
+              runsLeft={runsLeft}
+              unusedRun={!canStartNewRun}
+            />
             <button
               className="primary"
-              disabled={loading || !canStartNewRun}
+              disabled={loading || !canStartNewRun || runsLeft === 0}
               onClick={() => void start()}
             >
               {busy ? "Setting up…" : "Start run"}
@@ -2038,16 +2060,5 @@ export function RunInstructions() {
         win. An unresolved review never confirms a win.
       </li>
     </ol>
-  );
-}
-
-export function RunSetupFields() {
-  return (
-    <>
-      <p>
-        {RUN_BUDGET} budget, {RUNS_PER_DAY} new runs a day. The investigator can read agent
-        reasoning.
-      </p>
-    </>
   );
 }
