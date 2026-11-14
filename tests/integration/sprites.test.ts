@@ -16,6 +16,7 @@ import {
 } from "@fly/sprites";
 import { getCurrentSystemMessage, type Message } from "@earendil-works/pi-ai";
 import { hasEvidencedCatch, smokeCommandForTurn } from "../../scripts/smoke-contract";
+import type { GameEvent, PublicGame } from "../../lib/types";
 
 // Only the runner's fresh loopback database is accepted; never read .env.local.
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -91,6 +92,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   await pool.query(
     await readFile(new URL("../../db/migrations/018-monitor-ready.sql", import.meta.url), "utf8"),
   );
+  // Applied twice: the stop migration is idempotent.
+  for (let pass = 0; pass < 2; pass++)
+    await pool.query(
+      await readFile(new URL("../../db/migrations/019-session-stop.sql", import.meta.url), "utf8"),
+    );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
@@ -356,6 +362,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   >();
   type StreamFailure = "ok" | "reject" | "error" | "truncated" | "hang" | "no-complete";
   let checkpointMode: StreamFailure = "ok";
+  // Holds a checkpoint before it reports, so a test can act while it runs.
+  let checkpointGate: (() => Promise<void>) | undefined;
   let restoreMode: StreamFailure = "ok";
   // What each checkpoint or restore saw: agent requests and commands so far, and fork-child statuses.
   const checkpoints: { name: string; requests: number; commands: number }[] = [];
@@ -592,6 +600,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           requests: requests.filter((request) => request.role === "agent").length,
           commands: commands.length,
         });
+        if (checkpointGate) await checkpointGate();
         if (checkpointMode === "reject") throw new Error("fixture checkpoint rejected");
         const info = [{ type: "info", data: "Creating checkpoint..." }];
         if (checkpointMode === "error")
@@ -1094,6 +1103,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     violations.length = 0;
     failAt = undefined;
     gate = undefined;
+    checkpointGate = undefined;
     commandFailure = undefined;
     commandGate = undefined;
     commandResult = { stdout: "fixture-output", stderr: "", exitCode: 0 };
@@ -3040,6 +3050,323 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     extra: Record<string, unknown> = {},
   ) => (await instructFrames(who, gameId, extra)).response;
 
+  // A response held in its command until the test releases it or the response is stopped.
+  const holdCommands = () => {
+    const held: { signal: AbortSignal; release: () => void }[] = [];
+    let arrived = () => {};
+    commandGate = (signal) =>
+      new Promise<void>((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        held.push({ signal, release: resolve });
+        arrived();
+      });
+    const waitFor = async (count: number) => {
+      while (held.length < count) await new Promise<void>((resolve) => (arrived = resolve));
+    };
+    return { held, waitFor };
+  };
+  const frames = (text: string) =>
+    text
+      .split("\n\n")
+      .filter((frame) => frame.trim())
+      .map((frame) => ({
+        type: frame.match(/^event: (.*)$/m)![1],
+        data: JSON.parse(frame.match(/^data: (.*)$/m)![1]),
+      }));
+  // The real prompt route, read to its end in the background like a page that keeps its stream.
+  const respond = async (who: { cookie: string }, gameId: string, sessionId?: string) => {
+    const { POST } = await import("../../app/api/games/[id]/prompt/route");
+    const response = await POST(
+      new Request(`${origin}/api/games/${gameId}/prompt`, {
+        method: "POST",
+        headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "Controlled integration fixture", sessionId }),
+      }),
+      { params: Promise.resolve({ id: gameId }) },
+    );
+    assert.equal(response.status, 200);
+    return response.text().then(frames);
+  };
+  const stopRoute = async (
+    who: { cookie: string },
+    gameId: string,
+    sessionId: string,
+    headers: Record<string, string> = { origin },
+  ) => {
+    const { POST } = await import("../../app/api/games/[id]/sessions/[sessionId]/stop/route");
+    return POST(
+      new Request(`${origin}/api/games/${gameId}/sessions/${sessionId}/stop`, {
+        method: "POST",
+        headers: { ...headers, cookie: who.cookie },
+      }),
+      { params: Promise.resolve({ id: gameId, sessionId }) },
+    );
+  };
+  const readRun = async (who: { cookie: string }, gameId: string, sessionId = gameId) => {
+    const { GET } = await import("../../app/api/games/[id]/route");
+    const response = await GET(
+      new Request(`${origin}/api/games/${gameId}?session=${sessionId}`, {
+        headers: { cookie: who.cookie },
+      }),
+      { params: Promise.resolve({ id: gameId }) },
+    );
+    assert.equal(response.status, 200);
+    return (await response.json()) as PublicGame;
+  };
+  const sessionLease = async (sessionId: string) =>
+    (
+      await pool.query(
+        "SELECT lease,lease_until,stop_requested_at FROM ctf.agent_sessions WHERE id=$1",
+        [sessionId],
+      )
+    ).rows[0];
+  const withinSeconds = <T>(promise: Promise<T>, seconds = 5) =>
+    Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`still running after ${seconds}s`)), seconds * 1000),
+      ),
+    ]);
+  const stoppedText = "Response stopped. Your run is still open.";
+
+  await t.test(
+    "a stop request from a page without the stream ends the response and keeps the run open",
+    async () => {
+      const who = await member();
+      const game = await productionStartGame(who.id);
+      const { waitFor } = holdCommands();
+      const body = respond(who, game.id);
+      await withinSeconds(waitFor(1));
+      const response = await stopRoute(who, game.id, game.id);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { applied: true });
+      assert.ok((await sessionLease(game.id)).stop_requested_at, "the request is persisted");
+      const sent = await withinSeconds(body);
+      const errors = sent.filter(
+        ({ type, data }) => type === "event" && (data as GameEvent).kind === "error",
+      );
+      assert.deepEqual(
+        errors.map(({ data }) => [(data as GameEvent).text, (data as GameEvent).resumable]),
+        [[stoppedText, true]],
+      );
+      assert.equal(sent.at(-1)?.type, "done");
+      const run = await readRun(who, game.id);
+      assert.equal(run.status, "active");
+      assert.equal(run.busy, false);
+      assert.deepEqual(
+        run.events.map((event) => event.kind),
+        ["user", "agent", "tool", "error"],
+      );
+      assert.equal(run.events.at(-1)?.text, stoppedText);
+      assert.equal(run.events.at(-1)?.resumable, true);
+      assert.deepEqual(await sessionLease(game.id), {
+        lease: null,
+        lease_until: null,
+        stop_requested_at: null,
+      });
+      assert.deepEqual(
+        (
+          await pool.query(
+            "SELECT status FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command'",
+            [game.id],
+          )
+        ).rows.map(({ status }) => status),
+        ["unknown"],
+      );
+      commandGate = undefined;
+      agentCalls = 0;
+      const next = await respond(who, game.id);
+      assert.ok(
+        next.some(({ type, data }) => type === "event" && (data as GameEvent).text === "Done."),
+      );
+      assert.ok(!next.some(({ data }) => (data as GameEvent | null)?.kind === "error"));
+      assert.equal((await readRun(who, game.id)).busy, false);
+    },
+  );
+
+  await t.test(
+    "a first instruction stopped before inference is recorded and frees the run",
+    async () => {
+      const who = await member();
+      const game = await productionStartGame(who.id);
+      let checkpointing!: () => void, finish!: () => void;
+      const started = new Promise<void>((resolve) => (checkpointing = resolve));
+      const finished = new Promise<void>((resolve) => (finish = resolve));
+      checkpointGate = async () => {
+        checkpointing();
+        await finished;
+      };
+      const body = respond(who, game.id);
+      await started;
+      assert.deepEqual(await (await stopRoute(who, game.id, game.id)).json(), { applied: true });
+      // Let a heartbeat see the request while the checkpoint is still running.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      finish();
+      await withinSeconds(body);
+      assert.equal(
+        requests.filter(({ role }) => role === "agent").length,
+        0,
+        "no inference after the stop",
+      );
+      const run = await readRun(who, game.id);
+      assert.equal(run.status, "active");
+      assert.equal(run.busy, false);
+      assert.deepEqual(
+        run.events.map((event) => [event.kind, event.text]),
+        [
+          ["user", "Controlled integration fixture"],
+          ["error", stoppedText],
+        ],
+      );
+      assert.ok(run.events[0].id > 0, "the instruction is recorded, so the run has started");
+    },
+  );
+
+  await t.test(
+    "a stop request changes nothing for an idle session, another player or a bad request",
+    async () => {
+      const who = await member();
+      const stranger = await member();
+      const game = await productionStartGame(who.id);
+      assert.deepEqual(await (await stopRoute(who, game.id, game.id)).json(), { applied: false });
+      assert.equal((await sessionLease(game.id)).stop_requested_at, null);
+      const sibling = await createSession(game.id, who.id);
+      const { held, waitFor } = holdCommands();
+      const first = respond(who, game.id);
+      await withinSeconds(waitFor(1));
+      // The fake agent proposes a command on its first call only.
+      agentCalls = 0;
+      const second = respond(who, game.id, sibling.id);
+      await withinSeconds(waitFor(2));
+      const refusals: [Response, number, string][] = [
+        [await stopRoute(stranger, game.id, game.id), 404, "Run not found."],
+        [await stopRoute(who, game.id, game.id, {}), 403, "Request origin is not allowed."],
+        [
+          await stopRoute(who, game.id, game.id, { origin: "https://evil.example" }),
+          403,
+          "Request origin is not allowed.",
+        ],
+        [await stopRoute(who, game.id, "not-a-session"), 400, "Choose a valid session."],
+        [await stopRoute(who, "not-a-run", game.id), 404, "Run not found."],
+        [await stopRoute(who, game.id, randomUUID()), 404, "Session not found."],
+      ];
+      for (const [response, status, error] of refusals) {
+        assert.equal(response.status, status, error);
+        assert.deepEqual(await response.json(), { error });
+      }
+      for (const id of [game.id, sibling.id])
+        assert.equal(
+          (await sessionLease(id)).stop_requested_at,
+          null,
+          "no refusal stops a session",
+        );
+      assert.deepEqual(await (await stopRoute(who, game.id, sibling.id)).json(), { applied: true });
+      const stopped = await withinSeconds(second);
+      assert.ok(stopped.some(({ data }) => (data as GameEvent | null)?.text === stoppedText));
+      const running = await sessionLease(game.id);
+      assert.ok(running.lease_until > new Date(), "the sibling's response keeps its lease");
+      assert.equal(running.stop_requested_at, null);
+      held[0].release();
+      const finished = await withinSeconds(first);
+      assert.ok(
+        finished.some(({ type, data }) => type === "event" && (data as GameEvent).text === "Done."),
+      );
+      assert.ok(!finished.some(({ data }) => (data as GameEvent | null)?.kind === "error"));
+      const legacy = await member();
+      const old = await startGame(legacy.id);
+      const refused = await stopRoute(legacy, old.id, old.id);
+      assert.equal(refused.status, 409);
+      assert.deepEqual(await refused.json(), {
+        error: "This run can only be stopped from the page that sent the instruction.",
+      });
+    },
+  );
+
+  await t.test("a stop request never outlives the response it was made for", async () => {
+    const who = await member();
+    const game = await productionStartGame(who.id);
+    const { claimGameSession } = await import("../../lib/games");
+    const { requestSessionStop } = await import("../../lib/sessions");
+    // The response finishes before any heartbeat reads the request.
+    const leased = await claimGameSession(game.id, game.id, who.id);
+    assert.equal(await requestSessionStop(game.id, game.id, who.id), true);
+    await releaseSessionLease(game.id, game.id, leased.lease!);
+    assert.equal((await sessionLease(game.id)).stop_requested_at, null);
+    // A request left by a crashed response is cleared by the next claim.
+    const crashed = await claimGameSession(game.id, game.id, who.id);
+    assert.equal(await requestSessionStop(game.id, game.id, who.id), true);
+    await pool.query(
+      "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
+      [game.id],
+    );
+    assert.equal(await requestSessionStop(game.id, game.id, who.id), false, "no live response");
+    const next = await claimGameSession(game.id, game.id, who.id);
+    assert.notEqual(next.lease, crashed.lease);
+    assert.equal((await sessionLease(game.id)).stop_requested_at, null);
+    await releaseSessionLease(game.id, game.id, next.lease!);
+    agentCalls = 0;
+    const sent = await respond(who, game.id);
+    assert.ok(
+      sent.some(({ type, data }) => type === "event" && (data as GameEvent).text === "Done."),
+    );
+    assert.ok(!sent.some(({ data }) => (data as GameEvent | null)?.kind === "error"));
+  });
+
+  await t.test("starting a new run stops the open run's responses and ends it", async () => {
+    const { POST } = await import("../../app/api/games/route");
+    const start = (who: { cookie: string }) =>
+      POST(
+        new Request(`${origin}/api/games`, {
+          method: "POST",
+          headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+          body: JSON.stringify({ monitorReasoning: true }),
+        }),
+      );
+    const who = await member();
+    const game = await productionStartGame(who.id);
+    const { waitFor } = holdCommands();
+    const body = respond(who, game.id);
+    await withinSeconds(waitFor(1));
+    const response = await withinSeconds(start(who), 10);
+    assert.equal(response.status, 200);
+    const next = (await response.json()) as PublicGame;
+    assert.notEqual(next.id, game.id);
+    const sent = await withinSeconds(body);
+    assert.deepEqual(
+      sent
+        .filter(({ type, data }) => type === "event" && (data as GameEvent).kind === "error")
+        .map(({ data }) => (data as GameEvent).text),
+      [stoppedText],
+      "the response ended through the stop path before the run was replaced",
+    );
+    assert.equal((await readRun(who, game.id)).status, "ended");
+    assert.deepEqual(await sessionLease(game.id), {
+      lease: null,
+      lease_until: null,
+      stop_requested_at: null,
+    });
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT status FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command'",
+          [game.id],
+        )
+      ).rows.map(({ status }) => status),
+      ["interrupted"],
+      "the replaced run's environment is deleted, which settles its held command",
+    );
+    commandGate = undefined;
+    // A legacy response cannot be asked to stop, so its run is still refused, and at once.
+    const other = await member();
+    const legacy = await startGame(other.id);
+    const { claimGameSession } = await import("../../lib/games");
+    const leased = await claimGameSession(legacy.id, legacy.id, other.id);
+    const refused = await withinSeconds(start(other), 2);
+    assert.equal(refused.status, 409);
+    assert.equal((await readRun(other, legacy.id)).status, "active");
+    await releaseSessionLease(legacy.id, legacy.id, leased.lease!);
+  });
+
   await t.test("an admin-set attacker model pins new runs and later instructions", async () => {
     const { changeAgentModel } = await import("../../lib/agent-model");
     const { POST: start } = await import("../../app/api/games/route");
@@ -4576,6 +4903,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const { monitor_model, monitor_version, monitor_difficulty, monitor_reasoning } = await row(id);
     return { monitor_model, monitor_version, monitor_difficulty, monitor_reasoning };
   };
+  const runsLeft = async (who: { cookie: string }) => {
+    const { GET } = await import("../../app/api/games/route");
+    const response = await GET(
+      new Request(`${origin}/api/games`, { headers: { cookie: who.cookie } }),
+    );
+    assert.equal(response.status, 200);
+    return (await response.json()).runsLeft;
+  };
   for (const admin of [false, true])
     await t.test(
       `personal run quota ${admin ? "exempts persisted admins and respects revocation" : "rejects member privilege hints"}`,
@@ -4585,11 +4920,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         const anotherAdmin = await member();
         await pool.query('UPDATE ctf."user" SET "isAdmin"=true WHERE id=$1', [anotherAdmin.id]);
         let currentId = "";
+        assert.equal(await runsLeft(who), admin ? null : 3, "a fresh account has its whole day");
         for (let i = 0; i < 3; i++) {
           const response = await startRoute(who, {});
           assert.equal(response.status, 200);
           currentId = (await response.json()).id;
+          assert.equal(await runsLeft(who), admin ? null : 2 - i, "each new run takes one");
         }
+        assert.equal(await runsLeft(anotherAdmin), null, "an admin has no daily limit");
         const fourth = await startRoute(who, {
           isAdmin: true,
           ownerId: anotherAdmin.id,
@@ -4602,6 +4940,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           assert.equal(created.owner_id, who.id);
           assert.equal(created.new_run, true);
           await pool.query('UPDATE ctf."user" SET "isAdmin"=false WHERE id=$1', [who.id]);
+          assert.equal(await runsLeft(who), 0, "a revoked admin is counted like any member");
           const revoked = await startRoute(who, { isAdmin: true });
           assert.equal(revoked.status, 429, "same cookie must not retain revoked quota privileges");
           assert.match((await revoked.json()).error, /daily limit of new runs/);

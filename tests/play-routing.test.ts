@@ -21,5 +21,7 @@ test("public landing and grouped play have unique routes, sharing history's game
   assert.equal(routes.filter((route) => route === "/").length, 1);
   assert.equal(routes.filter((route) => route === "/play").length, 1);
   assert.ok(pageRoutes(join(app, "(game)")).includes("/play"));
-  for (const route of ["/runs", "/runs/[id]", "/rank", "/rules"]) assert.ok(routes.includes(route));
+  for (const route of ["/runs", "/runs/[id]", "/rank", "/rules", "/signin"])
+    assert.ok(routes.includes(route));
+  assert.ok(pageRoutes(join(app, "(game)")).includes("/signin"), "sign-in shares the game layout");
 });

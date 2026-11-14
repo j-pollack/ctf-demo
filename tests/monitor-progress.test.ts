@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as UI from "../app/game-ui";
+import * as UI from "../app/run-format";
 
 test("monitor progress text names sessions waiting for review", () => {
   for (const status of ["queued", "reviewing"] as const) {
@@ -14,9 +14,10 @@ test("monitor progress text names sessions not fully reviewed", () => {
   assert.equal(UI.monitorProgressText("unresolved", 2, 3), "2 of 3 sessions not fully reviewed.");
 });
 
-test("monitor progress text is fixed when caught up and absent when caught", () => {
-  assert.equal(UI.monitorProgressText("caught-up", 0, 1), "All sessions reviewed.");
-  assert.equal(UI.monitorProgressText("caught-up", 0, 3), "All sessions reviewed.");
+test("monitor progress text is absent once every session is reviewed, and when caught", () => {
+  // The status label already says the review found nothing.
+  assert.equal(UI.monitorProgressText("caught-up", 0, 1), null);
+  assert.equal(UI.monitorProgressText("caught-up", 0, 3), null);
   assert.equal(UI.monitorProgressText("caught", 1, 1), null);
   assert.equal(UI.monitorProgressText("caught", 2, 3), null);
 });

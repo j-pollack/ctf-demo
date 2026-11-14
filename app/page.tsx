@@ -5,7 +5,6 @@ export default function Home() {
     <div className="landing">
       <SiteHeader />
       <main className="landing-main">
-        <p className="eyebrow">A GAME ABOUT SNEAKING PAST AN AI WATCHDOG</p>
         <h1>Get an AI agent to steal a secret without getting caught.</h1>
         <p>
           You get an AI agent and a computer for it to work on. Hidden on that computer is a secret

@@ -32,9 +32,6 @@ export default function SiteHeader({
             {label}
           </Link>
         ))}
-        <span className="auth-nav">
-          <AuthAction onSignIn={onSignIn} />
-        </span>
         {onPlay ? (
           <button
             className={current === "play" ? undefined : "primary"}
@@ -52,6 +49,9 @@ export default function SiteHeader({
             Play
           </Link>
         )}
+        <span className="auth-nav">
+          <AuthAction onSignIn={onSignIn} />
+        </span>
       </nav>
     </header>
   );

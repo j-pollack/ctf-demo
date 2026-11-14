@@ -14,8 +14,8 @@ test("public landing renders without database access and does not offer sign-in 
   }
   assert.ok(navigation.indexOf("Rules") < navigation.indexOf("Rank"));
   assert.ok(navigation.indexOf("Rank") < navigation.indexOf("My Runs"));
-  assert.ok(navigation.indexOf("My Runs") < navigation.indexOf("Loading…"));
-  assert.ok(navigation.indexOf("Loading…") < navigation.indexOf("Play"));
+  assert.ok(navigation.indexOf("My Runs") < navigation.indexOf("Play"));
+  assert.ok(navigation.indexOf("Play") < navigation.indexOf("Loading…"), "sign in or out is last");
   assert.ok(navigation.indexOf('href="/rules"') < navigation.indexOf('href="/rank"'));
   assert.ok(navigation.indexOf('href="/rank"') < navigation.indexOf('href="/runs"'));
   assert.ok(navigation.indexOf('href="/runs"') < navigation.indexOf('href="/play"'));

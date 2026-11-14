@@ -1,3 +1,5 @@
+@layer ui-sdk;
+
 :root {
   --paper: #eef1e9;
   --ink: #20281f;
@@ -6,7 +8,14 @@
   --accent: #b8ea43;
   --blocked: #943b25;
   --panel: #e5e9de;
+  /* The one inline inset shared by the header, run bar, outcome strip and deck. */
+  --gutter: 24px;
   color-scheme: light;
+}
+@media (max-width: 720px) {
+  :root {
+    --gutter: 12px;
+  }
 }
 * {
   box-sizing: border-box;
@@ -40,6 +49,7 @@ button {
   min-height: 44px;
 }
 button:disabled,
+button[aria-disabled="true"],
 select:disabled {
   opacity: 0.55;
   cursor: default;
@@ -94,8 +104,6 @@ strong {
   flex-direction: column;
   height: 100dvh;
   overflow: hidden;
-  max-width: 1600px;
-  margin: auto;
 }
 .workspace {
   display: flex;
@@ -110,9 +118,9 @@ strong {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 20px;
+  padding: 0 var(--gutter);
   border-bottom: 1px solid var(--line);
-  min-height: 60px;
+  min-height: 44px;
 }
 .wordmark {
   flex: 0 0 auto;
@@ -210,29 +218,12 @@ i {
   min-height: 0;
   overflow: hidden;
 }
-.transcript {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  width: min(100%, 1120px);
-  min-width: 0;
-  min-height: 0;
-  padding: 0 28px 16px;
-  margin: 0 auto;
-}
-.column-head {
-  padding: 18px 0;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid var(--line);
-  font-size: 10px;
-  letter-spacing: 0.4px;
-  color: var(--muted);
-}
 .welcome {
-  padding: 45px 0;
-  max-width: 650px;
+  padding: 45px var(--gutter);
+  max-width: 700px;
+}
+.console > p[role="status"] {
+  padding: 16px var(--gutter);
 }
 .welcome p {
   font-size: 15px;
@@ -385,11 +376,18 @@ i {
 .entry.error header {
   color: inherit;
 }
+.thread-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .thread {
   flex: 1;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
+  overflow-wrap: anywhere;
 }
 .composer {
   flex-shrink: 0;
@@ -435,7 +433,9 @@ form label {
   resize: none;
   height: 64px;
   min-height: 0;
-  max-height: 15dvh;
+  /* The box grows with the instruction (see Composer) up to this, then scrolls. */
+  max-height: 40dvh;
+  overflow-y: auto;
 }
 .stage {
   margin-top: 20px;
@@ -450,112 +450,21 @@ form label {
     opacity: 0.2;
   }
 }
-aside.monitor {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px 28px;
-  flex: none;
-  position: relative;
-  width: 100%;
-  min-width: 0;
-  padding: 12px max(28px, calc((100vw - 1064px) / 2));
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-.stakes-lead,
-.budget,
-.risk-brief {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-width: 0;
-}
-.stakes-lead {
-  flex: 1 1 240px;
-}
-.stakes-lead > strong {
-  font-size: 14px;
-  line-height: 1.3;
-}
-.budget {
-  flex: 0 1 170px;
-}
-.budget > strong,
-.risk-brief > strong {
-  font-size: 24px;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-}
-.budget .meter {
-  height: 4px;
-  background: var(--line);
-  margin: 5px 0;
-}
-.budget .meter span {
-  display: block;
-  height: 100%;
-  background: #759d29;
-}
-.risk-brief {
-  flex: 0 1 170px;
-}
-.risk-brief > strong {
-  color: var(--band-ink, var(--band));
-}
-.monitor-progress {
-  display: flex;
-  flex: 1 1 100%;
-  flex-direction: column;
-  gap: 2px;
-  order: 5;
-}
-.monitor-progress > small {
-  color: var(--muted);
-}
-.monitor .new-run {
-  order: 4;
-  white-space: nowrap;
-}
-.stakes-detail {
-  flex: 1 1 100%;
-  min-width: 0;
-  order: 6;
-}
-.stakes-detail > summary {
-  cursor: pointer;
-  white-space: nowrap;
-}
-/* An overlay below the run header: opening it leaves the transcript's size and scroll alone. */
-.stakes-panel {
-  position: absolute;
-  z-index: 2;
-  top: 100%;
-  left: 0;
-  right: 0;
-  max-height: min(360px, 50dvh);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 12px max(28px, calc((100vw - 1064px) / 2));
-  border-bottom: 1px solid var(--line);
-  background: var(--paper);
-}
-.stakes-panel > .eyebrow {
-  margin-top: 12px;
-}
-.stakes-panel > .eyebrow:first-child {
-  margin-top: 0;
-}
-.details-model {
-  font-size: 11px;
-}
 .risk-heading {
-  max-width: 420px;
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
   margin-top: 12px;
+}
+.risk-heading > * {
+  white-space: nowrap;
+}
+.risk-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 .risk-heading strong {
   font-size: 11px;
@@ -576,25 +485,23 @@ aside.monitor {
   margin-top: 0;
 }
 /* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 orange, caught red. */
+/* Text uses a darker ink of each band, at least 4.5:1 on both the panel and the paper. */
 [data-band="low"] {
   --band: #4d7c0f;
+  --band-ink: #46710e;
 }
 [data-band="mid"] {
   --band: #e0a800;
-  /* Yellow and orange text are unreadable on the light paper; numbers use a darker shade. */
-  --band-ink: #8a6e00;
+  --band-ink: #7d6400;
 }
 [data-band="high"] {
   --band: #f97316;
-  --band-ink: #c2410c;
+  --band-ink: #b63d0b;
 }
 [data-band="caught"] {
   --band: #c62828;
 }
 /* Shared turn axis for the session risk traces. */
-.run-risk-chart {
-  max-width: 420px;
-}
 .run-risk-chart svg {
   display: block;
   width: 100%;
@@ -620,7 +527,7 @@ aside.monitor {
   stroke-width: 1.5;
 }
 .risk-axis-title {
-  margin-top: -8px;
+  margin-top: 2px;
   text-align: center;
   color: var(--muted);
   font-size: 10px;
@@ -688,8 +595,7 @@ aside.monitor {
   margin-bottom: 10px;
 }
 .info {
-  padding: 32px;
-  max-width: 1100px;
+  padding: 32px var(--gutter);
   min-height: 0;
   flex: 1;
   overflow: auto;
@@ -701,14 +607,17 @@ aside.monitor {
 }
 .info ol {
   padding-left: 22px;
-  max-width: 850px;
 }
 .info li {
   padding: 0 0 18px 10px;
 }
 .info > p:not(.eyebrow) {
-  max-width: 850px;
   margin-top: 16px;
+}
+@media (max-width: 720px) {
+  .info :is(td, th) {
+    padding-inline: 8px;
+  }
 }
 .filters {
   display: flex;
@@ -782,9 +691,6 @@ th {
   font-weight: 500;
 }
 /* The difficulty comparison on the rules page: cells hold sentences, so let them wrap. */
-.rules-table {
-  max-width: 850px;
-}
 .rules-table td,
 .rules-table th {
   white-space: normal;
@@ -797,12 +703,13 @@ th {
 .thread .error[role="alert"] {
   max-height: none;
   overflow: visible;
+  margin-top: 12px;
 }
 .error[role="alert"] {
   flex-shrink: 0;
   max-height: 72px;
   overflow: auto;
-  padding: 12px 32px;
+  padding: 8px 12px;
   display: flex;
   justify-content: space-between;
   gap: 15px;
@@ -814,7 +721,11 @@ th {
 .error p {
   padding: 0;
 }
+/* The dialog opens in the top layer as a popover, so it centers itself. */
 dialog {
+  inset: 0;
+  height: fit-content;
+  margin: auto;
   border: 1px solid var(--line);
   padding: 0;
   width: min(480px, calc(100% - 24px));
@@ -839,8 +750,7 @@ dialog::backdrop {
 .dialog-content p {
   margin-bottom: 20px;
 }
-.dialog-content > .primary,
-.dialog-content form > .primary {
+.dialog-content > .primary {
   width: 100%;
 }
 .close {
@@ -852,14 +762,6 @@ dialog::backdrop {
   padding: 0;
   width: 44px;
 }
-.dialog-content input {
-  display: block;
-  width: 100%;
-  margin: 8px 0 20px;
-  padding: 13px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-}
 .dialog-content .error {
   font-size: 12px;
   margin: 18px 0 0;
@@ -867,24 +769,35 @@ dialog::backdrop {
 .dialog-content .eyebrow {
   padding-right: 24px;
 }
-.turn-total {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  margin-left: auto;
-  padding-left: 16px;
-  border-left: 1px solid var(--line);
-  color: var(--ink);
+/* The sign-in page: one readable column at the shared gutter. */
+.sign-in-form,
+.sign-in > [role="status"],
+.sign-in > .error {
+  max-width: 28rem;
 }
-.turn-total > strong {
-  font-size: 24px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
+.sign-in-form p {
+  margin-bottom: 20px;
 }
-.turn-total > span {
-  font-size: 10px;
-  line-height: 1.4;
+.sign-in-form label {
+  display: block;
+  font-size: 12px;
+}
+.sign-in-form input {
+  display: block;
+  width: 100%;
+  margin: 8px 0 20px;
+  padding: 13px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+.sign-in-form .primary {
+  width: 100%;
+}
+.sign-in > .error {
+  margin-top: 18px;
+}
+.workspace > .error[role="alert"] {
+  padding-inline: var(--gutter);
 }
 .entry.user {
   margin: 16px 0 16px 40px;
@@ -942,7 +855,6 @@ dialog::backdrop {
 @media (max-width: 720px) {
   .top {
     gap: 4px;
-    padding-inline: 8px;
   }
   .wordmark {
     font-size: 14px;
@@ -961,8 +873,7 @@ dialog::backdrop {
   .top nav > button,
   .auth-nav > a,
   .auth-nav > button {
-    padding-inline: 4px;
-    font-size: 10px;
+    padding-inline: 5px;
   }
   .top nav > .primary {
     padding-inline: 8px;
@@ -974,40 +885,11 @@ dialog::backdrop {
     content: "…";
     font-size: 16px;
   }
-  .transcript {
-    padding: 0 16px 8px;
-  }
-  aside.monitor {
-    gap: 8px 14px;
-    padding: 8px 16px;
-  }
-  .stakes-lead {
-    display: none;
-  }
-  .budget,
-  .risk-brief {
-    flex: 1 1 100px;
-  }
-  .budget > strong,
-  .risk-brief > strong {
-    font-size: 19px;
-  }
-  .risk-brief > small {
-    display: none;
-  }
-  .monitor .new-run {
-    min-height: 36px;
-    padding: 6px 9px;
-  }
   .welcome {
-    padding: 30px 0;
+    padding-block: 30px;
   }
   .welcome p {
     font-size: 13px;
-  }
-  .info {
-    padding: 24px 20px;
-    min-height: 0;
   }
   .info h2 {
     font-size: 26px;
@@ -1017,12 +899,6 @@ dialog::backdrop {
   }
   .dialog-content {
     padding: 28px 20px;
-  }
-  .error[role="alert"] {
-    padding: 12px 20px;
-  }
-  .entry.user {
-    margin-left: 20px;
   }
 }
 @media (max-width: 360px) {
@@ -1035,7 +911,6 @@ dialog::backdrop {
   .auth-nav > a,
   .auth-nav > button {
     padding-inline: 3px;
-    font-size: 9px;
   }
 }
 .entry-actions {
@@ -1062,35 +937,6 @@ dialog::backdrop {
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-.fork-dialog-content {
-  max-height: calc(100dvh - 24px);
-  overflow-y: auto;
-}
-.fork-warning {
-  margin: 14px 0;
-  padding: 10px 12px;
-  border-left: 3px solid var(--accent);
-  background: var(--panel);
-}
-.fork-warning p {
-  margin: 0;
-}
-.fork-actions {
-  display: flex;
-  gap: 12px;
-}
-.fork-actions button {
-  flex: 1;
-  min-width: 0;
-}
-@media (max-width: 480px) {
-  .fork-actions {
-    flex-direction: column;
-  }
-  .fork-actions button {
-    width: 100%;
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   * {
@@ -1154,7 +1000,8 @@ dialog::backdrop {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.markdown :not(pre) > code {
+.markdown :not(pre) > code,
+.mission-intro code {
   padding: 2px 4px;
   background: #dfe5d7;
   border-radius: 3px;
@@ -1179,13 +1026,8 @@ dialog::backdrop {
   outline: 2px solid #557b1d;
   outline-offset: -2px;
 }
-.landing {
-  max-width: 1200px;
-  margin: auto;
-}
 .landing-main {
-  max-width: 850px;
-  padding: 80px 32px;
+  padding: 80px var(--gutter);
 }
 .landing h1 {
   font:
@@ -1195,9 +1037,8 @@ dialog::backdrop {
     sans-serif;
   margin: 20px 0 32px;
 }
-.landing-main > p:not(.eyebrow) {
+.landing-main > p {
   font-size: 16px;
-  max-width: 700px;
 }
 .landing-play {
   display: inline-block;
@@ -1224,7 +1065,7 @@ dialog::backdrop {
 }
 @media (max-width: 720px) {
   .landing-main {
-    padding: 48px 20px;
+    padding-block: 48px;
   }
 }
 .admin {
@@ -1430,118 +1271,372 @@ dialog::backdrop {
   color: var(--muted);
   font-weight: normal;
 }
-.empty {
-  color: var(--muted);
-}
-
+/* Play console: run bar, outcome strip, workbench (deck of session panes plus inspector). */
 .run-bar {
   flex: none;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line);
-}
-.run-bar-row {
-  display: flex;
+  display: grid;
+  grid-template-areas: "stats sessions actions";
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  min-height: 32px;
+  gap: 4px 16px;
+  padding: 6px var(--gutter);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
 }
-.run-id,
-.run-model {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
+.run-bar button,
+.pane-head button {
+  min-height: 32px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.run-bar :is(.session-add, .run-actions button):hover:not(:disabled, [aria-disabled="true"]) {
+  background: var(--paper);
+}
+.run-stats {
+  grid-area: stats;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 16px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.run-stats > * {
   white-space: nowrap;
 }
 .run-id strong {
-  font-size: 13px;
   letter-spacing: 0.5px;
 }
-.session-strip {
-  display: flex;
-  flex: none;
-  align-items: stretch;
-  gap: 10px;
-  min-width: 0;
-  border-bottom: 1px solid var(--line);
+.run-budget {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
-.session-tabs {
+.run-meter {
+  display: inline-block;
+  width: 56px;
+  height: 4px;
+  background: var(--line);
+}
+.run-meter > span {
+  display: block;
+  height: 100%;
+  background: #759d29;
+}
+.run-total {
+  color: var(--muted);
+}
+.run-risk[data-band],
+.run-status[data-band] {
+  color: var(--band-ink, var(--band));
+  font-weight: 600;
+}
+/* Reads as text in the stats line; the dotted underline says it opens something. */
+.run-bar .run-risk {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-decoration: underline dotted;
+  text-underline-offset: 4px;
+}
+.run-bar .run-risk:hover:not(:disabled) {
+  background: none;
+  text-decoration-style: solid;
+}
+.run-sessions {
+  grid-area: sessions;
   display: flex;
-  flex: 1;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* Local covers scroll with the chips and hide the fixed edge shadows until more chips lie beyond. */
+.chips {
+  display: flex;
+  gap: 4px;
   min-width: 0;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   scrollbar-width: thin;
+  scroll-padding-inline: 24px;
+  background:
+    linear-gradient(to right, var(--panel) 40%, transparent) left / 24px 100% no-repeat local,
+    linear-gradient(to left, var(--panel) 40%, transparent) right / 24px 100% no-repeat local,
+    linear-gradient(to right, #20281f33, transparent) left / 10px 100% no-repeat scroll,
+    linear-gradient(to left, #20281f33, transparent) right / 10px 100% no-repeat scroll;
 }
-.session-tab {
+.run-bar .chip {
+  position: relative;
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 10px;
-  min-height: 54px;
-  padding: 8px 18px;
-  border: 0;
-  border-bottom: 3px solid transparent;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 6px;
+  border: 1px dashed var(--muted);
+  background: transparent;
   color: var(--muted);
-  white-space: nowrap;
 }
-.session-tab[aria-selected="true"] {
-  border-bottom-color: #557b1d;
+.run-bar .chip:hover:not(:disabled) {
+  background: var(--paper);
+}
+/* The chips scroller clips outlines, so focus is drawn inside the chip. */
+.run-bar .chip:focus-visible {
+  outline-offset: -5px;
+}
+.run-bar .chip[data-shown] {
+  border-style: solid;
+  border-color: #557b1d;
+  color: var(--ink);
+}
+.run-bar .chip[aria-current="true"] {
+  font-weight: 700;
   color: var(--ink);
   background: #f7f9f3;
-  font-weight: 700;
+  box-shadow: inset 0 -3px 0 #557b1d;
 }
-.session-tab-status {
+.run-bar .chip[data-caught] {
+  border: 1px solid var(--blocked);
+  background: var(--blocked);
+  color: #fff;
+}
+.run-bar .chip[data-caught][aria-current="true"] {
+  box-shadow: inset 0 -3px 0 #fff;
+}
+.chip i {
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  animation: pulse 1.2s infinite;
+}
+.chip[data-caught] i {
+  background: currentColor;
+}
+.chip[data-unseen]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #557b1d;
+}
+/* Chevrons page the strip; they show only at an edge with chips beyond it. They sit over the
+   strip's edges so showing one never resizes the strip. */
+.chips-frame {
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chips-frame > .chips {
+  flex: 1;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 24px;
+}
+.chips-frame > .chips > .chip {
+  scroll-snap-align: start;
+}
+.run-bar .chips-more {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  width: 24px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1;
+}
+.chips-more[data-edge="start"] {
+  left: 0;
+}
+.chips-more[data-edge="end"] {
+  right: 0;
+}
+.chips-more[hidden] {
+  display: none;
+}
+.run-bar .chip[data-pending] {
+  border-style: dotted;
+}
+.run-bar .session-add {
+  flex: none;
+  border-color: #9ab760;
+  color: #304a13;
+  font-weight: 600;
+}
+.run-actions {
+  grid-area: actions;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.run-bar .details[aria-expanded="true"] {
+  border-color: #557b1d;
+  background: var(--paper);
+}
+.outcome {
+  flex: none;
+  max-height: min(30dvh, 240px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px var(--gutter);
+  border-bottom: 1px solid var(--line);
+}
+.outcome > * {
+  margin-top: 0;
+}
+.outcome > * + * {
+  margin-top: 8px;
+}
+.outcome .terminal {
+  padding: 8px 14px;
+  line-height: 1.5;
+}
+.outcome .terminal h2 {
+  font-size: 15px;
+  margin-bottom: 2px;
+}
+.outcome .terminal p + p {
+  margin-top: 4px;
+}
+.outcome .outcome-session {
+  min-height: 0;
+  margin-left: 6px;
+  padding-block: 0;
+}
+.outcome .terminal .primary {
+  margin-top: 10px;
+}
+.workbench {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  padding-inline: var(--gutter);
+}
+.workbench[data-inspector="column"] {
+  grid-template-columns: minmax(0, 1fr) 320px;
+}
+.deck {
+  display: grid;
+  grid-template-columns: repeat(var(--panes, 1), minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+.pane {
+  container: pane / inline-size;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 calc(var(--gutter) / 2) 12px;
+}
+.pane:first-child {
+  padding-left: 0;
+}
+.pane:last-child {
+  padding-right: 0;
+}
+.workbench[data-inspector="column"] .pane:last-child {
+  padding-right: calc(var(--gutter) / 2);
+}
+.pane + .pane {
+  border-left: 1px solid var(--line);
+}
+/* With one pane, focus has nothing to distinguish it from. */
+.pane[data-focused]:not(:only-child) {
+  box-shadow: inset 0 2px 0 #557b1d;
+}
+.pane-head {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 8px;
+  min-height: 36px;
+  padding-block: 2px;
+  border-bottom: 1px solid var(--line);
+}
+.pane-head h2 {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.pane-turns,
+.pane-running {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.pane-turns {
+  color: var(--muted);
+}
+.pane-running {
   color: #426f30;
-  font-size: 10px;
-  font-weight: 500;
 }
-.session-tab-status i {
+.pane-running i {
   width: 6px;
   height: 6px;
   margin-right: 5px;
   animation: pulse 1.2s infinite;
 }
-.session-new {
-  flex: none;
-  align-self: center;
-  min-height: 36px;
-  border-color: #9ab760;
-  color: #304a13;
-  font-weight: 600;
+.pane .mission-intro h2 {
+  font-size: clamp(22px, 5cqi, 39px);
 }
-@media (max-width: 720px) {
-  .session-new {
-    padding: 6px 10px;
+.pane .welcome h1 {
+  font-size: clamp(24px, 7cqi, 58px);
+}
+@container pane (max-width: 560px) {
+  .pane .entry.user {
+    margin-left: 20px;
   }
-  .session-tab {
-    min-height: 48px;
-    padding-inline: 12px;
+  .pane .composer > button,
+  .pane .composer .primary {
+    min-width: 72px;
+  }
+  .pane .mission-intro {
+    padding-block: 20px;
   }
 }
-@media (max-width: 360px) {
-  .session-tab-status {
-    font-size: 0;
-  }
-  .session-tab-status i {
-    margin: 0;
-  }
+/* The summary stays put in the pane header; open, the tray drops below the header across
+   the pane and covers the top of the transcript instead of pushing it. */
+.pane-head {
+  position: relative;
 }
 .system-prompt {
-  margin-top: 10px;
+  flex: none;
+  min-width: 0;
+  margin-left: auto;
+}
+.system-prompt-tray {
+  position: absolute;
+  top: 100%;
+  inset-inline: 0;
+  z-index: 3;
   border: 1px solid var(--line);
   background: var(--panel);
-}
-.system-prompt[open] {
   max-height: min(36dvh, 340px);
   overflow-y: auto;
   overscroll-behavior: contain;
+  box-shadow: 0 8px 24px #13200a1f;
 }
 .system-prompt summary {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 8px 12px;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 4px;
+  font-size: 12px;
+  white-space: nowrap;
   cursor: pointer;
   list-style: none;
 }
@@ -1563,28 +1658,30 @@ dialog::backdrop {
   font-size: 10px;
   white-space: nowrap;
 }
-.system-prompt .preview {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.system-prompt[open] .preview {
-  visibility: hidden;
+.system-prompt-tray > .hidden-tag {
+  display: inline-block;
+  margin: 8px 12px;
 }
 .unsaved {
   color: #426f30;
   font-size: 10px;
   white-space: nowrap;
 }
+/* The unsaved dot sits over the summary's corner, so typing never moves the summary. */
+.system-prompt summary {
+  position: relative;
+}
+.system-prompt summary .unsaved {
+  position: absolute;
+  top: 0;
+  right: 0;
+  line-height: 1;
+}
 .unsaved::before {
   content: "● " / "";
 }
 .system-prompt textarea,
-.system-prompt > p {
+.system-prompt-tray > p {
   display: block;
   width: 100%;
   border: 0;
@@ -1598,33 +1695,131 @@ dialog::backdrop {
   max-height: 40dvh;
   resize: vertical;
 }
-.system-prompt > p {
+.system-prompt-tray > p {
   max-height: 30dvh;
   overflow: auto;
   white-space: pre-wrap;
 }
+.inspector {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 0 16px calc(var(--gutter) / 2);
+  border-left: 1px solid var(--line);
+}
+.workbench[data-inspector="overlay"] .inspector {
+  position: absolute;
+  inset: 0 var(--gutter);
+  z-index: 2;
+  padding-bottom: 0;
+  padding-left: 0;
+  border-left: 0;
+  background: var(--paper);
+}
+.inspector h2,
+.inspector h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.inspector > section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.inspector > section > :first-child {
+  margin-top: 0;
+}
+.inspector section > strong,
+.inspector section > small {
+  display: block;
+}
+/* Overlay mode: Close details stays at the bottom. */
+.inspector-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+}
+.inspector .run-model {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+/* One row needs the stats, about four chips with Add session, and the actions side by side. */
+@media (max-width: 1260px) {
+  .run-bar {
+    grid-template-areas:
+      "stats stats"
+      "sessions actions";
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
 @media (max-width: 720px) {
-  .run-id {
+  /* Row one: stats, Details and New run. Row two: the chip strip, with Add session. */
+  .run-bar {
+    grid-template-areas:
+      "stats actions"
+      "sessions sessions";
+    row-gap: 2px;
+    padding-block: 4px;
+    font-size: 12px;
+  }
+  .run-sessions {
+    gap: 2px;
+  }
+  .chips {
+    gap: 1px;
+  }
+  .run-pending {
     display: none;
   }
-  .system-prompt[open] {
+  /* Keeps the two stats lines no taller than the buttons beside them. */
+  .run-bar .run-risk {
+    min-height: 22px;
+  }
+  /* Run id and budget left share a line beside the actions; risk wraps under them. */
+  .run-stats {
+    column-gap: 8px;
+  }
+  .run-meter,
+  .run-total,
+  .run-status[data-active] {
+    display: none;
+  }
+  .add-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .system-prompt-tray {
     max-height: min(22dvh, 220px);
   }
-  .stakes-panel {
-    max-height: 40dvh;
-    padding: 12px 16px;
-  }
+}
+@media (pointer: coarse) {
+  .run-bar button,
+  .pane-head button,
   .system-prompt summary {
-    flex-wrap: wrap;
+    min-height: 44px;
   }
-  .system-prompt .preview {
-    display: none;
+  .run-bar .session-add {
+    min-width: 44px;
   }
-  .unsaved {
-    margin-left: auto;
+  .pane-head {
+    padding-block: 0;
   }
-  .composer > button {
-    min-width: 72px;
+  .run-bar .chip {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 
@@ -1669,9 +1864,6 @@ dialog::backdrop {
   font-size: 11px;
 }
 /* Rules page glossary: term on its own line, definition indented under it. */
-.glossary {
-  max-width: 850px;
-}
 .glossary dt {
   margin-top: 12px;
   font-weight: 600;
@@ -1710,6 +1902,10 @@ dialog::backdrop {
   background: var(--paper);
   padding: 14px 0 4px;
 }
+.composer textarea:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .composer textarea {
   min-height: 78px;
   height: 78px;
@@ -1719,13 +1915,8 @@ dialog::backdrop {
 .composer .primary {
   min-width: 110px;
 }
-@media (max-height: 500px) {
-  .stakes-panel {
-    max-height: 30dvh;
-  }
-}
 @media (max-width: 720px) and (max-height: 500px) {
-  .system-prompt[open] {
+  .system-prompt-tray {
     max-height: 18dvh;
   }
   .composer textarea {

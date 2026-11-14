@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextSystemDraft, systemPromptChange } from "../app/game-ui";
+import { nextSystemDraft, withStoredSystemPrompt } from "../app/game-ui";
+import { systemPromptChange } from "../app/session-pane";
+import { createSessionUIState } from "../app/session-ui-state";
 
 test("system prompt draft follows the stored value only while untouched", () => {
   const base = { baseId: "run", baseValue: "old" };
@@ -28,4 +30,23 @@ test("a whitespace-only draft counts as empty, matching what the server stores",
   assert.deepEqual(systemPromptChange("  ", "S"), { systemPrompt: "" });
   assert.deepEqual(systemPromptChange("S", "S"), {});
   assert.deepEqual(systemPromptChange(" S ", "S"), { systemPrompt: " S " });
+});
+
+test("each session's draft follows its own stored prompt only while untouched", () => {
+  const views = {
+    alpha: createSessionUIState({ id: "alpha", systemPrompt: "old" }),
+    beta: {
+      ...createSessionUIState({ id: "beta", systemPrompt: "old" }),
+      systemPromptDraft: "mine",
+    },
+  };
+  const alpha = withStoredSystemPrompt(views, "alpha", "new");
+  assert.equal(alpha.alpha.systemPromptDraft, "new");
+  assert.equal(alpha.alpha.systemPrompt, "new");
+  const beta = withStoredSystemPrompt(alpha, "beta", "new");
+  assert.equal(beta.beta.systemPromptDraft, "mine");
+  assert.equal(beta.beta.systemPrompt, "new");
+  assert.equal(withStoredSystemPrompt(beta, "beta", "new"), beta, "an unchanged prompt is a no-op");
+  assert.equal(withStoredSystemPrompt(beta, "missing", "x"), beta);
+  assert.equal(views.alpha.systemPromptDraft, "old", "inputs are not mutated");
 });

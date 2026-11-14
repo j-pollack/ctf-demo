@@ -36,7 +36,7 @@ const HEARTBEAT_TIMEOUT_MS = 3000;
 export async function runAsyncGame(
   inputGame: GameRow,
   prompt: string,
-  signal: AbortSignal,
+  requestSignal: AbortSignal,
   send: (type: string, data: unknown) => void,
   options: { deadlineSignal?: AbortSignal } = {},
 ) {
@@ -46,6 +46,9 @@ export async function runAsyncGame(
   if (!lease) throw new GameError("This response has stopped.", 409);
   const generation = Number(game.execution_generation ?? 0);
   const stop = new AbortController();
+  // A stop request from any page ends the response exactly as the sender's own disconnect does.
+  const stopRequest = new AbortController();
+  const signal = AbortSignal.any([requestSignal, stopRequest.signal]);
   const activeCommands = new Map<string, string>();
   let directory: string | undefined;
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -71,8 +74,9 @@ export async function runAsyncGame(
         execution_generation: string;
         lease: string | null;
         lease_until: Date | null;
+        stop_requested_at: Date | null;
       }>(
-        `SELECT g.status,g.execution_generation,s.lease,s.lease_until
+        `SELECT g.status,g.execution_generation,s.lease,s.lease_until,s.stop_requested_at
          FROM ctf.games g JOIN ctf.agent_sessions s ON s.game_id=g.id AND s.id=$2
          WHERE g.id=$1`,
         [game.id, sessionId],
@@ -96,6 +100,7 @@ export async function runAsyncGame(
         state.lease_until <= new Date()
       )
         abort(new GameError("This response has stopped.", 409));
+      else if (state.stop_requested_at) stopRequest.abort();
     } catch (error) {
       abort(error);
     } finally {
@@ -261,6 +266,9 @@ export async function runAsyncGame(
       }
     };
     session.agent.subscribe(async (event) => {
+      // A stop that arrived before the prompt began still records the instruction, then ends the
+      // response before any inference.
+      if (event.type === "agent_start" && stop.signal.aborted) session!.agent.abort();
       if (event.type === "turn_start") send("stage", (phase = "Agent thinking"));
       if (event.type !== "message_end") return;
       const message = event.message as Message;

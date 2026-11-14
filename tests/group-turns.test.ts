@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupTurns, liveCall, partialArgument, withDelta } from "../app/game-ui";
+import { groupTurns, liveCall, partialArgument, withDelta } from "../app/transcript";
 import type { GameEvent } from "../lib/types";
 
 const agent = (id: number, command?: string): GameEvent => ({

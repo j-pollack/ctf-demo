@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { authClient } from "@/lib/auth-client";
+import { signInPath } from "@/app/sign-in-path";
 
 export default function AuthAction({ onSignIn }: { onSignIn?: () => void }) {
   const { data, isPending } = authClient.useSession();
@@ -36,7 +37,7 @@ export default function AuthAction({ onSignIn }: { onSignIn?: () => void }) {
   ) : onSignIn ? (
     <button onClick={onSignIn}>Sign in</button>
   ) : (
-    <a className="landing-signin" href="/play?signin=1">
+    <a className="landing-signin" href={signInPath("/play")}>
       Sign in
     </a>
   );

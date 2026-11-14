@@ -344,7 +344,7 @@ export async function claimSession(
     );
     if (!existing[0]) throw new GameError("Session not found.", 404);
     const { rows } = await client.query<AgentSessionRow>(
-      `UPDATE ctf.agent_sessions SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),
+      `UPDATE ctf.agent_sessions SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),stop_requested_at=NULL,
         agent_model=coalesce($4,agent_model),agent_effort=coalesce($5,agent_effort),system_prompt=coalesce($6,system_prompt)
       WHERE game_id=$1 AND id=$2 AND (lease_until IS NULL OR lease_until<now()) RETURNING *`,
       [
@@ -409,7 +409,7 @@ export async function releaseSessionLease(gameId: string, sessionId: string, lea
   await inTransaction(async (client) => {
     await client.query("SELECT id FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId]);
     const { rowCount } = await client.query(
-      "UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=$1 AND id=$2 AND lease=$3",
+      "UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL,stop_requested_at=NULL WHERE game_id=$1 AND id=$2 AND lease=$3",
       [gameId, sessionId, lease],
     );
     if (rowCount) {
@@ -424,6 +424,18 @@ export async function releaseSessionLease(gameId: string, sessionId: string, lea
       );
     }
   });
+}
+// The async runner reads the request on its next heartbeat. Only a response in progress can be
+// stopped, so a request for an idle session applies to nothing.
+export async function requestSessionStop(gameId: string, sessionId: string, ownerId: string) {
+  if (!validId(gameId) || !validId(sessionId)) throw new GameError("Session not found.", 404);
+  const { rowCount } = await db.query(
+    `UPDATE ctf.agent_sessions s SET stop_requested_at=now() FROM ctf.games g
+    WHERE g.id=s.game_id AND s.game_id=$1 AND s.id=$2 AND g.owner_id=$3
+      AND g.status='active' AND g.monitor_mode='async' AND s.lease_until>now()`,
+    [gameId, sessionId, ownerId],
+  );
+  return rowCount === 1;
 }
 export async function persistSessionMessages(
   gameId: string,

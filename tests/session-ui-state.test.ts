@@ -4,13 +4,14 @@ import {
   applyRunFinalizingState,
   applySessionSnapshot,
   createSessionUIState,
-  isVisibleSessionStream,
   isCurrentSessionCreateFence,
   isTerminalRunStatus,
   keepSelectedSessionProjection,
   mergeSessionEvent,
+  pickSession,
   projectSelectedSession,
   runHasStarted,
+  sessionLoading,
   setSessionBusy,
   stopAllSessions,
   type SessionUIMap,
@@ -184,7 +185,6 @@ test("terminal run state stops every local session and clears pending controls",
 
 test("a late sibling stream updates its session without replacing the selected live turn", () => {
   const state = mergeSessionEvent(initial(), "alpha", { id: 9, kind: "agent", text: "late" });
-  assert.equal(isVisibleSessionStream("beta", "alpha"), false);
   assert.deepEqual(
     state.alpha.events.map((event) => event.id),
     [1, 9],
@@ -285,4 +285,75 @@ test("a late sibling done frame updates run status while retaining the selected 
   assert.equal(preserved.caughtReason, "Prepared flag read");
   assert.equal(preserved.forkable, false);
   assert.equal(preserved.busy, false);
+});
+
+test("a session view records whether its events were fetched", () => {
+  const unfetched = createSessionUIState({ id: "beta", systemPrompt: "plan" });
+  assert.equal(unfetched.fetched, false, "a sibling created without events is not fetched");
+  assert.equal(unfetched.systemPrompt, "plan");
+  assert.equal(createSessionUIState({ id: "alpha", events: [] }).fetched, true);
+  const state = { beta: unfetched };
+  const streamed = mergeSessionEvent(state, "beta", user(3));
+  assert.equal(streamed.beta.fetched, false, "a stream event does not count as a fetch");
+  const loaded = applySessionSnapshot(streamed, "beta", [], 0);
+  assert.equal(loaded.beta.fetched, true, "an empty snapshot is still a fetch");
+  assert.equal(state.beta.fetched, false, "inputs are not mutated");
+});
+
+test("stopping all sessions keeps the fetched flag and clears live turns", () => {
+  const live = { reasoning: "", text: "partial", calls: [] };
+  const state: SessionUIMap = {
+    alpha: { ...createSessionUIState({ id: "alpha", events: [user(1)] }), live },
+  };
+  const stopped = stopAllSessions(state);
+  assert.equal(stopped.alpha.fetched, true);
+  assert.equal(stopped.alpha.live, undefined);
+  assert.equal(state.alpha.live, live);
+});
+
+test("the focused session falls back to the run's own session when the id belongs elsewhere", () => {
+  const live = {
+    id: "live",
+    sessionId: "alpha",
+    sessionBusy: false,
+    events: [],
+    sessions: [
+      { id: "alpha", ordinal: 1, busy: false },
+      { id: "beta", ordinal: 2, busy: true },
+    ],
+  } as unknown as import("../lib/types").PublicGame;
+  assert.equal(pickSession(live, "beta"), "beta");
+  assert.equal(pickSession(live, "detail-session"), "alpha", "a My Runs detail session is foreign");
+  assert.equal(pickSession(live, null), "alpha");
+});
+
+test("a session is loading while busy or unconfirmed, preferring local state over the summary", () => {
+  const live = {
+    id: "live",
+    sessionId: "alpha",
+    sessionBusy: true,
+    events: [],
+    sessions: [
+      { id: "alpha", ordinal: 1, busy: false },
+      { id: "beta", ordinal: 2, busy: true },
+    ],
+  } as unknown as import("../lib/types").PublicGame;
+  assert.equal(sessionLoading(live, {}, "beta"), true, "summary busy");
+  assert.equal(sessionLoading(live, {}, "alpha"), false, "summary idle wins over run flag");
+  assert.equal(sessionLoading(live, {}, "gone"), true, "unknown session uses the run flag");
+  const views = { beta: { ...createSessionUIState({ id: "beta", events: [] }), busy: false } };
+  assert.equal(sessionLoading(live, views, "beta"), false, "local idle wins over summary");
+  const unconfirmed = { alpha: { ...createSessionUIState({ id: "alpha" }), unconfirmed: true } };
+  assert.equal(sessionLoading(live, unconfirmed, "alpha"), true);
+});
+
+test("a stop request lasts until its session is idle", () => {
+  const stopping = {
+    ...initial(),
+    alpha: { ...createSessionUIState({ id: "alpha" }), busy: true, stopping: true },
+  };
+  assert.equal(setSessionBusy(stopping, "alpha", true, "").alpha.stopping, true);
+  assert.equal(setSessionBusy(stopping, "alpha", false, "").alpha.stopping, false);
+  assert.equal(stopAllSessions(stopping).alpha.stopping, false);
+  assert.equal(stopping.alpha.stopping, true, "the input is not changed");
 });

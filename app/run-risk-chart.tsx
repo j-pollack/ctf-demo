@@ -3,7 +3,7 @@ import type { SessionRiskSeries } from "@/app/run-risk";
 
 const colors = ["#426f30", "#a84a23", "#2d6ca5", "#8551a0", "#9b6e00", "#267b74"];
 const dashes = [undefined, "7 3", "2 3", "10 3 2 3"];
-const width = 420;
+const width = 300;
 const height = 120;
 const left = 38;
 const right = 12;

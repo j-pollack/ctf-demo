@@ -457,6 +457,39 @@ function checkEffort(effort: unknown) {
     throw new GameError("Choose an agent effort.", 400);
   return effort as AgentEffort | undefined;
 }
+// New runs the owner can still start in the rolling day that admission counts; null for an admin,
+// who has no limit. Admission in startGame stays the authority, so this is for display only.
+export async function newRunsLeft(ownerId: string): Promise<number | null> {
+  const { rows } = await db.query<{
+    total: number;
+    isAdmin: boolean | null;
+    isAnonymous: boolean | null;
+  }>(
+    `SELECT (SELECT count(*)::int FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours') AS total,
+       (SELECT "isAdmin" FROM ctf."user" WHERE id=$1) AS "isAdmin",
+       (SELECT "isAnonymous" FROM ctf."user" WHERE id=$1) AS "isAnonymous"`,
+    [ownerId],
+  );
+  if (isAdmin(rows[0])) return null;
+  return Math.max(0, RUNS_PER_DAY - rows[0].total);
+}
+const STOP_WAIT_MS = 20_000;
+const STOP_POLL_MS = 250;
+// A new run replaces the owner's open one, so its responses in progress are asked to stop and
+// given time to settle. Admission still refuses a response that outlasts the wait, or a legacy
+// one, which cannot be asked.
+async function stopOwnedResponses(ownerId: string) {
+  for (const deadline = Date.now() + STOP_WAIT_MS; Date.now() < deadline;) {
+    const { rowCount } = await db.query(
+      `UPDATE ctf.agent_sessions s SET stop_requested_at=now() FROM ctf.games g
+      WHERE g.id=s.game_id AND g.owner_id=$1 AND g.status='active' AND g.monitor_mode='async'
+        AND s.lease_until>now()`,
+      [ownerId],
+    );
+    if (!rowCount) return;
+    await new Promise((resolve) => setTimeout(resolve, STOP_POLL_MS));
+  }
+}
 export async function startGame(
   ownerId: string,
   agentModel?: string,
@@ -470,6 +503,7 @@ export async function startGame(
   const effort = checkEffort(options.agentEffort);
   // Before cleanup and admission: a bad choice must neither create a run nor end the current one.
   const monitor = checkMonitor(options);
+  await stopOwnedResponses(ownerId);
   await cleanup();
   // cleanup() reconciles resolvable holds; for a fork, finalize any that remain on the terminal
   // source run (e.g. a disconnected agent call) so the fork isn't blocked on billing that would
