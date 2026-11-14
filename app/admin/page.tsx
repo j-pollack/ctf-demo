@@ -168,7 +168,7 @@ export default async function Admin({
           action={setAgentModel}
           models={MODELS}
           current={current}
-          changedBy={changedBy(setting)}
+          changedBy={setting?.model === current ? changedBy(setting) : null}
           refused={refused}
         />
         <Card title="Runs per day" note="Last 30 days">

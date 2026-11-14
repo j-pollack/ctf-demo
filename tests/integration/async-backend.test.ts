@@ -548,6 +548,70 @@ await test(
       await reviewOnce(older);
     });
 
+    // Explicit times, so the order cannot depend on statement timing.
+    const setTimes = (sessionId: string, times: { created: string; reviewed: string | null }) =>
+      pool.query(
+        `UPDATE ctf.monitor_jobs SET created_at=now()-$2::interval,
+         last_reviewed_at=now()-$3::interval WHERE session_id=$1`,
+        [sessionId, times.created, times.reviewed],
+      );
+
+    await t.test(
+      "a session opened after a sibling's review does not jump ahead of it",
+      async () => {
+        await retireOtherJobs();
+        const id = await seed(`order-jump-run-${randomUUID()}`);
+        await write(id, ["x1"]);
+        await reviewOnce(id);
+        const later = await addSession(id, 2);
+        await write(id, ["y1"], later);
+        await write(id, ["x1", "x2"]);
+        await setTimes(id, { created: "10 minutes", reviewed: "5 minutes" });
+        await setTimes(later, { created: "1 minute", reviewed: null });
+        const claim = await claimMonitorJob();
+        assert.equal(claim?.sessionId, id, "the earlier session's last attention is older");
+        await finishMonitorJob(claim!, { kind: "allow" });
+        await reviewOnce(later);
+        assert.equal(await claimMonitorJob(), null);
+      },
+    );
+
+    await t.test("a run opened after another run's review does not jump ahead of it", async () => {
+      await retireOtherJobs();
+      const earlier = await seed(`order-jump-old-${randomUUID()}`);
+      await write(earlier, ["x1"]);
+      await reviewOnce(earlier);
+      const later = await seed(`order-jump-new-${randomUUID()}`);
+      await write(later, ["y1"]);
+      await write(earlier, ["x1", "x2"]);
+      await setTimes(earlier, { created: "10 minutes", reviewed: "5 minutes" });
+      await setTimes(later, { created: "1 minute", reviewed: null });
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.gameId, earlier, "the earlier run's last attention is older");
+      await finishMonitorJob(claim!, { kind: "allow" });
+      await reviewOnce(later);
+      assert.equal(await claimMonitorJob(), null);
+    });
+
+    await t.test("of two reviewed runs, the one reviewed longer ago goes first", async () => {
+      await retireOtherJobs();
+      const older = await seed(`order-reviewed-old-${randomUUID()}`);
+      const newer = await seed(`order-reviewed-new-${randomUUID()}`);
+      await write(older, ["a1"]);
+      await write(newer, ["b1"]);
+      await reviewOnce(older);
+      await reviewOnce(newer);
+      await write(older, ["a1", "a2"]);
+      await write(newer, ["b1", "b2"]);
+      await setTimes(older, { created: "10 minutes", reviewed: "1 minute" });
+      await setTimes(newer, { created: "5 minutes", reviewed: "3 minutes" });
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.gameId, newer, "the less recently reviewed run is claimed");
+      await finishMonitorJob(claim!, { kind: "allow" });
+      await reviewOnce(older);
+      assert.equal(await claimMonitorJob(), null);
+    });
+
     await t.test("a job still in backoff is skipped however long ago it was reviewed", async () => {
       await retireOtherJobs();
       const waiting = await seed(`order-backoff-${randomUUID()}`);

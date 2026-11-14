@@ -111,8 +111,8 @@ export function monitorProgressText(
   pendingSessions: number,
   totalSessions: number,
 ) {
-  if (status === "caught") return null;
   if (status === "caught-up") return "All sessions reviewed.";
+  if (status === "caught" || pendingSessions === 0) return null;
   const sessions = `${number(pendingSessions)} of ${number(totalSessions)} ${totalSessions === 1 ? "session" : "sessions"}`;
   return status === "unresolved"
     ? `${sessions} not fully reviewed.`
@@ -2115,7 +2115,6 @@ export default function GameUI({ models }: { models: string[] }) {
           <LeaderboardPanel
             scores={scores}
             models={models}
-
             boardAgent={boardAgent}
             onAgentChange={setBoardAgent}
           />
@@ -2409,13 +2408,11 @@ export function RulesPanel() {
 export function LeaderboardPanel({
   scores,
   models,
-
   boardAgent,
   onAgentChange,
 }: {
   scores: Score[];
   models: string[];
-
   boardAgent: string;
   onAgentChange: (agent: string) => void;
 }) {
