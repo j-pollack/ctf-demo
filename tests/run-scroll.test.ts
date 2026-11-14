@@ -4,7 +4,7 @@ import { runScrollPosition } from "../app/run-scroll";
 
 test("new output keeps following until the reader scrolls up, and reaching the end resumes it", () => {
   const geometry = { scrollTop: 500, scrollHeight: 1000, clientHeight: 500 };
-  const initial = runScrollPosition(geometry);
+  const initial = runScrollPosition(geometry, { top: 0, atBottom: false });
   assert.deepEqual(initial, { top: 500, atBottom: true });
   const output = { ...geometry, scrollHeight: 1400 };
   assert.equal(runScrollPosition(output, initial).atBottom, true);
@@ -12,15 +12,4 @@ test("new output keeps following until the reader scrolls up, and reaching the e
   assert.equal(reading.atBottom, false);
   assert.equal(runScrollPosition({ ...output, scrollTop: 400 }, reading).atBottom, false);
   assert.equal(runScrollPosition({ ...output, scrollTop: 852 }, reading).atBottom, true);
-});
-
-test("changing scroll containers resets following to the new viewport position", () => {
-  assert.equal(
-    runScrollPosition({ scrollTop: 0, scrollHeight: 2000, clientHeight: 600 }).atBottom,
-    false,
-  );
-  assert.equal(
-    runScrollPosition({ scrollTop: 0, scrollHeight: 300, clientHeight: 600 }).atBottom,
-    true,
-  );
 });

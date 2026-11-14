@@ -4,11 +4,11 @@ import type { SessionRiskSeries } from "@/app/run-risk";
 const colors = ["#426f30", "#a84a23", "#2d6ca5", "#8551a0", "#9b6e00", "#267b74"];
 const dashes = [undefined, "7 3", "2 3", "10 3 2 3"];
 const width = 420;
-const height = 176;
+const height = 120;
 const left = 38;
 const right = 12;
-const top = 12;
-const bottom = 34;
+const top = 8;
+const bottom = 26;
 
 function Marker({
   x,
@@ -69,7 +69,7 @@ export function RunRiskChart({ series }: { series: SessionRiskSeries[] }) {
             key={turn}
             className="risk-axis"
             x={x(turn)}
-            y={height - 10}
+            y={height - 6}
             textAnchor={turn === 0 ? "start" : turn === maxTurn ? "end" : "middle"}
           >
             {turn === 0 && hasPreTurn ? "Pre-turn" : turn}

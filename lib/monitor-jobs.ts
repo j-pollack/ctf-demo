@@ -15,6 +15,13 @@ export type MonitorJobClaim = {
 
 const CLAIM_MS = 90_000;
 const RETRY_DELAYS_MS = [1_000, 5_000, 20_000] as const;
+// A session is reviewed when its agent turn ends: a live lease means the turn is in progress.
+// A subquery, not a join, so FOR UPDATE SKIP LOCKED never locks or skips a runner's session row.
+// A finished response is claimable mid-turn too: releasing the lease sets ready_version, and
+// each claim consumes it.
+const REVIEWABLE = `(NOT EXISTS (SELECT 1 FROM ctf.agent_sessions s
+  WHERE s.game_id=j.game_id AND s.id=j.session_id AND s.lease_until>now())
+  OR j.ready_version>j.covered_version)`;
 
 export async function enqueueMonitorJob(
   client: PoolClient,
@@ -75,10 +82,11 @@ export async function claimMonitorJob(claimMs = CLAIM_MS): Promise<MonitorJobCla
   try {
     await client.query("BEGIN");
     const { rows: candidates } = await client.query<{ game_id: string }>(
-      `SELECT game_id FROM ctf.monitor_jobs
-       WHERE (status='queued' AND next_attempt_at<=now())
-          OR (status='reviewing' AND claim_until<now())
-       ORDER BY next_attempt_at,updated_at,id LIMIT 10`,
+      `SELECT game_id FROM ctf.monitor_jobs j
+       WHERE ((status='queued' AND next_attempt_at<=now())
+          OR (status='reviewing' AND claim_until<now()))
+         AND ${REVIEWABLE}
+       ORDER BY coalesce(last_reviewed_at,created_at),created_at,id LIMIT 10`,
     );
     for (const candidate of candidates) {
       const { rowCount } = await client.query(
@@ -96,10 +104,11 @@ export async function claimMonitorJob(claimMs = CLAIM_MS): Promise<MonitorJobCla
         requested_version: string;
         attempts: number;
       }>(
-        `SELECT id,game_id,session_id,epoch,requested_version,attempts FROM ctf.monitor_jobs
+        `SELECT id,game_id,session_id,epoch,requested_version,attempts FROM ctf.monitor_jobs j
          WHERE game_id=$1 AND ((status='queued' AND next_attempt_at<=now())
            OR (status='reviewing' AND claim_until<now()))
-         ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+           AND ${REVIEWABLE}
+         ORDER BY coalesce(last_reviewed_at,created_at),created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`,
         [candidate.game_id],
       );
       if (!job) continue;
@@ -119,7 +128,7 @@ export async function claimMonitorJob(claimMs = CLAIM_MS): Promise<MonitorJobCla
       const {
         rows: [claimed],
       } = await client.query<{ claim_until: Date }>(
-        `UPDATE ctf.monitor_jobs SET status='reviewing',claim_token=$2,
+        `UPDATE ctf.monitor_jobs SET status='reviewing',claim_token=$2,ready_version=0,
          claim_until=now()+($3::int * interval '1 millisecond'),target_version=requested_version,
          attempts=attempts+1,updated_at=now() WHERE id=$1 RETURNING claim_until`,
         [job.id, claimToken, claimMs],

@@ -280,6 +280,26 @@ await test(
       },
     );
     const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    if (mode === "allow") {
+      // While the target's turn is live, the worker reviews nothing for it.
+      await runMonitorWorkerOnce(timing);
+      const {
+        rows: [waiting],
+      } = await pool.query("SELECT status,attempts FROM ctf.monitor_jobs WHERE game_id=$1", [
+        workspace.gameId,
+      ]);
+      assert.deepEqual(waiting, { status: "queued", attempts: 0 });
+      assert.equal(
+        (await pool.query("SELECT 1 FROM ctf.monitor_reviews WHERE job_id IS NOT NULL")).rowCount,
+        0,
+      );
+      assert.equal(classifier + investigator, 0);
+    }
+    // The production worker reviews a session after its turn has ended.
+    await pool.query(
+      "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
+      [sessionId],
+    );
     const started = Date.now();
     assert.equal(await runMonitorWorkerOnce(timing), true);
     const elapsed = Date.now() - started;

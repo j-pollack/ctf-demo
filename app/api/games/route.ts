@@ -1,3 +1,4 @@
+import { currentAgentModel } from "@/lib/agent-model";
 import { db } from "@/lib/db";
 import { PUBLIC_GAME_COLUMNS, publicGame, startGame, type PublicGameRow } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
@@ -24,10 +25,9 @@ export async function POST(request: Request) {
     checkOrigin(request);
     const user = await player(request),
       data = await body(request);
-    const agent = publicAgentSettings(data);
+    const agent = publicAgentSettings(data, await currentAgentModel());
     return Response.json(
       await startGame(user.id, agent.agentModel, {
-        monitorDifficulty: data.monitorDifficulty,
         monitorReasoning: data.monitorReasoning,
         agentEffort: agent.agentEffort,
       }),

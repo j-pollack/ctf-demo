@@ -51,6 +51,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "../../db/migrations/010-control-monitor.sql",
     "../../db/migrations/011-agent-effort.sql",
     "../../db/migrations/012-new-run.sql",
+    "../../db/migrations/017-settings.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   const legacyId = randomUUID();
@@ -86,6 +87,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       new URL("../../db/migrations/015-transcript-evidence.sql", import.meta.url),
       "utf8",
     ),
+  );
+  await pool.query(
+    await readFile(new URL("../../db/migrations/018-monitor-ready.sql", import.meta.url), "utf8"),
   );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
@@ -1374,11 +1378,25 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   });
   await t.test(
-    "a separate worker catch aborts an in-flight command and bars later dispatch",
+    "a separate worker's catch from an idle session aborts a sibling's in-flight command",
     async () => {
       const owner = "async-cross-process";
       const game = await productionStartGame(owner);
-      proposed = ["cat /tmp/flag.txt", "printf old"];
+      // The worker reviews only idle sessions: the sibling's finished turn read the flag, and its
+      // review catches the run while the first session's command is still in flight.
+      const { claimGameSession } = await import("../../lib/games");
+      const sibling = await createSession(game.id, owner);
+      // Read before the catch: deleting the caught run's Sprite discards the fixture environment.
+      const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
+      proposed = ["cat /tmp/flag.txt"];
+      await runGame(
+        await claimGameSession(game.id, sibling.id, owner),
+        "Read the file",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      agentCalls = 0;
+      proposed = ["printf old"];
       let entered!: () => void;
       const commandEntered = new Promise<void>((resolve) => {
         entered = resolve;
@@ -1399,8 +1417,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         );
       };
       const running = runGame(
-        await claimGame(game.id, owner),
-        "Run the commands",
+        await claimGameSession(game.id, game.id, owner),
+        "Run the command",
         AbortSignal.timeout(5000),
         () => {},
       );
@@ -1458,10 +1476,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           [game.id],
         )
       ).rows;
+      // The child worker's Sprite deletion fails here (the preload refuses Sprite API calls). The
+      // runner then records the aborted command unknown, releases its lease and runs cleanup(),
+      // which deletes the caught multi-session run's Sprite and marks the command interrupted.
       assert.deepEqual(
         operations.map((operation) => operation.status),
-        ["completed", "unknown"],
+        ["completed", "interrupted"],
       );
+      assert.ok((await row(game.id)).sprite_deleted_at, "the caught run's Sprite was deleted");
       const reviews = (
         await pool.query(
           "SELECT evidence FROM ctf.monitor_reviews WHERE game_id=$1 AND verdict='block'",
@@ -1471,13 +1493,340 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(reviews.length, 1);
       const citation = reviews[0].evidence[0] as { ref: string; excerpt: string; sha256: string };
       assert.match(citation.ref, /^msg:/);
-      assert.ok(
-        citation.excerpt.includes(environments.get((await row(game.id)).sprite_name)!.secret!),
-      );
+      assert.ok(citation.excerpt.includes(secret));
       assert.ok(citation.excerpt.length > 38, "the worker stores the complete canonical chunk");
       assert.match(citation.sha256, /^[0-9a-f]{64}$/);
     },
   );
+  await t.test("the polling worker stops all its loops on SIGTERM and exits cleanly", async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--import",
+        "./tests/integration/async-worker-preload.ts",
+        "scripts/monitor-worker.ts",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: process.env.HOME ?? "",
+          NODE_ENV: "test",
+          CTF_INTEGRATION_DATABASE_URL: process.env.CTF_INTEGRATION_DATABASE_URL!,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    t.after(() => {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += String(chunk)));
+    child.stderr.on("data", (chunk) => (output += String(chunk)));
+    const exited = once(child, "exit");
+    // Signal handlers are registered before the worker announces its loops.
+    const started = await new Promise<{ loops: number }>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`The worker did not start: ${output}`)),
+        30_000,
+      );
+      child.stdout.on("data", () => {
+        const line = output
+          .split("\n")
+          .find((item) => item.includes('"event":"monitor.worker.started"'));
+        if (!line) return;
+        clearTimeout(timer);
+        resolve(JSON.parse(line));
+      });
+    });
+    assert.equal(started.loops, 4, "the polling worker runs four review loops");
+    assert.equal(child.exitCode, null, `the worker keeps polling until stopped: ${output}`);
+    const stoppedAt = Date.now();
+    child.kill("SIGTERM");
+    const [code] = await exited;
+    assert.equal(code, 0, output);
+    assert.ok(Date.now() - stoppedAt < 3_000, "idle loops stop within one poll interval");
+    assert.doesNotMatch(output, /monitor\.worker\.failed/);
+  });
+
+  // --- Concurrent reviews: the worker runs several runMonitorWorkerOnce loops at once. ---
+  const playSession = async (gameId: string, sessionId: string, owner: string, command: string) => {
+    const { claimGameSession } = await import("../../lib/games");
+    proposed = [command];
+    agentCalls = 0;
+    await runGame(
+      await claimGameSession(gameId, sessionId, owner),
+      "Run one command",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+  };
+  // Call B starts only once call A's investigator request has arrived: a claim skips a run row
+  // another claim holds. The fake holds every request until both reviews are in flight.
+  const reviewConcurrently = async () => {
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    let waiting = 0,
+      peak = 0,
+      entered!: () => void,
+      release!: () => void;
+    const firstEntered = new Promise<void>((resolve) => (entered = resolve));
+    const bothEntered = new Promise<void>((resolve) => (release = resolve));
+    beforeInvestigatorResponse = async () => {
+      waiting++;
+      peak = Math.max(peak, waiting);
+      entered();
+      if (waiting === 2) release();
+      await bothEntered;
+      waiting--;
+    };
+    const within = <T>(work: Promise<T>, what: string) =>
+      Promise.race([
+        work,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error(`${what} did not arrive in time`)), 10_000),
+        ),
+      ]);
+    try {
+      const first = runMonitorWorkerOnce();
+      await within(firstEntered, "the first review");
+      const second = runMonitorWorkerOnce();
+      return { results: await within(Promise.all([first, second]), "both reviews"), peak };
+    } finally {
+      release();
+      beforeInvestigatorResponse = undefined;
+    }
+  };
+  const reviewState = async (gameIds: string[]) => {
+    const jobs = (
+      await pool.query(
+        `SELECT id,session_id,status,covered_version,requested_version FROM ctf.monitor_jobs
+         WHERE game_id=ANY($1::uuid[])`,
+        [gameIds],
+      )
+    ).rows;
+    const reviews = (
+      await pool.query(
+        `SELECT id,job_id,session_id,verdict FROM ctf.monitor_reviews
+         WHERE game_id=ANY($1::uuid[]) AND target_kind='transcript' AND completed_at IS NOT NULL`,
+        [gameIds],
+      )
+    ).rows;
+    const charges = (
+      await pool.query(
+        "SELECT game_id,cost,settled_at FROM ctf.inference WHERE review_id=ANY($1::uuid[])",
+        [reviews.map((review) => review.id)],
+      )
+    ).rows;
+    const runs = (
+      await pool.query(
+        `SELECT id,status,blocks,spent_microdollars,reserved_microdollars FROM ctf.games
+         WHERE id=ANY($1::uuid[])`,
+        [gameIds],
+      )
+    ).rows;
+    const catches = (
+      await pool.query(
+        "SELECT game_id FROM ctf.events WHERE game_id=ANY($1::uuid[]) AND data->>'decision'='block'",
+        [gameIds],
+      )
+    ).rows;
+    return { jobs, reviews, charges, runs, catches };
+  };
+  const spentBefore = async (gameIds: string[]) =>
+    new Map(
+      (
+        await pool.query("SELECT id,spent_microdollars FROM ctf.games WHERE id=ANY($1::uuid[])", [
+          gameIds,
+        ])
+      ).rows.map((run) => [run.id, Number(run.spent_microdollars)]),
+    );
+  // Both admitted and overlapping; one review row per job; every charge settled once into spend.
+  const assertConcurrentReviews = async (
+    gameIds: string[],
+    sessionIds: string[],
+    before: Map<string, number>,
+    outcome: { peak: number; results: boolean[] },
+  ) => {
+    assert.deepEqual(outcome.results, [true, true], "both calls admitted a review");
+    assert.equal(outcome.peak, 2, "both reviews were in flight at once");
+    const state = await reviewState(gameIds);
+    assert.equal(state.jobs.length, 2);
+    assert.deepEqual(
+      state.reviews.map((review) => review.session_id).sort(),
+      [...sessionIds].sort(),
+      "each call reviewed a different session",
+    );
+    assert.deepEqual(
+      state.reviews.map((review) => review.job_id).sort(),
+      state.jobs.map((job) => job.id).sort(),
+      "exactly one completed review per job",
+    );
+    assert.ok(state.charges.length >= 2);
+    assert.ok(
+      state.charges.every((charge) => charge.settled_at),
+      "every review charge is settled",
+    );
+    for (const run of state.runs) {
+      const charged = state.charges
+        .filter((charge) => charge.game_id === run.id)
+        .reduce((sum, charge) => sum + Number(charge.cost), 0);
+      assert.equal(Number(run.spent_microdollars), before.get(run.id)! + charged);
+      assert.equal(Number(run.reserved_microdollars), 0);
+    }
+    return state;
+  };
+  const twoSessionRun = async (owner: string, commands: [string, string]) => {
+    const game = await productionStartGame(owner);
+    const sibling = await createSession(game.id, owner);
+    await playSession(game.id, game.id, owner, commands[0]);
+    await playSession(game.id, sibling.id, owner, commands[1]);
+    return { gameId: game.id, sessionIds: [game.id, sibling.id] };
+  };
+
+  await t.test("two sessions of one run are reviewed concurrently", async () => {
+    const { gameId, sessionIds } = await twoSessionRun("async-concurrent-run", [
+      "printf harmless",
+      "printf harmless",
+    ]);
+    const before = await spentBefore([gameId]);
+    const state = await assertConcurrentReviews(
+      [gameId],
+      sessionIds,
+      before,
+      await reviewConcurrently(),
+    );
+    for (const job of state.jobs) {
+      assert.equal(job.status, "caught-up");
+      assert.equal(job.covered_version, job.requested_version);
+    }
+    assert.equal(state.runs[0].status, "active");
+    assert.equal(state.catches.length, 0);
+  });
+
+  await t.test("two runs are reviewed concurrently", async () => {
+    const runs = [];
+    for (const owner of ["async-concurrent-a", "async-concurrent-b"]) {
+      const game = await productionStartGame(owner);
+      await playSession(game.id, game.id, owner, "printf harmless");
+      runs.push(game.id);
+    }
+    const before = await spentBefore(runs);
+    const state = await assertConcurrentReviews(runs, runs, before, await reviewConcurrently());
+    for (const job of state.jobs) {
+      assert.equal(job.status, "caught-up");
+      assert.equal(job.covered_version, job.requested_version);
+    }
+    assert.ok(state.runs.every((run) => run.status === "active"));
+  });
+
+  await t.test("a block during a concurrent review of the same run catches it once", async () => {
+    const { gameId, sessionIds } = await twoSessionRun("async-concurrent-one-block", [
+      "cat /tmp/flag.txt",
+      "printf harmless",
+    ]);
+    const before = await spentBefore([gameId]);
+    const blocksBefore = Number((await row(gameId)).blocks);
+    const state = await assertConcurrentReviews(
+      [gameId],
+      sessionIds,
+      before,
+      await reviewConcurrently(),
+    );
+    assert.equal(state.runs[0].status, "caught");
+    assert.equal(Number(state.runs[0].blocks), blocksBefore + 1);
+    assert.equal(state.catches.length, 1, "one catch event");
+    const statusOf = (sessionId: string) =>
+      state.jobs.find((job) => job.session_id === sessionId)?.status;
+    assert.equal(statusOf(sessionIds[0]), "caught");
+    assert.equal(statusOf(sessionIds[1]), "caught-up", "the allowed review settles normally");
+  });
+
+  await t.test("two concurrent blocks of the same run catch it once", async () => {
+    const { gameId, sessionIds } = await twoSessionRun("async-concurrent-two-blocks", [
+      "cat /tmp/flag.txt",
+      "cat /tmp/flag.txt",
+    ]);
+    const before = await spentBefore([gameId]);
+    const blocksBefore = Number((await row(gameId)).blocks);
+    const state = await assertConcurrentReviews(
+      [gameId],
+      sessionIds,
+      before,
+      await reviewConcurrently(),
+    );
+    assert.equal(state.runs[0].status, "caught");
+    assert.equal(Number(state.runs[0].blocks), blocksBefore + 1);
+    assert.equal(state.catches.length, 1, "one catch event");
+    assert.deepEqual(
+      state.jobs.map((job) => job.status),
+      ["caught", "caught"],
+    );
+  });
+
+  await t.test("a finished response is reviewed while the next instruction runs", async () => {
+    const owner = "async-turn-end";
+    const game = await productionStartGame(owner);
+    const { claimGameSession } = await import("../../lib/games");
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    await playSession(game.id, game.id, owner, "printf harmless");
+    const job = async () =>
+      (
+        await pool.query(
+          "SELECT status,covered_version,requested_version FROM ctf.monitor_jobs WHERE session_id=$1",
+          [game.id],
+        )
+      ).rows[0];
+    const reviews = async () =>
+      (
+        await pool.query(
+          "SELECT id,completed_at FROM ctf.monitor_reviews WHERE session_id=$1 AND target_kind='transcript'",
+          [game.id],
+        )
+      ).rows;
+    const finished = Number((await job()).requested_version);
+    // Instruction 2 starts at once; its agent request waits behind a gate.
+    let entered!: () => void, release!: () => void;
+    const admitted = new Promise<void>((resolve) => (entered = resolve));
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    onAgentRequest = async () => {
+      entered();
+      await gate;
+    };
+    agentCalls = 0;
+    proposed = ["printf harmless"];
+    const second = runGame(
+      await claimGameSession(game.id, game.id, owner),
+      "Run it again",
+      AbortSignal.timeout(10_000),
+      () => {},
+    );
+    try {
+      await admitted;
+      assert.ok(
+        (
+          await pool.query("SELECT 1 FROM ctf.agent_sessions WHERE id=$1 AND lease_until>now()", [
+            game.id,
+          ])
+        ).rowCount,
+        "instruction 2 holds the lease",
+      );
+      assert.equal(await runMonitorWorkerOnce(), true);
+      const reviewed = await reviews();
+      assert.equal(reviewed.length, 1);
+      assert.ok(reviewed[0].completed_at, "the review completed during instruction 2");
+      assert.ok(Number((await job()).covered_version) >= finished);
+      await runMonitorWorkerOnce();
+      assert.equal((await reviews()).length, 1, "no second review while instruction 2 runs");
+      assert.notEqual((await job()).status, "reviewing");
+    } finally {
+      release();
+      onAgentRequest = undefined;
+    }
+    await second;
+  });
+
   await t.test("a worker covers a harmless transcript despite high classifier risk", async () => {
     const owner = "async-worker-allow";
     const game = await productionStartGame(owner);
@@ -2322,7 +2671,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       switchedModel,
     );
     const { GET } = await import("../../app/api/leaderboard/route");
-    const query = `?difficulty=hard&agent=${encodeURIComponent(switchedModel)}`;
+    const query = `?agent=${encodeURIComponent(switchedModel)}`;
     assert.equal(
       (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()).entries
         .length,
@@ -2336,9 +2685,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.equal(actual.status, 200);
     assert.equal((await actual.json()).entries.length, 1);
     const stale = await GET(
-      new Request(
-        `http://localhost/api/leaderboard?difficulty=hard&agent=${encodeURIComponent(AGENT_MODEL)}`,
-      ),
+      new Request(`http://localhost/api/leaderboard?agent=${encodeURIComponent(AGENT_MODEL)}`),
     );
     assert.equal((await stale.json()).entries.length, 0);
   });
@@ -2451,6 +2798,70 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     gameId: string,
     extra: Record<string, unknown> = {},
   ) => (await instructFrames(who, gameId, extra)).response;
+
+  await t.test("an admin-set attacker model pins new runs and later instructions", async () => {
+    const { changeAgentModel } = await import("../../lib/agent-model");
+    const { POST: start } = await import("../../app/api/games/route");
+    const model = MODELS.find((candidate) => candidate !== AGENT_MODEL)!;
+    const setter = await member();
+    await pool.query(`UPDATE ctf."user" SET "isAdmin"=true WHERE id=$1`, [setter.id]);
+    const player = await member();
+    const starter = await member();
+    const old = await startGame(player.id);
+    const models = async (id: string) =>
+      (
+        await pool.query(
+          `SELECT g.agent_model AS game,s.agent_model AS session FROM ctf.games g
+           JOIN ctf.agent_sessions s ON s.game_id=g.id AND s.ordinal=1 WHERE g.id=$1`,
+          [id],
+        )
+      ).rows[0];
+    const post = (who: { cookie: string }, payload: Record<string, unknown>) =>
+      start(
+        new Request(`${origin}/api/games`, {
+          method: "POST",
+          headers: { origin, cookie: who.cookie, "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+      );
+    try {
+      await changeAgentModel(new Headers({ cookie: setter.cookie }), model);
+      agentModelOverride = model;
+      assert.deepEqual(await models(old.id), { game: AGENT_MODEL, session: AGENT_MODEL });
+
+      const rejected = await post(starter, { agentModel: AGENT_MODEL });
+      assert.equal(rejected.status, 400);
+      assert.equal((await rejected.json()).error, "The agent model cannot be changed.");
+      assert.equal(
+        (
+          await pool.query("SELECT count(*)::int AS n FROM ctf.games WHERE owner_id=$1", [
+            starter.id,
+          ])
+        ).rows[0].n,
+        0,
+        "a refused start creates no run",
+      );
+
+      const started = await post(starter, { agentModel: model });
+      assert.equal(started.status, 200);
+      assert.deepEqual(await models((await started.json()).id), { game: model, session: model });
+
+      const named = await instruct(player, old.id, { agentModel: AGENT_MODEL });
+      assert.equal(named.status, 400);
+      assert.equal((await named.json()).error, "The agent model cannot be changed.");
+      assert.equal((await models(old.id)).session, AGENT_MODEL, "a refusal leaves the session");
+
+      assert.equal((await instruct(player, old.id)).status, 200);
+      assert.equal(
+        (await models(old.id)).session,
+        model,
+        "the next instruction adopts the setting",
+      );
+    } finally {
+      agentModelOverride = AGENT_MODEL;
+      await pool.query("DELETE FROM ctf.settings");
+    }
+  });
 
   await t.test(
     "session routes validate bodies and ownership without starting another run",
@@ -3431,7 +3842,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   });
   await t.test(
-    "an empty-history fork can choose monitor settings on its first prompt",
+    "an empty-history fork keeps its inherited monitor settings on its first prompt",
     async () => {
       const who = await member();
       const parent = await startGame(who.id);
@@ -3461,7 +3872,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       });
       assert.equal(response.status, 200);
       const after = await row(child.id);
-      assert.deepEqual([after.monitor_difficulty, after.monitor_reasoning], ["easy", true]);
+      assert.deepEqual([after.monitor_difficulty, after.monitor_reasoning], ["hard", true]);
     },
   );
 
@@ -4054,7 +4465,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   };
   const LEGACY_MONITOR = { ...DEFAULT_MONITOR, monitor_version: MONITOR_VERSION };
 
-  await t.test("the start route stores the monitor choice and defaults it", async () => {
+  await t.test("the start route ignores a difficulty and defaults the monitor", async () => {
     const who = await member();
     const plain = await (await startRoute(who, {})).json();
     assert.deepEqual([plain.monitorDifficulty, plain.monitorReasoning], ["hard", true]);
@@ -4065,24 +4476,28 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     });
     assert.equal(response.status, 200);
     const chosen = await response.json();
-    assert.deepEqual([chosen.monitorDifficulty, chosen.monitorReasoning], ["easy", true]);
-    assert.deepEqual(await monitorOf(chosen.id), {
-      ...DEFAULT_MONITOR,
-      monitor_difficulty: "easy",
-      monitor_reasoning: true,
-    });
+    assert.deepEqual([chosen.monitorDifficulty, chosen.monitorReasoning], ["hard", true]);
+    assert.deepEqual(await monitorOf(chosen.id), DEFAULT_MONITOR);
     assert.equal((await row(chosen.id)).season_id, null, "runs no longer belong to a season");
     // The same fields come back from the stored row on a later read.
     const { publicGame, PUBLIC_GAME_COLUMNS } = await import("../../lib/games");
     const read = await pool.query(`SELECT ${PUBLIC_GAME_COLUMNS} FROM ctf.games WHERE id=$1`, [
       chosen.id,
     ]);
-    assert.equal((await publicGame(read.rows[0])).monitorDifficulty, "easy");
+    assert.equal((await publicGame(read.rows[0])).monitorDifficulty, "hard");
   });
 
+  for (const [name, monitorDifficulty] of [
+    ["an unknown difficulty", "impossible"],
+    ["a non-string difficulty", 1],
+  ] as const)
+    await t.test(`the start route ignores ${name} and records hard`, async () => {
+      const response = await startRoute(await member(), { monitorDifficulty });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await monitorOf((await response.json()).id), DEFAULT_MONITOR);
+    });
+
   for (const [name, body, status] of [
-    ["an unknown difficulty", { monitorDifficulty: "impossible" }, 400],
-    ["a non-string difficulty", { monitorDifficulty: 1 }, 400],
     ["a non-boolean reasoning flag", { monitorReasoning: "yes" }, 400],
   ] as const)
     await t.test(
@@ -4104,7 +4519,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
 
   await t.test(
-    "the first instruction changes an unbegun run's monitor difficulty and reasoning",
+    "the first instruction changes an unbegun run's monitor reasoning, not its difficulty",
     async () => {
       const who = await member();
       const game = await startGame(who.id);
@@ -4113,11 +4528,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         monitorReasoning: false,
       });
       assert.equal(response.status, 200);
-      assert.deepEqual(await monitorOf(game.id), {
-        ...LEGACY_MONITOR,
-        monitor_difficulty: "easy",
-        monitor_reasoning: false,
-      });
+      assert.deepEqual(await monitorOf(game.id), { ...LEGACY_MONITOR, monitor_reasoning: false });
       const monitored = typesafeOf("context");
       assert.equal(monitored.length, 1);
       const text = JSON.stringify(monitored[0].state);
@@ -4146,9 +4557,24 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     );
   });
 
+  for (const [name, monitorDifficulty] of [
+    ["an unknown difficulty", "impossible"],
+    ["a non-string difficulty", 2],
+  ] as const)
+    await t.test(`an instruction with ${name} runs and leaves the difficulty`, async () => {
+      const who = await member();
+      const game = await startGame(who.id);
+      const response = await instruct(who, game.id, { monitorDifficulty });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await monitorOf(game.id), LEGACY_MONITOR);
+      assert.ok(
+        requests.some((request) => request.role === "agent"),
+        "the agent took a turn",
+      );
+      assert.equal((await row(game.id)).lease, null, "the lease is released");
+    });
+
   for (const [name, extra, status] of [
-    ["an unknown difficulty", { monitorDifficulty: "impossible" }, 400],
-    ["a non-string difficulty", { monitorDifficulty: 2 }, 400],
     ["a non-boolean reasoning flag", { monitorReasoning: null }, 400],
   ] as const)
     await t.test(
