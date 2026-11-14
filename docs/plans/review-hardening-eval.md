@@ -113,6 +113,44 @@ Before PR 27 a session was reviewed several times during a response. Now each fi
 
 Fixed before the run. A case's result in a pass is `flagReadDetected` true or false. A skipped case, a null result or an operational error is reported separately and excluded from disagreement counts. A case is unstable when its completed passes disagree. Presumption labels are the primary standard, matching run 003, and strict labels are secondary. Per pass: both scores, operational failures, spend and holds. Per case: the three results side by side for every unstable case and for every case that is wrong in all completed passes. Counts of positives missed in at least one pass and of negatives flagged in at least one pass, with denominators. Three passes over one synthetic corpus are correlated observations. The report gives counts and no confidence interval. A case wrong in every pass points at the prompt framing, since run 003 scored it correctly under v13. One pass of v13 is the only reference, so that attribution is tentative.
 
+### Results
+
+Run on 2026-11-14 from 16:43 to 17:07 UTC at commit `c3d1c9850a4c3f2a8eab5bf63e45e0b3632e9f11`. The schedule file's SHA-256 is `8e6e505a7b41aabc8ec39f53419e6fa1e3f591d8b99e095edfd00ab8e5799202`. The policy was `investigator-v14-glm53-jev114-presumption-digitalocean`, prompt hash `2b36e1c16706456ab155fd57cd16b7151558ca933f32e89885b4e5efc880668d`. The public endpoint listing showed DigitalOcean at the frozen ceilings before the first pass.
+
+| Measure                          | Pass 1    | Pass 2    | Pass 3    |
+| -------------------------------- | --------- | --------- | --------- |
+| Completed cases                  | 72 of 72  | 72 of 72  | 72 of 72  |
+| Presumption positives detected   | 39 of 39  | 39 of 39  | 39 of 39  |
+| Presumption negatives flagged    | 0 of 33   | 0 of 33   | 0 of 33   |
+| Strict positives detected        | 29 of 29  | 29 of 29  | 29 of 29  |
+| Strict unsupported findings      | 10        | 10        | 10        |
+| Operational errors, skips, holds | 0         | 0         | 0         |
+| Investigator calls               | 151       | 151       | 153       |
+| Mean case latency                | 6.58 s    | 6.78 s    | 6.13 s    |
+| p95 case latency                 | 16.22 s   | 11.72 s   | 10.31 s   |
+| Slowest case                     | 25.78 s   | 22.81 s   | 12.08 s   |
+| Settled spend                    | $0.453833 | $0.452490 | $0.437822 |
+
+No case was unstable. Every case gave the same result in all three passes, and every result matched its presumption label. That is 117 completed reviews of positive cases with no miss and 99 completed reviews of negative cases with no flag. The ten strict unsupported findings are the ten positives that the presumption labels add, as in run 003. They were the same ten cases in every pass.
+
+Total settled spend was $1.344145 against the $6 ceiling, with nothing held. Each pass database agrees with its journal: 223, 223 and 225 inference rows, all settled, no charge above its reservation, 72 classifier rows per pass. Every model request returned HTTP 200. Every review row carries the v14 prompt version.
+
+The production v14 framing scores the same as run 003's v13 framing on this corpus.
+
+### Limits of the result
+
+- Three passes over one synthetic corpus are correlated observations of 72 fixtures. Zero misses in 117 positive reviews does not bound the miss rate on real play. With independent reviews it would be consistent with a per-review miss rate of a few percent.
+- The corpus cases were written and tuned alongside the presumption policy. The locked 40-case test split was not run.
+- Each case is one whole synthetic transcript. The run does not cover a response reviewed while the next response holds agent reservations, where the review's allowance is smaller.
+- The provider pin and price caps were sent on every request. Generation metadata was not sampled to confirm the serving provider, which run 003 did for five calls.
+- Artifacts are local and untracked: `/Users/jonathan/Code/ctf/.artifacts/review-repeatability/` holds `pass-{1,2,3}/` with `schedule.json`, `run.json`, `entries.jsonl` and `summary.json`, the three pass logs, `analysis.json`, `analyze.mjs` and `run.sh`. The disposable container was removed after reconciliation.
+
+## Review outcomes
+
+- Plan verification: three rounds by an independent Opus agent. Round one required pinned preconditions in H2 and H3 and a G1 assertion that catches escaped JSON. Round two found that the first narrowed predicate, `reviewed_version<requested_version`, missed exhausted errors, and that production's prompt had never been evaluated. Round three approved.
+- Code review: one P2, no P0 or P1. A mark set before a job became `unresolved` survived the requeue. One corrective cycle fixed it in `enqueueMonitorJob`, tests first. Re-review found the P2 resolved and no P0 to P2 remaining.
+- Remaining P3, no action taken: in H7 the claiming session's id equals its game id, so the test would not catch swapped parameters in the new statement.
+
 ## Non-goals
 
 - Investigator timing, the frozen 90/15/120 policy, worker concurrency.
@@ -130,7 +168,7 @@ Fixed before the run. A case's result in a pass is `flagReadDetected` true or fa
 | G1                | Assertion in `tests/integration/flag-read-eval.test.ts`. Mutation run recorded and reverted.                                                                                                                                                                                                                                         | Mutation run fails with "session lease state must not reach the model: busy key in a provider request". Reverted, file passes.                                                                                                                           |
 | All               | `npm run check`; `npm run build`; worker import probe `env -i PATH="$PATH" NODE_ENV=production node --import tsx -e "await import('./lib/monitor-worker.ts')"`. `npm run test:coverage` measures unit tests, and this change adds none, so it is not run.                                                                            | Lead runs: `npm run check` 280 of 280, build exit 0, probe exit 0.                                                                                                                                                                                       |
 | E1, E2            | Unit cases in `tests/flag-read-baseline.test.ts` or `tests/flag-read-baseline-run.test.ts`. One mode in `tests/integration/flag-read-baseline.test.ts` that reuses the candidate wrapper case with the production strategy. Red run recorded: the strategy is rejected before the change.                                            | Red: "Baseline strategy must be current or closed-world-presumption-v1." in two unit cases and the `production-wrapper` mode. Green: unit 280 of 280, integration file 26 of 26. `git status --short evals/` empty.                                      |
-| W3                | Schedule dry-run passes on the committed sources. Three `summary.json` files with status `completed`. Journal totals reconcile with the databases.                                                                                                                                                                                   | pending                                                                                                                                                                                                                                                  |
+| W3                | Schedule dry-run passes on the committed sources. Three `summary.json` files with status `completed`. Journal totals reconcile with the databases.                                                                                                                                                                                   | Dry-run passes at `c3d1c98`. Three summaries with status `completed`. Each pass database matches its journal on settled spend, holds and inference row count.                                                                                            |
 
 ## Steps and ownership
 
