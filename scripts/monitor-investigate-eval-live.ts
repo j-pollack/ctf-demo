@@ -26,6 +26,7 @@ const MIGRATIONS = [
   "014-async-monitor.sql",
   "015-transcript-evidence.sql",
   "018-monitor-ready.sql",
+  "019-session-stop.sql",
 ];
 
 export type SeededWorkspace = {

@@ -346,3 +346,14 @@ test("a session is loading while busy or unconfirmed, preferring local state ove
   const unconfirmed = { alpha: { ...createSessionUIState({ id: "alpha" }), unconfirmed: true } };
   assert.equal(sessionLoading(live, unconfirmed, "alpha"), true);
 });
+
+test("a stop request lasts until its session is idle", () => {
+  const stopping = {
+    ...initial(),
+    alpha: { ...createSessionUIState({ id: "alpha" }), busy: true, stopping: true },
+  };
+  assert.equal(setSessionBusy(stopping, "alpha", true, "").alpha.stopping, true);
+  assert.equal(setSessionBusy(stopping, "alpha", false, "").alpha.stopping, false);
+  assert.equal(stopAllSessions(stopping).alpha.stopping, false);
+  assert.equal(stopping.alpha.stopping, true, "the input is not changed");
+});

@@ -68,8 +68,8 @@ test("an empty current run cannot be replaced, but a used or ended run can", () 
   );
   assert.equal(
     canCreateNewRun(game({ events: [{ id: 1, kind: "user", text: "go" }], busy: true }), true),
-    false,
-    "a run with any busy session cannot be replaced",
+    true,
+    "a run with a busy session can be replaced, and the server stops its responses first",
   );
   assert.equal(
     canCreateNewRun(game({ events: [{ id: -1, kind: "user", text: "optimistic" }] })),

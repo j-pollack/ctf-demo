@@ -20,6 +20,8 @@ export type SessionUIState = {
   live?: LiveTurn;
   pending?: { gameId: string; text: string; afterId: number };
   unconfirmed: boolean;
+  // A stop was requested and the session is still busy.
+  stopping: boolean;
 };
 
 export type SessionUIMap = Record<string, SessionUIState>;
@@ -131,6 +133,7 @@ export function createSessionUIState(
     events,
     fetched: session.events !== undefined,
     unconfirmed: false,
+    stopping: false,
   };
 }
 
@@ -167,7 +170,7 @@ export function setSessionBusy(
 ): SessionUIMap {
   const session = state[id];
   if (!session) return state;
-  return { ...state, [id]: { ...session, busy, stage } };
+  return { ...state, [id]: { ...session, busy, stage, stopping: busy && session.stopping } };
 }
 
 // Stream events are useful for immediate display, but only a fetched snapshot confirms a cursor.
@@ -227,6 +230,7 @@ export function stopAllSessions(state: SessionUIMap): SessionUIMap {
         live: undefined,
         pending: undefined,
         unconfirmed: false,
+        stopping: false,
       },
     ]),
   );

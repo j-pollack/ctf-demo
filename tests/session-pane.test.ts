@@ -176,3 +176,31 @@ test("agent turns name their model only when the run used more than one", () => 
   const mixed = render(summary("s1", 1, 1), view, { showTurnModels: true });
   assert.match(mixed, /<span class="turn-model"> · vendor\/model-a<\/span>/);
 });
+
+test("a busy session this page does not stream shows Stop and that the agent is working", () => {
+  const html = render(summary("a", 1, 1), {
+    ...createSessionUIState({ id: "a", events: [] }),
+    busy: true,
+  });
+  assert.match(html, /<button type="button">Stop<\/button>/);
+  assert.match(
+    html,
+    /<div role="status" class="stage"><i aria-hidden="true"><\/i>Agent working…<\/div>/,
+  );
+  assert.doesNotMatch(html, />Send<\/button>/);
+});
+
+test("after Stop without a local stream the pane shows Stopping until the session is idle", () => {
+  const stopping = { ...createSessionUIState({ id: "a", events: [] }), busy: true, stopping: true };
+  const html = render(summary("a", 1, 1), stopping);
+  assert.match(html, /<button type="button" disabled="">Stopping…<\/button>/);
+  assert.doesNotMatch(html, />Stop<\/button>|>Send<\/button>/);
+  // With a local stream, Stop aborts it at once and stays available.
+  assert.match(
+    render(summary("a", 1, 1), stopping, { streaming: true }),
+    /<button type="button">Stop<\/button>/,
+  );
+  const idle = render(summary("a", 1, 1), { ...stopping, busy: false });
+  assert.match(idle, />Send<\/button>/);
+  assert.doesNotMatch(idle, /Stopping|Agent working/);
+});

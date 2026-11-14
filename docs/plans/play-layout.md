@@ -440,3 +440,67 @@ Checks: `npm run check` exits 0 with 345 tests, with the notice and console test
 - Investigator status labels say what the review is doing or found: "Review queued", "Under review", "Reviewed, nothing found", "Review incomplete". "Caught up" read like "Caught", the word for losing. The progress line "All sessions reviewed." is gone, since the label says it.
 - The run bar becomes two rows at 1260px and below, up from 1180px, because the stats are longer. Browser: one row at 1261px and wider with at least six chips beside the stats, thread top 127px. At 390px the stats stay on two lines.
 - A run that has been submitted and awaits its result opens a modal notice: "The investigator is reviewing this run", what that means, how many sessions are still waiting, and a control to read the transcripts meanwhile. "Finalizing" in the run bar was the only sign before. The notice blocks the page until the result arrives, when it closes and the outcome strip shows the result. The player can dismiss it for that run. A blocking notice with no way out would trap the player when a review cannot complete, and would hide the transcripts for up to two minutes. If the review cannot complete, the notice says so. After dismissal the strip still says "Play has ended. The investigator is reviewing this run, and the result will appear here." with a pulsing mark, and the bar reads "Final review". `reviewNoticeOpen` and `ReviewNotice` have unit and SSR tests seen failing first. Browser, from a new `review` fixture at 1440 and 390: the notice is centred, the page behind is inert, and its control closes it. The notice closing when a real result arrives is unrun.
+
+## Stop after reload, and New run after a stopped first instruction
+
+Reported by the user on 2026-11-14.
+
+- **B1.** Send an instruction, reload the page while the agent works, and the response can no longer be stopped.
+- **B2.** Send a run's first instruction, press Stop while the agent works, and New run stays disabled.
+
+### What is known
+
+Stop is only a client action. `onStop` in `app/game-ui.tsx` aborts the browser's `fetch` of `POST /api/games/:id/prompt`, and the route's `request.signal` ends the run. A reloaded page, or a second tab, has no fetch to abort, and the server has no stop endpoint. The composer shows Stop only for a session with a local stream.
+
+The async runner already polls its session once a second (`checkHeartbeat` in `lib/runner-async.ts`) and aborts when its lease is gone. That poll is the channel a stop request can use. It crosses serverless instances, which an in-memory signal cannot.
+
+The cause of B2 is not established. `canCreateNewRun` needs the run started and not busy, and `runHasStarted` counts a persisted user instruction, a completed turn or a busy session. A hypothesis, unverified: stopping the first response leaves one of those conditions unmet, or leaves the session's lease or pending state held.
+
+### Decisions
+
+- **T1.** A stop request is a persisted fact about a session: a `stop_requested_at` timestamp on `ctf.agent_sessions`, added by an additive, idempotent migration. A stop endpoint sets it for the owner's session only while that session has a live lease. Claiming a session and releasing its lease both clear it, so a stop can never reach a later response.
+- **T2.** The runner honors it on its heartbeat by taking the same path as a client abort. It keeps its lease, so the partial transcript and the "Response stopped. Your run is still open." event are saved as they are today.
+- **T3.** Stop shows for any busy session on an editable run. With a local stream it aborts the fetch as today and also posts the stop request. Without one it posts the stop request, shows that it is stopping, and the poll brings the result.
+- **T4.** B2 is reproduced first, in the integration harness or by a failing test, and fixed at its cause.
+
+### Criteria
+
+- **S1.** Given a response in progress and a stop request from a client that does not hold the stream, the run stops, the lease is released, the events so far and a resumable "Response stopped" event are persisted, the run stays active, and the next instruction to that session succeeds. Integration test with real routes and Postgres.
+- **S2.** A stop request on an idle session changes nothing and does not stop the next response. A stop request cannot be made for another player's run, without a valid origin, or with a malformed id. A sibling session's response keeps running. Integration tests.
+- **S3.** The pane shows an enabled Stop for a busy session with no local stream on an editable run, and a stopping state after it is pressed. SSR test.
+- **S4.** After the first instruction of a run is stopped mid-response and the session is idle, New run is enabled. Test at the layer where the cause is found.
+- **S5.** `npm run check` and `npm run test:integration` pass. The migration is listed in `scripts/setup.ts` and applying it twice succeeds.
+
+### Stop evidence
+
+Recorded 2026-11-14.
+
+Investigation, in the integration harness with real routes and Postgres. The server stopped cleanly on every aborted request and on a cancelled response body, for a first instruction and for a later one. The persisted state afterwards was correct: the instruction recorded, the session idle, the run active. So neither bug comes from the abort path itself. Two causes were confirmed. No response could be stopped without holding its stream. A stop that arrived while a first instruction was taking its checkpoint did nothing, because the agent had no active run to abort yet, and a full inference call then ran. That keeps the session busy and New run disabled, and it only happens on a first instruction. A third cause is a hypothesis: on a deployment the function may never learn that the browser disconnected, so the old Stop left the agent working. `vercel.json` has no function configuration that would forward a disconnect. The fix does not depend on it.
+
+Changes: migration `019-session-stop.sql` adds a nullable `stop_requested_at` to `ctf.agent_sessions`. `requestSessionStop` sets it for an owned, active, async run whose session has a live lease. `claimSession` and `releaseSessionLease` clear it. `POST /api/games/:id/sessions/:sessionId/stop` checks origin, player, id format and ownership. The async runner reads the column on its one-second heartbeat and takes the client-abort path, keeping its lease so the transcript and the "Response stopped" event are saved. On `agent_start` it aborts if the run is already stopping. The client's Stop shows for any busy session on an editable run and posts the request, with "Stopping…" until the session is idle. A busy session without a local stream says "Agent working…".
+
+Deviation: a legacy run refuses the stop request with a 409. New runs are async.
+
+Checks: `npm run check` exits 0 with 352 tests. `npm run test:integration` exits 0 with 303 tests. S1, S2 and S4 are integration scenarios that assert persisted events, lease columns and run status, each seen failing first. S3 is an SSR test. The migration is applied twice in the suite.
+
+Review: the independent reviewer found no P0 to P2. It confirmed the SQL cannot match another player's row, that refusals do not reveal whether a run exists, that a finalizing run cannot be flagged, that a leftover timestamp cannot stop a later response, and that the monitor worker's imports are unchanged. Two P3 findings are open. A stop is scoped to the session and not to one response, so a request sent as response A ends could stop a response B that another tab starts in that instant. A stop that coincides with the response deadline carries `autoContinue`, so a different tab could continue it.
+
+Release: the new code writes the column on every claim, so the migration must be applied before the code serves. The README states that Vercel's production alias waits for `ci` and `migrate prod`, and a preview migrates its own Neon branch at build. A local database needs `npm run setup`.
+
+Unrun: Stop from a reloaded page in a real browser, the checkpoint timing on a real Sprite, and the disconnect behavior on a deployment.
+
+## New run while agents are working
+
+Recorded 2026-11-14.
+
+Request: New run stays enabled while sessions are responding. Starting a new run stops those responses, ends the run and starts the new one.
+
+Before, the client disabled New run for a busy run and `startGame` refused with a 409 while any owned session held a lease.
+
+Changes: `startGame` calls `stopOwnedResponses` before admission. It sets `stop_requested_at` on every busy session of the owner's active async runs and repeats every 250 ms until none is busy, for at most 20 seconds. The runner stops through the path in "Stop evidence", so the partial transcript, the "Response stopped" event and billing are settled before the run ends. Admission is unchanged, so a response that outlasts the wait and a legacy response are still refused with the 409. `canCreateNewRun` no longer returns false for a busy run.
+
+Known limit: the stop happens before the admission checks. A start that admission then refuses, for the daily limit or a full environment pool, has stopped the responses and left the run open. The dialog disables Start run when no runs are left, so this needs a stale page.
+
+Checks: `npm run check` exits 0 with 352 tests. `npm run test:integration` exits 0 with 304 tests. The new integration scenario starts a run through the real route while a response is held in its command. It asserts the 200, the "Response stopped" event on the old stream, the old run ended with its lease cleared and its command settled, and an immediate 409 for a legacy response. It failed with the 409 first.
+
+Unrun: the wait against a real Sprite, where a checkpoint may take longer than the fake's.

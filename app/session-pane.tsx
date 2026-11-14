@@ -164,6 +164,7 @@ function EmptySession({ runStarted }: { runStarted: boolean }) {
 function ThreadBody({
   session,
   view,
+  runStatus,
   runStarted,
   showTurnModels,
   disabled,
@@ -174,6 +175,7 @@ function ThreadBody({
   SessionPaneProps,
   | "session"
   | "view"
+  | "runStatus"
   | "runStarted"
   | "showTurnModels"
   | "disabled"
@@ -205,6 +207,8 @@ function ThreadBody({
         </p>
       )
     );
+  // A reloaded page cannot stream a response already in progress, so it has no stage of its own.
+  const stage = view.stage || (view.busy && runStatus === "active" ? "Agent working" : "");
   return (
     <>
       {view.events.length === 0 && <EmptySession runStarted={runStarted} />}
@@ -228,10 +232,10 @@ function ThreadBody({
         </p>
       )}
       {view.live && <LiveEntry live={view.live} />}
-      {view.stage && (
+      {stage && (
         <div role="status" className="stage">
           <i aria-hidden="true" />
-          {view.stage}…
+          {stage}…
         </div>
       )}
       {error}
@@ -254,6 +258,8 @@ function Composer({
   const draft = view?.draft ?? "",
     loading = disabled || !view?.fetched || !!view?.busy || !!view?.unconfirmed,
     id = `prompt-${session.id}`,
+    // With a local stream, Stop aborts it at once; without one the server stops it shortly.
+    stopping = !streaming && !!view?.stopping,
     field = useRef<HTMLTextAreaElement>(null);
   // Fit the box to the instruction. The stylesheet sets the smallest and largest height.
   useLayoutEffect(() => {
@@ -290,9 +296,9 @@ function Composer({
           }
         }}
       />
-      {view?.busy && streaming ? (
-        <button type="button" onClick={onStop}>
-          Stop
+      {view?.busy ? (
+        <button type="button" onClick={onStop} disabled={stopping}>
+          {stopping ? "Stopping…" : "Stop"}
         </button>
       ) : (
         <button className="primary" disabled={loading || !draft.trim()}>

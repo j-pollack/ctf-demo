@@ -102,7 +102,7 @@ export function canCreateNewRun(
 ) {
   if (!resolved) return false;
   if (!current) return true;
-  if (current.status === "active") return started && !current.busy;
+  if (current.status === "active") return started;
   return (
     current.status !== "creating" &&
     (current.status !== "finalizing" || current.monitorMode === "async")
@@ -957,7 +957,8 @@ export default function GameUI({ models }: { models: string[] }) {
       (panel === "play" || panel === "detail") &&
       reviewNoticeOpen(displayGame, reviewDismissedFor),
     dismissReview = () => setReviewDismissedFor(displayGame?.id ?? null);
-  // Run-level actions wait for the live run's focused session, whichever run is on screen.
+  // Continue waits for the live run's focused session, whichever run is on screen. New run does
+  // not: the server stops the open run's responses before it replaces the run.
   const loading =
     busy || (!!game && !!liveSessionId && sessionLoading(game, sessionViews, liveSessionId));
   const sessions = displayGame
@@ -1527,6 +1528,36 @@ export default function GameUI({ models }: { models: string[] }) {
       }
     }
   }
+  // Aborting a local stream stops the response only if the server sees the disconnect, and a
+  // reloaded page has no stream, so Stop also asks the server to stop the session.
+  async function stop(sessionId: string) {
+    if (!game) return;
+    const runId = game.id,
+      owner = historyOwner.current,
+      epoch = accountEpoch.current;
+    userStopped.current.add(sessionId);
+    const local = sessionControllers.current.get(sessionId);
+    local?.abort();
+    if (local && game.monitorMode !== "async") return;
+    updateSession(sessionId, (current) => ({ ...current, stopping: true, error: "" }));
+    try {
+      await api(
+        `/api/games/${encodeURIComponent(runId)}/sessions/${encodeURIComponent(sessionId)}/stop`,
+        { method: "POST" },
+      );
+    } catch (err) {
+      if (
+        owner === historyOwner.current &&
+        epoch === accountEpoch.current &&
+        activeRunIdRef.current === runId
+      )
+        updateSession(sessionId, (current) => ({
+          ...current,
+          stopping: false,
+          error: err instanceof Error ? err.message : "Could not stop this response.",
+        }));
+    }
+  }
   async function copyEvent(event: GameEvent) {
     try {
       await navigator.clipboard.writeText([event.text, event.command].filter(Boolean).join("\n"));
@@ -1539,10 +1570,7 @@ export default function GameUI({ models }: { models: string[] }) {
     onSystemDraftChange: (id, systemPromptDraft) =>
       updateSession(id, (current) => ({ ...current, systemPromptDraft })),
     onSend: (id) => void send(id),
-    onStop: (id) => {
-      userStopped.current.add(id);
-      sessionControllers.current.get(id)?.abort();
-    },
+    onStop: (id) => void stop(id),
     onRetry: (id) => {
       const source = baseDisplayGame;
       if (source) void loadSession(source, id);
@@ -1682,7 +1710,7 @@ export default function GameUI({ models }: { models: string[] }) {
               streamingIds={shownIds.filter((id) => sessionControllers.current.has(id))}
               creatingSession={creatingSession}
               pendingOrdinal={pendingOrdinal}
-              newRunDisabled={loading || !canStartNewRun}
+              newRunDisabled={busy || !canStartNewRun}
               newRunTitle={
                 displayGame.status === "active" && !runStarted(displayGame)
                   ? "Send this run an instruction first."
@@ -1767,7 +1795,7 @@ export default function GameUI({ models }: { models: string[] }) {
             />
             <button
               className="primary"
-              disabled={loading || !canStartNewRun || runsLeft === 0}
+              disabled={busy || !canStartNewRun || runsLeft === 0}
               onClick={() => void start()}
             >
               {busy ? "Setting up…" : "Start run"}
