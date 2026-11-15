@@ -14,7 +14,7 @@ const text = (html: string) =>
     .replace(/\s+/g, " ");
 
 const landing = text(renderToStaticMarkup(createElement(Home)));
-const rules = text(renderToStaticMarkup(createElement(UI.RulesPanel)));
+const rules = text(renderToStaticMarkup(createElement(UI.RulesPanel, {})));
 const board = (scores: unknown[]) =>
   renderToStaticMarkup(
     createElement(UI.LeaderboardPanel, {

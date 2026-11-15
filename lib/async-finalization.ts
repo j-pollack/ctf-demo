@@ -59,11 +59,18 @@ export async function beginAsyncSubmission(input: {
     } = await client.query<{
       status: string;
       monitor_mode: string;
+      submission_transport: string;
       secret_hash: string;
-    }>("SELECT status,monitor_mode,secret_hash FROM ctf.games WHERE id=$1 FOR UPDATE", [
-      input.gameId,
-    ]);
-    if (!run || run.status !== "active" || run.monitor_mode !== "async")
+    }>(
+      "SELECT status,monitor_mode,submission_transport,secret_hash FROM ctf.games WHERE id=$1 FOR UPDATE",
+      [input.gameId],
+    );
+    if (
+      !run ||
+      run.status !== "active" ||
+      run.monitor_mode !== "async" ||
+      run.submission_transport !== "tool"
+    )
       throw new GameError("This run has ended.", 409);
     const {
       rows: [session],

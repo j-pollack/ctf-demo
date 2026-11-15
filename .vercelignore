@@ -1,0 +1,16 @@
+.artifacts
+.agents
+.claude
+.codex
+.aws
+.neon
+.pr-lens
+.secrets
+coverage
+.worktrees
+.git
+node_modules
+.next
+.vercel
+.env
+.env.*

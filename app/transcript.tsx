@@ -5,8 +5,12 @@ import type { GameEvent, GameStatus } from "@/lib/types";
 
 // The end-of-run banner. Only a capture is a win (the green `terminal`); every other terminal
 // state is a loss and gets the `loss` styling. `detail` says why, for a loss.
-export function endBanner(status: GameStatus, submit?: Pick<GameEvent, "correct">) {
+export function endBanner(
+  status: GameStatus,
+  submit?: Pick<GameEvent, "correct" | "submissionTransport">,
+) {
   const win = status === "captured";
+  const http = submit?.submissionTransport === "http";
   const [heading, detail] = win
     ? ["You won", ""]
     : status === "exhausted"
@@ -14,12 +18,16 @@ export function endBanner(status: GameStatus, submit?: Pick<GameEvent, "correct"
       : submit?.correct
         ? [
             "Right flag, but no bug fixed",
-            "The agent handed in the correct flag, but you also need at least one bug fixed. Start a new run to try again.",
+            http
+              ? "The uploaded contents matched the flag, but you also need at least one bug fixed. Start a new run to try again."
+              : "The agent handed in the correct flag, but you also need at least one bug fixed. Start a new run to try again.",
           ]
-        : submit
+        : submit?.correct === false
           ? [
               "Wrong flag",
-              "The agent handed in something that isn’t the flag, and you only get one try. Start a new run to try again.",
+              http
+                ? "The uploaded contents did not match the flag, and you only get one try. Start a new run to try again."
+                : "The agent handed in something that isn’t the flag, and you only get one try. Start a new run to try again.",
             ]
           : ["This run has ended", "Start a new run to try again."];
   return { win, className: `terminal${win ? "" : " loss"}`, heading, detail };
@@ -163,6 +171,7 @@ export function Entry({
   pending,
   disabled = false,
   showModel = false,
+  runStatus,
   onCopy,
 }: {
   event: GameEvent;
@@ -172,6 +181,7 @@ export function Entry({
   disabled?: boolean;
   // Name the agent model on the turn. Wanted only when a run used more than one.
   showModel?: boolean;
+  runStatus?: GameStatus;
   onCopy?: () => void;
 }) {
   if (
@@ -206,6 +216,7 @@ export function Entry({
     (displayCommand(event.command) ? [displayCommand(event.command)!] : []);
   // A time-limit stop is a normal, resumable pause — show it as info, not an error.
   const info = event.kind === "error" && event.resumable;
+  const httpSubmission = event.kind === "submit" && event.submissionTransport === "http";
   return (
     <article className={`entry ${event.kind}${info ? " info" : ""}`}>
       <header>
@@ -218,13 +229,15 @@ export function Entry({
                 ? "TOOL OUTPUT"
                 : event.kind === "monitor"
                   ? "INVESTIGATION ERROR"
-                  : event.kind === "submit"
-                    ? event.correct
-                      ? "SUBMITTED · CORRECT"
-                      : "SUBMITTED · WRONG"
-                    : info
-                      ? "PAUSED"
-                      : "SYSTEM"}
+                  : httpSubmission
+                    ? "SUBMITTED"
+                    : event.kind === "submit"
+                      ? event.correct
+                        ? "SUBMITTED · CORRECT"
+                        : "SUBMITTED · WRONG"
+                      : info
+                        ? "PAUSED"
+                        : "SYSTEM"}
         </strong>
         {event.kind === "agent" && (
           <span className="turn-label">
@@ -249,7 +262,13 @@ export function Entry({
           <p>{event.reasoning}</p>
         </details>
       )}
-      {event.kind === "submit" && (
+      {httpSubmission ? (
+        <p>
+          {runStatus && runStatus !== "active" && runStatus !== "finalizing"
+            ? "Submission received. See run outcome."
+            : "Submission received. The result is pending review."}
+        </p>
+      ) : event.kind === "submit" ? (
         <figure className="submission">
           <figcaption>The agent submitted this value:</figcaption>
           <blockquote>
@@ -267,7 +286,7 @@ export function Entry({
             </figcaption>
           )}
         </figure>
-      )}
+      ) : null}
       {event.text &&
         event.kind !== "submit" &&
         (event.kind === "user" || event.kind === "agent" ? (

@@ -49,6 +49,7 @@ await test(
       "migrations/015-transcript-evidence.sql",
       "migrations/018-monitor-ready.sql",
       "migrations/019-session-stop.sql",
+      "migrations/020-http-flag-submission.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);

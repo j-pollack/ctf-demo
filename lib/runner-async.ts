@@ -25,6 +25,7 @@ import {
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
 import { completeAsyncCommand, dispatchAsyncCommand } from "./monitor-commands";
 import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
+import { configuredFlagEndpoint } from "./flag-submission-protocol";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
 import { checkpointEnvironment, executeCommand, SPRITE_WORKDIR } from "./sprites";
 import { repairMessages } from "./transcript-repair";
@@ -41,6 +42,7 @@ export async function runAsyncGame(
   options: { deadlineSignal?: AbortSignal } = {},
 ) {
   const game = { ...inputGame };
+  const http = game.submission_transport === "http";
   const sessionId = game.session_id ?? game.id;
   const lease = game.lease;
   if (!lease) throw new GameError("This response has stopped.", 409);
@@ -50,18 +52,22 @@ export async function runAsyncGame(
   const stopRequest = new AbortController();
   const signal = AbortSignal.any([requestSignal, stopRequest.signal]);
   const activeCommands = new Map<string, string>();
+  let persistence: Promise<void> = Promise.resolve();
   let directory: string | undefined;
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   let failure: unknown;
   let checkpoint: string | undefined;
   let phase = "";
   let heartbeatBusy = false;
+  let receiptReceived = false;
 
   const abort = (error?: unknown) => {
     if (error) failure ??= error;
     stop.abort();
     session?.agent.abort();
   };
+  const expectedReceiptCancellation = (error: unknown) =>
+    receiptReceived && stop.signal.aborted && error instanceof Error && error.name === "AbortError";
   const onSignal = () => abort();
   signal.addEventListener("abort", onSignal, { once: true });
 
@@ -75,8 +81,10 @@ export async function runAsyncGame(
         lease: string | null;
         lease_until: Date | null;
         stop_requested_at: Date | null;
+        submission_received: boolean;
       }>(
-        `SELECT g.status,g.execution_generation,s.lease,s.lease_until,s.stop_requested_at
+        `SELECT g.status,g.execution_generation,s.lease,s.lease_until,s.stop_requested_at,
+          EXISTS(SELECT 1 FROM ctf.flag_submissions WHERE game_id=g.id) AS submission_received
          FROM ctf.games g JOIN ctf.agent_sessions s ON s.game_id=g.id AND s.id=$2
          WHERE g.id=$1`,
         [game.id, sessionId],
@@ -92,7 +100,12 @@ export async function runAsyncGame(
         }),
       ]).finally(() => clearTimeout(timeout));
       const state = rows[0];
-      if (
+      if (http && state?.status === "finalizing" && state.submission_received) {
+        receiptReceived = true;
+        game.status = "finalizing";
+        send("state", { status: "finalizing", sessionId });
+        abort();
+      } else if (
         state?.status !== "active" ||
         Number(state.execution_generation) !== generation ||
         state.lease !== lease ||
@@ -101,6 +114,10 @@ export async function runAsyncGame(
       )
         abort(new GameError("This response has stopped.", 409));
       else if (state.stop_requested_at) stopRequest.abort();
+      else if (state.submission_received && activeCommands.size === 0) {
+        receiptReceived = true;
+        abort();
+      }
     } catch (error) {
       abort(error);
     } finally {
@@ -130,7 +147,11 @@ export async function runAsyncGame(
 
   try {
     const model = await getModel(game.agent_model);
-    const systemPrompt = agentPrompt(game.system_prompt);
+    const submissionUrl = http ? configuredFlagEndpoint().url : undefined;
+    const systemPrompt = agentPrompt(
+      game.system_prompt,
+      submissionUrl ? { runId: game.id, sessionId, submissionUrl } : undefined,
+    );
     const settings = SettingsManager.inMemory({
       compaction: { enabled: false },
       retry: { enabled: false },
@@ -184,6 +205,9 @@ export async function runAsyncGame(
           game.sprite_name,
           command,
           AbortSignal.any([stop.signal, toolSignal ?? new AbortController().signal]),
+          dispatch.submissionToken
+            ? { TARGET: submissionUrl!, CTF_SUBMISSION_TOKEN: dispatch.submissionToken }
+            : undefined,
         );
         return { content: [{ type: "text" as const, text: output }], details: {} };
       },
@@ -217,14 +241,17 @@ export async function runAsyncGame(
       modelRuntime: runtime,
       model,
       thinkingLevel: game.agent_effort,
-      tools: ["sprite_exec", "submit"],
+      tools: http ? ["sprite_exec"] : ["sprite_exec", "submit"],
       noTools: "builtin",
-      customTools: [commandTool, submitTool],
+      customTools: http ? [commandTool] : [commandTool, submitTool],
       sessionManager: manager,
       settingsManager: settings,
       resourceLoader: loader,
     }));
-    if (session.getActiveToolNames().sort().join(",") !== "sprite_exec,submit")
+    if (
+      session.getActiveToolNames().sort().join(",") !==
+      (http ? "sprite_exec" : "sprite_exec,submit")
+    )
       throw new Error("Unexpected tool configuration.");
     session.agent.streamFunction = agentStream(
       game,
@@ -243,9 +270,11 @@ export async function runAsyncGame(
         send("delta", delta);
       },
       { role: "agent", sessionId },
+      () => persistence,
     );
     session.agent.toolExecution = "sequential";
     session.agent.beforeToolCall = async ({ toolCall }) => {
+      await persistence;
       if (stop.signal.aborted || game.status !== "active")
         return { block: true, reason: "The run is over.", terminate: true };
       if (toolCall.name === "submit")
@@ -265,86 +294,106 @@ export async function runAsyncGame(
         return { block: true, reason: "This response has stopped.", terminate: true };
       }
     };
-    session.agent.subscribe(async (event) => {
-      // A stop that arrived before the prompt began still records the instruction, then ends the
-      // response before any inference.
-      if (event.type === "agent_start" && stop.signal.aborted) session!.agent.abort();
-      if (event.type === "turn_start") send("stage", (phase = "Agent thinking"));
-      if (event.type !== "message_end") return;
-      const message = event.message as Message;
-      if (
-        failure &&
-        !(
-          message.role === "toolResult" &&
-          message.toolName === "sprite_exec" &&
-          activeCommands.has(message.toolCallId)
-        )
-      )
-        return;
-      if (
-        message.role === "system" ||
-        (message.role === "toolResult" && message.toolName === "submit")
-      )
-        return;
-      try {
-        const messages = session!.messages as Message[];
-        if (message.role === "toolResult") {
-          const dispatchId = activeCommands.get(message.toolCallId);
-          if (dispatchId) {
-            const output = textOf(message);
-            const completed = await completeAsyncCommand({
-              dispatchId,
-              gameId: game.id,
-              sessionId,
-              messages,
-              outcome: message.isError ? "unknown" : "completed",
-              output,
-            });
-            activeCommands.delete(message.toolCallId);
-            send("event", completed.event);
-            await emitBilling();
+    session.agent.subscribe((event) => {
+      persistence = persistence
+        .then(async () => {
+          // A stop that arrived before the prompt began still records the instruction, then ends the
+          // response before any inference.
+          if (event.type === "agent_start" && stop.signal.aborted) session!.agent.abort();
+          if (event.type === "turn_start") send("stage", (phase = "Agent thinking"));
+          if (event.type !== "message_end") return;
+          const message = event.message as Message;
+          if (
+            failure &&
+            !(
+              message.role === "toolResult" &&
+              message.toolName === "sprite_exec" &&
+              activeCommands.has(message.toolCallId)
+            )
+          )
             return;
+          if (
+            message.role === "system" ||
+            (message.role === "toolResult" && message.toolName === "submit")
+          )
+            return;
+          try {
+            const messages = session!.messages as Message[];
+            if (message.role === "toolResult") {
+              const dispatchId = activeCommands.get(message.toolCallId);
+              if (dispatchId) {
+                const output = textOf(message);
+                const completed = await completeAsyncCommand({
+                  dispatchId,
+                  gameId: game.id,
+                  sessionId,
+                  messages,
+                  outcome: message.isError ? "unknown" : "completed",
+                  output,
+                });
+                activeCommands.delete(message.toolCallId);
+                send("event", completed.event);
+                await emitBilling();
+                if (http) {
+                  const receipt = (
+                    await db.query<{ promoted_at: Date | null }>(
+                      "SELECT promoted_at FROM ctf.flag_submissions WHERE game_id=$1",
+                      [game.id],
+                    )
+                  ).rows[0];
+                  if (receipt?.promoted_at) {
+                    game.status = "finalizing";
+                    send("state", { status: "finalizing", sessionId });
+                  }
+                  if (receipt) {
+                    receiptReceived = true;
+                    abort();
+                  }
+                }
+                return;
+              }
+            }
+            if (game.status !== "active") return;
+            const turnsDelta =
+              message.role === "assistant" &&
+              message.stopReason !== "error" &&
+              message.stopReason !== "aborted"
+                ? 1
+                : 0;
+            await persistReviewedSessionMessages(
+              game.id,
+              sessionId,
+              lease,
+              messages,
+              turnsDelta,
+              generation,
+            );
+            if (turnsDelta) game.turns++;
+            if (message.role === "user")
+              await emit({ kind: "user", text: textOf(message), checkpoint });
+            if (message.role === "assistant" && turnsDelta) {
+              const commands = message.content.flatMap((part) =>
+                part.type === "toolCall" && part.name === "sprite_exec"
+                  ? [String(part.arguments.command ?? "")]
+                  : [],
+              );
+              await emit({
+                kind: "agent",
+                text: textOf(message),
+                reasoning: reasoningOf(message),
+                command: commands.join("\n") || undefined,
+                ...(commands.length && { commands }),
+                turn: game.turns,
+                model: message.model,
+              });
+            }
+            if (message.role === "toolResult")
+              await emit({ kind: "tool", text: textOf(message), turn: game.turns });
+          } catch (error) {
+            abort(error);
           }
-        }
-        if (game.status !== "active") return;
-        const turnsDelta =
-          message.role === "assistant" &&
-          message.stopReason !== "error" &&
-          message.stopReason !== "aborted"
-            ? 1
-            : 0;
-        await persistReviewedSessionMessages(
-          game.id,
-          sessionId,
-          lease,
-          messages,
-          turnsDelta,
-          generation,
-        );
-        if (turnsDelta) game.turns++;
-        if (message.role === "user")
-          await emit({ kind: "user", text: textOf(message), checkpoint });
-        if (message.role === "assistant" && turnsDelta) {
-          const commands = message.content.flatMap((part) =>
-            part.type === "toolCall" && part.name === "sprite_exec"
-              ? [String(part.arguments.command ?? "")]
-              : [],
-          );
-          await emit({
-            kind: "agent",
-            text: textOf(message),
-            reasoning: reasoningOf(message),
-            command: commands.join("\n") || undefined,
-            ...(commands.length && { commands }),
-            turn: game.turns,
-            model: message.model,
-          });
-        }
-        if (message.role === "toolResult")
-          await emit({ kind: "tool", text: textOf(message), turn: game.turns });
-      } catch (error) {
-        abort(error);
-      }
+        })
+        .catch((error) => abort(error));
     });
     if (signal.aborted) throw new Error("Response stopped.");
     await assertLease(game);
@@ -354,6 +403,7 @@ export async function runAsyncGame(
     );
     if ((count[0]?.total ?? 0) === 1) checkpoint = await checkpointEnvironment(game.sprite_name);
     await session.agent.prompt(prompt);
+    await persistence;
     if (failure && game.status === "active") throw failure;
     if (signal.aborted && game.status === "active") {
       await emit({
@@ -364,7 +414,14 @@ export async function runAsyncGame(
       });
     }
   } catch (error) {
-    if (game.status !== "finalizing" && game.status !== "caught" && game.status !== "ended") {
+    const expectedReceiptAbort =
+      expectedReceiptCancellation(error) && (!failure || expectedReceiptCancellation(failure));
+    if (
+      !expectedReceiptAbort &&
+      game.status !== "finalizing" &&
+      game.status !== "caught" &&
+      game.status !== "ended"
+    ) {
       const responseError = failure ?? error;
       console.error(
         JSON.stringify({
@@ -398,6 +455,7 @@ export async function runAsyncGame(
   } finally {
     clearInterval(heartbeat);
     signal.removeEventListener("abort", onSignal);
+    await persistence;
     for (const [toolCallId, dispatchId] of activeCommands) {
       const messages = (session?.messages ?? []) as Message[];
       const reported = messages.find(

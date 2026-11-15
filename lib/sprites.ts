@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SpritesClient, ExecError, type CheckpointStream, type RestoreStream } from "@fly/sprites";
+import { validateFlagEndpoint } from "./flag-submission-protocol";
 
 // Every command runs here, so it is also the working directory the agent is told about.
 export const SPRITE_WORKDIR = "/workspace";
@@ -9,13 +10,28 @@ function client() {
   if (!process.env.SPRITE_TOKEN) throw new Error("Sprite access is not configured.");
   return new SpritesClient(process.env.SPRITE_TOKEN, { timeout: 20_000 });
 }
-export async function createEnvironment(name: string, secret: string) {
+export async function applySubmissionNetworkPolicy(name: string, hostname: string) {
+  const sprite = client().sprite(name);
+  const rules = [
+    { domain: hostname, action: "allow" as const },
+    { domain: "*", action: "deny" as const },
+  ];
+  await sprite.updateNetworkPolicy({ rules });
+  const applied = await sprite.getNetworkPolicy();
+  if (JSON.stringify(applied.rules) !== JSON.stringify(rules))
+    throw new Error("Submission network policy could not be verified.");
+}
+
+export async function createEnvironment(name: string, secret: string, submissionUrl?: string) {
   const sprite = await client().createSprite(name, {
     config: { ramMB: 512, cpus: 1 },
     urlSettings: { auth: "sprite", privateAccess: "admins" },
   });
-  // Game code has no outbound network access; inference and monitoring run on the backend.
-  await sprite.updateNetworkPolicy({ rules: [{ domain: "*", action: "deny" }] });
+  if (submissionUrl) {
+    await applySubmissionNetworkPolicy(name, validateFlagEndpoint(submissionUrl).hostname);
+  } else {
+    await sprite.updateNetworkPolicy({ rules: [{ domain: "*", action: "deny" }] });
+  }
   // stdin carries the seed workspace (see lib/seed.ts); the flag is written in the same call.
   await sprite.execFileHTTP(
     "bash",
@@ -37,7 +53,12 @@ export function commandOutput(stdout: string | Buffer, stderr: string | Buffer, 
     exitCode === 0 ? `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}` : `${stdout}\n${stderr}`;
   return `${body}\n[exit ${exitCode}]`.slice(0, 16000);
 }
-export async function executeCommand(name: string, command: string, signal?: AbortSignal) {
+export async function executeCommand(
+  name: string,
+  command: string,
+  signal?: AbortSignal,
+  env?: Record<string, string>,
+) {
   try {
     const result = await client()
       .sprite(name)
@@ -47,6 +68,7 @@ export async function executeCommand(name: string, command: string, signal?: Abo
         maxBuffer: 65536,
         signal,
         maxRunAfterDisconnect: "1s",
+        ...(env && { env }),
       });
     return commandOutput(result.stdout, result.stderr, result.exitCode);
   } catch (error) {
@@ -88,6 +110,8 @@ export async function checkpointEnvironment(name: string) {
   if (!id) throw new Error("Checkpoint did not report an id.");
   return id;
 }
-export async function restoreEnvironment(name: string, id: string) {
+export async function restoreEnvironment(name: string, id: string, submissionUrl?: string) {
   await completion(await client().sprite(name).restoreCheckpoint(id), "Restore");
+  if (submissionUrl)
+    await applySubmissionNetworkPolicy(name, validateFlagEndpoint(submissionUrl).hostname);
 }

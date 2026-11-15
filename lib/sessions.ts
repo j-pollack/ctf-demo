@@ -140,13 +140,19 @@ export async function createSession(
       agent_effort: AgentEffort;
       system_prompt: string;
       monitor_mode: "legacy" | "async";
+      submission_transport: "tool" | "http";
     }>(
-      "SELECT status,agent_model,agent_effort,system_prompt,monitor_mode FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
+      "SELECT status,agent_model,agent_effort,system_prompt,monitor_mode,submission_transport FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
       [gameId, ownerId],
     );
     const game = games[0];
     if (!game) throw new GameError("Run not found.", 404);
     if (game.status !== "active") throw new GameError("This run has ended.", 409);
+    if (
+      game.submission_transport === "http" &&
+      (await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [gameId])).rowCount
+    )
+      throw new GameError("A flag has already been submitted.", 409);
     const { rows: defaults } = await client.query<{
       agent_model: string;
       agent_effort: AgentEffort;
@@ -329,6 +335,11 @@ export async function claimSession(
     if (!game) throw new GameError("Run not found.", 404);
     if (game.status !== "active")
       throw new GameError("This run has ended or is already responding.", 409);
+    if (
+      game.submission_transport === "http" &&
+      (await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [gameId])).rowCount
+    )
+      throw new GameError("A flag has already been submitted.", 409);
     const { rows: monitorRows } = await client.query<{
       monitor_settings_locked: boolean;
       monitor_mode: "legacy" | "async";

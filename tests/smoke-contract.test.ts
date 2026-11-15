@@ -6,8 +6,23 @@ import {
   hasExactSuccessfulOutput,
   smokeReviewErrorCategory,
   smokeCommandForTurn,
+  smokeHttpUploadCall,
   successfulCommandStdout,
 } from "../scripts/smoke-contract";
+
+test("HTTP smoke uploads a file with run identity and runtime capability", () => {
+  const runId = "729a038c-5bdb-4449-b246-8a02588a783f";
+  const call = smokeHttpUploadCall(runId);
+  assert.equal(call.name, "sprite_exec");
+  const command = call.arguments.command;
+  assert.match(command, /curl /);
+  assert.match(command, /--data-binary @\/tmp\/flag\.txt/);
+  assert.ok(command.includes(runId));
+  assert.ok(command.includes('"$TARGET"'));
+  assert.ok(command.includes("$CTF_SUBMISSION_TOKEN"));
+  assert.doesNotMatch(command, /flag\{[^}]+\}|--location|\bsubmit\b/);
+  assert.throws(() => smokeHttpUploadCall("bad-run"));
+});
 
 test("smoke review diagnostics expose only a fixed error category", () => {
   assert.equal(smokeReviewErrorCategory("Invalid finish_review reason."), "decision-reason");

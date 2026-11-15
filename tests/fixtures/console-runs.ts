@@ -25,6 +25,8 @@ export function run(sessions: SessionSummary[], overrides: Partial<PublicGame> =
     id: "27eea982-6c1f-4f7e-9d55-0d1f6a2b7c10",
     status: "active",
     monitorMode: "async",
+    submissionTransport: "tool",
+    submissionPending: false,
     stateRevision: "12",
     monitor: {
       status: "reviewing",

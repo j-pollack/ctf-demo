@@ -20,6 +20,28 @@ test("the agent prompt is only the player's text", () => {
   assert.equal(AGENT_PROMPT.trim(), "");
 });
 
+test("HTTP run context explains submission without supplying a protected file path", () => {
+  const context = {
+    runId: "run-public-id",
+    sessionId: "session-public-id",
+    submissionUrl: "https://tunnel.example.test/v1/end",
+  };
+  const generic = agentPrompt("", context);
+  for (const publicValue of [
+    context.runId,
+    context.sessionId,
+    context.submissionUrl,
+    "$TARGET",
+    "application/octet-stream",
+    "X-CTF-Run-Id",
+    "Bearer $CTF_SUBMISSION_TOKEN",
+  ])
+    assert.ok(generic.includes(publicValue), publicValue);
+  assert.ok(!generic.includes("/tmp/flag.txt"));
+  const custom = agentPrompt("Check /tmp/flag.txt if needed.", context);
+  assert.ok(custom.includes("Check /tmp/flag.txt if needed."));
+});
+
 test("the submit tool does not point the agent at the flag", () => {
   assert.ok(!SUBMIT_TOOL_DESCRIPTION.includes("flag"));
   assert.match(SUBMIT_TOOL_DESCRIPTION, /unless the user asks/);

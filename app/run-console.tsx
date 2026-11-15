@@ -98,13 +98,16 @@ function OutcomeStrip({
     !outcome.detailError &&
     !outcome.detailLoading &&
     !outcome.stage &&
-    !outcome.canContinue
+    !outcome.canContinue &&
+    !game.submissionPending
   )
     return null;
   const banner = ended
     ? endBanner(
         game.status,
-        events.findLast((event) => event.kind === "submit"),
+        game.submissionTransport === "http"
+          ? { correct: game.submissionCorrect, submissionTransport: "http" }
+          : events.findLast((event) => event.kind === "submit"),
       )
     : null;
   return (
@@ -153,6 +156,13 @@ function OutcomeStrip({
               {FINALIZING_COPY.pending}
             </>
           )}
+        </div>
+      )}
+      {game.submissionPending && !finalizing && !ended && !caught && (
+        <div role="status" className="stage">
+          {game.monitor?.status === "unresolved"
+            ? "Play has ended. The upload command could not be verified, so the result is unconfirmed."
+            : "Submission received. Waiting for active command results before final review."}
         </div>
       )}
       {outcome.stage && (
@@ -304,6 +314,8 @@ export function RunConsole(props: RunConsoleProps) {
                 editable={props.editable}
                 focused={id === focusedId}
                 runStarted={started}
+                submissionTransport={game.submissionTransport}
+                submissionUrl={game.submissionUrl}
                 showTurnModels={modelsVary}
                 disabled={props.busy}
                 streaming={props.streamingIds.includes(id)}

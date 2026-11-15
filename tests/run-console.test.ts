@@ -129,6 +129,63 @@ test("a captured run keeps the win line with its turn count in the strip", () =>
   assert.equal(count(html, /class="outcome"/g), 1);
 });
 
+test("an HTTP receipt stays pending until command results are known", () => {
+  const game = run(sessions(1), {
+    submissionTransport: "http",
+    submissionUrl: "https://submit.example.test/v1/end",
+    submissionPending: true,
+    events: [{ id: 9, kind: "submit", text: "", submissionTransport: "http" }],
+  });
+  const html = render(game, {
+    editable: false,
+    sessionViews: views([["session-1", fetched("session-1", game.events)]]),
+  });
+  assert.match(
+    html,
+    /Submission received\. Waiting for active command results before final review/,
+  );
+  assert.match(html, /HTTP upload help/);
+  assert.match(html, /submit\.example\.test\/v1\/end/);
+  assert.doesNotMatch(
+    html,
+    /Wrong flag|SUBMITTED · WRONG|submitted this value|<textarea id="prompt-/,
+  );
+});
+
+test("an HTTP receipt with unknown command outcome stays visibly unconfirmed", () => {
+  const game = run(sessions(1), {
+    submissionTransport: "http",
+    submissionPending: true,
+    monitor: {
+      status: "unresolved",
+      pendingSessions: 1,
+      reviewedUpdates: 0,
+      totalUpdates: 1,
+      lastReviewedAt: null,
+    },
+  });
+  const html = render(game, { editable: false });
+  assert.match(html, /upload command could not be verified/);
+  assert.match(html, /result is unconfirmed/);
+  assert.doesNotMatch(html, /<textarea id="prompt-|Wrong flag/);
+});
+
+test("a terminal HTTP result uses run-level correctness after an older event snapshot", () => {
+  const receipt = { id: 9, kind: "submit", text: "", submissionTransport: "http" } as const;
+  const game = run(sessions(1), {
+    status: "ended",
+    submissionTransport: "http",
+    submissionCorrect: false,
+    events: [receipt],
+  });
+  const html = render(game, {
+    sessionViews: views([["session-1", fetched("session-1", [receipt])]]),
+  });
+  assert.match(html, /<h2>Wrong flag<\/h2>/);
+  assert.match(html, /Submission received\. See run outcome/);
+  assert.doesNotMatch(html, /SUBMITTED · WRONG|submitted this value/);
+});
+
 test("an open inspector is a column or covers an inert deck", () => {
   const column = render(run(sessions(2)), { inspector: "column" });
   assert.match(column, /<div class="workbench" data-inspector="column">/);
@@ -255,12 +312,12 @@ test("while the first instruction is in flight, empty sibling panes no longer sh
     "session-2": fetched("session-2", []),
   };
   const html = render(game, { sessionViews: views });
-  assert.doesNotMatch(html, /Fix a bug, then submit the flag/);
+  assert.doesNotMatch(html, /Fix a bug, then upload the flag/);
   assert.match(html, /No instructions yet\./);
   const fresh = render(game, {
     sessionViews: { "session-1": fetched("session-1", []), "session-2": fetched("session-2", []) },
   });
-  assert.equal(count(fresh, /Fix a bug, then submit the flag/g), 2);
+  assert.equal(count(fresh, /Fix a bug, then upload the flag/g), 2);
 });
 
 test("a run awaiting its result says the investigator is reviewing it, with a progress mark", () => {
