@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { SpritesClient } from "@fly/sprites";
 import { Pool } from "pg";
 import { closePool } from "./postgres";
 
@@ -53,7 +54,7 @@ await test(
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
 
-    const { claimSession } = await import("../../lib/sessions");
+    const { claimSession, releaseSessionLease } = await import("../../lib/sessions");
     const { dispatchAsyncCommand, completeAsyncCommand } =
       await import("../../lib/monitor-commands");
     const { receiveFlagSubmission, retryPendingHttpSubmissions } =
@@ -221,5 +222,51 @@ await test(
       ).rows[0].n,
       0,
     );
+
+    // The Sprite boundary: refuse creation after admission and accept deletes of known Sprites.
+    const created: string[] = [];
+    const deleted: string[] = [];
+    t.mock.method(SpritesClient.prototype, "createSprite", async (name: string) => {
+      assert.match(name, /^ctf-[0-9a-f-]{36}$/);
+      created.push(name);
+      throw new Error("integration Sprite creation refused");
+    });
+    t.mock.method(SpritesClient.prototype, "deleteSprite", async (name: string) => {
+      assert.ok(name === `ctf-${unknownId}` || created.includes(name), `Unexpected ${name}`);
+      deleted.push(name);
+    });
+    t.mock.method(globalThis, "fetch", async () => {
+      throw new Error("No live HTTP in integration tests");
+    });
+    const { startGame } = await import("../../lib/games");
+    const unknownRun = async () =>
+      (
+        await pool.query(
+          `SELECT g.status,g.submitted_flag_correct,r.promoted_at,
+             (SELECT count(*)::int FROM ctf.finalization_jobs j WHERE j.game_id=g.id) AS jobs
+           FROM ctf.games g JOIN ctf.flag_submissions r ON r.game_id=g.id WHERE g.id=$1`,
+          [unknownId],
+        )
+      ).rows[0];
+    // A receipt run whose response still holds its lease may yet drain, so it is not replaced.
+    await assert.rejects(startGame(owner), { status: 409 });
+    assert.deepEqual(created, []);
+    assert.deepEqual(await unknownRun(), {
+      status: "active",
+      submitted_flag_correct: null,
+      promoted_at: null,
+      jobs: 0,
+    });
+    // Once that response has ended with the uploader unknown, nothing can promote the receipt, so a
+    // new run replaces it instead of waiting for the 24-hour sweep.
+    await releaseSessionLease(unknownId, unknownId, unknownLease);
+    await assert.rejects(startGame(owner), /integration Sprite creation refused/);
+    assert.equal(created.length, 1);
+    assert.deepEqual(await unknownRun(), {
+      status: "ended",
+      submitted_flag_correct: null,
+      promoted_at: null,
+      jobs: 0,
+    });
   },
 );

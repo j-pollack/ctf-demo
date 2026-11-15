@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { transaction } from "./games";
+import { diagnosticText } from "./inference";
 import { hasSecret } from "./policy";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -11,7 +12,7 @@ export function hashSubmissionToken(token: string): string {
   return digest(token);
 }
 
-export type ReceiptResult = "accepted" | "conflict" | "unauthorized" | "stale";
+type ReceiptResult = "accepted" | "conflict" | "unauthorized" | "stale";
 
 export async function receiveFlagSubmission(input: {
   gameId: string;
@@ -61,6 +62,13 @@ export async function receiveFlagSubmission(input: {
       return receipt.operation_id === operation.id && receipt.body_hash === bodyHash
         ? "accepted"
         : "conflict";
+    // Sprite deletion updates operations before terminal runs, so do not lock them after one.
+    if (
+      run.status !== "active" ||
+      run.monitor_mode !== "async" ||
+      run.submission_transport !== "http"
+    )
+      return "stale";
     const {
       rows: [session],
     } = await client.query<{
@@ -78,9 +86,6 @@ export async function receiveFlagSubmission(input: {
       [operation.id],
     );
     if (
-      run.status !== "active" ||
-      run.monitor_mode !== "async" ||
-      run.submission_transport !== "http" ||
       Number(run.execution_generation) !== Number(operation.execution_generation) ||
       lockedOperation?.status !== "running" ||
       !operation.originating_lease ||
@@ -99,7 +104,7 @@ export async function receiveFlagSubmission(input: {
   });
 }
 
-export type PromotionResult = "promoted" | "pending" | "none";
+type PromotionResult = "promoted" | "pending" | "none";
 
 /** Call after command evidence and operation outcome are committed in the same transaction. */
 export async function promoteHttpSubmission(
@@ -172,8 +177,22 @@ export async function retryPendingHttpSubmissions(): Promise<number> {
      ORDER BY r.accepted_at,r.game_id LIMIT 20`,
   );
   let promoted = 0;
-  for (const row of rows)
-    if ((await transaction((client) => promoteHttpSubmission(client, row.game_id))) === "promoted")
-      promoted++;
+  for (const row of rows) {
+    try {
+      if (
+        (await transaction((client) => promoteHttpSubmission(client, row.game_id))) === "promoted"
+      )
+        promoted++;
+    } catch (error) {
+      // One failing run must not stall promotion, finalization and review for every other run.
+      console.error(
+        JSON.stringify({
+          event: "flag_submission.promotion_failed",
+          gameId: row.game_id,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+    }
+  }
   return promoted;
 }

@@ -31,7 +31,7 @@ import {
   type PublicGame,
 } from "./types";
 import { createEnvironment, restoreEnvironment } from "./sprites";
-import { configuredFlagEndpoint } from "./flag-submission-protocol";
+import { configuredFlagEndpoint, flagEndpointUrl } from "./flag-submission-protocol";
 import { forkBeforeLastInstruction, stripInheritedHiddenReasoning } from "./fork-transcript";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { enqueueMonitorJob } from "./monitor-jobs";
@@ -291,7 +291,7 @@ export async function publicGame(
         submissionCorrect: monitorState.submitted_flag_correct,
       }),
     ...(game.submission_transport === "http" && {
-      submissionUrl: configuredFlagEndpoint().url,
+      submissionUrl: flagEndpointUrl() ?? undefined,
     }),
     stateRevision: monitorState.state_revision,
     ...(monitor && { monitor }),
@@ -572,17 +572,6 @@ export async function startGame(
       )
     )
       throw new GameError("Wait for your current run to finish starting or responding.", 409);
-    if (
-      existing.rows.some((row) => row.submission_transport === "http") &&
-      (
-        await client.query(
-          `SELECT 1 FROM ctf.flag_submissions r JOIN ctf.games g ON g.id=r.game_id
-         WHERE g.owner_id=$1 AND g.status='active' LIMIT 1`,
-          [ownerId],
-        )
-      ).rowCount
-    )
-      throw new GameError("Wait for the submitted run to finish.", 409);
     const busyOwned = await client.query(
       `SELECT 1 FROM ctf.agent_sessions s JOIN ctf.games g ON g.id=s.game_id
       WHERE g.owner_id=$1 AND (g.status IN ('creating','active') OR

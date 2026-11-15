@@ -366,6 +366,50 @@ test(
       ),
       /foreign key constraint/,
     );
+    // A run whose promotion fails, accepted first, must not stop the worker promoting later runs.
+    const failingGameId = randomUUID();
+    const failingOperationId = randomUUID();
+    const failingLease = randomUUID();
+    const failingToken = randomBytes(32).toString("base64url");
+    await pool.query(
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,
+        monitor_version,status,token_budget,agent_effort,system_prompt,monitor_mode,submission_transport)
+       VALUES($1,$2,$3,$4,'agent','monitor','version','active',1000,'medium','','async','http')`,
+      [failingGameId, ownerId, `sprite-${failingGameId}`, hashSecret(flag)],
+    );
+    await pool.query(
+      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt,lease,lease_until)
+       VALUES($1,$1,1,'agent','medium','',$2,now()+interval '1 minute')`,
+      [failingGameId, failingLease],
+    );
+    await pool.query(
+      `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,command,
+        execution_generation,submission_token_hash,originating_lease)
+       VALUES($1,$2,$3,$3,'failing','command','curl',0,$4,$5)`,
+      [
+        failingOperationId,
+        `sprite-${failingGameId}`,
+        failingGameId,
+        hashSubmissionToken(failingToken),
+        failingLease,
+      ],
+    );
+    assert.equal(
+      await receiveFlagSubmission({ gameId: failingGameId, token: failingToken, value: flag }),
+      "accepted",
+    );
+    await pool.query("UPDATE ctf.sprite_operations SET status='completed',output='' WHERE id=$1", [
+      failingOperationId,
+    ]);
+    await pool.query(
+      `CREATE FUNCTION ctf.fail_promotion() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN RAISE EXCEPTION 'integration promotion failure'; END $$`,
+    );
+    await pool.query(
+      `CREATE TRIGGER fail_promotion BEFORE UPDATE ON ctf.games FOR EACH ROW
+       WHEN (NEW.id='${failingGameId}' AND NEW.status='finalizing')
+       EXECUTE FUNCTION ctf.fail_promotion()`,
+    );
     assert.equal((await post(flag, token, wrongGameId)).status, 401);
     const wrong = await post("wrong body", wrongToken, wrongGameId);
     assert.equal(wrong.status, 202);
@@ -380,5 +424,17 @@ test(
         .rows[0].submitted_flag_correct,
       false,
     );
+    const failing = async () =>
+      (
+        await pool.query(
+          `SELECT g.status,r.promoted_at IS NOT NULL AS promoted FROM ctf.games g
+           JOIN ctf.flag_submissions r ON r.game_id=g.id WHERE g.id=$1`,
+          [failingGameId],
+        )
+      ).rows[0];
+    assert.deepEqual(await failing(), { status: "active", promoted: false });
+    await pool.query("DROP TRIGGER fail_promotion ON ctf.games");
+    assert.equal(await retryPendingHttpSubmissions(), 1);
+    assert.deepEqual(await failing(), { status: "finalizing", promoted: true });
   },
 );
