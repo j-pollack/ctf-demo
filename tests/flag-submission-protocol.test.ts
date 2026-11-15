@@ -3,56 +3,42 @@ import { test } from "node:test";
 import {
   configuredFlagEndpoint,
   decodeSubmissionBody,
+  flagEndpointUrl,
   parseSubmissionRequest,
   validateFlagEndpoint,
 } from "../lib/flag-submission-protocol";
 
 const gameId = "bb8373cb-9fef-4e5a-9a6d-e307d421ab22";
-const headers = [
-  "Content-Type",
-  "application/octet-stream",
-  "Authorization",
-  "Bearer one-time-token",
-  "X-CTF-Run-Id",
-  gameId,
-];
+const headers = {
+  "Content-Type": "application/octet-stream",
+  Authorization: "Bearer one-time-token",
+  "X-CTF-Run-Id": gameId,
+};
 
-test("accepts only the exact upload route and unambiguous authority", () => {
+test("accepts only an unambiguous authorized upload", () => {
+  assert.deepEqual(parseSubmissionRequest(new Headers(headers)), {
+    gameId,
+    token: "one-time-token",
+  });
+  // Web Headers joins repeats with a comma, which no longer matches a single bearer.
+  const repeated = new Headers(headers);
+  repeated.append("Authorization", "Bearer other");
+  assert.deepEqual(parseSubmissionRequest(repeated), { status: 401 });
   assert.deepEqual(
-    parseSubmissionRequest({ method: "POST", url: "/v1/end", rawHeaders: headers }),
-    {
-      gameId,
-      token: "one-time-token",
-    },
-  );
-  assert.deepEqual(
-    parseSubmissionRequest({ method: "POST", url: "/v1/end?x=1", rawHeaders: headers }),
-    { status: 404 },
-  );
-  assert.deepEqual(
-    parseSubmissionRequest({
-      method: "POST",
-      url: "/v1/end",
-      rawHeaders: [...headers, "Authorization", "Bearer other"],
-    }),
+    parseSubmissionRequest(new Headers({ ...headers, Origin: "https://example.test" })),
     { status: 400 },
   );
   assert.deepEqual(
-    parseSubmissionRequest({
-      method: "POST",
-      url: "/v1/end",
-      rawHeaders: [...headers, "Origin", "https://example.test"],
-    }),
+    parseSubmissionRequest(new Headers({ ...headers, "Transfer-Encoding": "chunked, chunked" })),
     { status: 400 },
   );
   assert.deepEqual(
-    parseSubmissionRequest({
-      method: "POST",
-      url: "/v1/end",
-      rawHeaders: [...headers, "Transfer-Encoding", "chunked, chunked"],
-    }),
-    { status: 400 },
+    parseSubmissionRequest(new Headers({ ...headers, "Content-Type": "text/plain" })),
+    { status: 415 },
   );
+  assert.deepEqual(parseSubmissionRequest(new Headers({ ...headers, "Content-Length": "8193" })), {
+    status: 413,
+  });
 });
 
 test("bounded UTF-8 body rejects invalid, empty and oversized input", () => {
@@ -152,4 +138,17 @@ test("selected unsafe origin fails without falling back", () => {
       VERCEL_PROJECT_PRODUCTION_URL: "app.example.test",
     }),
   );
+});
+
+test("the display URL is null when the endpoint is not configured", () => {
+  const saved = { ...process.env };
+  try {
+    for (const name of ["SITE_URL", "VERCEL_ENV", "VERCEL_URL", "VERCEL_PROJECT_PRODUCTION_URL"])
+      delete process.env[name];
+    assert.equal(flagEndpointUrl(), null);
+    process.env.SITE_URL = "https://tunnel.example.test";
+    assert.equal(flagEndpointUrl(), "https://tunnel.example.test/v1/end");
+  } finally {
+    process.env = saved;
+  }
 });

@@ -79,11 +79,10 @@ export async function POST(request: Request): Promise<Response> {
     return respond(503);
   }
   const url = new URL(request.url);
-  if (url.pathname !== "/v1/end" || url.search || url.hash) return respond(404);
+  if (url.search) return respond(404);
   const authority = request.headers.get("host");
   if (url.protocol !== "https:" || authority !== endpoint.hostname) return respond(400);
-  const rawHeaders = [...request.headers.entries()].flatMap(([name, value]) => [name, value]);
-  const parsed = parseSubmissionRequest({ method: request.method, url: "/v1/end", rawHeaders });
+  const parsed = parseSubmissionRequest(request.headers);
   if ("status" in parsed) return respond(parsed.status);
   const body = await readBody(request);
   if ("status" in body) return respond(body.status);

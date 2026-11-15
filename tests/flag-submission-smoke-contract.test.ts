@@ -1,20 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyControlDenial, parseSmokeConfig } from "../scripts/flag-ingress-smoke-contract";
+import { classifyControlDenial, parseSmokeConfig } from "../scripts/flag-submission-smoke-contract";
 
 const env = {
   CTF_SMOKE_DISPOSABLE: "1",
   CTF_SMOKE_DATABASE_URL: "postgresql://smoke@db.example.test/ctf_smoke_flag_http",
   CTF_SMOKE_DATABASE_NAME: "ctf_smoke_flag_http",
-  CTF_SMOKE_DEPLOYMENT_ID: "local-tunnel-1234",
-  SITE_URL: "https://flags-stage.example.test",
+  SITE_URL: "https://flags.example.test",
   CTF_SMOKE_CONTROL_URL: "https://owned-control.example.test/health",
   SPRITE_TOKEN: "synthetic-token",
 };
 
-test("Sprite ingress smoke uses the configured site target and unrelated HTTPS control", () => {
-  assert.equal(parseSmokeConfig(env).endpoint, "https://flags-stage.example.test/v1/end");
-  assert.equal(parseSmokeConfig(env).hostname, "flags-stage.example.test");
+test("Sprite submission smoke uses the configured site target and unrelated HTTPS control", () => {
+  assert.equal(parseSmokeConfig(env).endpoint, "https://flags.example.test/v1/end");
+  assert.equal(parseSmokeConfig(env).hostname, "flags.example.test");
   assert.equal(parseSmokeConfig(env).controlUrl, env.CTF_SMOKE_CONTROL_URL);
   assert.throws(
     () => parseSmokeConfig({ ...env, CTF_SMOKE_DISPOSABLE: "" }),
@@ -24,7 +23,7 @@ test("Sprite ingress smoke uses the configured site target and unrelated HTTPS c
     () => parseSmokeConfig({ ...env, CTF_SMOKE_DATABASE_NAME: "shared" }),
     /CTF_SMOKE_DATABASE_NAME/,
   );
-  assert.throws(() => parseSmokeConfig({ ...env, SITE_URL: "http://flags-stage.example.test" }));
+  assert.throws(() => parseSmokeConfig({ ...env, SITE_URL: "http://flags.example.test" }));
   assert.throws(() => parseSmokeConfig({ ...env, SITE_URL: "" }));
   assert.throws(
     () => parseSmokeConfig({ ...env, CTF_SMOKE_CONTROL_URL: "" }),
@@ -42,7 +41,7 @@ test("Sprite ingress smoke uses the configured site target and unrelated HTTPS c
     () =>
       parseSmokeConfig({
         ...env,
-        CTF_SMOKE_CONTROL_URL: "https://flags-stage.example.test/health",
+        CTF_SMOKE_CONTROL_URL: "https://flags.example.test/health",
       }),
     /unrelated/,
   );

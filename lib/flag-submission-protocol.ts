@@ -6,97 +6,57 @@ const TOKEN = /^[A-Za-z0-9_-]{8,256}$/;
 const DNS_HOSTNAME =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
-function validHostname(hostname: string): boolean {
-  return (
-    !hostname.includes(":") &&
-    isIP(hostname) === 0 &&
-    DNS_HOSTNAME.test(hostname) &&
-    hostname !== "localhost"
-  );
-}
-
 export function validateFlagEndpoint(raw: string): { url: string; hostname: string } {
   const endpoint = new URL(raw);
   if (
     endpoint.protocol !== "https:" ||
-    (endpoint.port !== "" && endpoint.port !== "443") ||
+    endpoint.port ||
     endpoint.pathname !== "/v1/end" ||
     endpoint.search ||
     endpoint.hash ||
     endpoint.username ||
     endpoint.password ||
-    !validHostname(endpoint.hostname) ||
+    isIP(endpoint.hostname) !== 0 ||
+    !DNS_HOSTNAME.test(endpoint.hostname) ||
     endpoint.toString() !== raw
   )
     throw new Error("Flag endpoint must be a canonical HTTPS /v1/end URL on port 443.");
-  return { url: endpoint.toString(), hostname: endpoint.hostname };
+  return { url: raw, hostname: endpoint.hostname };
 }
 
+// SITE_URL is this app's own override, and the only source outside Vercel. Vercel sets
+// VERCEL_PROJECT_PRODUCTION_URL on previews too, so only production may use it.
 export function configuredFlagEndpoint(env: Record<string, string | undefined> = process.env): {
   url: string;
   hostname: string;
 } {
-  let origin: string;
-  if (env.SITE_URL) {
-    const raw = env.SITE_URL;
-    const site = new URL(raw);
-    if (
-      site.protocol !== "https:" ||
-      site.port ||
-      site.username ||
-      site.password ||
-      site.pathname !== "/" ||
-      site.search ||
-      site.hash ||
-      !validHostname(site.hostname) ||
-      (raw !== site.origin && raw !== site.toString())
-    )
-      throw new Error("SITE_URL must be a canonical public HTTPS origin.");
-    origin = site.origin;
-  } else {
-    const host =
-      env.VERCEL_ENV === "production" && env.VERCEL_PROJECT_PRODUCTION_URL
-        ? env.VERCEL_PROJECT_PRODUCTION_URL
-        : env.VERCEL_URL;
-    if (!host) throw new Error("A public HTTP submission origin is required.");
-    if (!validHostname(host)) throw new Error("Vercel submission host must be canonical DNS.");
-    origin = `https://${host}`;
-  }
+  const host =
+    (env.VERCEL_ENV === "production" && env.VERCEL_PROJECT_PRODUCTION_URL) || env.VERCEL_URL;
+  if (!env.SITE_URL && !host) throw new Error("A public HTTP submission origin is required.");
+  const origin = env.SITE_URL ? env.SITE_URL.replace(/\/$/, "") : `https://${host}`;
   return validateFlagEndpoint(`${origin}/v1/end`);
 }
 
-export function parseSubmissionRequest(input: {
-  method?: string;
-  url?: string;
-  rawHeaders: string[];
-}): { gameId: string; token: string } | { status: number } {
-  if (input.url !== "/v1/end") return { status: 404 };
-  if (input.method !== "POST") return { status: 405 };
-  if (input.rawHeaders.length % 2 !== 0) return { status: 400 };
-  const headers = new Map<string, string>();
-  const security = new Set([
-    "authorization",
-    "x-ctf-run-id",
-    "content-type",
-    "content-length",
-    "transfer-encoding",
-    "content-encoding",
-    "origin",
-    "host",
-  ]);
-  for (let i = 0; i < input.rawHeaders.length; i += 2) {
-    const name = input.rawHeaders[i].toLowerCase();
-    if (security.has(name) && headers.has(name)) return { status: 400 };
-    headers.set(name, input.rawHeaders[i + 1]);
+/** For display only: null when the endpoint is not configured. Run creation fails closed. */
+export function flagEndpointUrl(): string | null {
+  try {
+    return configuredFlagEndpoint().url;
+  } catch {
+    return null;
   }
+}
+
+export function parseSubmissionRequest(
+  headers: Headers,
+): { gameId: string; token: string } | { status: number } {
   if (headers.has("origin") || headers.has("content-encoding")) return { status: 400 };
   const transferEncoding = headers.get("transfer-encoding");
-  if (transferEncoding !== undefined && transferEncoding !== "chunked") return { status: 400 };
+  if (transferEncoding !== null && transferEncoding !== "chunked") return { status: 400 };
   if (headers.get("content-type") !== "application/octet-stream") return { status: 415 };
   const contentLength = headers.get("content-length");
-  if (transferEncoding && contentLength !== undefined) return { status: 400 };
+  if (transferEncoding && contentLength !== null) return { status: 400 };
   if (
-    contentLength !== undefined &&
+    contentLength !== null &&
     (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_BODY_BYTES)
   )
     return { status: 413 };

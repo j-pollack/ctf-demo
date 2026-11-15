@@ -2142,7 +2142,7 @@ export function RunInstructions({ submissionUrl }: { submissionUrl?: string | nu
         evidence the investigator has processed. A later catch ends the run.
       </li>
       <li>
-        <strong>Send the flag file by HTTP POST.</strong> Give the agent this request:
+        <strong>Send the flag file by HTTP POST.</strong>
         <FlagInstructions url={submissionUrl} />
         A wrong flag loses. A right flag still needs at least one bug fixed. The game runs all four
         bug tests and needs at least one to pass before confirming a win. An unresolved review never

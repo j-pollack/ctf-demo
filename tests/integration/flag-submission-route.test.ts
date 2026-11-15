@@ -12,7 +12,7 @@ const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
 const adminUrl = new URL(base);
 adminUrl.pathname = "/postgres";
 
-test("Vercel flag route accepts bounded live capabilities only", { timeout: 30_000 }, async (t) => {
+test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, async (t) => {
   const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
   await admin.query(`CREATE DATABASE "${database}"`);
   const url = new URL(base);
@@ -135,7 +135,6 @@ test("Vercel flag route accepts bounded live capabilities only", { timeout: 30_0
     415,
   );
   assert.equal((await submit(flag, {}, `${endpoint}?x=1`)).status, 404);
-  assert.equal((await submit(flag, {}, "https://flags.integration.test/v1/flag")).status, 404);
   const localNextUrl = "https://localhost:3001/v1/end";
   assert.equal((await submit(flag, {}, localNextUrl)).status, 202);
   assert.equal((await submit(flag, { Host: "other.integration.test" }, localNextUrl)).status, 400);
@@ -197,7 +196,7 @@ test("Vercel flag route accepts bounded live capabilities only", { timeout: 30_0
   );
 });
 
-test("Vercel flag route rejects bad and stalled Web streams", { timeout: 15_000 }, async () => {
+test("Flag route rejects bad and stalled Web streams", { timeout: 15_000 }, async () => {
   process.env.SITE_URL = "https://flags.integration.test";
   const route = await import("../../app/v1/end/route");
   const endpoint = "https://flags.integration.test/v1/end";

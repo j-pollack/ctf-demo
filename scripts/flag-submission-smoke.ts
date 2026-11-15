@@ -9,7 +9,7 @@ import {
   checkpointEnvironment,
   restoreEnvironment,
 } from "../lib/sprites";
-import { classifyControlDenial, parseSmokeConfig } from "./flag-ingress-smoke-contract";
+import { classifyControlDenial, parseSmokeConfig } from "./flag-submission-smoke-contract";
 
 type Result = { exitCode: number; output: string };
 const started = Date.now();
@@ -83,8 +83,6 @@ async function cleanSprite(sprites: SpritesClient, name: string) {
 }
 
 async function main() {
-  if (process.env.CTF_SMOKE_DISPOSABLE !== "1")
-    throw new Error("CTF_SMOKE_DISPOSABLE=1 is required.");
   const config = parseSmokeConfig(process.env);
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", interrupt);
@@ -98,7 +96,7 @@ async function main() {
   const gameId = randomUUID();
   const lease = randomUUID();
   const operationId = randomUUID();
-  const spriteName = `ctf-ingress-smoke-${gameId}`;
+  const spriteName = `ctf-submission-smoke-${gameId}`;
   const token = randomBytes(32).toString("base64url");
   const flag = `flag{${randomBytes(24).toString("base64url")}}`;
   let sprite: Sprite | undefined;
@@ -119,13 +117,13 @@ async function main() {
 
     stage = "outside control preflight";
     requireActive();
-    const ingressReachable = await fetch(config.endpoint, {
+    const reachable = await fetch(config.endpoint, {
       method: "GET",
       redirect: "manual",
       signal: AbortSignal.any([cancellation.signal, AbortSignal.timeout(10_000)]),
     });
-    assert.equal(ingressReachable.status, 405, "Dedicated ingress did not reject GET /v1/end.");
-    await ingressReachable.body?.cancel();
+    assert.equal(reachable.status, 405, "The receiver did not reject GET /v1/end.");
+    await reachable.body?.cancel();
     const unauthorized = await fetch(config.endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream", "X-CTF-Run-Id": randomUUID() },
@@ -151,7 +149,7 @@ async function main() {
     sprite = await sprites.createSprite(spriteName, {
       config: { ramMB: 512, cpus: 1 },
       urlSettings: { auth: "sprite", privateAccess: "admins" },
-      labels: ["ctf-ingress-smoke"],
+      labels: ["ctf-submission-smoke"],
     });
     await sprite.updateNetworkPolicy({ rules: [{ domain: "*", action: "deny" }] });
     assert.deepEqual((await sprite.getNetworkPolicy()).rules, [{ domain: "*", action: "deny" }]);
@@ -179,7 +177,7 @@ async function main() {
     ]);
     assert.equal(allowedHost.exitCode, 0);
     assert.equal(allowedHost.output.trim(), "HTTP:405");
-    report("allowed-ingress-host", "reachable");
+    report("allowed-submission-host", "reachable");
 
     stage = "unrelated host denial";
     const deniedControl = await spriteCommand(sprite, [
@@ -303,7 +301,7 @@ async function main() {
   }
   if (cleanupFailed) throw new Error("Owned resource cleanup failed.");
   requireActive();
-  report("sprite-contract", "passed", { id: config.deploymentId, elapsedMs: Date.now() - started });
+  report("sprite-contract", "passed", { elapsedMs: Date.now() - started });
 }
 
 main().catch(() => {

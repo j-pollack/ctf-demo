@@ -1,4 +1,4 @@
-# Flag submission ingress
+# Flag submission endpoint
 
 New HTTP runs upload raw flag bytes to `POST /v1/end` on the app's public HTTPS origin. `SITE_URL` is this app's optional origin override, not a Vercel-provided variable. The backend derives the endpoint from it when set. Leave it unset on Vercel to use the system variables below. On Vercel production it otherwise uses `VERCEL_PROJECT_PRODUCTION_URL` when available, then the immutable `VERCEL_URL`. Previews use their immutable `VERCEL_URL`. An invalid selected value fails closed. Request headers do not choose the destination. The selected hostname is the only egress host permitted for new HTTP Sprite runs. The command receives the endpoint as `TARGET` and a short-lived `CTF_SUBMISSION_TOKEN`. The route requires the token and matching run ID before admitting a receipt.
 
@@ -18,14 +18,13 @@ If the tunnel hostname changes, inventory all nonterminal HTTP runs, including i
 
 ## Opt-in full receipt smoke
 
-`node --import tsx scripts/flag-ingress-smoke.ts` is opt-in. Supply all values explicitly, without loading `.env.local`:
+`node --import tsx scripts/flag-submission-smoke.ts` is opt-in. Supply all values explicitly, without loading `.env.local`:
 
 | Variable                  | Value                                                                      |
 | ------------------------- | -------------------------------------------------------------------------- |
 | `CTF_SMOKE_DISPOSABLE`    | `1`                                                                        |
 | `CTF_SMOKE_DATABASE_URL`  | Direct URL for an empty, migrated `ctf_smoke_*` database with verified TLS |
 | `CTF_SMOKE_DATABASE_NAME` | Exact database name from that URL                                          |
-| `CTF_SMOKE_DEPLOYMENT_ID` | Identifier for the tunnel or deployment                                    |
 | `SITE_URL`                | Exact public HTTPS origin under test                                       |
 | `CTF_SMOKE_CONTROL_URL`   | Unrelated operator-owned public HTTPS URL returning `200`                  |
 | `SPRITE_TOKEN`            | Credential for disposable test Sprites                                     |
@@ -36,4 +35,4 @@ For a local tunnel proof without database writes, use a separate bounded probe o
 
 ## Deployment and rollback
 
-The public receiver must reach the same app and database that own the run. Before changing an active origin or route, stop new HTTP run creation and retire or replace affected nonterminal runs with a compatible worker. A Sprite hostname policy does not isolate the HTTP path or services sharing that hostname or IP address. Production promotion requires separate real ingress, rate-limit and Sprite checks. The local free ngrok cap is weaker than the planned Vercel WAF rule.
+The public receiver must reach the same app and database that own the run. Before changing an active origin or route, stop new HTTP run creation and retire or replace affected nonterminal runs with a compatible worker. A Sprite hostname policy does not isolate the HTTP path or services sharing that hostname or IP address. Production promotion requires separate real receiver, rate-limit and Sprite checks. The local free ngrok cap is weaker than the planned Vercel WAF rule.

@@ -7,7 +7,6 @@ export type SmokeConfig = {
   hostname: string;
   controlUrl: string;
   spriteToken: string;
-  deploymentId: string;
 };
 
 export function parseSmokeConfig(env: Record<string, string | undefined>): SmokeConfig {
@@ -65,15 +64,12 @@ export function parseSmokeConfig(env: Record<string, string | undefined>): Smoke
     throw new Error("CTF_SMOKE_CONTROL_URL must be a canonical HTTPS URL.");
   if (control.hostname === hostname)
     throw new Error("CTF_SMOKE_CONTROL_URL must use an unrelated hostname.");
-  if (!env.CTF_SMOKE_DEPLOYMENT_ID || !/^[a-zA-Z0-9._-]{4,100}$/.test(env.CTF_SMOKE_DEPLOYMENT_ID))
-    throw new Error("CTF_SMOKE_DEPLOYMENT_ID is required.");
   return {
     databaseUrl: database.toString(),
     endpoint,
     hostname,
     controlUrl: rawControl,
     spriteToken: env.SPRITE_TOKEN,
-    deploymentId: env.CTF_SMOKE_DEPLOYMENT_ID,
   };
 }
 
