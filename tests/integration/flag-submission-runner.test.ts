@@ -57,8 +57,7 @@ await test(
     const { claimSession, releaseSessionLease } = await import("../../lib/sessions");
     const { dispatchAsyncCommand, completeAsyncCommand } =
       await import("../../lib/monitor-commands");
-    const { receiveFlagSubmission, retryPendingHttpSubmissions } =
-      await import("../../lib/flag-submissions");
+    const { receiveFlagSubmission } = await import("../../lib/flag-submissions");
     const { beginAsyncSubmission, claimAsyncFinalization } =
       await import("../../lib/async-finalization");
     const { makeSecret } = await import("../../lib/policy");
@@ -137,7 +136,6 @@ await test(
       (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [gameId])).rows[0].status,
       "active",
     );
-    assert.equal(await retryPendingHttpSubmissions(), 0);
     await completeAsyncCommand({
       dispatchId: sibling.id,
       gameId,
@@ -170,7 +168,6 @@ await test(
       events.some((event) => event.kind === "submit" && event.correct !== undefined),
       false,
     );
-    assert.equal(await retryPendingHttpSubmissions(), 0);
     const unknownId = randomUUID();
     await pool.query(
       `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,
@@ -213,7 +210,6 @@ await test(
       (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [unknownId])).rows[0].status,
       "active",
     );
-    assert.equal(await retryPendingHttpSubmissions(), 0);
     assert.equal(
       (
         await pool.query("SELECT count(*)::int AS n FROM ctf.finalization_jobs WHERE game_id=$1", [

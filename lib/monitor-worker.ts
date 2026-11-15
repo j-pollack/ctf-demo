@@ -21,7 +21,6 @@ import {
 import { executeCommand } from "./sprites";
 import { SEED_BUGS, seedScoreCommand } from "./seed";
 import { diagnosticText } from "./inference";
-import { retryPendingHttpSubmissions } from "./flag-submissions";
 import type { GameRow } from "./games";
 import { flagReadPolicyForRun } from "./flag-read-policy";
 import {
@@ -192,10 +191,9 @@ async function finalizeOneRun() {
 
 export async function runMonitorWorkerOnce(timingOverride?: InvestigatorTiming): Promise<boolean> {
   const timing = resolveInvestigatorTiming(timingOverride);
-  const promoted = await retryPendingHttpSubmissions();
   const finalized = await finalizeOneRun();
   const claimed = await claimMonitorJob(BOUNDED_INVESTIGATOR_POLICY.claimMs);
-  if (!claimed) return finalized || promoted > 0;
+  if (!claimed) return finalized;
   const claim: MonitorJobClaim = { ...claimed, runBudgetExempt: true };
   try {
     await reviewClaim(claim, timing);

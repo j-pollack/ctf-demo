@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
-import { db } from "./db";
 import { transaction } from "./games";
-import { diagnosticText } from "./inference";
 import { hasSecret } from "./policy";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -162,37 +160,4 @@ export async function promoteHttpSubmission(
     [gameId],
   );
   return "promoted";
-}
-
-/** Bounded worker recovery after a crash between evidence persistence and promotion. */
-export async function retryPendingHttpSubmissions(): Promise<number> {
-  const { rows } = await db.query<{ game_id: string }>(
-    `SELECT r.game_id FROM ctf.flag_submissions r
-     JOIN ctf.games g ON g.id=r.game_id
-     JOIN ctf.sprite_operations uploader ON uploader.id=r.operation_id
-     WHERE r.promoted_at IS NULL AND g.status='active'
-       AND uploader.status='completed' AND uploader.output IS NOT NULL
-       AND NOT EXISTS (SELECT 1 FROM ctf.sprite_operations pending
-         WHERE pending.sprite_name=g.sprite_name AND pending.status IN ('running','unknown'))
-     ORDER BY r.accepted_at,r.game_id LIMIT 20`,
-  );
-  let promoted = 0;
-  for (const row of rows) {
-    try {
-      if (
-        (await transaction((client) => promoteHttpSubmission(client, row.game_id))) === "promoted"
-      )
-        promoted++;
-    } catch (error) {
-      // One failing run must not stall promotion, finalization and review for every other run.
-      console.error(
-        JSON.stringify({
-          event: "flag_submission.promotion_failed",
-          gameId: row.game_id,
-          error: diagnosticText(error instanceof Error ? error.message : error),
-        }),
-      );
-    }
-  }
-  return promoted;
 }
