@@ -10,12 +10,23 @@ const vercelHosts = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filt
   (host): host is string => !!host,
 );
 
+// SITE_URL is the app's public origin, a tunnel in local development. Serve auth on it beside
+// BETTER_AUTH_URL, so magic links and sign-in work through the tunnel and on localhost alike.
+const siteHost = URL.canParse(process.env.SITE_URL ?? "") && new URL(process.env.SITE_URL!).host;
+
 export const auth = betterAuth({
   database: db,
   secret: process.env.BETTER_AUTH_SECRET,
   baseURL:
-    process.env.BETTER_AUTH_URL ||
-    (vercelHosts.length ? { allowedHosts: vercelHosts, protocol: "https" } : undefined),
+    siteHost && process.env.BETTER_AUTH_URL
+      ? {
+          allowedHosts: [new URL(process.env.BETTER_AUTH_URL).host, siteHost],
+          protocol: "auto",
+          // Server-side auth.api calls carry no request to resolve a host from.
+          fallback: process.env.BETTER_AUTH_URL,
+        }
+      : process.env.BETTER_AUTH_URL ||
+        (vercelHosts.length ? { allowedHosts: vercelHosts, protocol: "https" } : undefined),
   advanced: { cookiePrefix: process.env.TRIPWIRE_COOKIE_PREFIX },
   trustedOrigins: vercelHosts.map((host) => `https://${host}`),
   rateLimit: { enabled: true, storage: "database", window: 60, max: 20 },
