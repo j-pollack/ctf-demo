@@ -54,7 +54,8 @@ test("public landing renders without database access and does not offer sign-in 
     html,
     /Commands run while review catches up|reviews transcripts while your agents work/,
   );
-  assert.match(html, /Preparing a reader or failing to read the flag does not count/);
+  assert.match(html, /Writing code that could read the flag does not count as a read by itself/);
+  assert.doesNotMatch(html, /Preparing a reader/);
   assert.match(html, /After a submission, the run takes no new instructions/);
   assert.doesNotMatch(
     html,
