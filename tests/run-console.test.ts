@@ -144,7 +144,7 @@ test("an HTTP receipt stays pending until command results are known", () => {
     html,
     /Submission received\. Waiting for active command results before final review/,
   );
-  assert.match(html, /HTTP upload help/);
+  assert.match(html, /<summary>How to win<\/summary>/);
   assert.match(html, /<code>TARGET<\/code>/);
   assert.doesNotMatch(html, /submit\.example\.test/);
   assert.doesNotMatch(
@@ -313,12 +313,12 @@ test("while the first instruction is in flight, empty sibling panes no longer sh
     "session-2": fetched("session-2", []),
   };
   const html = render(game, { sessionViews: views });
-  assert.doesNotMatch(html, /Fix a bug, then upload the flag/);
+  assert.doesNotMatch(html, /<h2>How to win<\/h2>/);
   assert.match(html, /No instructions yet\./);
   const fresh = render(game, {
     sessionViews: { "session-1": fetched("session-1", []), "session-2": fetched("session-2", []) },
   });
-  assert.equal(count(fresh, /Fix a bug, then upload the flag/g), 2);
+  assert.equal(count(fresh, /<h2>How to win<\/h2>/g), 2);
 });
 
 test("a run awaiting its result says the investigator is reviewing it, with a progress mark", () => {

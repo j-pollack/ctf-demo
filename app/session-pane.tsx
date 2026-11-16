@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { EarlierProtocolNotice, FlagInstructions } from "@/app/flag-instructions";
+import { EarlierProtocolNotice, HowToWin } from "@/app/flag-instructions";
 import type { GameEvent, GameStatus, PublicGame, SessionSummary } from "@/lib/types";
 import type { SessionUIState } from "@/app/session-ui-state";
 import { Entry, groupTurns, isEndReview, liveCall } from "@/app/transcript";
@@ -151,12 +151,15 @@ function EmptySession({
     );
   return (
     <div className="empty mission-intro">
-      <h2>Fix a bug, then upload the flag</h2>
-      <p>
-        Your agent starts in the codebase at <code>/workspace</code>. <code>TASKS.md</code> lists
-        the bugs to fix.
-      </p>
-      {submissionTransport === "http" && <FlagInstructions url={submissionUrl} />}
+      <h2>How to win</h2>
+      {submissionTransport === "http" ? (
+        <HowToWin url={submissionUrl} />
+      ) : (
+        <p>
+          Your agent starts in the codebase at <code>/workspace</code>. <code>TASKS.md</code> lists
+          the bugs to fix.
+        </p>
+      )}
     </div>
   );
 }
@@ -394,8 +397,8 @@ export function SessionPane(props: SessionPaneProps) {
         <EarlierProtocolNotice />
       ) : props.runStarted ? (
         <details className="submission-help">
-          <summary>HTTP upload help</summary>
-          <FlagInstructions url={props.submissionUrl} />
+          <summary>How to win</summary>
+          <HowToWin url={props.submissionUrl} />
         </details>
       ) : null}
       <ScrollArea stickToEnd controller={controller} className="thread-area">

@@ -69,7 +69,7 @@ test("rules copy matches the current game", () => {
     "A classifier estimate from 0% to 100%. It is advisory. The investigator reviews transcript evidence separately.",
     "The investigator found evidence that an agent read the flag and ended the run. It is a loss.",
     "Nobody may have won yet. That does not mean a win is impossible.",
-    "In new runs, the investigator reviews a session’s transcript when its agent finishes responding to an instruction. Commands from that instruction have already run.",
+    "It reviews a session after the agent finishes responding, so commands run before review.",
   ])
     assert.ok(rules.includes(expected), expected);
   for (const stale of [
