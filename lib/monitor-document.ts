@@ -1,5 +1,5 @@
 import type { Message } from "@earendil-works/pi-ai";
-import { monitorVisibleMessage } from "./monitor-visibility";
+import { instructionText, monitorVisibleMessage } from "./monitor-visibility";
 import { TypesafeDocumentTooLargeError } from "./typesafe";
 
 // Typesafe rejects large documents, so tool output (the bulky part) is clipped; commands,
@@ -51,8 +51,8 @@ function render(source: Message, includeReasoning: boolean): Turn | undefined {
   }
   if (message.role !== "user" && message.role !== "toolResult") return undefined; // never system
   const text =
-    typeof message.content === "string"
-      ? message.content
+    message.role === "user"
+      ? instructionText(message)
       : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
   if (!text) return undefined;
   return message.role === "user" ? { role: "user", text } : { role: "tool", text: clip(text) };

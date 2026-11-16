@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
@@ -8,8 +8,9 @@ import { enqueueMonitorJob } from "./monitor-jobs";
 import { GameError } from "./policy";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { destroyEnvironment } from "./sprites";
+import { hashSubmissionToken, promoteHttpSubmission } from "./flag-submissions";
 
-export type CommandDispatch = { id: string; generation: number };
+export type CommandDispatch = { id: string; generation: number; submissionToken?: string };
 
 function mergeCommandResult(
   current: Message[],
@@ -89,10 +90,11 @@ export async function dispatchAsyncCommand(input: {
     } = await client.query<{
       status: string;
       monitor_mode: string;
+      submission_transport: "tool" | "http";
       execution_generation: string;
       sprite_name: string;
     }>(
-      "SELECT status,monitor_mode,execution_generation,sprite_name FROM ctf.games WHERE id=$1 FOR UPDATE",
+      "SELECT status,monitor_mode,submission_transport,execution_generation,sprite_name FROM ctf.games WHERE id=$1 FOR UPDATE",
       [input.gameId],
     );
     if (
@@ -102,6 +104,12 @@ export async function dispatchAsyncCommand(input: {
       Number(run.execution_generation) !== input.generation
     )
       throw new GameError("This response has stopped.", 409);
+    if (
+      run.submission_transport === "http" &&
+      (await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [input.gameId]))
+        .rowCount
+    )
+      throw new GameError("A flag has already been submitted.", 409);
     const {
       rows: [session],
     } = await client.query<{ lease: string | null; lease_until: Date | null }>(
@@ -117,10 +125,12 @@ export async function dispatchAsyncCommand(input: {
     );
     if (exclusive) throw new GameError("The environment is being finalized.", 409);
     const id = randomUUID();
+    const submissionToken =
+      run.submission_transport === "http" ? randomBytes(32).toString("base64url") : undefined;
     await client.query(
       `INSERT INTO ctf.sprite_operations
-       (id,sprite_name,game_id,session_id,tool_call_id,kind,command,execution_generation)
-       VALUES($1,$2,$3,$4,$5,'command',$6,$7)`,
+       (id,sprite_name,game_id,session_id,tool_call_id,kind,command,execution_generation,submission_token_hash,originating_lease)
+       VALUES($1,$2,$3,$4,$5,'command',$6,$7,$8,$9)`,
       [
         id,
         run.sprite_name,
@@ -129,9 +139,11 @@ export async function dispatchAsyncCommand(input: {
         input.toolCallId,
         input.command,
         input.generation,
+        submissionToken ? hashSubmissionToken(submissionToken) : null,
+        submissionToken ? input.lease : null,
       ],
     );
-    return { id, generation: input.generation };
+    return { id, generation: input.generation, ...(submissionToken && { submissionToken }) };
   });
 }
 
@@ -217,6 +229,7 @@ export async function completeAsyncCommand(input: {
         epoch: evidence.epoch,
         version: evidence.version,
       });
+    await promoteHttpSubmission(client, input.gameId);
     return { ...evidence, event: { ...event.data, id: Number(event.id) } };
   });
 }

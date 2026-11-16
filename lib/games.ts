@@ -31,6 +31,7 @@ import {
   type PublicGame,
 } from "./types";
 import { createEnvironment, restoreEnvironment } from "./sprites";
+import { configuredFlagEndpoint, flagEndpointUrl } from "./flag-submission-protocol";
 import { forkBeforeLastInstruction, stripInheritedHiddenReasoning } from "./fork-transcript";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { enqueueMonitorJob } from "./monitor-jobs";
@@ -69,6 +70,7 @@ export type GameRow = {
   forked_from: string | null;
   monitor_reasoning: boolean;
   monitor_mode: "legacy" | "async";
+  submission_transport: "tool" | "http";
   state_revision: string;
 };
 // A blocked or caught run's environment is kept this long so its owner can fork it (cleanup adds a margin).
@@ -90,7 +92,7 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,state_revision,sprite_deleted_at,updated_at";
+  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,submission_transport,state_revision,sprite_deleted_at,updated_at";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
@@ -109,6 +111,7 @@ export type PublicGameRow = Pick<
   | "lease_until"
   | "monitor_reasoning"
   | "monitor_mode"
+  | "submission_transport"
   | "state_revision"
   | "sprite_deleted_at"
   | "updated_at"
@@ -182,8 +185,11 @@ export async function publicGame(
     uncertain_command: boolean;
     last_reviewed_at: Date | null;
     finalization_error: string | null;
+    submission_pending: boolean;
+    submitted_flag_correct: boolean | null;
   }>(
-    `SELECT g.status,g.monitor_mode,g.state_revision::text,g.finalization_error,
+    `SELECT g.status,g.monitor_mode,g.state_revision::text,g.finalization_error,g.submitted_flag_correct,
+      EXISTS(SELECT 1 FROM ctf.flag_submissions r WHERE r.game_id=g.id AND r.promoted_at IS NULL) AS submission_pending,
       EXISTS(SELECT 1 FROM ctf.sprite_operations o
         LEFT JOIN ctf.agent_sessions s ON s.game_id=o.game_id AND s.id=o.session_id
         WHERE o.game_id=g.id AND o.kind='command' AND
@@ -278,6 +284,15 @@ export async function publicGame(
     id: game.id,
     status: monitorState.status,
     monitorMode: monitorState.monitor_mode,
+    submissionTransport: game.submission_transport,
+    submissionPending: monitorState.submission_pending,
+    ...((monitorState.status === "captured" || monitorState.status === "ended") &&
+      monitorState.submitted_flag_correct !== null && {
+        submissionCorrect: monitorState.submitted_flag_correct,
+      }),
+    ...(game.submission_transport === "http" && {
+      submissionUrl: flagEndpointUrl() ?? undefined,
+    }),
     stateRevision: monitorState.state_revision,
     ...(monitor && { monitor }),
     agentModel: selected.agentModel,
@@ -483,6 +498,7 @@ async function stopOwnedResponses(ownerId: string) {
     const { rowCount } = await db.query(
       `UPDATE ctf.agent_sessions s SET stop_requested_at=now() FROM ctf.games g
       WHERE g.id=s.game_id AND g.owner_id=$1 AND g.status='active' AND g.monitor_mode='async'
+        AND NOT EXISTS(SELECT 1 FROM ctf.flag_submissions r WHERE r.game_id=g.id)
         AND s.lease_until>now()`,
       [ownerId],
     );
@@ -503,6 +519,15 @@ export async function startGame(
   const effort = checkEffort(options.agentEffort);
   // Before cleanup and admission: a bad choice must neither create a run nor end the current one.
   const monitor = checkMonitor(options);
+  let submissionUrl: string;
+  try {
+    submissionUrl = configuredFlagEndpoint().url;
+  } catch {
+    throw new GameError(
+      "HTTP submission is not configured yet. A run cannot start until the submission endpoint is available.",
+      503,
+    );
+  }
   await stopOwnedResponses(ownerId);
   await cleanup();
   // cleanup() reconciles resolvable holds; for a fork, finalize any that remain on the terminal
@@ -596,6 +621,11 @@ export async function startGame(
       source.system_prompt = sourceSessions.rows[0].system_prompt;
       if (source.status !== "blocked" && source.status !== "caught")
         throw new GameError("Only a run the monitor stopped can be forked.", 409);
+      if (
+        (await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [sourceId]))
+          .rowCount
+      )
+        throw new GameError("A submitted run cannot be forked.", 409);
       if ((await client.query("SELECT 1 FROM ctf.games WHERE forked_from=$1", [sourceId])).rowCount)
         throw new GameError("This run has already been forked.", 409);
       if (
@@ -652,8 +682,8 @@ export async function startGame(
     // A fork is born `creating` on its parent's sprite and secret, carrying the parent's whole
     // account; it turns active once the sprite is restored to the dropped instruction's checkpoint.
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run,monitor_settings_locked,monitor_mode)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'async') RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run,monitor_settings_locked,monitor_mode,submission_transport)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'async','http') RETURNING *`,
       [
         id,
         ownerId,
@@ -788,7 +818,7 @@ export async function startGame(
       });
       if (!restoreOperation)
         throw new GameError("The environment is still finishing earlier work.", 409);
-      await restoreEnvironment(child.sprite_name, cut.checkpoint);
+      await restoreEnvironment(child.sprite_name, cut.checkpoint, submissionUrl);
       await completeExclusiveSpriteOperation(restoreOperation, "completed");
     } catch (error) {
       if (restoreOperation) {
@@ -822,7 +852,7 @@ export async function startGame(
     return { ...(await publicGame(child)), retryInstruction: cut.instruction };
   }
   try {
-    await createEnvironment(game.sprite_name, secret);
+    await createEnvironment(game.sprite_name, secret, submissionUrl);
     await db.query(
       "UPDATE ctf.games SET status='active',state_revision=state_revision+1,updated_at=now() WHERE id=$1",
       [id],
@@ -968,6 +998,10 @@ export async function reserveInference(
     if (
       !game ||
       (role === "agent" && game.status !== "active") ||
+      (role === "agent" &&
+        game.submission_transport === "http" &&
+        !!(await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [gameId]))
+          .rowCount) ||
       (!context.jobClaim &&
         context.executionGeneration !== undefined &&
         Number(game.execution_generation) !== context.executionGeneration) ||

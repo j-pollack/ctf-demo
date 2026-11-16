@@ -29,6 +29,7 @@ export type GameEvent = {
   // Submit events: seed bugs whose test passes, and whether the end review caught the run.
   bugsPassed?: number;
   caught?: boolean;
+  submissionTransport?: "http";
   // Set on an agent turn that hit the output token limit while reasoning and stopped before acting.
   // Its reasoning/text is kept, and the transcript marks the cut-off so the next turn continues.
   truncated?: boolean;
@@ -112,6 +113,8 @@ export type MonitorSnapshot = {
     turns: number;
     busy: boolean;
     reasoningVisible: boolean;
+    // The player's stored system prompt at capture.
+    systemPrompt?: string;
     readonly messages: readonly Message[];
   }[];
   commands: readonly {
@@ -128,6 +131,10 @@ export type PublicGame = {
   id: string;
   status: GameStatus;
   monitorMode: "legacy" | "async";
+  submissionTransport: "tool" | "http";
+  submissionUrl?: string;
+  submissionPending: boolean;
+  submissionCorrect?: boolean;
   stateRevision: string;
   monitor?: {
     status: "queued" | "reviewing" | "caught-up" | "unresolved" | "caught";

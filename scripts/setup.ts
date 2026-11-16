@@ -30,6 +30,7 @@ try {
     "017-settings.sql",
     "018-monitor-ready.sql",
     "019-session-stop.sql",
+    "020-http-flag-submission.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

@@ -8,7 +8,7 @@ import { RunInspector } from "../app/run-inspector";
 import { run, session } from "./fixtures/console-runs";
 
 test("step-by-step rules describe starting a run without the removed difficulty setting", () => {
-  const html = renderToStaticMarkup(createElement(UI.RunInstructions));
+  const html = renderToStaticMarkup(createElement(UI.RunInstructions, {}));
   assert.match(html, /Start a run/);
   assert.doesNotMatch(html, /difficulty|\bEasy\b|\bMedium\b|\bHard\b/i);
   assert.match(html, /investigator can read the agent’s reasoning/);

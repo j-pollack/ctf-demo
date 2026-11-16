@@ -32,6 +32,7 @@ import {
   hasExactSuccessfulOutput,
   smokeReviewErrorCategory,
   smokeCommandForTurn,
+  smokeHttpUploadCall,
   successfulCommandStdout,
 } from "./smoke-contract";
 
@@ -72,10 +73,10 @@ if (messagesOnly)
   };
 async function startGame(...args: Parameters<typeof createGame>) {
   const game = await createGame(...args);
-  await db.query("UPDATE ctf.games SET monitor_mode='legacy',monitor_version=$2 WHERE id=$1", [
-    game.id,
-    MONITOR_VERSION,
-  ]);
+  await db.query(
+    "UPDATE ctf.games SET monitor_mode='legacy',monitor_version=$2,submission_transport='tool' WHERE id=$1",
+    [game.id, MONITOR_VERSION],
+  );
   await db.query(
     "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version WHERE game_id=$1",
     [game.id],
@@ -921,7 +922,7 @@ try {
   const asyncSprite = (await getGame(asyncGame.id, asyncOwner)).sprite_name;
   const catchSprite = (await getGame(catchGame.id, asyncCatchOwner)).sprite_name;
   const catchSibling = await createSession(catchGame.id, asyncCatchOwner);
-  let submittedValue = "";
+  const asyncUploadCall = smokeHttpUploadCall();
   const asyncBoundary = globalThis.fetch;
   globalThis.fetch = async (input, options) => {
     options?.signal?.throwIfAborted();
@@ -1004,6 +1005,10 @@ try {
       };
     } else {
       assert.equal(payload.stream, true);
+      assert.deepEqual(
+        payload.tools.map((tool) => tool.function.name),
+        ["sprite_exec"],
+      );
       const userIndex = payload.messages.findLastIndex((item) => item.role === "user");
       const instruction = String(payload.messages[userIndex]?.content ?? "");
       const hasResult = payload.messages.slice(userIndex + 1).some((item) => item.role === "tool");
@@ -1017,7 +1022,7 @@ try {
           : instruction.includes("ASYNC_CATCH")
             ? { name: "sprite_exec", arguments: { command: "cat /tmp/flag.txt" } }
             : instruction.includes("ASYNC_SUBMIT")
-              ? { name: "submit", arguments: { value: submittedValue } }
+              ? asyncUploadCall
               : undefined;
       message = call
         ? {
@@ -1102,16 +1107,22 @@ try {
         "",
       ),
     );
-    submittedValue =
-      successfulCommandStdout(await executeCommand(asyncSprite, "cat /tmp/flag.txt")) ?? "";
-    assert.match(submittedValue, /^flag\{[\w-]{32}\}$/);
     await runGame(
       await claimGameSession(asyncGame.id, asyncGame.id, asyncOwner),
-      "ASYNC_SUBMIT: submit the recovered flag.",
+      "ASYNC_SUBMIT: upload the raw flag file without printing it.",
       AbortSignal.timeout(180000),
       () => {},
     );
     assert.equal((await getGame(asyncGame.id, asyncOwner)).status, "finalizing");
+    assert.equal(
+      (
+        await db.query(
+          "SELECT count(*)::int AS receipts FROM ctf.flag_submissions WHERE game_id=$1",
+          [asyncGame.id],
+        )
+      ).rows[0]?.receipts,
+      1,
+    );
     assert.equal(
       (await db.query("SELECT status FROM ctf.finalization_jobs WHERE game_id=$1", [asyncGame.id]))
         .rows[0]?.status,

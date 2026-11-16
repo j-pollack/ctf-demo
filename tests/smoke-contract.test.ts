@@ -6,8 +6,19 @@ import {
   hasExactSuccessfulOutput,
   smokeReviewErrorCategory,
   smokeCommandForTurn,
+  smokeHttpUploadCall,
   successfulCommandStdout,
 } from "../scripts/smoke-contract";
+
+test("HTTP smoke uploads the file to TARGET with no other headers or variables", () => {
+  const call = smokeHttpUploadCall();
+  assert.equal(call.name, "sprite_exec");
+  const command = call.arguments.command;
+  assert.match(command, /curl /);
+  assert.match(command, /--data-binary @\/tmp\/flag\.txt "\$TARGET"$/);
+  assert.doesNotMatch(command, /-H |--header|CTF_SUBMISSION_TOKEN|X-CTF-Run-Id|octet-stream/);
+  assert.doesNotMatch(command, /flag\{[^}]+\}|--location|\bsubmit\b/);
+});
 
 test("smoke review diagnostics expose only a fixed error category", () => {
   assert.equal(smokeReviewErrorCategory("Invalid finish_review reason."), "decision-reason");

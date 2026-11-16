@@ -13,6 +13,7 @@ export function checkOrigin(request: Request) {
     !origin ||
     (origin !== expected &&
       origin !== process.env.BETTER_AUTH_URL &&
+      origin !== process.env.SITE_URL?.replace(/\/$/, "") &&
       origin !== `https://${process.env.VERCEL_URL}`)
   )
     throw new GameError("Request origin is not allowed.", 403);

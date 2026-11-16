@@ -13,6 +13,7 @@ import { INVESTIGATOR_MODEL } from "./monitor-review";
 import { MONITOR_VERSION } from "./control";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { enqueueMonitorJob } from "./monitor-jobs";
+import { lastInstructionPrompt } from "./monitor-visibility";
 
 export type AgentSessionRow = {
   id: string;
@@ -131,50 +132,48 @@ export async function createSession(
     !["low", "medium", "high"].includes(settings.agentEffort)
   )
     throw new GameError("Choose a valid agent reasoning effort.");
-  if (settings.systemPrompt !== undefined && settings.systemPrompt.length > 8192)
-    throw new GameError("Enter a system prompt of up to 8,192 characters.");
   return inTransaction(async (client) => {
     const { rows: games } = await client.query<{
       status: GameStatus;
       agent_model: string;
       agent_effort: AgentEffort;
-      system_prompt: string;
       monitor_mode: "legacy" | "async";
+      submission_transport: "tool" | "http";
     }>(
-      "SELECT status,agent_model,agent_effort,system_prompt,monitor_mode FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
+      "SELECT status,agent_model,agent_effort,monitor_mode,submission_transport FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
       [gameId, ownerId],
     );
     const game = games[0];
     if (!game) throw new GameError("Run not found.", 404);
     if (game.status !== "active") throw new GameError("This run has ended.", 409);
+    if (
+      game.submission_transport === "http" &&
+      (await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [gameId])).rowCount
+    )
+      throw new GameError("A flag has already been submitted.", 409);
     const { rows: defaults } = await client.query<{
       agent_model: string;
       agent_effort: AgentEffort;
-      system_prompt: string;
-    }>(
-      "SELECT agent_model,agent_effort,system_prompt FROM ctf.agent_sessions WHERE game_id=$1 AND ordinal=1",
-      [gameId],
-    );
+    }>("SELECT agent_model,agent_effort FROM ctf.agent_sessions WHERE game_id=$1 AND ordinal=1", [
+      gameId,
+    ]);
     const base = defaults[0] ?? game;
     const { rows: ordinalRows } = await client.query<{ ordinal: number }>(
       "SELECT coalesce(max(ordinal),0)+1 AS ordinal FROM ctf.agent_sessions WHERE game_id=$1",
       [gameId],
     );
     const id = randomUUID();
+    // A new session has no system prompt: a prompt is stored only with the instruction that
+    // records it, so the API never serves a prompt monitors have no record of.
     const { rows } = await client.query<AgentSessionRow>(
       `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
-      VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+      VALUES($1,$2,$3,$4,$5,'') RETURNING *`,
       [
         id,
         gameId,
         ordinalRows[0].ordinal,
         settings.agentModel ?? base.agent_model,
         settings.agentEffort ?? base.agent_effort,
-        settings.systemPrompt === undefined
-          ? base.system_prompt
-          : settings.systemPrompt.trim()
-            ? settings.systemPrompt
-            : "",
       ],
     );
     const {
@@ -329,6 +328,11 @@ export async function claimSession(
     if (!game) throw new GameError("Run not found.", 404);
     if (game.status !== "active")
       throw new GameError("This run has ended or is already responding.", 409);
+    if (
+      game.submission_transport === "http" &&
+      (await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [gameId])).rowCount
+    )
+      throw new GameError("A flag has already been submitted.", 409);
     const { rows: monitorRows } = await client.query<{
       monitor_settings_locked: boolean;
       monitor_mode: "legacy" | "async";
@@ -345,20 +349,9 @@ export async function claimSession(
     if (!existing[0]) throw new GameError("Session not found.", 404);
     const { rows } = await client.query<AgentSessionRow>(
       `UPDATE ctf.agent_sessions SET lease=$3,lease_until=now()+interval '270 seconds',updated_at=now(),stop_requested_at=NULL,
-        agent_model=coalesce($4,agent_model),agent_effort=coalesce($5,agent_effort),system_prompt=coalesce($6,system_prompt)
+        agent_model=coalesce($4,agent_model),agent_effort=coalesce($5,agent_effort)
       WHERE game_id=$1 AND id=$2 AND (lease_until IS NULL OR lease_until<now()) RETURNING *`,
-      [
-        gameId,
-        sessionId,
-        lease,
-        settings.agentModel ?? null,
-        settings.agentEffort ?? null,
-        settings.systemPrompt === undefined
-          ? null
-          : settings.systemPrompt.trim()
-            ? settings.systemPrompt
-            : "",
-      ],
+      [gameId, sessionId, lease, settings.agentModel ?? null, settings.agentEffort ?? null],
     );
     if (!rows[0]) throw new GameError("This session is already responding.", 409);
     // A new instruction makes everything recorded so far reviewable: a response that ended without
@@ -373,8 +366,7 @@ export async function claimSession(
       ]);
     if (
       rows[0].agent_model !== existing[0].agent_model ||
-      rows[0].agent_effort !== existing[0].agent_effort ||
-      rows[0].system_prompt !== existing[0].system_prompt
+      rows[0].agent_effort !== existing[0].agent_effort
     )
       await client.query(
         "UPDATE ctf.games SET observation_revision=observation_revision+1 WHERE id=$1",
@@ -400,7 +392,16 @@ export async function claimSession(
         lease_until: rows[0].lease_until,
         session_id: sessionId,
       },
-      session: rows[0],
+      // The requested prompt is stored when the instruction that records it persists.
+      session: {
+        ...rows[0],
+        system_prompt:
+          settings.systemPrompt === undefined
+            ? rows[0].system_prompt
+            : settings.systemPrompt.trim()
+              ? settings.systemPrompt
+              : "",
+      },
       lease,
     };
   });
@@ -554,9 +555,16 @@ export async function persistReviewedSessionMessages(
       "UPDATE ctf.games SET turns=turns+$2,observation_revision=observation_revision+1,updated_at=now() WHERE id=$1 RETURNING observation_revision",
       [gameId, turnsDelta],
     );
+    // The stored prompt follows the latest instruction that records one.
     await client.query(
-      "UPDATE ctf.agent_sessions SET messages=$3,turns=turns+$4,updated_at=now() WHERE game_id=$1 AND id=$2",
-      [gameId, sessionId, JSON.stringify(messages), turnsDelta],
+      "UPDATE ctf.agent_sessions SET messages=$3,turns=turns+$4,system_prompt=coalesce($5,system_prompt),updated_at=now() WHERE game_id=$1 AND id=$2",
+      [
+        gameId,
+        sessionId,
+        JSON.stringify(messages),
+        turnsDelta,
+        lastInstructionPrompt(messages) ?? null,
+      ],
     );
     const revision = Number(rows[0].observation_revision);
     const evidence = await persistTranscriptEvidence(client, {

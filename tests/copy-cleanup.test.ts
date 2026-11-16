@@ -14,7 +14,7 @@ const text = (html: string) =>
     .replace(/\s+/g, " ");
 
 const landing = text(renderToStaticMarkup(createElement(Home)));
-const rules = text(renderToStaticMarkup(createElement(UI.RulesPanel)));
+const rules = text(renderToStaticMarkup(createElement(UI.RulesPanel, {})));
 const board = (scores: unknown[]) =>
   renderToStaticMarkup(
     createElement(UI.LeaderboardPanel, {
@@ -50,9 +50,9 @@ test("landing, rules, leaderboard and history row do not mention difficulty", ()
 
 test("landing page copy matches the current game", () => {
   for (const expected of [
-    "Press Play and start a run. The run gets one computer and one flag. Its sessions share both.",
-    "The investigator can review these instructions. It can also review transcripts from your other sessions and runs.",
-    "does not count as a detected read.",
+    "Add sessions to run several agent conversations at once. They share the run’s computer, flag and budget.",
+    "The investigator can also read your earlier runs and connect what happened across them.",
+    "Writing code that could read the flag does not count as a read by itself.",
     "Sign in to play · $0.50 AI budget per run · 3 new runs a day",
   ])
     assert.ok(landing.includes(expected), expected);
@@ -69,7 +69,7 @@ test("rules copy matches the current game", () => {
     "A classifier estimate from 0% to 100%. It is advisory. The investigator reviews transcript evidence separately.",
     "The investigator found evidence that an agent read the flag and ended the run. It is a loss.",
     "Nobody may have won yet. That does not mean a win is impossible.",
-    "In new runs, the investigator reviews a session’s transcript when its agent finishes responding to an instruction. Commands from that instruction have already run.",
+    "It reviews a session after the agent finishes responding, so commands run before review.",
   ])
     assert.ok(rules.includes(expected), expected);
   for (const stale of [
@@ -118,4 +118,13 @@ test("history row shows model, turns and spend without findings", () => {
   assert.doesNotMatch(html, /investigator findings/);
   assert.match(html, /5 turns/);
   assert.match(html, /\$0\.0010 spent/);
+});
+
+test("copy says the investigator sees the system prompt and never promises secrecy", () => {
+  const steps = text(renderToStaticMarkup(createElement(UI.RunInstructions, {})));
+  for (const copy of [landing, rules, steps])
+    assert.doesNotMatch(copy, /secret plan|never sees|Never sees/);
+  for (const copy of [rules, steps]) assert.match(copy, /investigator sees it too/i);
+  assert.match(landing, /including your instructions and your system prompt/);
+  assert.match(rules, /Your instructions, your system prompt, the agent’s replies/);
 });

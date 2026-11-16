@@ -161,3 +161,15 @@ test("required instruction, newest evidence or proposed command cannot silently 
     );
   }
 });
+
+test("the classifier sees the system prompt in effect for each instruction", () => {
+  const instruction = (text: string, systemPrompt: string) =>
+    ({ role: "user", content: [{ type: "text", text }], timestamp: 0, systemPrompt }) as Message;
+  const doc = buildMonitorDocument(
+    [instruction("first", "PLAN-A"), agent("ls"), instruction("second", "PLAN-B")],
+    { includeReasoning: false },
+  );
+  assert.match(doc.transcript[0].text, /PLAN-A[\s\S]*first/);
+  assert.doesNotMatch(doc.transcript[0].text, /PLAN-B/);
+  assert.match(doc.transcript[2].text, /PLAN-B[\s\S]*second/);
+});

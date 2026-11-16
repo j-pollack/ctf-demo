@@ -27,6 +27,7 @@ const MIGRATIONS = [
   "015-transcript-evidence.sql",
   "018-monitor-ready.sql",
   "019-session-stop.sql",
+  "020-http-flag-submission.sql",
 ];
 
 export type SeededWorkspace = {

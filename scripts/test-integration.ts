@@ -84,6 +84,7 @@ try {
       ...(realTiming ? { CTF_REAL_MONITOR_TIMING: "1" } : {}),
       SPRITE_TOKEN: "integration-sprite-token",
       OPENROUTER_API_KEY: "integration-router-key",
+      SITE_URL: "https://flags.integration.test",
       CTF_INTEGRATION_DATABASE_URL: `postgresql://postgres@127.0.0.1:${port}/${database}`,
     },
   });

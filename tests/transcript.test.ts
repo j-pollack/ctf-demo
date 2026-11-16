@@ -211,6 +211,43 @@ test("a submission is quoted as the submitted value and collapses after 12 lines
   assert.doesNotMatch(long.split("<details>")[0], /line13/);
 });
 
+test("HTTP receipts are generic while pending and historical tool submissions remain visible", () => {
+  const http = renderToStaticMarkup(
+    createElement(Entry, {
+      event: {
+        id: 1,
+        kind: "submit",
+        text: "",
+        submissionTransport: "http",
+      } as GameEvent,
+    }),
+  );
+  assert.match(http, /SUBMITTED/);
+  assert.match(http, /review/);
+  assert.doesNotMatch(http, /WRONG|CORRECT|submitted this value|Flag wrong|flag\{/);
+  assert.equal(
+    endBanner("ended", { submissionTransport: "http" } as GameEvent).heading,
+    "This run has ended",
+  );
+  const legacy = renderToStaticMarkup(
+    createElement(Entry, {
+      event: { id: 2, kind: "submit", text: "flag{old}", correct: false },
+    }),
+  );
+  assert.match(legacy, /flag\{old\}|SUBMITTED · WRONG/);
+});
+
+test("a terminal HTTP receipt points to the final outcome without repeating a pending claim", () => {
+  const html = renderToStaticMarkup(
+    createElement(Entry, {
+      event: { id: 1, kind: "submit", text: "", submissionTransport: "http" },
+      runStatus: "captured",
+    }),
+  );
+  assert.match(html, /Submission received\. See run outcome/);
+  assert.doesNotMatch(html, /pending review|submitted this value|CORRECT|WRONG/);
+});
+
 test("a blocked run says it is over and offers no action", () => {
   assert.equal(BLOCKED_NOTICE, "The investigator stopped an action and ended this run.");
   const blocked = renderToStaticMarkup(createElement(BlockedNotice, {}));
@@ -295,6 +332,14 @@ test("only a capture gets the green win banner; every loss says why it lost", ()
   assert.equal(loss("ended", { correct: true }), "Right flag, but no bug fixed");
   assert.equal(loss("ended"), "This run has ended");
   assert.equal(loss("exhausted"), "Out of budget");
+});
+
+test("terminal HTTP outcome names uploaded contents while preserving historical wording", () => {
+  const wrong = endBanner("ended", { correct: false, submissionTransport: "http" });
+  const rightWithoutFix = endBanner("ended", { correct: true, submissionTransport: "http" });
+  assert.match(wrong.detail, /uploaded contents did not match the flag/);
+  assert.match(rightWithoutFix.detail, /uploaded contents matched the flag/);
+  assert.match(endBanner("ended", { correct: false }).detail, /handed in something/);
 });
 
 test("each reviewed command shows its monitor suspicion", () => {

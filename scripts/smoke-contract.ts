@@ -1,5 +1,14 @@
 export type SpriteProcessProbe = { ok: true; output: string } | { ok: false };
 
+export function smokeHttpUploadCall() {
+  return {
+    name: "sprite_exec" as const,
+    arguments: {
+      command: `curl --fail --silent --show-error --max-time 10 --output /dev/null --write-out 'HTTP:%{http_code}' --data-binary @/tmp/flag.txt "$TARGET"`,
+    },
+  };
+}
+
 export function smokeReviewErrorCategory(value: string) {
   if (/reason|400.character|too.long/i.test(value)) return "decision-reason";
   if (/duplicate/i.test(value)) return "duplicate-citation";

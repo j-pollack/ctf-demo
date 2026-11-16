@@ -19,6 +19,7 @@ import {
   SUBMIT_TOOL_DESCRIPTION,
 } from "./policy";
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
+import { instructionMessage } from "./monitor-visibility";
 import {
   assertLease,
   cleanup,
@@ -695,7 +696,7 @@ export async function runGame(
         [game.id],
       );
       if ((count[0]?.total ?? 0) === 1) checkpoint = await checkpointEnvironment(game.sprite_name);
-      await session.agent.prompt(prompt);
+      await session.agent.prompt(instructionMessage(prompt, game.system_prompt));
     } finally {
       signal.removeEventListener("abort", abort);
     }

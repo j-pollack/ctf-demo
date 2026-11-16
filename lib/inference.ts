@@ -638,10 +638,15 @@ export function agentStream(
   onRetry?: (message: string) => void,
   onDelta?: (delta: AgentDelta) => void,
   trustedOptions: TrustedInferenceOptions = {},
+  beforeDispatch?: () => Promise<void>,
 ) {
   return (_model: Model<Api>, context: TranscriptContext, options?: { signal?: AbortSignal }) => {
     const stream = createAssistantMessageEventStream();
-    void infer(game, model, context.messages, options?.signal, onRetry, onDelta, trustedOptions)
+    void Promise.resolve()
+      .then(() => beforeDispatch?.())
+      .then(() =>
+        infer(game, model, context.messages, options?.signal, onRetry, onDelta, trustedOptions),
+      )
       .then((message) =>
         stream.push({
           type: "done",
