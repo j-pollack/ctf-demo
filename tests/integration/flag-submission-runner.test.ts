@@ -99,11 +99,11 @@ await test(
     assert.match(first.submissionToken ?? "", /^[A-Za-z0-9_-]{43}$/);
     assert.notEqual(first.submissionToken, sibling.submissionToken);
     assert.equal(
-      await receiveFlagSubmission({ gameId, token: first.submissionToken!, value: secret }),
+      await receiveFlagSubmission({ token: first.submissionToken!, value: secret }),
       "accepted",
     );
     assert.equal(
-      await receiveFlagSubmission({ gameId, token: first.submissionToken!, value: secret }),
+      await receiveFlagSubmission({ token: first.submissionToken!, value: secret }),
       "accepted",
     );
     await assert.rejects(
@@ -192,7 +192,6 @@ await test(
     });
     assert.equal(
       await receiveFlagSubmission({
-        gameId: unknownId,
         token: uncertain.submissionToken!,
         value: secret,
       }),

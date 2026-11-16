@@ -157,10 +157,6 @@ function EmptySession({
         the bugs to fix.
       </p>
       {submissionTransport === "http" && <FlagInstructions url={submissionUrl} />}
-      <p>
-        An investigator reads every session's transcript. If it finds evidence that an agent read
-        the flag, directly or indirectly, the run ends.
-      </p>
     </div>
   );
 }

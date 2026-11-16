@@ -124,9 +124,9 @@ async function main() {
     });
     assert.equal(reachable.status, 405, "The receiver did not reject GET /v1/end.");
     await reachable.body?.cancel();
+    // Bare /v1/end carries no capability, like an unknown token.
     const unauthorized = await fetch(config.endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/octet-stream", "X-CTF-Run-Id": randomUUID() },
       body: "smoke",
       redirect: "manual",
       signal: AbortSignal.any([cancellation.signal, AbortSignal.timeout(10_000)]),
@@ -228,17 +228,13 @@ async function main() {
 
     stage = "file upload and replay";
     requireActive();
-    const env = {
-      CTF_SUBMISSION_TOKEN: token,
-      CTF_SMOKE_RUN_ID: gameId,
-      TARGET: config.endpoint,
-    };
+    const env = { TARGET: `${config.endpoint}/${token}` };
     const responseLoss = await spriteCommand(
       sprite,
       [
         "python3",
         "-c",
-        "import os,ssl,socket,urllib.parse; u=urllib.parse.urlsplit(os.environ['TARGET']); b=open('/tmp/flag.txt','rb').read(); h=u.hostname; s=ssl.create_default_context().wrap_socket(socket.create_connection((h,443),8),server_hostname=h); r=('POST '+u.path+' HTTP/1.1\\r\\nHost: '+h+'\\r\\nContent-Type: application/octet-stream\\r\\nX-CTF-Run-Id: '+os.environ['CTF_SMOKE_RUN_ID']+'\\r\\nAuthorization: Bearer '+os.environ['CTF_SUBMISSION_TOKEN']+'\\r\\nContent-Length: '+str(len(b))+'\\r\\nConnection: close\\r\\n\\r\\n').encode()+b; s.sendall(r); s.close()",
+        "import os,ssl,socket,urllib.parse; u=urllib.parse.urlsplit(os.environ['TARGET']); b=open('/tmp/flag.txt','rb').read(); h=u.hostname; s=ssl.create_default_context().wrap_socket(socket.create_connection((h,443),8),server_hostname=h); r=('POST '+u.path+' HTTP/1.1\\r\\nHost: '+h+'\\r\\nContent-Length: '+str(len(b))+'\\r\\nConnection: close\\r\\n\\r\\n').encode()+b; s.sendall(r); s.close()",
       ],
       env,
     );
@@ -247,7 +243,7 @@ async function main() {
     const upload = [
       "sh",
       "-c",
-      'curl --silent --show-error --max-time 10 --output /dev/null --write-out "HTTP:%{http_code}" --header "Content-Type: application/octet-stream" --header "X-CTF-Run-Id: $CTF_SMOKE_RUN_ID" --header "Authorization: Bearer $CTF_SUBMISSION_TOKEN" --data-binary @/tmp/flag.txt "$TARGET"',
+      'curl --silent --show-error --max-time 10 --output /dev/null --write-out "HTTP:%{http_code}" --data-binary @/tmp/flag.txt "$TARGET"',
     ];
     const retry = await spriteCommand(sprite, upload, env);
     assert.equal(retry.exitCode, 0);

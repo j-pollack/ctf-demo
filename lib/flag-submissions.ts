@@ -3,7 +3,6 @@ import type { PoolClient } from "pg";
 import { transaction } from "./games";
 import { hasSecret } from "./policy";
 
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const digest = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
 export function hashSubmissionToken(token: string): string {
@@ -13,15 +12,23 @@ export function hashSubmissionToken(token: string): string {
 type ReceiptResult = "accepted" | "conflict" | "unauthorized" | "stale";
 
 export async function receiveFlagSubmission(input: {
-  gameId: string;
   token: string;
   value: string;
 }): Promise<ReceiptResult> {
-  if (!uuid.test(input.gameId) || !/^[A-Za-z0-9_-]{8,256}$/.test(input.token))
-    return "unauthorized";
+  if (!/^[A-Za-z0-9_-]{8,256}$/.test(input.token)) return "unauthorized";
   const tokenHash = hashSubmissionToken(input.token);
   const bodyHash = digest(input.value);
   return transaction(async (client) => {
+    // The token alone names the run. This read takes no lock; everything is rechecked below
+    // after the games row, then the session and operation rows, are locked in that order.
+    const {
+      rows: [found],
+    } = await client.query<{ game_id: string }>(
+      "SELECT game_id FROM ctf.sprite_operations WHERE submission_token_hash=$1 AND kind='command'",
+      [tokenHash],
+    );
+    if (!found) return "unauthorized";
+    const gameId = found.game_id;
     const {
       rows: [run],
     } = await client.query<{
@@ -33,7 +40,7 @@ export async function receiveFlagSubmission(input: {
     }>(
       `SELECT status,monitor_mode,submission_transport,execution_generation,secret_hash
        FROM ctf.games WHERE id=$1 FOR UPDATE`,
-      [input.gameId],
+      [gameId],
     );
     if (!run) return "unauthorized";
     const {
@@ -47,14 +54,14 @@ export async function receiveFlagSubmission(input: {
     }>(
       `SELECT id,session_id,status,execution_generation,originating_lease
        FROM ctf.sprite_operations WHERE game_id=$1 AND submission_token_hash=$2 AND kind='command'`,
-      [input.gameId, tokenHash],
+      [gameId, tokenHash],
     );
     if (!operation) return "unauthorized";
     const {
       rows: [receipt],
     } = await client.query<{ operation_id: string; body_hash: string }>(
       "SELECT operation_id,body_hash FROM ctf.flag_submissions WHERE game_id=$1",
-      [input.gameId],
+      [gameId],
     );
     if (receipt)
       return receipt.operation_id === operation.id && receipt.body_hash === bodyHash
@@ -75,7 +82,7 @@ export async function receiveFlagSubmission(input: {
       stop_requested_at: Date | null;
     }>(
       "SELECT lease,lease_until,stop_requested_at FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE",
-      [input.gameId, operation.session_id],
+      [gameId, operation.session_id],
     );
     const {
       rows: [lockedOperation],
@@ -96,7 +103,7 @@ export async function receiveFlagSubmission(input: {
     await client.query(
       `INSERT INTO ctf.flag_submissions(game_id,operation_id,body_hash,correct)
        VALUES($1,$2,$3,$4)`,
-      [input.gameId, operation.id, bodyHash, hasSecret(input.value, run.secret_hash)],
+      [gameId, operation.id, bodyHash, hasSecret(input.value, run.secret_hash)],
     );
     return "accepted";
   });

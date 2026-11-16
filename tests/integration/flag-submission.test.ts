@@ -102,7 +102,7 @@ test(
     const { hashSubmissionToken, receiveFlagSubmission, promoteHttpSubmission } =
       await import("../../lib/flag-submissions");
     const { transaction } = await import("../../lib/games");
-    const { POST } = await import("../../app/v1/end/route");
+    const { POST } = await import("../../app/v1/end/[[...token]]/route");
     const gameId = randomUUID();
     const sessionId = randomUUID();
     const operationId = randomUUID();
@@ -128,24 +128,14 @@ test(
     );
 
     const endpoint = "https://flags.integration.test/v1/end";
-    const post = (
-      body: string,
-      bearer = token,
-      id = gameId,
-      headers: Record<string, string> = {},
-    ) =>
+    const post = (body: string, capability = token, headers: Record<string, string> = {}) =>
       POST(
-        new Request(endpoint, {
+        new Request(`${endpoint}/${capability}`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/octet-stream",
-            Authorization: `Bearer ${bearer}`,
-            "X-CTF-Run-Id": id,
-            Host: "flags.integration.test",
-            ...headers,
-          },
+          headers: { Host: "flags.integration.test", ...headers },
           body,
         }),
+        { params: Promise.resolve({ token: [capability] }) },
       );
 
     const missing = await post(flag, "invalid-token");
@@ -156,14 +146,10 @@ test(
         await POST(
           new Request(endpoint, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/octet-stream",
-              "X-CTF-Run-Id": gameId,
-              Host: "flags.integration.test",
-              Cookie: ownerCookie,
-            },
+            headers: { Host: "flags.integration.test", Cookie: ownerCookie },
             body: flag,
           }),
+          { params: Promise.resolve({}) },
         )
       ).status,
       401,
@@ -172,8 +158,7 @@ test(
       (await pool.query("SELECT count(*)::int AS n FROM ctf.flag_submissions")).rows[0].n,
       0,
     );
-    assert.equal((await post(flag, token, gameId, { Origin: "https://app.example" })).status, 400);
-    assert.equal((await post(flag, token, gameId, { "Content-Type": "text/plain" })).status, 415);
+    assert.equal((await post(flag, token, { Origin: "https://app.example" })).status, 400);
     assert.equal((await post("", token)).status, 400);
     assert.equal(
       (await pool.query("SELECT count(*)::int AS n FROM ctf.flag_submissions")).rows[0].n,
@@ -309,7 +294,7 @@ test(
       ).rows[0].n,
       1,
     );
-    assert.equal(await receiveFlagSubmission({ gameId, token, value: flag }), "accepted");
+    assert.equal(await receiveFlagSubmission({ token, value: flag }), "accepted");
     await pool.query("UPDATE ctf.games SET status='caught' WHERE id=$1", [gameId]);
     assert.equal((await post(flag)).status, 202);
     assert.equal((await post("changed")).status, 409);
@@ -361,11 +346,10 @@ test(
       ),
       /foreign key constraint/,
     );
-    assert.equal((await post(flag, token, wrongGameId)).status, 401);
-    const wrong = await post("wrong body", wrongToken, wrongGameId);
+    const wrong = await post("wrong body", wrongToken);
     assert.equal(wrong.status, 202);
     assert.equal(await wrong.text(), ack);
-    assert.equal((await post(flag, wrongToken, wrongGameId)).status, 409);
+    assert.equal((await post(flag, wrongToken)).status, 409);
     await pool.query("UPDATE ctf.sprite_operations SET status='completed',output='' WHERE id=$1", [
       wrongOperationId,
     ]);

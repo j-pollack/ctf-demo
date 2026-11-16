@@ -8,35 +8,30 @@ import {
   validateFlagEndpoint,
 } from "../lib/flag-submission-protocol";
 
-const gameId = "bb8373cb-9fef-4e5a-9a6d-e307d421ab22";
-const headers = {
-  "Content-Type": "application/octet-stream",
-  Authorization: "Bearer one-time-token",
-  "X-CTF-Run-Id": gameId,
-};
+const token = "A".repeat(43);
 
-test("accepts only an unambiguous authorized upload", () => {
-  assert.deepEqual(parseSubmissionRequest(new Headers(headers)), {
-    gameId,
-    token: "one-time-token",
+test("the path token is the only credential and no header is required", () => {
+  assert.deepEqual(parseSubmissionRequest(new Headers(), [token]), { token });
+  assert.deepEqual(
+    parseSubmissionRequest(new Headers({ "Content-Type": "application/x-www-form-urlencoded" }), [
+      token,
+    ]),
+    { token },
+  );
+  for (const segments of [undefined, [], [token, "extra"], ["bad token"], ["short"]])
+    assert.deepEqual(parseSubmissionRequest(new Headers(), segments), { status: 401 });
+  assert.deepEqual(
+    parseSubmissionRequest(new Headers({ Origin: "https://example.test" }), [token]),
+    { status: 400 },
+  );
+  assert.deepEqual(parseSubmissionRequest(new Headers({ "Content-Encoding": "gzip" }), [token]), {
+    status: 400,
   });
-  // Web Headers joins repeats with a comma, which no longer matches a single bearer.
-  const repeated = new Headers(headers);
-  repeated.append("Authorization", "Bearer other");
-  assert.deepEqual(parseSubmissionRequest(repeated), { status: 401 });
   assert.deepEqual(
-    parseSubmissionRequest(new Headers({ ...headers, Origin: "https://example.test" })),
+    parseSubmissionRequest(new Headers({ "Transfer-Encoding": "chunked, chunked" }), [token]),
     { status: 400 },
   );
-  assert.deepEqual(
-    parseSubmissionRequest(new Headers({ ...headers, "Transfer-Encoding": "chunked, chunked" })),
-    { status: 400 },
-  );
-  assert.deepEqual(
-    parseSubmissionRequest(new Headers({ ...headers, "Content-Type": "text/plain" })),
-    { status: 415 },
-  );
-  assert.deepEqual(parseSubmissionRequest(new Headers({ ...headers, "Content-Length": "8193" })), {
+  assert.deepEqual(parseSubmissionRequest(new Headers({ "Content-Length": "8193" }), [token]), {
     status: 413,
   });
 });

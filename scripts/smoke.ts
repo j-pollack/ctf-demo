@@ -922,7 +922,7 @@ try {
   const asyncSprite = (await getGame(asyncGame.id, asyncOwner)).sprite_name;
   const catchSprite = (await getGame(catchGame.id, asyncCatchOwner)).sprite_name;
   const catchSibling = await createSession(catchGame.id, asyncCatchOwner);
-  const asyncUploadCall = smokeHttpUploadCall(asyncGame.id);
+  const asyncUploadCall = smokeHttpUploadCall();
   const asyncBoundary = globalThis.fetch;
   globalThis.fetch = async (input, options) => {
     options?.signal?.throwIfAborted();

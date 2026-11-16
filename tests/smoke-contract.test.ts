@@ -10,18 +10,14 @@ import {
   successfulCommandStdout,
 } from "../scripts/smoke-contract";
 
-test("HTTP smoke uploads a file with run identity and runtime capability", () => {
-  const runId = "729a038c-5bdb-4449-b246-8a02588a783f";
-  const call = smokeHttpUploadCall(runId);
+test("HTTP smoke uploads the file to TARGET with no other headers or variables", () => {
+  const call = smokeHttpUploadCall();
   assert.equal(call.name, "sprite_exec");
   const command = call.arguments.command;
   assert.match(command, /curl /);
-  assert.match(command, /--data-binary @\/tmp\/flag\.txt/);
-  assert.ok(command.includes(runId));
-  assert.ok(command.includes('"$TARGET"'));
-  assert.ok(command.includes("$CTF_SUBMISSION_TOKEN"));
+  assert.match(command, /--data-binary @\/tmp\/flag\.txt "\$TARGET"$/);
+  assert.doesNotMatch(command, /-H |--header|CTF_SUBMISSION_TOKEN|X-CTF-Run-Id|octet-stream/);
   assert.doesNotMatch(command, /flag\{[^}]+\}|--location|\bsubmit\b/);
-  assert.throws(() => smokeHttpUploadCall("bad-run"));
 });
 
 test("smoke review diagnostics expose only a fixed error category", () => {

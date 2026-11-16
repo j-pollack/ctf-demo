@@ -149,10 +149,7 @@ export async function runAsyncGame(
   try {
     const model = await getModel(game.agent_model);
     const submissionUrl = http ? configuredFlagEndpoint().url : undefined;
-    const systemPrompt = agentPrompt(
-      game.system_prompt,
-      submissionUrl ? { runId: game.id, sessionId, submissionUrl } : undefined,
-    );
+    const systemPrompt = agentPrompt(game.system_prompt);
     const settings = SettingsManager.inMemory({
       compaction: { enabled: false },
       retry: { enabled: false },
@@ -207,7 +204,7 @@ export async function runAsyncGame(
           command,
           AbortSignal.any([stop.signal, toolSignal ?? new AbortController().signal]),
           dispatch.submissionToken
-            ? { TARGET: submissionUrl!, CTF_SUBMISSION_TOKEN: dispatch.submissionToken }
+            ? { TARGET: `${submissionUrl}/${dispatch.submissionToken}` }
             : undefined,
         );
         return { content: [{ type: "text" as const, text: output }], details: {} };

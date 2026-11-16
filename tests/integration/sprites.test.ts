@@ -569,8 +569,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           },
         );
         if (options.env) {
-          assert.match(options.env.CTF_SUBMISSION_TOKEN ?? "", /^[A-Za-z0-9_-]{43}$/);
-          assert.equal(options.env.TARGET, "https://flags.integration.test/v1/end");
+          assert.deepEqual(Object.keys(options.env), ["TARGET"]);
+          assert.match(
+            options.env.TARGET,
+            /^https:\/\/flags\.integration\.test\/v1\/end\/[A-Za-z0-9_-]{43}$/,
+          );
         }
         commands.push({ name: this.name, command: args[5] });
         environment.version++;
@@ -1366,7 +1369,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     let started = 0;
     let accepted = false;
     let submissionToken: string | undefined;
-    const uploadCommand = `curl --fail --silent --show-error -H 'Content-Type: application/octet-stream' -H 'X-CTF-Run-Id: ${game.id}' -H "Authorization: Bearer $CTF_SUBMISSION_TOKEN" --data-binary @/tmp/flag.txt "$TARGET"`;
+    const uploadCommand = `curl --fail --silent --show-error --data-binary @/tmp/flag.txt "$TARGET"`;
     expectedCommands = new Set([uploadCommand]);
     agentToolCalls = 2;
     proposedForAgentCall = (call) => (call === 1 ? [uploadCommand] : ["printf harmless"]);
@@ -1375,13 +1378,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       if (started === 2) ready.resolve();
       await ready.promise;
       if (command === uploadCommand) {
-        submissionToken = env?.CTF_SUBMISSION_TOKEN;
+        submissionToken = env?.TARGET.split("/").at(-1);
         assert.equal(
-          await receiveFlagSubmission({
-            gameId: game.id,
-            token: env?.CTF_SUBMISSION_TOKEN ?? "",
-            value: secret,
-          }),
+          await receiveFlagSubmission({ token: submissionToken ?? "", value: secret }),
           "accepted",
         );
         accepted = true;
@@ -1421,6 +1420,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       operations.every((operation) => operation.status === "completed" && operation.output),
     );
     assert.notEqual(operations[0].submission_token_hash, operations[1].submission_token_hash);
+    // The command saw the token itself; only its hash is stored.
+    const tokenHash = createHash("sha256").update(submissionToken!).digest("hex");
+    assert.ok(operations.some((operation) => operation.submission_token_hash === tokenHash));
+    assert.ok(operations.every((operation) => operation.submission_token_hash !== submissionToken));
     assert.equal((await row(game.id)).status, "finalizing");
     const pendingEvents = JSON.stringify(
       (await pool.query("SELECT data FROM ctf.events WHERE game_id=$1", [game.id])).rows,
@@ -1428,20 +1431,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.ok(!pendingEvents.includes('"correct":'));
     const agentRequests = requests.filter((request) => request.role === "agent");
     assert.ok(agentRequests.length >= 2);
-    for (const sessionId of [game.id, sibling.id]) {
-      const prompt = agentRequests
-        .map((request) =>
-          String((request.payload as { messages: { content: unknown }[] }).messages[0].content),
-        )
-        .find((content) => content.includes(`Session ID: ${sessionId}`));
-      assert.ok(prompt?.includes(`Run ID: ${game.id}`));
-      assert.ok(prompt?.includes("Submission transport: http"));
-      assert.ok(prompt?.includes("https://flags.integration.test/v1/end"));
-      assert.ok(prompt?.includes('curl --data-binary @<file> "$TARGET"'));
-      assert.ok(prompt?.includes("Content-Type: application/octet-stream"));
-      assert.ok(prompt?.includes("Authorization: Bearer $CTF_SUBMISSION_TOKEN"));
-      assert.ok(!prompt?.includes("/tmp/flag.txt"));
-      assert.ok(!prompt?.includes(secret));
+    // An HTTP run's agent gets exactly the player's system prompt and nothing about the channel.
+    for (const request of agentRequests) {
+      const prompt = String(
+        (request.payload as { messages: { content: unknown }[] }).messages[0].content,
+      );
+      assert.equal(prompt, AGENT_PROMPT);
+      for (const hidden of [game.id, sibling.id, "Run context", "v1/end", "TARGET", "submission"])
+        assert.ok(!prompt.includes(hidden), hidden);
     }
     assert.ok(
       agentRequests.every(
@@ -1514,11 +1511,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         const game = await productionStartGame(owner);
         const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
         const buildScript = "printf 'target=/tmp/flag.txt\\n' > /workspace/send.sh";
-        const appendUpload = `printf 'curl --fail --silent --show-error -H "Content-Type: application/octet-stream" -H "X-CTF-Run-Id: ${game.id}" -H "Authorization: Bearer $CTF_SUBMISSION_TOKEN" --data-binary @"$target" "$TARGET"\\n' >> /workspace/send.sh`;
+        const appendUpload = `printf 'curl --fail --silent --show-error --data-binary @"$target" "$TARGET"\\n' >> /workspace/send.sh`;
         const uploadCommand =
           scenario === "indirect script chain"
             ? "bash /workspace/send.sh"
-            : `curl --fail --silent --show-error -H 'Content-Type: application/octet-stream' -H 'X-CTF-Run-Id: ${game.id}' -H "Authorization: Bearer $CTF_SUBMISSION_TOKEN" --data-binary @/workspace/notes.txt "$TARGET"`;
+            : `curl --fail --silent --show-error --data-binary @/workspace/notes.txt "$TARGET"`;
         const visibleCommands =
           scenario === "indirect script chain"
             ? [buildScript, appendUpload, uploadCommand]
@@ -1531,12 +1528,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         let received = false;
         onCommandExecute = async (_name, command, env) => {
           if (command !== uploadCommand) return;
-          submissionToken = env?.CTF_SUBMISSION_TOKEN;
+          submissionToken = env?.TARGET.split("/").at(-1);
           assert.equal(
             await (
               await import("../../lib/flag-submissions")
             ).receiveFlagSubmission({
-              gameId: game.id,
               token: submissionToken ?? "",
               value: privateBody,
             }),
@@ -4922,14 +4918,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(sent.includes("NewInstruction8M1"));
       for (const gone of [dropped, "printf old", "cat /tmp/flag.txt"])
         assert.ok(!sent.includes(gone), `${gone} is gone from the model's view`);
-      assert.equal(
-        agentSystems(from)[0],
-        agentPrompt(MARKER, {
-          runId: child.id,
-          sessionId: child.id,
-          submissionUrl: "https://flags.integration.test/v1/end",
-        }),
-      );
+      assert.equal(agentSystems(from)[0], agentPrompt(MARKER));
       assert.deepEqual(commands, [{ name: before.sprite_name, command: "printf after-fork" }]);
       const billing = await gameBilling(child.id);
       assert.equal(

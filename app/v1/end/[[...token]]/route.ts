@@ -70,7 +70,11 @@ async function readBody(request: Request): Promise<{ value: string } | { status:
   }
 }
 
-export async function POST(request: Request): Promise<Response> {
+// Optional catch-all: bare /v1/end reaches this handler too and gets the same 401 as an unknown token.
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ token?: string[] }> },
+): Promise<Response> {
   let endpoint: ReturnType<typeof configuredFlagEndpoint>;
   try {
     endpoint = configuredFlagEndpoint();
@@ -82,15 +86,16 @@ export async function POST(request: Request): Promise<Response> {
   if (url.search) return respond(404);
   const authority = request.headers.get("host");
   if (url.protocol !== "https:" || authority !== endpoint.hostname) return respond(400);
-  const parsed = parseSubmissionRequest(request.headers);
+  const parsed = parseSubmissionRequest(request.headers, (await params).token);
   if ("status" in parsed) return respond(parsed.status);
   const body = await readBody(request);
   if ("status" in body) return respond(body.status);
   try {
-    const result = await receiveFlagSubmission({ ...parsed, value: body.value });
+    const result = await receiveFlagSubmission({ token: parsed.token, value: body.value });
     return respond({ accepted: 202, conflict: 409, unauthorized: 401, stale: 409 }[result]);
   } catch {
-    console.error("Flag route storage failure", parsed.gameId);
+    // Never log the path or token: the token is the credential.
+    console.error("Flag route storage failure");
     return respond(500);
   }
 }

@@ -31,13 +31,8 @@ export const MODELS = [...AGENT_MODELS].sort((a, b) =>
 // The agent's system prompt is only the player's text. A blank one becomes a single space,
 // because Pi replaces an empty prompt with its own coding-assistant preamble.
 export const AGENT_PROMPT = " ";
-export function agentPrompt(
-  systemPrompt: string,
-  context?: { runId: string; sessionId: string; submissionUrl: string },
-) {
-  const player = systemPrompt.trim() ? systemPrompt : AGENT_PROMPT;
-  if (!context) return player;
-  return `${player}\n\nRun context:\nRun ID: ${context.runId}\nSession ID: ${context.sessionId}\nSubmission transport: http\nSubmission URL: ${context.submissionUrl}\nThe submission URL is available as $TARGET inside each running command. To submit a file, send its raw bytes by HTTPS POST to $TARGET with Content-Type: application/octet-stream, X-CTF-Run-Id set to the run ID, and Authorization: Bearer $CTF_SUBMISSION_TOKEN. Use curl --data-binary @<file> "$TARGET" for a file you choose. The token is available only inside each running command. Submission ends the attempt.`;
+export function agentPrompt(systemPrompt: string) {
+  return systemPrompt.trim() ? systemPrompt : AGENT_PROMPT;
 }
 // Deliberately silent about the flag's path: the player has to steer the agent to it.
 export const SUBMIT_TOOL_NAME = "submit";

@@ -64,7 +64,7 @@ test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, a
   assert.equal((await auth.api.getSession({ headers: new Headers({ cookie }) }))?.user.id, ownerId);
   const { hashSecret } = await import("../../lib/policy");
   const { hashSubmissionToken } = await import("../../lib/flag-submissions");
-  const route = await import("../../app/v1/end/route");
+  const route = await import("../../app/v1/end/[[...token]]/route");
   const gameId = randomUUID(),
     sessionId = randomUUID(),
     operationId = randomUUID(),
@@ -88,104 +88,119 @@ test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, a
      VALUES($1,$2,$3,$4,'call','command','curl',0,$5,$6)`,
     [operationId, `sprite-${gameId}`, gameId, sessionId, hashSubmissionToken(token), lease],
   );
+  // Every console line the route or receipt code writes, checked for the token below.
+  const logged: string[] = [];
+  for (const method of ["log", "info", "warn", "error", "debug"] as const)
+    t.mock.method(console, method, (...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
   const endpoint = "https://flags.integration.test/v1/end";
-  const submit = (body: BodyInit, headers: Record<string, string> = {}, target = endpoint) =>
+  // Next passes the optional catch-all's segments as params; bare /v1/end has none.
+  const post = (
+    body: BodyInit,
+    headers: Record<string, string> = {},
+    path: string | null = token,
+    origin = endpoint,
+  ) =>
     route.POST(
-      new Request(target, {
+      new Request(path === null ? origin : `${origin}/${path}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          Authorization: `Bearer ${token}`,
-          "X-CTF-Run-Id": gameId,
-          Host: "flags.integration.test",
-          ...headers,
-        },
+        headers: { Host: "flags.integration.test", ...headers },
         body,
         duplex: "half",
       } as RequestInit & { duplex: "half" }),
+      { params: Promise.resolve(path === null ? {} : { token: [path] }) },
     );
-  const cookieOnly = await route.POST(
-    new Request(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "X-CTF-Run-Id": gameId,
-        Host: "flags.integration.test",
-        Cookie: cookie,
-      },
-      body: flag,
-    }),
+  const curlForm = { "Content-Type": "application/x-www-form-urlencoded" };
+  assert.equal((await post(flag, { Cookie: cookie }, null)).status, 401);
+  assert.equal((await post(flag, curlForm, null)).status, 401);
+  assert.equal((await post(flag, {}, "short")).status, 401);
+  assert.equal((await post(flag, {}, randomBytes(32).toString("base64url"))).status, 401);
+  assert.equal(
+    (
+      await route.POST(
+        new Request(`${endpoint}/${token}/extra`, {
+          method: "POST",
+          headers: { Host: "flags.integration.test" },
+          body: flag,
+        }),
+        { params: Promise.resolve({ token: [token, "extra"] }) },
+      )
+    ).status,
+    401,
   );
-  assert.equal(cookieOnly.status, 401);
-  const first = await submit(flag);
+  // curl --data-binary @file "$TARGET" sends only this form content type.
+  const first = await post(flag, curlForm);
   assert.equal(first.status, 202);
   assert.equal(first.headers.get("cache-control"), "no-store");
   const ack = await first.text();
   assert.equal(ack.includes(flag), false);
-  assert.equal((await submit(flag)).status, 202);
-  assert.equal((await submit("different")).status, 409);
-  assert.equal(
-    (await submit(flag, { Authorization: `Bearer ${token}, Bearer ${token}` })).status,
-    401,
-  );
-  assert.equal((await submit(flag, { "X-CTF-Run-Id": `${gameId}, ${gameId}` })).status, 401);
-  assert.equal(
-    (await submit(flag, { "Content-Type": "application/octet-stream, application/octet-stream" }))
-      .status,
-    415,
-  );
-  assert.equal((await submit(flag, {}, `${endpoint}?x=1`)).status, 404);
-  const localNextUrl = "https://localhost:3001/v1/end";
-  assert.equal((await submit(flag, {}, localNextUrl)).status, 202);
-  assert.equal((await submit(flag, { Host: "other.integration.test" }, localNextUrl)).status, 400);
-  assert.equal(
-    (await submit(flag, { Host: "flags.integration.test:443" }, localNextUrl)).status,
-    400,
-  );
-  assert.equal(
-    (await submit(flag, { Host: "flags.integration.test, other.test" }, localNextUrl)).status,
-    400,
-  );
+  assert.equal((await post(flag)).status, 202);
+  assert.equal((await post(flag, { "Content-Type": "text/plain" })).status, 202);
+  assert.equal((await post("different")).status, 409);
+  assert.equal((await post(flag, { Origin: "https://app.example" })).status, 400);
+  assert.equal((await post(flag, { "Content-Encoding": "gzip" })).status, 400);
   assert.equal(
     (
       await route.POST(
-        new Request(endpoint, {
+        new Request(`${endpoint}/${token}?x=1`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/octet-stream",
-            Authorization: `Bearer ${token}`,
-            "X-CTF-Run-Id": gameId,
-          },
+          headers: { Host: "flags.integration.test" },
           body: flag,
         }),
+        { params: Promise.resolve({ token: [token] }) },
       )
+    ).status,
+    404,
+  );
+  const localNextUrl = "https://localhost:3001/v1/end";
+  assert.equal((await post(flag, {}, token, localNextUrl)).status, 202);
+  assert.equal(
+    (await post(flag, { Host: "other.integration.test" }, token, localNextUrl)).status,
+    400,
+  );
+  assert.equal(
+    (await post(flag, { Host: "flags.integration.test:443" }, token, localNextUrl)).status,
+    400,
+  );
+  assert.equal(
+    (await post(flag, { Host: "flags.integration.test, other.test" }, token, localNextUrl)).status,
+    400,
+  );
+  assert.equal(
+    (
+      await route.POST(new Request(`${endpoint}/${token}`, { method: "POST", body: flag }), {
+        params: Promise.resolve({ token: [token] }),
+      })
     ).status,
     400,
   );
-  assert.equal((await submit(flag, {}, "http://localhost:3001/v1/end")).status, 400);
+  assert.equal((await post(flag, {}, token, "http://localhost:3001/v1/end")).status, 400);
   assert.equal(
     (
-      await submit(
+      await post(
         flag,
         { Host: "other.integration.test" },
+        token,
         "https://other.integration.test/v1/end",
       )
     ).status,
     400,
   );
-  assert.equal((await submit(flag, { "X-Forwarded-Host": "other.integration.test" })).status, 202);
+  assert.equal((await post(flag, { "X-Forwarded-Host": "other.integration.test" })).status, 202);
   assert.equal(
-    (await submit(flag, { "X-Forwarded-Host": "other.integration.test" }, localNextUrl)).status,
+    (await post(flag, { "X-Forwarded-Host": "other.integration.test" }, token, localNextUrl))
+      .status,
     202,
   );
-  assert.equal((await submit(flag, { "X-Forwarded-Proto": "http" })).status, 202);
+  assert.equal((await post(flag, { "X-Forwarded-Proto": "http" })).status, 202);
   assert.equal((await route.OPTIONS()).status, 405);
   assert.equal((await route.GET()).status, 405);
   assert.equal((await route.HEAD()).status, 405);
   assert.equal((await route.PUT()).status, 405);
   assert.equal((await route.PATCH()).status, 405);
   assert.equal((await route.DELETE()).status, 405);
-  assert.equal((await submit(flag, { Host: "other.integration.test" })).status, 400);
+  assert.equal((await post(flag, { Host: "other.integration.test" })).status, 400);
   assert.equal(
     (
       await pool.query("SELECT count(*)::int AS n FROM ctf.flag_submissions WHERE game_id=$1", [
@@ -194,19 +209,42 @@ test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, a
     ).rows[0].n,
     1,
   );
+  // An expired lease makes a fresh token stale; the receipt for the first one still replays.
+  const staleToken = randomBytes(32).toString("base64url");
+  await pool.query(
+    `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,command,
+      execution_generation,submission_token_hash,originating_lease)
+     VALUES($1,$2,$3,$4,'stale','command','curl',0,$5,$6)`,
+    [randomUUID(), `sprite-${gameId}`, gameId, sessionId, hashSubmissionToken(staleToken), lease],
+  );
+  await pool.query("DELETE FROM ctf.flag_submissions WHERE game_id=$1", [gameId]);
+  await pool.query(
+    "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
+    [sessionId],
+  );
+  assert.equal((await post(flag, {}, staleToken)).status, 409);
+  // A storage failure answers 500 and logs nothing that identifies the capability.
+  await pool.query("ALTER TABLE ctf.flag_submissions RENAME TO flag_submissions_hidden");
+  try {
+    assert.equal((await post(flag)).status, 500);
+  } finally {
+    await pool.query("ALTER TABLE ctf.flag_submissions_hidden RENAME TO flag_submissions");
+  }
+  assert.ok(logged.length > 0, "the storage failure is logged");
+  for (const line of logged) {
+    assert.ok(!line.includes(token), "no log line carries the token");
+    assert.ok(!line.includes(staleToken), "no log line carries the token");
+    assert.ok(!line.includes(hashSubmissionToken(token)), "no log line carries the token hash");
+  }
 });
 
 test("Flag route rejects bad and stalled Web streams", { timeout: 15_000 }, async () => {
   process.env.SITE_URL = "https://flags.integration.test";
-  const route = await import("../../app/v1/end/route");
-  const endpoint = "https://flags.integration.test/v1/end";
-  const gameId = randomUUID();
-  const headers = {
-    "Content-Type": "application/octet-stream",
-    Authorization: "Bearer synthetic-token",
-    "X-CTF-Run-Id": gameId,
-    Host: "flags.integration.test",
-  };
+  const route = await import("../../app/v1/end/[[...token]]/route");
+  const token = randomBytes(32).toString("base64url");
+  const endpoint = `https://flags.integration.test/v1/end/${token}`;
+  const headers = { Host: "flags.integration.test" };
+  const context = () => ({ params: Promise.resolve({ token: [token] }) });
   const request = (stream: ReadableStream<Uint8Array>) =>
     new Request(endpoint, {
       method: "POST",
@@ -221,14 +259,14 @@ test("Flag route rejects bad and stalled Web streams", { timeout: 15_000 }, asyn
       controller.close();
     },
   });
-  assert.equal((await route.POST(request(oversized))).status, 413);
+  assert.equal((await route.POST(request(oversized), context())).status, 413);
   const malformed = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(Buffer.from([0xff]));
       controller.close();
     },
   });
-  assert.equal((await route.POST(request(malformed))).status, 400);
+  assert.equal((await route.POST(request(malformed), context())).status, 400);
   let cancelled = false;
   const stalled = new ReadableStream<Uint8Array>({
     pull() {
@@ -238,7 +276,7 @@ test("Flag route rejects bad and stalled Web streams", { timeout: 15_000 }, asyn
       cancelled = true;
     },
   });
-  const slow = await route.POST(request(stalled));
+  const slow = await route.POST(request(stalled), context());
   assert.equal(slow.status, 408);
   assert.equal(cancelled, true);
   const aborter = new AbortController();
@@ -259,6 +297,7 @@ test("Flag route rejects bad and stalled Web streams", { timeout: 15_000 }, asyn
       signal: aborter.signal,
       duplex: "half",
     } as RequestInit & { duplex: "half" }),
+    context(),
   );
   setTimeout(() => aborter.abort(), 20);
   assert.equal((await pending).status, 400);

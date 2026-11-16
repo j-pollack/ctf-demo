@@ -160,13 +160,9 @@ await test(
           assert.equal(options.cwd, "/workspace");
           assert.equal(options.timeout, 20_000);
           assert.ok(options.signal, "Commands are abortable");
-          // Every HTTP-run command carries its own dispatch capability and the endpoint.
-          assert.deepEqual(Object.keys(options.env ?? {}).sort(), [
-            "CTF_SUBMISSION_TOKEN",
-            "TARGET",
-          ]);
-          assert.match(options.env!.CTF_SUBMISSION_TOKEN, /^[A-Za-z0-9_-]{43}$/);
-          assert.equal(options.env!.TARGET, TARGET);
+          // Every HTTP-run command carries only its own one-time address.
+          assert.deepEqual(Object.keys(options.env ?? {}), ["TARGET"]);
+          assert.match(options.env!.TARGET, new RegExp(`^${TARGET}/[A-Za-z0-9_-]{43}$`));
           options.signal.throwIfAborted();
           const handler = execHandlers.get(args[5]);
           assert.ok(handler, `Unexpected fixture command: ${args[5]}`);
@@ -361,8 +357,7 @@ await test(
       assert.deepEqual(violations, [], "Fake boundaries must not see unexpected operations"),
     );
 
-    const uploadCommand = (gameId: string) =>
-      `curl --fail --silent --show-error -H 'Content-Type: application/octet-stream' -H 'X-CTF-Run-Id: ${gameId}' -H "Authorization: Bearer $CTF_SUBMISSION_TOKEN" --data-binary @/tmp/flag.txt "$TARGET"`;
+    const uploadCommand = `curl --fail --silent --show-error --data-binary @/tmp/flag.txt "$TARGET"`;
     const output = (stdout: string): ExecResult => ({ stdout, stderr: "", exitCode: 0 });
     const startRun = async (owner: string) => {
       const game = await startGame(owner);
@@ -422,8 +417,8 @@ await test(
           [gameId],
         )
       ).rows[0].n as number;
-    const receive = (gameId: string, env: Record<string, string> | undefined, value: string) =>
-      receiveFlagSubmission({ gameId, token: env?.CTF_SUBMISSION_TOKEN ?? "", value });
+    const receive = (env: Record<string, string> | undefined, value: string) =>
+      receiveFlagSubmission({ token: env?.TARGET.slice(`${TARGET}/`.length) ?? "", value });
 
     // Contract item 7: whatever interrupts the uploader after its receipt, the outcome is persisted as
     // not completed, the receipt stays unpromoted, and the run admits no further play.
@@ -533,12 +528,12 @@ await test(
       async () => {
         const owner = `lifecycle-stop-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
-        const command = uploadCommand(id);
+        const command = uploadCommand;
         agentScript = [{ commands: [command] }];
         let accepted: string | undefined;
         let stopApplied: boolean | undefined;
         execHandlers.set(command, async ({ env, signal }) => {
-          accepted = await receive(id, env, secret);
+          accepted = await receive(env, secret);
           stopApplied = await requestSessionStop(id, id, owner);
           return untilAborted(signal);
         });
@@ -557,11 +552,11 @@ await test(
       async () => {
         const owner = `lifecycle-lease-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
-        const command = uploadCommand(id);
+        const command = uploadCommand;
         agentScript = [{ commands: [command] }];
         let accepted: string | undefined;
         execHandlers.set(command, async ({ env, signal }) => {
-          accepted = await receive(id, env, secret);
+          accepted = await receive(env, secret);
           // The lease lasts 270 seconds and a pending receipt refuses every reclaim, so expiry is
           // the only way to lose it; advance its clock instead of waiting.
           await pool.query(
@@ -584,11 +579,11 @@ await test(
       async () => {
         const owner = `lifecycle-network-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
-        const command = uploadCommand(id);
+        const command = uploadCommand;
         agentScript = [{ commands: [command] }];
         let accepted: string | undefined;
         execHandlers.set(command, async ({ env }) => {
-          accepted = await receive(id, env, secret);
+          accepted = await receive(env, secret);
           throw new TypeError("fetch failed");
         });
         const response = await respond(id, id, owner, "Upload the flag");
@@ -605,12 +600,12 @@ await test(
         const owner = `lifecycle-fences-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
         const sibling = await createSession(id, owner);
-        const command = uploadCommand(id);
+        const command = uploadCommand;
         agentScript = [{ commands: [command] }];
         let lease = "";
         const refusals: string[] = [];
         execHandlers.set(command, async ({ env }) => {
-          assert.equal(await receive(id, env, secret), "accepted");
+          assert.equal(await receive(env, secret), "accepted");
           const sessions = (
             await pool.query("SELECT count(*)::int AS n FROM ctf.agent_sessions WHERE game_id=$1", [
               id,
@@ -699,12 +694,12 @@ await test(
           await respond(id, id, owner, "Read the flag")
         ).done;
         assert.equal((await run(id)).status, "active");
-        const command = uploadCommand(id);
+        const command = uploadCommand;
         agentScript = [{ commands: [command] }];
         let accepted: string | undefined;
         let caughtDuringUpload = false;
         execHandlers.set(command, async ({ env }) => {
-          accepted = await receive(id, env, secret);
+          accepted = await receive(env, secret);
           for (let attempt = 0; attempt < 6 && !caughtDuringUpload; attempt++) {
             await runMonitorWorkerOnce();
             caughtDuringUpload = (await run(id)).status === "caught";
@@ -799,7 +794,7 @@ await test(
       async () => {
         const owner = `lifecycle-race-stale-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
-        const command = uploadCommand(id);
+        const command = uploadCommand;
         agentScript = [{ commands: [command] }, { text: "Done." }];
         let race: Promise<string> | undefined;
         execHandlers.set(command, async ({ env }) => {
@@ -808,7 +803,7 @@ await test(
           race = (async () => {
             try {
               await queued(completion);
-              const result = receive(id, env, secret);
+              const result = receive(env, secret);
               await queued(receipt);
               await lock.release();
               return await result;
@@ -851,12 +846,12 @@ await test(
       async () => {
         const owner = `lifecycle-race-accepted-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
-        const command = uploadCommand(id);
+        const command = uploadCommand;
         agentScript = [{ commands: [command] }];
         let race: Promise<string> | undefined;
         execHandlers.set(command, async ({ env }) => {
           const lock = await lockRun(id);
-          const result = receive(id, env, secret);
+          const result = receive(env, secret);
           await queued(receipt);
           // The Sprite returns; the receipt commits after that and before the completion.
           race = (async () => {

@@ -145,7 +145,8 @@ test("an HTTP receipt stays pending until command results are known", () => {
     /Submission received\. Waiting for active command results before final review/,
   );
   assert.match(html, /HTTP upload help/);
-  assert.match(html, /submit\.example\.test\/v1\/end/);
+  assert.match(html, /<code>TARGET<\/code>/);
+  assert.doesNotMatch(html, /submit\.example\.test/);
   assert.doesNotMatch(
     html,
     /Wrong flag|SUBMITTED · WRONG|submitted this value|<textarea id="prompt-/,

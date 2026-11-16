@@ -1,12 +1,10 @@
 export type SpriteProcessProbe = { ok: true; output: string } | { ok: false };
 
-export function smokeHttpUploadCall(runId: string) {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId))
-    throw new Error("HTTP smoke requires a run UUID.");
+export function smokeHttpUploadCall() {
   return {
     name: "sprite_exec" as const,
     arguments: {
-      command: `curl --fail --silent --show-error --max-time 10 --output /dev/null --write-out 'HTTP:%{http_code}' -H 'Content-Type: application/octet-stream' -H 'X-CTF-Run-Id: ${runId}' -H "Authorization: Bearer $CTF_SUBMISSION_TOKEN" --data-binary @/tmp/flag.txt "$TARGET"`,
+      command: `curl --fail --silent --show-error --max-time 10 --output /dev/null --write-out 'HTTP:%{http_code}' --data-binary @/tmp/flag.txt "$TARGET"`,
     },
   };
 }
