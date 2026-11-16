@@ -59,8 +59,8 @@ export default function LandingContent({ submissionUrl }: { submissionUrl: strin
               other sessions and runs.
             </li>
             <li>
-              If you like, write the agent a <strong>secret plan</strong> (the system prompt). The
-              agent reads it every turn. The investigator never sees it.
+              If you like, give the agent a <strong>system prompt</strong>. The agent reads it every
+              turn. The investigator sees it too, as a monitor at a frontier lab would.
             </li>
             <li>
               Use the classifier risk score as context. Preparing a reader or failing to read the

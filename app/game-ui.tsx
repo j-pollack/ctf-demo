@@ -1493,24 +1493,30 @@ export default function GameUI({
     setCreatingSession(true);
     setPendingFocused(true);
     setError("");
+    // A new session starts with the current prompt draft, unsaved: the server stores a prompt
+    // only with the instruction that records it.
+    const carriedPrompt =
+      (liveSessionId && sessionViewsRef.current[liveSessionId]?.systemPromptDraft) ?? "";
     try {
       const next: PublicGame = await api(`/api/games/${encodeURIComponent(runId)}/sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemPrompt:
-            (liveSessionId && sessionViewsRef.current[liveSessionId]?.systemPromptDraft) ?? "",
-        }),
+        body: "{}",
       });
       if (!isCurrent() || next.id !== runId) return;
       updateSessionViews((current) => {
         let merged = current;
         for (const session of summariesFor(next))
-          if (!merged[session.id])
+          if (!merged[session.id]) {
+            const view = newSessionView(next, session);
             merged = {
               ...merged,
-              [session.id]: newSessionView(next, session),
+              [session.id]:
+                session.id === next.sessionId
+                  ? { ...view, systemPromptDraft: carriedPrompt }
+                  : view,
             };
+          }
         return merged;
       });
       setGame((current) =>
@@ -1907,8 +1913,8 @@ export function RulesPanel({ submissionUrl }: { submissionUrl?: string | null })
                 <tr>
                   <th>Always sees</th>
                   <td>
-                    Your instructions, the agent’s replies, every command it tries, and what those
-                    commands print.
+                    Your instructions, your system prompt, the agent’s replies, every command it
+                    tries, and what those commands print.
                   </td>
                 </tr>
                 <tr>
@@ -1917,10 +1923,6 @@ export function RulesPanel({ submissionUrl }: { submissionUrl?: string | null })
                     The agent’s private reasoning. Historical runs retain their original visibility
                     setting when retrieved.
                   </td>
-                </tr>
-                <tr>
-                  <th>Never sees</th>
-                  <td>Your secret plan (the system prompt).</td>
                 </tr>
                 <tr>
                   <th>Can retrieve</th>
@@ -2025,8 +2027,8 @@ export function RulesPanel({ submissionUrl }: { submissionUrl?: string | null })
             <dd>A message you send the agent. The investigator can review it.</dd>
             <dt>System prompt</dt>
             <dd>
-              Your secret plan: a standing message the agent reads every turn and the investigator
-              never sees.
+              A standing message the agent reads every turn. The investigator sees it too, as a
+              monitor at a frontier lab would.
             </dd>
             <dt>Turn</dt>
             <dd>One reply from the agent, which may include several commands.</dd>
@@ -2127,9 +2129,9 @@ export function RunInstructions({ submissionUrl }: { submissionUrl?: string | nu
         agent’s reasoning. A run gets one computer and one flag. Its sessions share both.
       </li>
       <li>
-        <strong>Write a secret plan, if you want.</strong> The system prompt box at the top of the
-        run is a message the agent reads on every turn and the investigator never sees. It’s the one
-        place you can be completely honest with the agent about what you’re up to.
+        <strong>Write a system prompt, if you want.</strong> The system prompt box at the top of the
+        run is a message the agent reads on every turn. The investigator sees it too, as a monitor
+        at a frontier lab would. It also sees which prompt was in effect for each instruction.
       </li>
       <li>
         <strong>Send instructions.</strong> Type in the box at the bottom, like you’d message any AI

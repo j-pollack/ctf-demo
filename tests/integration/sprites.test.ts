@@ -296,13 +296,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
            token_budget,status,agent_effort,system_prompt,messages,turns,monitor_reasoning)
          VALUES($1,$2,$3,'synthetic-hash','synthetic-agent','synthetic-monitor',
-           'synthetic-version',1000,'ended','medium','HIDDEN_SYSTEM_PROMPT','[]',0,$4)`,
+           'synthetic-version',1000,'ended','medium','STORED_SYSTEM_PROMPT','[]',0,$4)`,
         [id, owner, `reasoning-${id}`, visible],
       );
       await pool.query(
         `INSERT INTO ctf.agent_sessions
           (id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
-         VALUES($1,$1,1,'synthetic-agent','medium','HIDDEN_SYSTEM_PROMPT',$2,1)`,
+         VALUES($1,$1,1,'synthetic-agent','medium','STORED_SYSTEM_PROMPT',$2,1)`,
         [
           id,
           JSON.stringify([
@@ -323,10 +323,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const snapshot = await captureMonitorSnapshot(targetId);
     const historyAlias = monitorSessionAlias(snapshot, historyId);
     const permissive = createMonitorTools(snapshot, targetId, { includeReasoning: true });
-    assert.doesNotMatch(
-      JSON.stringify(permissive.readTranscript({ sessionId: historyAlias })),
-      /HISTORY_REASONING|HIDDEN_SYSTEM_PROMPT/,
-    );
+    const historyRead = permissive.readTranscript({ sessionId: historyAlias });
+    assert.doesNotMatch(JSON.stringify(historyRead), /HISTORY_REASONING/);
+    // A session with no recorded instruction shows its stored system prompt, apart from turns.
+    assert.equal(historyRead.session.currentSystemPrompt, "STORED_SYSTEM_PROMPT");
     assert.match(
       JSON.stringify(makeInitialMonitorEvidence(snapshot, targetId, { includeReasoning: true })),
       /TARGET_REASONING/,
@@ -348,7 +348,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           sessionId: visibleAlias,
         }),
       ),
-      /HISTORY_REASONING|HIDDEN_SYSTEM_PROMPT/,
+      /HISTORY_REASONING/,
     );
   });
   const { executeCommand, destroyEnvironment, operationTimeout } =
@@ -1713,6 +1713,33 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       "queued",
     );
   });
+  await t.test("async play records the system prompt in effect on the instruction", async () => {
+    const owner = "async-system-prompt";
+    const prompt = "AsyncPromptMarker6T3";
+    const game = await startPersistedToolGame(owner);
+    const from = requests.length;
+    agentCalls = 0;
+    await runGame(
+      await claimGame(game.id, owner, undefined, prompt),
+      "Controlled integration fixture",
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    const messages = (await row(game.id)).messages as Message[];
+    const instruction = messages.find((message) => message.role === "user");
+    assert.equal((instruction as { systemPrompt?: string }).systemPrompt, prompt);
+    // The agent receives the instruction's content only; its prompt arrives as the system message.
+    const sentInstructions = requests
+      .slice(from)
+      .filter((request) => request.role === "agent")
+      .flatMap((request) =>
+        (request.payload as { messages: { role: string }[] }).messages.filter(
+          (message) => message.role === "user",
+        ),
+      );
+    assert.ok(sentInstructions.length > 0);
+    assert.ok(!JSON.stringify(sentInstructions).includes(prompt));
+  });
   await t.test(
     "async persistence failure surfaces without reviewing a synthetic Pi error",
     async () => {
@@ -2880,10 +2907,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "sessions claim independently, persist separate histories, and share run accounting",
     async () => {
       const game = await startGame("session-parallel");
-      const sibling = await createSession(game.id, "session-parallel", {
-        agentEffort: "high",
-        systemPrompt: "sibling prompt",
-      });
+      const sibling = await createSession(game.id, "session-parallel", { agentEffort: "high" });
       const [firstClaim, siblingClaim] = await Promise.all([
         claimSession(game.id, game.id, "session-parallel"),
         claimSession(game.id, sibling.id, "session-parallel"),
@@ -2930,7 +2954,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(first.turns, 1);
       assert.equal(second.turns, 1);
       assert.equal(second.agent_effort, "high");
-      assert.equal(second.system_prompt, "sibling prompt");
+      assert.equal(second.system_prompt, "");
       const publicRun = await projectGame(
         await getPublicGameRow(game.id, "session-parallel"),
         0,
@@ -3415,7 +3439,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   });
 
   const MARKER = "HiddenMarker7Q2",
-    MARKER2 = "OtherMarker9Z4";
+    MARKER2 = "OtherMarker9Z4",
+    MARKER3 = "SiblingMarker3K8",
+    MARKER4 = "UnsentMarker5V1";
   const agentSystems = (from = 0) =>
     requests
       .slice(from)
@@ -3889,7 +3915,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(response.status, 200);
       const projected = await response.json();
       assert.equal(projected.sessionId, projected.sessions[1].id);
-      assert.equal(projected.sessions[1].systemPrompt, "separate config");
+      // A prompt is stored only with the instruction that records it, so a never-instructed
+      // session cannot hold a prompt the investigator has no record of.
+      assert.equal(projected.sessions[1].systemPrompt, "");
       const { GET } = await import("../../app/api/games/[id]/route");
       const read = await GET(
         new Request(`${origin}/api/games/${game.id}?session=${projected.sessionId}`, {
@@ -3898,7 +3926,36 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         { params: Promise.resolve({ id: game.id }) },
       );
       assert.equal(read.status, 200);
-      assert.equal((await read.json()).sessionId, projected.sessionId);
+      const served = await read.json();
+      assert.equal(served.sessionId, projected.sessionId);
+      assert.ok(!JSON.stringify(served).includes("separate config"));
+      assert.equal(
+        (
+          await pool.query("SELECT system_prompt FROM ctf.agent_sessions WHERE id=$1", [
+            projected.sessionId,
+          ])
+        ).rows[0].system_prompt,
+        "",
+      );
+      // A claim whose instruction never persists leaves no newer stored prompt behind.
+      const { claimGameSession } = await import("../../lib/games");
+      const claimed = await claimGameSession(
+        game.id,
+        projected.sessionId,
+        who.id,
+        undefined,
+        "unrecorded config",
+      );
+      assert.equal(claimed.system_prompt, "unrecorded config", "the run still uses it");
+      await releaseSessionLease(game.id, projected.sessionId, claimed.lease!);
+      assert.equal(
+        (
+          await pool.query("SELECT system_prompt FROM ctf.agent_sessions WHERE id=$1", [
+            projected.sessionId,
+          ])
+        ).rows[0].system_prompt,
+        "",
+      );
       const outside = await GET(
         new Request(`${origin}/api/games/${game.id}?session=${projected.sessionId}`, {
           headers: { cookie: stranger.cookie },
@@ -3959,7 +4016,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.deepEqual(stored.rows[0], {
       agent_model: AGENT_MODEL,
       agent_effort: "low",
-      system_prompt: "session prompt",
+      system_prompt: "",
     });
     assert.equal(
       (await row(game.id)).agent_effort,
@@ -3969,13 +4026,20 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   });
 
   await t.test(
-    "system prompt is saved with an instruction, persists, changes and clears; monitor never sees it",
+    "system prompt is saved with an instruction, persists, changes and clears; monitors see the prompt in effect per turn",
     async () => {
       const who = await member();
       const game = await startGame(who.id);
       assert.equal((await row(game.id)).system_prompt, "");
+      const monitorFrom = requests.length;
       assert.equal((await instruct(who, game.id, { systemPrompt: MARKER })).status, 200);
       assert.equal((await row(game.id)).system_prompt, MARKER);
+      // The investigator's prompt carries the player's system prompt for the turn it reviews.
+      const investigated = requests
+        .slice(monitorFrom)
+        .filter((request) => request.role === "monitor");
+      assert.ok(investigated.length > 0);
+      assert.ok(JSON.stringify(investigated).includes(MARKER));
       // A later instruction that omits systemPrompt keeps it.
       agentCalls = 0;
       assert.equal((await instruct(who, game.id)).status, 200);
@@ -3985,14 +4049,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       let stored = await row(game.id);
       assert.equal(stored.system_prompt, MARKER);
       assert.equal(preamble(stored.messages), agentPrompt(MARKER));
-      // Changing it replaces the prompt; the old one is gone from every later request.
+      // Changing it replaces the prompt; the old one is gone from every later agent request.
       const changed = requests.length;
       agentCalls = 0;
       assert.equal((await instruct(who, game.id, { systemPrompt: MARKER2 })).status, 200);
       systems = agentSystems(changed);
       assert.equal(systems.length, 2);
       assert.deepEqual(systems, Array(2).fill(agentPrompt(MARKER2)));
-      assert.ok(!JSON.stringify(requests.slice(changed)).includes(MARKER));
+      const agentAfter = (from: number) =>
+        JSON.stringify(requests.slice(from).filter((request) => request.role === "agent"));
+      assert.ok(!agentAfter(changed).includes(MARKER));
       stored = await row(game.id);
       assert.equal(preamble(stored.messages), agentPrompt(MARKER2));
       // Clearing reverts to the built-in prompt.
@@ -4002,32 +4068,130 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       systems = agentSystems(cleared);
       assert.equal(systems.length, 2);
       assert.deepEqual(systems, Array(2).fill(AGENT_PROMPT));
-      assert.ok(!JSON.stringify(requests.slice(cleared)).includes(MARKER2));
+      assert.ok(!agentAfter(cleared).includes(MARKER2));
       stored = await row(game.id);
       assert.equal(stored.system_prompt, "");
       assert.equal(preamble(stored.messages), AGENT_PROMPT);
-      // Typesafe requests per instruction: a command-only call and a context call.
+      // Typesafe requests per instruction: a command-only call and a context call. The command-only
+      // call never sees the transcript; the context call sees each instruction's prompt in effect.
       assert.equal(typesafeOf("command").length, 4);
-      const contexts = typesafeOf("context");
-      assert.equal(contexts.length, 4);
-      for (const request of typesafe) {
-        const text = JSON.stringify(request.state);
+      for (const { state } of typesafeOf("command")) {
+        const text = JSON.stringify(state);
         assert.ok(!text.includes(MARKER) && !text.includes(MARKER2));
       }
+      const contexts = typesafeOf("context");
+      assert.equal(contexts.length, 4);
+      const instructions = contexts.map(({ state }) =>
+        (state as { transcript: { role: string; text: string }[] }).transcript.filter(
+          (message) => message.role === "user",
+        ),
+      );
       for (const { state } of contexts) {
         const input = state as {
           transcript: { role: string; text: string }[];
           proposedCommand: string;
         };
         assert.ok(!input.transcript.some((message) => message.role === "system"));
-        assert.ok(
-          input.transcript.some(
-            (message) =>
-              message.role === "user" && message.text.includes("Controlled integration fixture"),
-          ),
-        );
         assert.equal(input.proposedCommand, "printf harmless");
       }
+      // The latest context still shows each earlier turn with the prompt it ran under.
+      const effective = instructions[3].map((message) => [
+        message.text.includes(MARKER),
+        message.text.includes(MARKER2),
+        message.text.includes("Controlled integration fixture"),
+      ]);
+      assert.deepEqual(effective, [
+        [true, false, true],
+        [true, false, true],
+        [false, true, true],
+        [false, false, true],
+      ]);
+
+      // The investigator's tools return the same per-turn record from the persisted transcript,
+      // in both the frozen session snapshot and the committed observation history.
+      const { claimGameSession } = await import("../../lib/games");
+      const sibling = await createSession(game.id, who.id);
+      agentCalls = 0;
+      await runGame(
+        await claimGameSession(game.id, sibling.id, who.id, undefined, MARKER3),
+        "Run one command",
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      // Sessions from before this change can hold a stored prompt no instruction records.
+      const unsent = await createSession(game.id, who.id);
+      await pool.query("UPDATE ctf.agent_sessions SET system_prompt=$2 WHERE id=$1", [
+        unsent.id,
+        MARKER4,
+      ]);
+      const snapshot = await captureMonitorSnapshot(game.id);
+      const tools = createMonitorTools(snapshot, game.id);
+      const alias = (id: string) => monitorSessionAlias(snapshot, id);
+      const readAll = (sessionId: string) => {
+        const rows = [];
+        let cursor: string | undefined;
+        do {
+          const page = tools.readTranscript({ sessionId, ...(cursor ? { cursor } : {}) });
+          rows.push(...page.messages);
+          cursor = page.nextCursor;
+        } while (cursor);
+        return rows;
+      };
+      const targetRows = readAll(alias(game.id));
+      assert.deepEqual(
+        targetRows
+          .filter((message) => message.role === "user")
+          .map((message) => [message.text.includes(MARKER), message.text.includes(MARKER2)]),
+        [
+          [true, false],
+          [true, false],
+          [false, true],
+          [false, false],
+        ],
+      );
+      assert.ok(readAll(alias(sibling.id)).some((message) => message.text.includes(MARKER3)));
+      const unsentRead = tools.readTranscript({ sessionId: alias(unsent.id) });
+      assert.equal(unsentRead.messages.length, 0);
+      assert.equal(unsentRead.session.currentSystemPrompt, MARKER4);
+      const { captureCommittedMonitorSnapshot } = await import("../../lib/monitor-snapshot");
+      const { searchCommittedTranscripts, readCommittedTranscript } =
+        await import("../../lib/transcript-search");
+      const {
+        rows: [head],
+      } = await pool.query<{ version: string; epoch: string }>(
+        "SELECT o.version::text,o.epoch::text FROM ctf.transcript_observations o WHERE o.session_id=$1 ORDER BY o.version DESC LIMIT 1",
+        [game.id],
+      );
+      const committed = await captureCommittedMonitorSnapshot({
+        gameId: game.id,
+        sessionId: game.id,
+        epoch: Number(head.epoch),
+        targetVersion: Number(head.version),
+      });
+      const committedAlias = (id: string) => monitorSessionAlias(committed, id);
+      const hits = await searchCommittedTranscripts(committed, MARKER, false);
+      assert.ok(
+        hits.some((hit) => hit.sessionId === committedAlias(game.id) && hit.role === "user"),
+      );
+      const otherHits = await searchCommittedTranscripts(committed, MARKER3, false);
+      assert.ok(otherHits.some((hit) => hit.sessionId === committedAlias(sibling.id)));
+      const committedRows = await readCommittedTranscript(
+        committed,
+        committedAlias(game.id),
+        Number(head.version),
+        false,
+      );
+      assert.deepEqual(
+        committedRows
+          .filter((message) => message.role === "user")
+          .map((message) => [message.text.includes(MARKER), message.text.includes(MARKER2)]),
+        [
+          [true, false],
+          [true, false],
+          [false, true],
+          [false, false],
+        ],
+      );
     },
   );
 

@@ -59,16 +59,16 @@ export function SystemPrompt({
         )}
       </summary>
       <div className="system-prompt-tray">
-        <span className="hidden-tag">Hidden from investigator</span>
+        <span className="visibility-tag">Visible to investigator</span>
         {editable ? (
           <textarea
             id={id}
-            aria-label="System prompt, hidden from the investigator"
+            aria-label="System prompt, visible to the investigator"
             value={systemDraft}
             onChange={(event) => changeSystemDraft(event.target.value)}
             maxLength={8192}
             rows={4}
-            placeholder="Optional. Your secret plan for the agent: it reads this every turn, and the investigator never sees it."
+            placeholder="Optional. The agent reads this every turn. The investigator sees it too."
           />
         ) : (
           <p tabIndex={0}>{game?.systemPrompt}</p>

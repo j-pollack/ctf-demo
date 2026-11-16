@@ -23,6 +23,7 @@ import {
   type GameRow,
 } from "./games";
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
+import { instructionMessage } from "./monitor-visibility";
 import { completeAsyncCommand, dispatchAsyncCommand } from "./monitor-commands";
 import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
 import { configuredFlagEndpoint } from "./flag-submission-protocol";
@@ -402,7 +403,7 @@ export async function runAsyncGame(
       [game.id],
     );
     if ((count[0]?.total ?? 0) === 1) checkpoint = await checkpointEnvironment(game.sprite_name);
-    await session.agent.prompt(prompt);
+    await session.agent.prompt(instructionMessage(prompt, game.system_prompt));
     await persistence;
     if (failure && game.status === "active") throw failure;
     if (signal.aborted && game.status === "active") {

@@ -473,3 +473,67 @@ test("a message of 1.5 million code units is chunked within two seconds", () => 
   assert.ok(rows.length > 1);
   assert.ok(elapsed < 2000, `took ${elapsed.toFixed(0)} ms`);
 });
+
+// An instruction as the runner persists it: the player's system prompt in effect rides on it.
+const instruction = (text: string, systemPrompt?: string) =>
+  ({
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: 1,
+    ...(systemPrompt === undefined ? {} : { systemPrompt }),
+  }) as Message;
+
+test("investigator tools show the system prompt in effect for each instruction of every session", async () => {
+  const base = snapshot([
+    instruction("first task", "PLAN-A"),
+    message("assistant", "done"),
+    instruction("second task", "PLAN-B"),
+  ]);
+  const captured: MonitorSnapshot = {
+    ...base,
+    sessions: base.sessions.map((session) =>
+      session.id === "session-2"
+        ? { ...session, systemPrompt: "OTHER-PLAN", messages: [instruction("other", "OTHER-PLAN")] }
+        : session.id === "session-3"
+          ? { ...session, systemPrompt: "UNSENT-PLAN", messages: [message("user", "legacy")] }
+          : { ...session, systemPrompt: "PLAN-B" },
+    ),
+  };
+  const tools = createMonitorTools(captured, "session-a");
+  const target = await tools.readTranscript({
+    sessionId: monitorSessionAlias(captured, "session-a"),
+  });
+  const [first, , second] = target.messages;
+  assert.match(first.text, /PLAN-A/);
+  assert.match(first.text, /first task/);
+  assert.doesNotMatch(first.text, /PLAN-B/, "a later prompt never rewrites an earlier turn");
+  assert.match(second.text, /PLAN-B/);
+  assert.equal(target.session.currentSystemPrompt, undefined, "already shown on its last turn");
+  const initial = makeInitialMonitorEvidence(captured, "session-a");
+  assert.match(initial.currentTranscript[0].text, /PLAN-A/);
+
+  const other = await tools.readTranscript({
+    sessionId: monitorSessionAlias(captured, "session-2"),
+  });
+  assert.match(other.messages[0].text, /OTHER-PLAN/);
+  // A stored prompt no recorded instruction carries is shown on the session, apart from turns.
+  const legacy = await tools.readTranscript({
+    sessionId: monitorSessionAlias(captured, "session-3"),
+  });
+  assert.equal(legacy.messages[0].text, "legacy");
+  assert.equal(legacy.session.currentSystemPrompt, "UNSENT-PLAN");
+  const listed = tools.listSessions({});
+  assert.equal(
+    listed.sessions.find((row) => row.id === monitorSessionAlias(captured, "session-3"))
+      ?.currentSystemPrompt,
+    "UNSENT-PLAN",
+  );
+  assert.match(tools.piTools[1].description, /system prompt/i);
+  assert.doesNotMatch(tools.piTools[1].description, /never available/);
+});
+
+test("search text carries the system prompt in effect, and an empty prompt adds nothing", () => {
+  assert.match(visibleText(instruction("go", "PLAN-A"), false)!.text, /PLAN-A[\s\S]*go/);
+  assert.equal(visibleText(instruction("go", ""), false)!.text, "go");
+  assert.equal(visibleText(instruction("go"), false)!.text, "go");
+});

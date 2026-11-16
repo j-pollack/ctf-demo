@@ -1651,14 +1651,14 @@ dialog::backdrop {
 .system-prompt[open] summary::before {
   content: "−" / "";
 }
-.hidden-tag {
+.visibility-tag {
   padding: 2px 6px;
   background: var(--ink);
   color: var(--accent);
   font-size: 10px;
   white-space: nowrap;
 }
-.system-prompt-tray > .hidden-tag {
+.system-prompt-tray > .visibility-tag {
   display: inline-block;
   margin: 8px 12px;
 }

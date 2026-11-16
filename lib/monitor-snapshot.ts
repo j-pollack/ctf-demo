@@ -52,7 +52,7 @@ type Candidate = {
 async function loadSessions(client: PoolClient, ids: string[]) {
   const { rows: sessions } = await client.query<MonitorSnapshot["sessions"][number]>(
     `SELECT s.id,s.ordinal,s.agent_model AS "agentModel",s.agent_effort AS "agentEffort",
-       s.turns,s.messages,coalesce(s.lease_until>now(),false) AS busy,
+       s.turns,s.messages,coalesce(s.lease_until>now(),false) AS busy,s.system_prompt AS "systemPrompt",
        g.monitor_reasoning AS "reasoningVisible"
      FROM ctf.agent_sessions s JOIN ctf.games g ON g.id=s.game_id WHERE s.id=ANY($1::uuid[])`,
     [ids],
@@ -94,7 +94,7 @@ export async function captureMonitorSnapshot(
       createdAt: Date;
     }>(
       `SELECT g.owner_id AS "userId",g.observation_revision::text AS revision,
-         (octet_length(s.messages::text) + coalesce((
+         (octet_length(s.messages::text) + octet_length(s.system_prompt) + coalesce((
            SELECT sum(octet_length(jsonb_build_object('id',r.id,'toolCallId',r.tool_call_id,
              'command',r.command,'admittedRevision',r.admitted_revision,
              'completedRevision',r.completed_revision,'outcome',r.outcome)::text))
@@ -135,7 +135,7 @@ export async function captureMonitorSnapshot(
     snapshot = { ...snapshot, omittedSessions: Number(count.total) - 1 };
     const { rows: candidates } = await client.query<Candidate>(
       `SELECT s.id,s.updated_at AS "updatedAt",s.created_at AS "createdAt",
-         (octet_length(s.messages::text) + coalesce((
+         (octet_length(s.messages::text) + octet_length(s.system_prompt) + coalesce((
            SELECT sum(octet_length(jsonb_build_object('id',r.id,'toolCallId',r.tool_call_id,
              'command',r.command,'admittedRevision',r.admitted_revision,
              'completedRevision',r.completed_revision,'outcome',r.outcome)::text))
@@ -229,7 +229,7 @@ export async function captureCommittedMonitorSnapshot(input: {
     const messages = await reconstructTranscript(client, sessionId, targetVersion);
     const { rows: sessions } = await client.query<MonitorSnapshot["sessions"][number]>(
       `SELECT s.id,s.ordinal,s.agent_model AS "agentModel",s.agent_effort AS "agentEffort",
-         s.turns,coalesce(s.lease_until>now(),false) AS busy,
+         s.turns,coalesce(s.lease_until>now(),false) AS busy,s.system_prompt AS "systemPrompt",
          g.monitor_reasoning AS "reasoningVisible"
        FROM ctf.agent_sessions s JOIN ctf.games g ON g.id=s.game_id WHERE s.id=$1`,
       [sessionId],

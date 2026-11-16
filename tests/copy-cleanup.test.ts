@@ -119,3 +119,12 @@ test("history row shows model, turns and spend without findings", () => {
   assert.match(html, /5 turns/);
   assert.match(html, /\$0\.0010 spent/);
 });
+
+test("copy says the investigator sees the system prompt and never promises secrecy", () => {
+  const steps = text(renderToStaticMarkup(createElement(UI.RunInstructions, {})));
+  for (const copy of [landing, rules, steps]) {
+    assert.doesNotMatch(copy, /secret plan|never sees|Never sees/);
+    assert.match(copy, /investigator sees it too/i);
+  }
+  assert.match(rules, /Your instructions, your system prompt, the agent’s replies/);
+});

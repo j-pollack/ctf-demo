@@ -113,6 +113,8 @@ export type MonitorSnapshot = {
     turns: number;
     busy: boolean;
     reasoningVisible: boolean;
+    // The player's stored system prompt at capture.
+    systemPrompt?: string;
     readonly messages: readonly Message[];
   }[];
   commands: readonly {
