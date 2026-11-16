@@ -76,7 +76,8 @@ try {
       ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SystemRoot", "NODE_V8_COVERAGE"].includes(key),
     ),
   );
-  child = spawn(process.execPath, ["--import", "tsx", "--test", ...selectedFiles], {
+  const reporter = "--test-reporter=./scripts/test-integration-reporter.ts";
+  child = spawn(process.execPath, ["--import", "tsx", "--test", reporter, ...selectedFiles], {
     stdio: "inherit",
     env: {
       ...env,
