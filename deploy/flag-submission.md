@@ -6,17 +6,11 @@ The token travels in the URL path, so anything that logs request paths can recor
 
 ## Local ngrok tunnel
 
-Run the app on port 3001, then start a tunnel to that same local app:
-
-```sh
-ngrok http 3001 --inspect=false
-```
-
-Read the actual HTTPS forwarding origin from ngrok's output. Set `SITE_URL` to that origin in the local app's `.env.local`, with no path. Restart the app and confirm that its landing, rules and play screens show the submission instructions instead of the unavailable notice. Do not use `localhost`, a guessed ngrok hostname, a Vercel preview connected to another database, or the tunnel's inspection interface as the Sprite target. Keep the tunnel and app running while HTTP commands may still execute.
+`npm run dev` starts `ngrok http <port> --inspect=false` for the app's port and passes the tunnel's HTTPS origin to the app and the monitor worker as `SITE_URL`, printed as `Site URL:` at startup. It overrides any `SITE_URL` in `.env.local`. To use another tunnel, export `SITE_URL` in the shell before `npm run dev`; ngrok is then skipped. If ngrok is missing or fails, the dev server prints why and starts without a site URL, and new runs report the endpoint as unavailable. Stopping `npm run dev`, or losing the tunnel, stops all three processes. The free account allows one ngrok agent at a time, so only one checkout can run with a tunnel.
 
 The current free ngrok account has an account-wide limit of 4,000 HTTP requests per minute. It does not provide the planned path-specific 30 requests per 60 seconds per IP rule: ngrok rejected that Traffic Policy with `ERR_NGROK_2263`. Do not claim a local path-specific `429` test. The route's path token, request size and time limits remain required. On Vercel, a WAF rule limits `/v1/end` and every path under it to 30 requests per 60 seconds per IP. Prove its `429` against a deployed `/v1/end` before production promotion.
 
-If the tunnel hostname changes, inventory all nonterminal HTTP runs, including idle runs with no active commands. Wait for affected commands to finish, then retire or replace affected owned runs through normal lifecycle controls before changing `SITE_URL`. If an old-target run is retained, do not resume it after the change; start a fresh run with the new hostname. Restart the app after changing `SITE_URL`. A retained run keeps its old Sprite policy and cannot be migrated by changing the app setting. The free tunnel hostname is not assumed stable.
+If the tunnel hostname changes, inventory all nonterminal HTTP runs, including idle runs with no active commands. Wait for affected commands to finish, then retire or replace affected owned runs through normal lifecycle controls before restarting `npm run dev` with a new tunnel. If an old-target run is retained, do not resume it after the change; start a fresh run with the new hostname. A retained run keeps its old Sprite policy and cannot be migrated by changing the app setting. The free tunnel hostname is not assumed stable.
 
 ## Opt-in full receipt smoke
 
