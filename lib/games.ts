@@ -3,6 +3,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { isAdmin } from "./admin";
+import { currentGameRules } from "./game-rules";
 import {
   ASYNC_MONITOR_VERSION,
   LEGACY_FLAG_READ_MONITOR_VERSION,
@@ -71,6 +72,8 @@ export type GameRow = {
   monitor_reasoning: boolean;
   monitor_mode: "legacy" | "async";
   submission_transport: "tool" | "http";
+  monitor_isolation: boolean;
+  bug_fix_required: boolean;
   state_revision: string;
 };
 // A blocked or caught run's environment is kept this long so its owner can fork it (cleanup adds a margin).
@@ -92,7 +95,7 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,submission_transport,state_revision,sprite_deleted_at,updated_at";
+  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,submission_transport,monitor_isolation,bug_fix_required,state_revision,sprite_deleted_at,updated_at";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
@@ -112,6 +115,8 @@ export type PublicGameRow = Pick<
   | "monitor_reasoning"
   | "monitor_mode"
   | "submission_transport"
+  | "monitor_isolation"
+  | "bug_fix_required"
   | "state_revision"
   | "sprite_deleted_at"
   | "updated_at"
@@ -298,6 +303,7 @@ export async function publicGame(
     agentModel: selected.agentModel,
     agentEffort: selected.agentEffort,
     monitorDifficulty: game.monitor_difficulty,
+    rules: { monitorIsolation: game.monitor_isolation, bugFixRequired: game.bug_fix_required },
     systemPrompt: selected.systemPrompt,
     tokenBudget: game.token_budget,
     tokensUsed: game.tokens_used,
@@ -681,9 +687,10 @@ export async function startGame(
     );
     // A fork is born `creating` on its parent's sprite and secret, carrying the parent's whole
     // account; it turns active once the sprite is restored to the dropped instruction's checkpoint.
+    const rules = await currentGameRules(client);
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run,monitor_settings_locked,monitor_mode,submission_transport)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'async','http') RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run,monitor_settings_locked,monitor_mode,submission_transport,monitor_isolation,bug_fix_required)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'async','http',$23,$24) RETURNING *`,
       [
         id,
         ownerId,
@@ -709,6 +716,8 @@ export async function startGame(
         effort ?? source?.agent_effort ?? PLAYER_AGENT_EFFORT,
         newRun,
         !newRun,
+        source?.monitor_isolation ?? rules.monitorIsolation,
+        source?.bug_fix_required ?? rules.bugFixRequired,
       ],
     );
     await client.query(

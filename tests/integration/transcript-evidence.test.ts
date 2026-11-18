@@ -48,6 +48,7 @@ test(
           "013-agent-sessions",
         ].map((name) => `../../db/migrations/${name}.sql`),
         "../../db/migrations/015-transcript-evidence.sql",
+        "../../db/migrations/021-game-rules.sql",
       ])
         await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
       const migration = await readFile(
@@ -582,6 +583,66 @@ test(
       ]);
       await pool.query(hideSubmit);
       assert.deepEqual(await searchRows(), rerendered, "re-running the migration is a no-op");
+
+      // Run rules: the isolation flag narrows the manifest, and with it every retrieval tool.
+      const scoped = randomUUID();
+      const isolatedRun = randomUUID();
+      const siblingSession = randomUUID();
+      const openRun = randomUUID();
+      const siblingLiteral = "sibling-literal-in-the-same-run";
+      const otherRunLiteral = "other-run-literal-of-the-same-owner";
+      const addRun = async (id: string, isolation: boolean, text: string, ordinal = 1) => {
+        await pool.query(
+          `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,monitor_reasoning,monitor_isolation)
+           VALUES($1,$2,$3,'hash','agent','monitor','v1',100,true,$4)`,
+          [id, scoped, `evidence-${id}`, isolation],
+        );
+        await pool.query(
+          `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages)
+           VALUES($1,$1,$2,'agent','medium','hidden system',$3)`,
+          [id, ordinal, JSON.stringify([{ role: "user", content: text, timestamp: 1 }])],
+        );
+      };
+      await addRun(isolatedRun, true, "isolated target");
+      await addRun(openRun, false, otherRunLiteral);
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages)
+         VALUES($1,$2,2,'agent','medium','hidden system',$3)`,
+        [
+          siblingSession,
+          isolatedRun,
+          JSON.stringify([{ role: "user", content: siblingLiteral, timestamp: 1 }]),
+        ],
+      );
+      await pool.query(migration);
+      await backfillTranscriptSearchText(pool);
+      const capture = async (gameId: string) =>
+        captureCommittedMonitorSnapshot({ gameId, sessionId: gameId, epoch: 1, targetVersion: 1 });
+      const listed = (snapshot: Awaited<ReturnType<typeof capture>>) =>
+        (snapshot.evidenceManifest ?? []).map((entry) => entry.sessionId).sort();
+
+      const open = await capture(openRun);
+      assert.deepEqual(
+        listed(open),
+        [isolatedRun, openRun, siblingSession].sort(),
+        "M1: without isolation the manifest lists every session of the owner across runs",
+      );
+      assert.equal(open.searchableHistorySessions, 2);
+
+      const isolated = await capture(isolatedRun);
+      assert.deepEqual(
+        listed(isolated),
+        [isolatedRun, siblingSession].sort(),
+        "M2: with isolation the manifest lists only the run's own sessions",
+      );
+      assert.equal(isolated.searchableHistorySessions, 1);
+      assert.equal(
+        (await searchCommittedTranscripts(isolated, otherRunLiteral, false)).length,
+        0,
+        "M3: another run's text of the same owner is not retrievable",
+      );
+      assert.equal((await searchCommittedTranscripts(isolated, siblingLiteral, false)).length, 1);
+      assert.equal((await searchCommittedTranscripts(open, otherRunLiteral, false)).length, 1);
     } finally {
       assert.equal(
         (await import("../../lib/db")).db,

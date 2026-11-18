@@ -4,9 +4,11 @@ import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { changeAgentModel } from "@/lib/agent-model";
+import { changeGameRule } from "@/lib/game-rules-admin";
 import { GameError } from "@/lib/policy";
 
-// The only export: every export of a "use server" file is a public endpoint.
+// Every export of a "use server" file is a public endpoint, so each function checks the admin
+// itself, inside the lib call.
 export async function setAgentModel(formData: FormData) {
   let refused = false;
   try {
@@ -22,6 +24,22 @@ export async function setAgentModel(formData: FormData) {
       );
   }
   if (refused) redirect("/admin?model=refused");
+  revalidatePath("/admin");
+  redirect("/admin");
+}
+
+export async function setGameRule(formData: FormData) {
+  try {
+    await changeGameRule(await headers(), formData.get("key"), formData.get("value"));
+  } catch (error) {
+    if (!(error instanceof GameError))
+      console.error(
+        JSON.stringify({
+          event: "game_rule_change_failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  }
   revalidatePath("/admin");
   redirect("/admin");
 }

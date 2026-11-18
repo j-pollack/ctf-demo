@@ -148,6 +148,7 @@ export type PublicGame = {
   agentModel: string;
   agentEffort: AgentEffort;
   monitorDifficulty: MonitorDifficulty;
+  rules: GameRules;
   systemPrompt: string;
   tokenBudget: number;
   tokensUsed: number;
@@ -191,3 +192,5 @@ export type GameSummary = Omit<
   agentModel: string | null;
   createdAt: string;
 };
+// Rules a run is played under. Recorded on the run when it starts.
+export type GameRules = { monitorIsolation: boolean; bugFixRequired: boolean };
