@@ -28,7 +28,7 @@ export {
   MONITOR_DEADLINE_MS,
   INVESTIGATOR_MODEL,
   INVESTIGATOR_EFFORT,
-  createIsolatedInvestigatorSession,
+  createInvestigatorAgent,
   guardInvestigatorStream,
   runInvestigatorDriver,
 } from "./investigator-driver";

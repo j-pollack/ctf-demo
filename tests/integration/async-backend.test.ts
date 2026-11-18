@@ -153,11 +153,11 @@ await test(
           await import("../../lib/typesafe");
         const { MAX_MONITOR_DOCUMENT_BYTES } = await import("../../lib/monitor-document");
         const { FLAG_READ_MONITOR_VERSION } = await import("../../lib/control");
-        const oldKey = process.env.TYPESAFE_API_KEY;
-        process.env.TYPESAFE_API_KEY = "synthetic-classifier-context";
+        const oldKey = process.env.OPENROUTER_API_KEY;
+        process.env.OPENROUTER_API_KEY = "synthetic-classifier-context";
         t.after(() => {
-          if (oldKey === undefined) delete process.env.TYPESAFE_API_KEY;
-          else process.env.TYPESAFE_API_KEY = oldKey;
+          if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+          else process.env.OPENROUTER_API_KEY = oldKey;
         });
         for (const reserveBudget of [false, true]) {
           for (const scenario of [
@@ -218,7 +218,7 @@ await test(
                 globalThis,
                 "fetch",
                 async (url: string | URL | Request, init?: RequestInit) => {
-                  assert.equal(String(url), "https://api.typesafe.ai/v1/systemone");
+                  assert.equal(String(url), "https://openrouter.ai/api/v1/systemone");
                   assert.equal(init?.method, "POST");
                   const headers = new Headers(init?.headers);
                   assert.equal(headers.get("authorization"), "Bearer synthetic-classifier-context");

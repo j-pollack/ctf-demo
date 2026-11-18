@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { Pool } from "pg";
 import { closePool } from "./postgres";
@@ -48,14 +47,10 @@ await test(
     databaseUrl.pathname = `/${databaseName}`;
 
     const oldRouterKey = process.env.OPENROUTER_API_KEY;
-    const oldTypesafeKey = process.env.TYPESAFE_API_KEY;
     process.env.OPENROUTER_API_KEY = "integration-router-key";
-    process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
     t.after(() => {
       if (oldRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = oldRouterKey;
-      if (oldTypesafeKey === undefined) delete process.env.TYPESAFE_API_KEY;
-      else process.env.TYPESAFE_API_KEY = oldTypesafeKey;
     });
 
     let typesafeCalls = 0;
@@ -64,7 +59,6 @@ await test(
     let requestedHistoricalTranscript = false;
     let observedHistoricalToolResult = false;
     let historicalRetrievalStage = 0;
-    let continuationCwdSeen = false;
     const reviewPrompts: string[] = [];
     const reviewAttempts = new Map<string, number>();
     const modelVisiblePayloads: string[] = [];
@@ -94,18 +88,18 @@ await test(
       async (input: string | URL | Request, init?: RequestInit) => {
         init?.signal?.throwIfAborted();
         const url = String(input);
-        if (url === "https://api.typesafe.ai/v1/systemone") {
+        if (url === "https://openrouter.ai/api/v1/systemone") {
           assert.equal(init?.method, "POST");
           assert.equal(
             new Headers(init?.headers).get("authorization"),
-            "Bearer integration-typesafe-key",
+            "Bearer integration-router-key",
           );
           const body = JSON.parse(String(init?.body)) as {
             model: string;
             questions: Record<string, unknown>;
             state: unknown;
           };
-          assert.equal(body.model, "jev-1.14.0");
+          assert.equal(body.model, "typesafe/jev-1.14");
           const keys = Object.keys(body.questions).sort().join(",");
           assert.ok(["intent,suspicion", "reads_now,stages_indirect"].includes(keys));
           typesafeCalls++;
@@ -157,15 +151,10 @@ await test(
             "Investigator uses the actual buffered review path",
           );
           const systems = request.messages.filter((message) => message.role === "system");
-          assert.equal(systems[0]?.content, INVESTIGATOR_SYSTEM_PROMPT);
-          const cwdPrefix = `<cwd>\n${tmpdir()}/tripwire-monitor-`;
-          for (const system of systems.slice(1)) {
-            const content = system.content ?? "";
-            if (!content) continue;
-            assert.ok(content.startsWith(cwdPrefix) && content.endsWith("\n</cwd>"));
-            assert.match(content.slice(cwdPrefix.length, -"\n</cwd>".length), /^[A-Za-z0-9_-]+$/);
-            continuationCwdSeen = true;
-          }
+          assert.deepEqual(
+            systems.map((system) => system.content),
+            [INVESTIGATOR_SYSTEM_PROMPT],
+          );
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
             "finish_review",
             "list_sessions",
@@ -364,7 +353,6 @@ await test(
     assert.match(entries[7].operationalError ?? "", /503/);
     assert.equal(investigatorCalls, monitorInvestigationCases.length + 14);
     assert.ok(requestedHistoricalTranscript);
-    assert.ok(continuationCwdSeen, "later Pi requests include only the isolated cwd section");
     assert.ok(observedHistoricalToolResult);
     assert.equal(providerFailures, 2);
     assert.ok(entries.some((entry) => entry.expected === "attack" && entry.verdict === "block"));
@@ -381,7 +369,7 @@ await test(
     assert.equal(report.totals.errors, 4);
     assert.equal(report.totals.budgetExceeded, false);
     assert.ok(entries.every((entry) => entry.investigatorModel === "z-ai/glm-5.3"));
-    assert.ok(entries.every((entry) => entry.classifierModel === "jev-1.14.0"));
+    assert.ok(entries.every((entry) => entry.classifierModel === "typesafe/jev-1.14"));
     assert.ok(
       entries.every(
         (entry) => entry.monitorVersion === "investigator-v4-glm53-jev114-policy-delivery",

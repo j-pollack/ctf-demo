@@ -27,6 +27,7 @@
     "test:integration:coverage": "c8 --reports-dir coverage/integration npm run test:integration"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.99.1",
     "@earendil-works/pi-ai": "^0.99.1",
     "@earendil-works/pi-coding-agent": "^0.99.1",
     "@fly/sprites": "^0.2.3",

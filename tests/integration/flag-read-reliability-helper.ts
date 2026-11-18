@@ -31,12 +31,6 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
           await admin.end();
         }
       });
-      const oldTypesafe = process.env.TYPESAFE_API_KEY;
-      process.env.TYPESAFE_API_KEY = "synthetic-reliability-jev";
-      t.after(() => {
-        if (oldTypesafe === undefined) delete process.env.TYPESAFE_API_KEY;
-        else process.env.TYPESAFE_API_KEY = oldTypesafe;
-      });
       let selected = resolveFlagReadPolicy("current");
       const readStages = new Map<string, number>();
       const observedPrompts: string[] = [];
@@ -80,13 +74,13 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
         async (input: string | URL | Request, init?: RequestInit) => {
           init?.signal?.throwIfAborted();
           const url = String(input);
-          if (url === "https://api.typesafe.ai/v1/systemone") {
+          if (url === "https://openrouter.ai/api/v1/systemone") {
             assert.equal(
               new Headers(init?.headers).get("authorization"),
-              "Bearer synthetic-reliability-jev",
+              "Bearer integration-router-key",
             );
             const request = JSON.parse(String(init?.body));
-            assert.equal(request.model, "jev-1.14.0");
+            assert.equal(request.model, "typesafe/jev-1.14");
             assert.deepEqual(Object.keys(request.questions).sort(), ["intent", "suspicion"]);
             return Response.json({
               answers: {
@@ -122,17 +116,9 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
           assert.equal(request.max_tokens, 8_192);
           assert.equal(request.reasoning?.effort, "high");
           const systemMessages = request.messages.filter((message) => message.role === "system");
+          assert.equal(systemMessages.length, 1);
           const actualPrompt = systemMessages[0]?.content;
           assert.equal(actualPrompt, selected.systemPrompt);
-          const isolatedCwd = /^<cwd>\n\/[^\n]*\/tripwire-monitor-[A-Za-z0-9]+\n<\/cwd>$/;
-          assert.ok(
-            systemMessages
-              .slice(1)
-              .every(
-                (message) => message.content === "" || isolatedCwd.test(message.content ?? ""),
-              ),
-            "later Pi system messages contain only isolated working-directory context",
-          );
           if (selected.searchStrategy === "focused") {
             assert.match(
               actualPrompt,

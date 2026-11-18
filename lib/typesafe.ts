@@ -1,7 +1,9 @@
-// Transport-only client for the Typesafe (Jev) System One API, the control-game monitor.
-// Docs: https://docs.typesafe.ai/api/system-one . Billing is per input token; no billing here.
-// Pin a versioned model so calibrated thresholds don't drift when the `jev-latest` alias moves.
-export const TYPESAFE_MODEL = "jev-1.14.0";
+// Transport-only client for Jev, the control-game monitor, through OpenRouter's System One endpoint.
+// The endpoint implements TypeSafe's request and response shapes.
+// Docs: https://openrouter.ai/docs/guides/community/typesafe-sdk . Billing is per input token; no billing here.
+// The model id is pinned to the 1.14 slug, not an alias, so calibrated thresholds don't drift with
+// new releases. OpenRouter's slug carries no patch number.
+export const TYPESAFE_MODEL = "typesafe/jev-1.14";
 
 // A question is keyed by a name you choose; the answer comes back under the same name.
 export type TypesafeQuestion =
@@ -60,23 +62,24 @@ function validateAnswer(
     throw new Error(`Typesafe returned an invalid answer for "${name}".`);
 }
 
-// Jev rejects a request longer than its context limit (400 max_tokens_exceeded); the caller must
-// shrink `state` and retry.
+// OpenRouter serves Jev with a 262,144 token window and runs text requests over about 32,000 bytes
+// in TypeSafe's long-context mode, so at our document cap this rejection is a backstop. The caller
+// shrinks `state` and retries on 400 max_tokens_exceeded.
 export class TypesafeDocumentTooLargeError extends Error {
   constructor() {
     super("Typesafe rejected the request as too large (max_tokens_exceeded).");
   }
 }
 
-const URL = "https://api.typesafe.ai/v1/systemone";
+const URL = "https://openrouter.ai/api/v1/systemone";
 
 export async function evaluate(
   state: unknown,
   questions: Record<string, TypesafeQuestion>,
   signal?: AbortSignal,
 ): Promise<{ answers: Record<string, TypesafeAnswer>; inputTokens: number }> {
-  const key = process.env.TYPESAFE_API_KEY;
-  if (!key) throw new Error("TYPESAFE_API_KEY is not set.");
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new Error("OPENROUTER_API_KEY is not set.");
   const response = await fetch(URL, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },

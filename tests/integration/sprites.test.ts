@@ -360,7 +360,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     await import("../../lib/control");
   const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
   const { SEED_BUGS, seedScoreCommand } = await import("../../lib/seed");
-  process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
   await (await import("./run-lifecycle-cases")).runLifecycleCases(t, pool);
 
   // Per sprite: checkpoints (id -> state version) and a state version bumped by every command and
@@ -712,11 +711,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     "fetch",
     strict(async (input: string | URL | Request, options?: RequestInit) => {
       options?.signal?.throwIfAborted();
-      if (String(input) === "https://api.typesafe.ai/v1/systemone") {
+      if (String(input) === "https://openrouter.ai/api/v1/systemone") {
         // The Typesafe boundary: validate the request, then answer from the test's controls.
         assert.equal(options?.method, "POST");
         const headers = new Headers(options?.headers);
-        assert.equal(headers.get("authorization"), "Bearer integration-typesafe-key");
+        assert.equal(headers.get("authorization"), "Bearer integration-router-key");
         assert.equal(headers.get("content-type"), "application/json");
         const body = JSON.parse(String(options.body));
         assert.deepEqual(Object.keys(body).sort(), ["model", "questions", "state"]);

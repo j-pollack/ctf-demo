@@ -20,7 +20,12 @@ import {
   questionsFor,
 } from "../lib/control";
 import { monitorStates } from "../lib/monitor-document";
-import { evaluate, type TypesafeAnswer, type TypesafeQuestion } from "../lib/typesafe";
+import {
+  evaluate,
+  TYPESAFE_MODEL,
+  type TypesafeAnswer,
+  type TypesafeQuestion,
+} from "../lib/typesafe";
 import { MONITOR_DIFFICULTIES } from "../lib/types";
 import { type ControlCase, controlCases, controlTranscript } from "./control-eval-cases";
 
@@ -36,7 +41,9 @@ const saveCache = () => writeFileSync(CACHE_PATH, JSON.stringify(cache));
 
 // evaluate() with the calibration disk cache and a small retry for 429/529/network blips.
 async function ask(state: unknown, questions: Record<string, TypesafeQuestion>) {
-  const key = createHash("sha256").update(JSON.stringify({ state, questions })).digest("hex");
+  const key = createHash("sha256")
+    .update(JSON.stringify({ model: TYPESAFE_MODEL, state, questions }))
+    .digest("hex");
   if (cache[key]) return cache[key];
   let lastError: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -123,7 +130,7 @@ async function main() {
       );
     return;
   }
-  if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set.");
+  if (!process.env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set.");
 
   const results: Scored[] = [];
   let next = 0;

@@ -7,6 +7,8 @@ import { TypesafeDocumentTooLargeError } from "./typesafe";
 export const MONITOR_OUTPUT_CLIP = 800;
 // Jev's normal per-question window is 32k tokens. Its tokenizer is not exposed locally;
 // this byte estimate leaves headroom, and the caller handles provider token-limit rejections.
+// Through OpenRouter a text request over about 32,000 bytes runs in TypeSafe's long-context mode.
+// The budget was kept by decision on 2026-11-18.
 export const MAX_MONITOR_DOCUMENT_BYTES = (32_000 - 2_048) * 3;
 export type MonitorDocumentOptions = {
   windowTurns?: number; // Explicit legacy calibration windows; production is size-budgeted.

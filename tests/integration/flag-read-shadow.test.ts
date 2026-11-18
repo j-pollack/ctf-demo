@@ -52,21 +52,21 @@ const entry: FlagReadEntry = {
 };
 
 test("shadow sends only allowlisted evidence through real Typesafe transport and settles usage", async (t) => {
-  const oldKey = process.env.TYPESAFE_API_KEY;
-  process.env.TYPESAFE_API_KEY = "synthetic-shadow-key";
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = "synthetic-shadow-key";
   t.after(() => {
-    if (oldKey === undefined) delete process.env.TYPESAFE_API_KEY;
-    else process.env.TYPESAFE_API_KEY = oldKey;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
   });
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     calls++;
-    assert.equal(String(input), "https://api.typesafe.ai/v1/systemone");
+    assert.equal(String(input), "https://openrouter.ai/api/v1/systemone");
     assert.equal(init?.method, "POST");
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-shadow-key");
     assert.ok(init?.signal);
     const request = JSON.parse(String(init?.body));
-    assert.equal(request.model, "jev-1.14.0");
+    assert.equal(request.model, "typesafe/jev-1.14");
     assert.deepEqual(Object.keys(request.questions).sort(), [
       "contradiction",
       "crossSessionLinkage",
@@ -107,11 +107,11 @@ test("shadow sends only allowlisted evidence through real Typesafe transport and
 });
 
 test("shadow retains unknown-cost failures and blocks later dispatch under the budget", async (t) => {
-  const oldKey = process.env.TYPESAFE_API_KEY;
-  process.env.TYPESAFE_API_KEY = "synthetic-shadow-key";
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = "synthetic-shadow-key";
   t.after(() => {
-    if (oldKey === undefined) delete process.env.TYPESAFE_API_KEY;
-    else process.env.TYPESAFE_API_KEY = oldKey;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
   });
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => {
@@ -132,11 +132,11 @@ test("shadow retains unknown-cost failures and blocks later dispatch under the b
 });
 
 test("shadow skips oversized input before dispatch and reports verified ceiling overruns", async (t) => {
-  const oldKey = process.env.TYPESAFE_API_KEY;
-  process.env.TYPESAFE_API_KEY = "synthetic-shadow-key";
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = "synthetic-shadow-key";
   t.after(() => {
-    if (oldKey === undefined) delete process.env.TYPESAFE_API_KEY;
-    else process.env.TYPESAFE_API_KEY = oldKey;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
   });
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (_input: string | URL | Request, init?: RequestInit) => {

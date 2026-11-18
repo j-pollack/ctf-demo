@@ -135,8 +135,9 @@ export function buildSchedule(
           outputUsdPerMillion: BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion,
         },
         classifier: {
-          source: "https://docs.typesafe.ai/models.md",
-          model: "jev-1.14.0",
+          source: "https://openrouter.ai/api/v1/models/typesafe/jev-1.14/endpoints",
+          model: TYPESAFE_MODEL,
+          checkedAt: "2026-11-18",
           inputUsdPerMillion: 0.042,
           outputUsdPerMillion: 0,
         },

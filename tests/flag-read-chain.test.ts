@@ -38,7 +38,7 @@ function setup() {
     invalid.push(id),
   );
   const execute = (id: string, args: unknown) =>
-    tool.execute(id, args as never, undefined, undefined, {} as never);
+    tool.execute(id, args as never, undefined, undefined);
   return { base, tool, decisions, failed, invalid, execute };
 }
 
@@ -136,7 +136,7 @@ test("chain bounds, membership, target anchors and negative omission remain reco
 });
 
 test("wrapper preserves base validation, source objects and execution arguments", async () => {
-  const { base, tool, execute, decisions, invalid, failed } = setup();
+  const { base, execute, decisions, invalid, failed } = setup();
   const schemaBefore = structuredClone(base.parameters);
   const args = structuredClone({ ...positive, chain });
   await execute("valid", args);
@@ -152,7 +152,6 @@ test("wrapper preserves base validation, source objects and execution arguments"
   assert.equal(decisions.length, 1);
   const signal = new AbortController().signal;
   const update = () => {};
-  const context = {} as Parameters<typeof tool.execute>[4];
   const forwarded: unknown[] = [];
   const spyBase = {
     ...base,
@@ -164,8 +163,8 @@ test("wrapper preserves base validation, source objects and execution arguments"
   const spyTool = withReadEvidenceChain(spyBase, visible, target.sessionId, () =>
     assert.fail("valid chain must not notify invalid"),
   );
-  await spyTool.execute("forward", args as never, signal, update, context);
-  assert.deepEqual(forwarded, ["forward", positive, signal, update, context]);
+  await spyTool.execute("forward", args as never, signal, update);
+  assert.deepEqual(forwarded, ["forward", positive, signal, update]);
 });
 
 test("structurally valid chains do not claim to prove semantic entailment", async () => {
@@ -200,7 +199,7 @@ test("base finish callback failure propagates once without wrapper invalid notif
     invalid.push(error),
   );
   await assert.rejects(
-    tool.execute("callback", { ...positive, chain } as never, undefined, undefined, {} as never),
+    tool.execute("callback", { ...positive, chain } as never, undefined, undefined),
     (error) => error === sentinel,
   );
   assert.deepEqual(failures, [sentinel]);

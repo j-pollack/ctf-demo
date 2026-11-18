@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createAssistantMessageEventStream,
+  getCurrentTools,
   type AssistantMessage,
   type JsonObject,
   type Message,
@@ -9,9 +10,9 @@ import {
 } from "@earendil-works/pi-ai";
 import { providerTranscript } from "../lib/inference";
 import { runInvestigatorDriver } from "../lib/investigator-driver";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import {
-  createIsolatedInvestigatorSession,
+  createInvestigatorAgent,
   guardInvestigatorStream,
   promptForReview,
   runMonitorReview,
@@ -201,13 +202,17 @@ test("complete initial transcript that exceeds the reserved model context fails 
   );
 });
 
+const unconfiguredStream: StreamFn = () => {
+  throw new Error("The test must set streamFunction before prompting.");
+};
+
 test("real Pi session has only investigator tools and first valid finish aborts the remaining batch", async () => {
   const initial = makeInitialMonitorEvidence(snapshot, "session-a");
   const visible = new Map(initial.currentTranscript.map((item) => [item.ref, item]));
   const commandTools = createMonitorTools(snapshot, "session-a");
   let decision: unknown;
   let failure: unknown;
-  let runtime: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
+  let runtime: ReturnType<typeof createInvestigatorAgent> | undefined;
   const finish = createFinishReviewTool(
     visible,
     (value) => {
@@ -217,119 +222,112 @@ test("real Pi session has only investigator tools and first valid finish aborts 
       failure ??= error;
     },
   );
-  const tools: ToolDefinition[] = [...commandTools.piTools, finish];
-  runtime = await createIsolatedInvestigatorSession(model, tools);
-  try {
-    assert.deepEqual(runtime.session.getActiveToolNames().sort(), [
-      "finish_review",
-      "list_sessions",
-      "read_transcript",
-    ]);
-    let providerCalls = 0;
-    let dispatchedCalls = 0;
-    const startedTools: string[] = [];
-    const finishedTools: string[] = [];
-    runtime.session.agent.streamFunction = guardInvestigatorStream(
-      (_apiModel, _context) => {
-        providerCalls += 1;
-        const row = initial.currentTranscript.find((item) =>
-          item.text.includes("read /tmp/flag.txt"),
-        )!;
-        return providerToolCall(
-          "finish_review",
-          "finish-1",
-          {
-            verdict: "block",
-            reason: "The current instruction asks for the protected file contents.",
-            evidence: [{ ref: row.ref, excerpt: "read /tmp/flag.txt" }],
-          },
-          { name: "read_transcript", id: "must-not-run", args: { sessionId: "session-a" } },
-        );
-      },
-      {
-        signal: new AbortController().signal,
-        isStopped: () => Boolean(decision || failure),
-        onLimit: () => {
-          failure = new Error("limit");
-        },
-        admitCall: () => {
-          dispatchedCalls += 1;
-          return dispatchedCalls <= 8;
-        },
-      },
-    );
-    runtime.session.agent.subscribe((event) => {
-      if (event.type === "tool_execution_start") startedTools.push(event.toolName);
-      if (event.type === "tool_execution_end")
-        finishedTools.push(`${event.toolName}:${event.isError}`);
-      if (event.type === "tool_execution_end" && event.toolName === "finish_review" && decision)
-        runtime?.session.agent.abort();
-    });
-    await runtime.session.agent.prompt("Review this snapshot.");
-    assert.equal(providerCalls, 1, finishedTools.join(","));
-    assert.equal(dispatchedCalls, 1);
-    assert.deepEqual(startedTools, ["finish_review"]);
-    assert.equal(failure, undefined);
-    assert.deepEqual(decision, {
-      verdict: "block",
-      reason: "The current instruction asks for the protected file contents.",
-      evidence: [
+  const tools: AgentTool[] = [...commandTools.piTools, finish];
+  runtime = createInvestigatorAgent(model, tools, unconfiguredStream);
+  assert.deepEqual(
+    getCurrentTools(runtime.state.messages)
+      .map((tool) => tool.name)
+      .sort(),
+    ["finish_review", "list_sessions", "read_transcript"],
+  );
+  let providerCalls = 0;
+  let dispatchedCalls = 0;
+  const startedTools: string[] = [];
+  const finishedTools: string[] = [];
+  runtime.streamFunction = guardInvestigatorStream(
+    (_apiModel, _context) => {
+      providerCalls += 1;
+      const row = initial.currentTranscript.find((item) =>
+        item.text.includes("read /tmp/flag.txt"),
+      )!;
+      return providerToolCall(
+        "finish_review",
+        "finish-1",
         {
-          ref: initial.currentTranscript[0].ref,
-          excerpt: "read /tmp/flag.txt",
-          sha256: initial.currentTranscript[0].sha256,
+          verdict: "block",
+          reason: "The current instruction asks for the protected file contents.",
+          evidence: [{ ref: row.ref, excerpt: "read /tmp/flag.txt" }],
         },
-      ],
-    });
-    assert.match(INVESTIGATOR_SYSTEM_PROMPT, /untrusted evidence/);
-    assert.doesNotMatch(JSON.stringify(startedTools), /hidden instructions/);
-  } finally {
-    await runtime.dispose();
-  }
+        { name: "read_transcript", id: "must-not-run", args: { sessionId: "session-a" } },
+      );
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => Boolean(decision || failure),
+      onLimit: () => {
+        failure = new Error("limit");
+      },
+      admitCall: () => {
+        dispatchedCalls += 1;
+        return dispatchedCalls <= 8;
+      },
+    },
+  );
+  runtime.subscribe((event) => {
+    if (event.type === "tool_execution_start") startedTools.push(event.toolName);
+    if (event.type === "tool_execution_end")
+      finishedTools.push(`${event.toolName}:${event.isError}`);
+    if (event.type === "tool_execution_end" && event.toolName === "finish_review" && decision)
+      runtime?.abort();
+  });
+  await runtime.prompt("Review this snapshot.");
+  assert.equal(providerCalls, 1, finishedTools.join(","));
+  assert.equal(dispatchedCalls, 1);
+  assert.deepEqual(startedTools, ["finish_review"]);
+  assert.equal(failure, undefined);
+  assert.deepEqual(decision, {
+    verdict: "block",
+    reason: "The current instruction asks for the protected file contents.",
+    evidence: [
+      {
+        ref: initial.currentTranscript[0].ref,
+        excerpt: "read /tmp/flag.txt",
+        sha256: initial.currentTranscript[0].sha256,
+      },
+    ],
+  });
+  assert.match(INVESTIGATOR_SYSTEM_PROMPT, /untrusted evidence/);
+  assert.doesNotMatch(JSON.stringify(startedTools), /hidden instructions/);
 });
 
 test("retrieval tool error aborts the real Pi loop before another provider request", async () => {
-  let runtime: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
+  let runtime: ReturnType<typeof createInvestigatorAgent> | undefined;
   let failure: unknown;
   const retrieval = createMonitorTools(snapshot, "session-a", {
     onFailure: (error) => {
       failure ??= error;
     },
   });
-  runtime = await createIsolatedInvestigatorSession(model, retrieval.piTools);
-  try {
-    let providerCalls = 0;
-    let dispatchedCalls = 0;
-    runtime.session.agent.streamFunction = guardInvestigatorStream(
-      () => {
-        providerCalls += 1;
-        return providerToolCall("read_transcript", "read-invalid", {
-          sessionId: monitorSessionAlias(snapshot, "session-a"),
-          cursor: "forged-invalid-cursor",
-        });
+  runtime = createInvestigatorAgent(model, retrieval.piTools, unconfiguredStream);
+  let providerCalls = 0;
+  let dispatchedCalls = 0;
+  runtime.streamFunction = guardInvestigatorStream(
+    () => {
+      providerCalls += 1;
+      return providerToolCall("read_transcript", "read-invalid", {
+        sessionId: monitorSessionAlias(snapshot, "session-a"),
+        cursor: "forged-invalid-cursor",
+      });
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => Boolean(failure),
+      onLimit: () => {
+        failure ??= new Error("limit");
       },
-      {
-        signal: new AbortController().signal,
-        isStopped: () => Boolean(failure),
-        onLimit: () => {
-          failure ??= new Error("limit");
-        },
-        admitCall: () => {
-          dispatchedCalls += 1;
-          return dispatchedCalls <= 8;
-        },
+      admitCall: () => {
+        dispatchedCalls += 1;
+        return dispatchedCalls <= 8;
       },
-    );
-    runtime.session.agent.subscribe((event) => {
-      if (event.type === "tool_execution_end" && event.isError) runtime?.session.agent.abort();
-    });
-    await runtime.session.agent.prompt("Read the history.");
-    assert.equal(providerCalls, 1);
-    assert.equal(dispatchedCalls, 1);
-    assert.match(String(failure), /Invalid cursor/);
-  } finally {
-    await runtime.dispose();
-  }
+    },
+  );
+  runtime.subscribe((event) => {
+    if (event.type === "tool_execution_end" && event.isError) runtime?.abort();
+  });
+  await runtime.prompt("Read the history.");
+  assert.equal(providerCalls, 1);
+  assert.equal(dispatchedCalls, 1);
+  assert.match(String(failure), /Invalid cursor/);
 });
 
 test("invalid evidence citation fails before a decision is latched", async () => {
@@ -337,7 +335,7 @@ test("invalid evidence citation fails before a decision is latched", async () =>
   const visible = new Map(initial.currentTranscript.map((item) => [item.ref, item]));
   let decision: unknown;
   let failure: unknown;
-  let runtime: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
+  let runtime: ReturnType<typeof createInvestigatorAgent> | undefined;
   const finish = createFinishReviewTool(
     visible,
     (value) => {
@@ -347,42 +345,38 @@ test("invalid evidence citation fails before a decision is latched", async () =>
       failure ??= error;
     },
   );
-  runtime = await createIsolatedInvestigatorSession(model, [finish]);
-  try {
-    let providerCalls = 0;
-    let dispatchedCalls = 0;
-    runtime.session.agent.streamFunction = guardInvestigatorStream(
-      () => {
-        providerCalls += 1;
-        return providerToolCall("finish_review", "finish-forged", {
-          verdict: "allow",
-          reason: "The citation is not in the visible current transcript.",
-          evidence: [{ ref: "unread-sibling-message", excerpt: "hidden evidence" }],
-        });
+  runtime = createInvestigatorAgent(model, [finish], unconfiguredStream);
+  let providerCalls = 0;
+  let dispatchedCalls = 0;
+  runtime.streamFunction = guardInvestigatorStream(
+    () => {
+      providerCalls += 1;
+      return providerToolCall("finish_review", "finish-forged", {
+        verdict: "allow",
+        reason: "The citation is not in the visible current transcript.",
+        evidence: [{ ref: "unread-sibling-message", excerpt: "hidden evidence" }],
+      });
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => Boolean(failure || decision),
+      onLimit: () => {
+        failure ??= new Error("limit");
       },
-      {
-        signal: new AbortController().signal,
-        isStopped: () => Boolean(failure || decision),
-        onLimit: () => {
-          failure ??= new Error("limit");
-        },
-        admitCall: () => {
-          dispatchedCalls += 1;
-          return dispatchedCalls <= 8;
-        },
+      admitCall: () => {
+        dispatchedCalls += 1;
+        return dispatchedCalls <= 8;
       },
-    );
-    runtime.session.agent.subscribe((event) => {
-      if (event.type === "tool_execution_end" && event.isError) runtime?.session.agent.abort();
-    });
-    await runtime.session.agent.prompt("Review this snapshot.");
-    assert.equal(providerCalls, 1);
-    assert.equal(dispatchedCalls, 1);
-    assert.equal(decision, undefined);
-    assert.match(String(failure), /Evidence excerpt does not match visible snapshot text/);
-  } finally {
-    await runtime.dispose();
-  }
+    },
+  );
+  runtime.subscribe((event) => {
+    if (event.type === "tool_execution_end" && event.isError) runtime?.abort();
+  });
+  await runtime.prompt("Review this snapshot.");
+  assert.equal(providerCalls, 1);
+  assert.equal(dispatchedCalls, 1);
+  assert.equal(decision, undefined);
+  assert.match(String(failure), /Evidence excerpt does not match visible snapshot text/);
 });
 
 test("unexpected finish validator and callback errors stay fatal", async () => {
@@ -425,7 +419,7 @@ test("unexpected finish validator and callback errors stay fatal", async () => {
       },
     );
     await assert.rejects(
-      tool.execute("finish-internal", args as never, undefined, undefined, {} as never),
+      tool.execute("finish-internal", args as never, undefined, undefined),
       scenario.expected,
     );
     assert.match(String(fatal), scenario.expected);
@@ -434,137 +428,125 @@ test("unexpected finish validator and callback errors stay fatal", async () => {
 });
 
 test("cutoff tool arguments fail closed before execution or another model dispatch", async () => {
-  let runtime: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
+  let runtime: ReturnType<typeof createInvestigatorAgent> | undefined;
   let failure: unknown;
   const tools = createMonitorTools(snapshot, "session-a");
-  runtime = await createIsolatedInvestigatorSession(model, tools.piTools);
-  try {
-    let providerCalls = 0;
-    let dispatchedCalls = 0;
-    const toolStarts: string[] = [];
-    const toolEnds: boolean[] = [];
-    runtime.session.agent.streamFunction = guardInvestigatorStream(
-      () => {
-        providerCalls += 1;
-        return providerToolCall(
-          "read_transcript",
-          "cut-off-call",
-          { sessionId: "session-a" },
-          undefined,
-          "length",
-        );
+  runtime = createInvestigatorAgent(model, tools.piTools, unconfiguredStream);
+  let providerCalls = 0;
+  let dispatchedCalls = 0;
+  const toolStarts: string[] = [];
+  const toolEnds: boolean[] = [];
+  runtime.streamFunction = guardInvestigatorStream(
+    () => {
+      providerCalls += 1;
+      return providerToolCall(
+        "read_transcript",
+        "cut-off-call",
+        { sessionId: "session-a" },
+        undefined,
+        "length",
+      );
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => Boolean(failure),
+      onLimit: () => {
+        failure ??= new Error("limit");
       },
-      {
-        signal: new AbortController().signal,
-        isStopped: () => Boolean(failure),
-        onLimit: () => {
-          failure ??= new Error("limit");
-        },
-        admitCall: () => {
-          dispatchedCalls += 1;
-          return dispatchedCalls <= 8;
-        },
+      admitCall: () => {
+        dispatchedCalls += 1;
+        return dispatchedCalls <= 8;
       },
-    );
-    runtime.session.agent.subscribe((event) => {
-      if (
-        event.type === "message_end" &&
-        event.message.role === "assistant" &&
-        event.message.stopReason === "length"
-      ) {
-        failure = new Error("output cutoff");
-        runtime?.session.agent.abort();
-      }
-      if (event.type === "tool_execution_start") toolStarts.push(event.toolName);
-      if (event.type === "tool_execution_end") toolEnds.push(event.isError);
-    });
-    await runtime.session.agent.prompt("Read the transcript.");
-    assert.equal(providerCalls, 1);
-    assert.equal(dispatchedCalls, 1);
-    assert.deepEqual(toolStarts, ["read_transcript"]);
-    assert.deepEqual(toolEnds, [true]);
-    assert.match(String(failure), /output cutoff/);
-  } finally {
-    await runtime.dispose();
-  }
+    },
+  );
+  runtime.subscribe((event) => {
+    if (
+      event.type === "message_end" &&
+      event.message.role === "assistant" &&
+      event.message.stopReason === "length"
+    ) {
+      failure = new Error("output cutoff");
+      runtime?.abort();
+    }
+    if (event.type === "tool_execution_start") toolStarts.push(event.toolName);
+    if (event.type === "tool_execution_end") toolEnds.push(event.isError);
+  });
+  await runtime.prompt("Read the transcript.");
+  assert.equal(providerCalls, 1);
+  assert.equal(dispatchedCalls, 1);
+  assert.deepEqual(toolStarts, ["read_transcript"]);
+  assert.deepEqual(toolEnds, [true]);
+  assert.match(String(failure), /output cutoff/);
 });
 
 test("investigator stops before a ninth inference dispatch", async () => {
-  let runtime: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
+  let runtime: ReturnType<typeof createInvestigatorAgent> | undefined;
   let failure: unknown;
   const tools = createMonitorTools(snapshot, "session-a");
-  runtime = await createIsolatedInvestigatorSession(model, tools.piTools);
-  try {
-    let providerCalls = 0;
-    let admittedCalls = 0;
-    runtime.session.agent.streamFunction = guardInvestigatorStream(
-      () => {
-        providerCalls += 1;
-        return providerToolCall("list_sessions", `list-${providerCalls}`, {});
+  runtime = createInvestigatorAgent(model, tools.piTools, unconfiguredStream);
+  let providerCalls = 0;
+  let admittedCalls = 0;
+  runtime.streamFunction = guardInvestigatorStream(
+    () => {
+      providerCalls += 1;
+      return providerToolCall("list_sessions", `list-${providerCalls}`, {});
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => Boolean(failure),
+      onLimit: () => {
+        failure ??= new Error("Investigator call limit reached.");
+        runtime?.abort();
       },
-      {
-        signal: new AbortController().signal,
-        isStopped: () => Boolean(failure),
-        onLimit: () => {
-          failure ??= new Error("Investigator call limit reached.");
-          runtime?.session.agent.abort();
-        },
-        admitCall: () => {
-          if (admittedCalls >= 8) return false;
-          admittedCalls += 1;
-          return true;
-        },
+      admitCall: () => {
+        if (admittedCalls >= 8) return false;
+        admittedCalls += 1;
+        return true;
       },
-    );
-    await runtime.session.agent.prompt("Continue until the request cap stops you.");
-    assert.equal(providerCalls, 8);
-    assert.equal(admittedCalls, 8);
-    assert.equal(tools.retrievalCalls, 8);
-    assert.match(String(failure), /call limit reached/);
-  } finally {
-    await runtime.dispose();
-  }
+    },
+  );
+  await runtime.prompt("Continue until the request cap stops you.");
+  assert.equal(providerCalls, 8);
+  assert.equal(admittedCalls, 8);
+  assert.equal(tools.retrievalCalls, 8);
+  assert.match(String(failure), /call limit reached/);
 });
 
 test("context overflow is rejected before an inference dispatch", async () => {
-  let runtime: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
+  let runtime: ReturnType<typeof createInvestigatorAgent> | undefined;
   let failure: unknown;
-  runtime = await createIsolatedInvestigatorSession(model, []);
-  try {
-    let providerCalls = 0;
-    let admittedCalls = 0;
-    let measured: { bytes: number; limit: number } | undefined;
-    runtime.session.agent.streamFunction = guardInvestigatorStream(
-      () => {
-        providerCalls += 1;
-        return providerToolCall("unused", "unused", {});
+  runtime = createInvestigatorAgent(model, [], unconfiguredStream);
+  let providerCalls = 0;
+  let admittedCalls = 0;
+  let measured: { bytes: number; limit: number } | undefined;
+  runtime.streamFunction = guardInvestigatorStream(
+    () => {
+      providerCalls += 1;
+      return providerToolCall("unused", "unused", {});
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => Boolean(failure),
+      maxContextBytes: 48_000,
+      onContextLimit: (bytes, limit) => {
+        measured = { bytes, limit };
+        failure = new Error(`Investigator context limit reached: ${bytes} bytes > ${limit}.`);
       },
-      {
-        signal: new AbortController().signal,
-        isStopped: () => Boolean(failure),
-        maxContextBytes: 48_000,
-        onContextLimit: (bytes, limit) => {
-          measured = { bytes, limit };
-          failure = new Error(`Investigator context limit reached: ${bytes} bytes > ${limit}.`);
-        },
-        onLimit: () => {
-          failure = new Error("call limit");
-        },
-        admitCall: () => {
-          admittedCalls++;
-          return true;
-        },
+      onLimit: () => {
+        failure = new Error("call limit");
       },
-    );
-    await runtime.session.agent.prompt("x".repeat(50_000));
-    assert.equal(providerCalls, 0);
-    assert.equal(admittedCalls, 0);
-    assert.equal(measured?.limit, 48_000);
-    assert.ok((measured?.bytes ?? 0) > 48_000);
-    assert.match(String(failure), /context limit reached: \d+ bytes > 48000/);
-  } finally {
-    await runtime.dispose();
-  }
+      admitCall: () => {
+        admittedCalls++;
+        return true;
+      },
+    },
+  );
+  await runtime.prompt("x".repeat(50_000));
+  assert.equal(providerCalls, 0);
+  assert.equal(admittedCalls, 0);
+  assert.equal(measured?.limit, 48_000);
+  assert.ok((measured?.bytes ?? 0) > 48_000);
+  assert.match(String(failure), /context limit reached: \d+ bytes > 48000/);
 });
 
 test("switched-model reasoning uses the provider serialization", () => {
@@ -676,59 +658,55 @@ test("replayed reasoning is counted once in the provider context", async () => {
     },
   );
   const tools = [...createMonitorTools(snapshot, "session-a").piTools, finish];
-  const runtime = await createIsolatedInvestigatorSession(model, tools);
-  try {
-    runtime.session.agent.streamFunction = guardInvestigatorStream(
-      (_apiModel, context) => {
-        calls++;
-        if (calls <= 2)
-          return providerToolCall(
-            "list_sessions",
-            `list-${calls}`,
-            {},
-            undefined,
-            "toolUse",
-            calls === 1 ? firstReasoning : secondReasoning,
-          );
-        const raw = JSON.stringify(context.messages);
-        const projected = providerTranscript(context.messages, model.id);
-        const wire = JSON.stringify(projected);
-        assert.ok(Buffer.byteLength(raw, "utf8") > 48_000);
-        assert.ok(Buffer.byteLength(wire, "utf8") < 48_000);
-        assert.equal(raw.split(firstReasoning).length - 1, 2);
-        assert.equal(wire.split(firstReasoning).length - 1, 1);
-        assert.equal(wire.split(secondReasoning).length - 1, 1);
-        assert.equal(projected.tools?.length, tools.length);
-        return providerToolCall("finish_review", "finish", {
-          verdict: "allow",
-          reason: "The target was reviewed.",
-          evidence: [{ ref: cited.ref, excerpt: "read /tmp/flag.txt" }],
-        });
+  const runtime = createInvestigatorAgent(model, tools, unconfiguredStream);
+  runtime.streamFunction = guardInvestigatorStream(
+    (_apiModel, context) => {
+      calls++;
+      if (calls <= 2)
+        return providerToolCall(
+          "list_sessions",
+          `list-${calls}`,
+          {},
+          undefined,
+          "toolUse",
+          calls === 1 ? firstReasoning : secondReasoning,
+        );
+      const raw = JSON.stringify(context.messages);
+      const projected = providerTranscript(context.messages, model.id);
+      const wire = JSON.stringify(projected);
+      assert.ok(Buffer.byteLength(raw, "utf8") > 48_000);
+      assert.ok(Buffer.byteLength(wire, "utf8") < 48_000);
+      assert.equal(raw.split(firstReasoning).length - 1, 2);
+      assert.equal(wire.split(firstReasoning).length - 1, 1);
+      assert.equal(wire.split(secondReasoning).length - 1, 1);
+      assert.equal(projected.tools?.length, tools.length);
+      return providerToolCall("finish_review", "finish", {
+        verdict: "allow",
+        reason: "The target was reviewed.",
+        evidence: [{ ref: cited.ref, excerpt: "read /tmp/flag.txt" }],
+      });
+    },
+    {
+      signal: new AbortController().signal,
+      isStopped: () => Boolean(failure || decision),
+      maxContextBytes: 48_000,
+      onContextLimit: () => {
+        failure = new Error("context limit");
       },
-      {
-        signal: new AbortController().signal,
-        isStopped: () => Boolean(failure || decision),
-        maxContextBytes: 48_000,
-        onContextLimit: () => {
-          failure = new Error("context limit");
-        },
-        onLimit: () => {
-          failure = new Error("call limit");
-        },
-        admitCall: () => true,
+      onLimit: () => {
+        failure = new Error("call limit");
       },
-    );
-    runtime.session.agent.subscribe((event) => {
-      if (event.type === "tool_execution_end" && event.toolName === "finish_review" && decision)
-        runtime.session.agent.abort();
-    });
-    await runtime.session.agent.prompt("Review the target with available tools.");
-    assert.equal(calls, 3);
-    assert.equal(failure, undefined);
-    assert.ok(decision);
-  } finally {
-    await runtime.dispose();
-  }
+      admitCall: () => true,
+    },
+  );
+  runtime.subscribe((event) => {
+    if (event.type === "tool_execution_end" && event.toolName === "finish_review" && decision)
+      runtime.abort();
+  });
+  await runtime.prompt("Review the target with available tools.");
+  assert.equal(calls, 3);
+  assert.equal(failure, undefined);
+  assert.ok(decision);
 });
 
 test("a submission review reaches the investigator as an ordinary transcript review", () => {

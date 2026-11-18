@@ -39,12 +39,6 @@ test(
     created = true;
     const databaseUrl = new URL(baseUrl);
     databaseUrl.pathname = `/${name}`;
-    const oldTypesafe = process.env.TYPESAFE_API_KEY;
-    process.env.TYPESAFE_API_KEY = "synthetic-chain-jev";
-    t.after(() => {
-      if (oldTypesafe === undefined) delete process.env.TYPESAFE_API_KEY;
-      else process.env.TYPESAFE_API_KEY = oldTypesafe;
-    });
 
     const policy = resolveFlagReadPolicy("evidence-chain");
     const base = createFinishInvestigationTool(
@@ -99,13 +93,13 @@ test(
       async (input: string | URL | Request, init?: RequestInit) => {
         init?.signal?.throwIfAborted();
         const url = String(input);
-        if (url === "https://api.typesafe.ai/v1/systemone") {
+        if (url === "https://openrouter.ai/api/v1/systemone") {
           assert.equal(
             new Headers(init?.headers).get("authorization"),
-            "Bearer synthetic-chain-jev",
+            "Bearer integration-router-key",
           );
           const request = JSON.parse(String(init?.body));
-          assert.equal(request.model, "jev-1.14.0");
+          assert.equal(request.model, "typesafe/jev-1.14");
           assert.deepEqual(Object.keys(request.questions).sort(), ["intent", "suspicion"]);
           return Response.json({
             answers: {

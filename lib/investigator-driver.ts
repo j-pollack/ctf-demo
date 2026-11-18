@@ -1,22 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Value } from "typebox/value";
 import {
   createAssistantMessageEventStream,
-  InMemoryCredentialStore,
   type Api,
   type AssistantMessage,
   type Model,
 } from "@earendil-works/pi-ai";
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import { Agent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import { INVESTIGATOR_MODEL } from "./policy";
 import {
   agentStream,
@@ -34,72 +23,16 @@ export const MONITOR_DEADLINE_MS = 60_000;
 export { INVESTIGATOR_MODEL } from "./policy";
 export const INVESTIGATOR_EFFORT = "high" as const;
 
-export async function createIsolatedInvestigatorSession(
+export function createInvestigatorAgent(
   model: Model<"openai-completions">,
-  customTools: ToolDefinition[],
+  tools: AgentTool[],
+  streamFn: StreamFn,
   systemPrompt = INVESTIGATOR_SYSTEM_PROMPT,
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "tripwire-monitor-"));
-  let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
-  try {
-    const settings = SettingsManager.inMemory({
-      compaction: { enabled: false },
-      retry: { enabled: false },
-      cacheWarming: "off",
-    });
-    const loader = new DefaultResourceLoader({
-      cwd: directory,
-      agentDir: directory,
-      settingsManager: settings,
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      systemPromptOverride: () => systemPrompt,
-    });
-    await loader.reload();
-    const modelRuntime = await ModelRuntime.create({
-      credentials: new InMemoryCredentialStore(),
-      modelsPath: null,
-      refreshOnCreate: false,
-      allowModelNetwork: false,
-    });
-    const sessionManager = SessionManager.inMemory(directory);
-    sessionManager.appendMessage({
-      role: "system",
-      content: "",
-      sections: { preamble: systemPrompt },
-      timestamp: Date.now(),
-    });
-    ({ session } = await createAgentSession({
-      cwd: directory,
-      agentDir: directory,
-      modelRuntime,
-      model,
-      thinkingLevel: INVESTIGATOR_EFFORT,
-      tools: customTools.map((tool) => tool.name),
-      noTools: "all",
-      customTools,
-      sessionManager,
-      settingsManager: settings,
-      resourceLoader: loader,
-    }));
-    return {
-      session,
-      dispose: async () => {
-        try {
-          session?.dispose();
-        } finally {
-          await rm(directory, { recursive: true, force: true });
-        }
-      },
-    };
-  } catch (error) {
-    session?.dispose();
-    await rm(directory, { recursive: true, force: true });
-    throw error;
-  }
+  return new Agent({
+    initialState: { systemPrompt, model, thinkingLevel: INVESTIGATOR_EFFORT, tools },
+    streamFn,
+  });
 }
 
 function abortedStream(model: Model<Api>) {
@@ -160,8 +93,8 @@ export function guardInvestigatorStream(
 }
 
 type InvestigatorSetup = {
-  tools: ToolDefinition[];
-  finishTool: ToolDefinition;
+  tools: AgentTool[];
+  finishTool: AgentTool;
   prompt: string;
   maxContextBytes: number;
   initialEvidenceCount: number;
@@ -229,12 +162,12 @@ export async function runInvestigatorDriver<T>(
   let lastInvalidDecision: string | undefined;
   const invalidFinishCalls = new Set<string>();
   const toolArguments = new Map<string, unknown>();
-  let investigator: Awaited<ReturnType<typeof createIsolatedInvestigatorSession>> | undefined;
+  let investigator: Agent | undefined;
   let setup: InvestigatorSetup | undefined;
   let calls = 0;
   const recordFailure = (error: unknown) => {
     failure ??= error;
-    investigator?.session.agent.abort();
+    investigator?.abort();
   };
   const finish = (value: T) => {
     if (decision || failure) throw new Error("Conflicting investigator decision.");
@@ -258,12 +191,11 @@ export async function runInvestigatorDriver<T>(
       retrievedRefs: setup.retrievedRefs(),
     };
   };
-  const disposeSignal = () => investigator?.session.agent.abort();
+  const disposeSignal = () => investigator?.abort();
   signal.addEventListener("abort", disposeSignal, { once: true });
   try {
     setup = await config.prepare({ model, signal, recordFailure, finish, onInvalid });
     if (failure) throw failure;
-    investigator = await createIsolatedInvestigatorSession(model, setup.tools, config.systemPrompt);
     const dispatch = agentStream(input.game, model, recordFailure, undefined, undefined, {
       role: "monitor",
       sessionId: input.currentSessionId,
@@ -280,7 +212,7 @@ export async function runInvestigatorDriver<T>(
         ? BOUNDED_INVESTIGATOR_POLICY.providerEndpoint
         : undefined,
     } satisfies TrustedInferenceOptions);
-    investigator.session.agent.streamFunction = guardInvestigatorStream(dispatch, {
+    const streamFn = guardInvestigatorStream(dispatch, {
       signal,
       isStopped: () => Boolean(failure || decision),
       onLimit: () =>
@@ -300,7 +232,8 @@ export async function runInvestigatorDriver<T>(
         return true;
       },
     });
-    investigator.session.agent.subscribe((event) => {
+    investigator = createInvestigatorAgent(model, setup.tools, streamFn, config.systemPrompt);
+    investigator.subscribe((event) => {
       if (event.type === "message_end" && event.message.role === "assistant")
         for (const part of event.message.content)
           if (part.type === "toolCall") toolArguments.set(part.id, part.arguments);
@@ -339,7 +272,7 @@ export async function runInvestigatorDriver<T>(
             lastInvalidDecision ??= `Invalid ${config.finishName} arguments.`;
           else recordFailure(new Error(`Investigator ${config.finishName} tool failed.`));
         }
-        if (decision || failure) investigator?.session.agent.abort();
+        if (decision || failure) investigator?.abort();
       } else if (event.type === "tool_execution_end") {
         const rawArgs = toolArguments.get(event.toolCallId);
         toolArguments.delete(event.toolCallId);
@@ -373,7 +306,7 @@ export async function runInvestigatorDriver<T>(
           : "Investigator review deadline expired.",
       );
     if (failure) throw failure;
-    await investigator.session.agent.prompt(setup.prompt);
+    await investigator.prompt(setup.prompt);
     if (failure) throw failure;
     return result();
   } catch (error) {
@@ -386,10 +319,6 @@ export async function runInvestigatorDriver<T>(
     throw error;
   } finally {
     signal.removeEventListener("abort", disposeSignal);
-    try {
-      await investigator?.dispose();
-    } finally {
-      await setup?.dispose?.();
-    }
+    await setup?.dispose?.();
   }
 }
