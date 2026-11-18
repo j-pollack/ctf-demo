@@ -50,6 +50,7 @@ await test(
       "migrations/018-monitor-ready.sql",
       "migrations/019-session-stop.sql",
       "migrations/020-http-flag-submission.sql",
+      "migrations/021-game-rules.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
@@ -1161,6 +1162,45 @@ await test(
         );
       },
     );
+    for (const scenario of [
+      { name: "a required bug fix with none passing", required: true, correct: true, ok: false },
+      { name: "an optional bug fix with none passing", required: false, correct: true, ok: true },
+      { name: "a required bug fix with a wrong flag", required: true, correct: false, ok: false },
+      { name: "an optional bug fix with a wrong flag", required: false, correct: false, ok: false },
+    ])
+      await t.test(`W4: capture guard for ${scenario.name}`, async () => {
+        const id = await seed(`capture-guard-${randomUUID()}`);
+        await write(id, ["submitted evidence"]);
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const review = await claimMonitorJob();
+          assert.ok(review);
+          await finishMonitorJob(review, { kind: "allow" });
+          if (review.gameId === id) break;
+        }
+        await pool.query(
+          `UPDATE ctf.games SET status='finalizing',submitted_flag_correct=$2,
+         submitted_session_id=$1,bug_fix_required=$3 WHERE id=$1`,
+          [id, scenario.correct, scenario.required],
+        );
+        await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [id]);
+        const claim = await claimAsyncFinalization();
+        assert.equal(claim?.gameId, id);
+        const status = async () =>
+          (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [id])).rows[0].status;
+        if (scenario.ok) {
+          assert.equal(await finalizeAsyncRun(claim!, "captured", 0), true);
+          assert.equal(await status(), "captured");
+          return;
+        }
+        await assert.rejects(
+          finalizeAsyncRun(claim!, "captured", 0),
+          (error: unknown) =>
+            error instanceof Error &&
+            error.message === "Capture requirements were not met." &&
+            (error as { status?: number }).status === 409,
+        );
+        assert.equal(await status(), "finalizing", "a refused capture changes nothing");
+      });
     await t.test("public monitor status hides stored worker diagnostics", async () => {
       const id = await seed(`private-diagnostic-${randomUUID()}`);
       await write(id, ["review this"]);

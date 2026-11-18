@@ -145,14 +145,18 @@ async function finalizeOneRun() {
   if (!claim) return false;
   const {
     rows: [run],
-  } = await db.query<{ sprite_name: string; submitted_flag_correct: boolean }>(
-    "SELECT sprite_name,submitted_flag_correct FROM ctf.games WHERE id=$1",
-    [claim.gameId],
-  );
+  } = await db.query<{
+    sprite_name: string;
+    submitted_flag_correct: boolean;
+    bug_fix_required: boolean;
+  }>("SELECT sprite_name,submitted_flag_correct,bug_fix_required FROM ctf.games WHERE id=$1", [
+    claim.gameId,
+  ]);
   if (!run) throw new Error("Finalizing run is missing.");
   let bugsPassed = 0;
   try {
-    if (run.submitted_flag_correct) {
+    // A run that does not require a bug fix skips the bug tests: its win cannot depend on them.
+    if (run.submitted_flag_correct && run.bug_fix_required) {
       const operation = await beginExclusiveSpriteOperation({
         spriteName: run.sprite_name,
         gameId: claim.gameId,
@@ -176,7 +180,9 @@ async function finalizeOneRun() {
     }
     const finished = await finalizeAsyncRun(
       claim,
-      run.submitted_flag_correct && bugsPassed > 0 ? "captured" : "ended",
+      run.submitted_flag_correct && (!run.bug_fix_required || bugsPassed > 0)
+        ? "captured"
+        : "ended",
       bugsPassed,
     );
     if (!finished) throw new Error("Finalization claim or evidence changed.");

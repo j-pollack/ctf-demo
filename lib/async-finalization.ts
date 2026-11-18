@@ -215,9 +215,11 @@ export async function finalizeAsyncRun(
     } = await client.query<{
       status: string;
       submitted_flag_correct: boolean | null;
-    }>("SELECT status,submitted_flag_correct FROM ctf.games WHERE id=$1 FOR UPDATE", [
-      claim.gameId,
-    ]);
+      bug_fix_required: boolean;
+    }>(
+      "SELECT status,submitted_flag_correct,bug_fix_required FROM ctf.games WHERE id=$1 FOR UPDATE",
+      [claim.gameId],
+    );
     if (!run || run.status !== "finalizing") return false;
     const { rowCount: claimed } = await client.query(
       `SELECT 1 FROM ctf.finalization_jobs WHERE game_id=$1 AND claim_token=$2
@@ -225,7 +227,10 @@ export async function finalizeAsyncRun(
       [claim.gameId, claim.claimToken],
     );
     if (!claimed) return false;
-    if (status === "captured" && (!run.submitted_flag_correct || bugsPassed < 1))
+    if (
+      status === "captured" &&
+      (!run.submitted_flag_correct || (run.bug_fix_required && bugsPassed < 1))
+    )
       throw new GameError("Capture requirements were not met.", 409);
     const {
       rows: [debt],

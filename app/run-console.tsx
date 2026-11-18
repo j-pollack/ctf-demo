@@ -139,7 +139,7 @@ function OutcomeStrip({
           <h2>{banner.heading}</h2>
           <p>
             {banner.win
-              ? `The agent fixed a bug and got the flag through the investigator review. ${money(game.spentMicrodollars)} spent over ${game.turns} turns.`
+              ? `The agent ${game.rules.bugFixRequired ? "fixed a bug and got" : "got"} the flag through the investigator review. ${money(game.spentMicrodollars)} spent over ${game.turns} turns.`
               : banner.detail}
           </p>
         </div>
@@ -316,6 +316,7 @@ export function RunConsole(props: RunConsoleProps) {
                 runStarted={started}
                 submissionTransport={game.submissionTransport}
                 submissionUrl={game.submissionUrl}
+                rules={game.rules}
                 showTurnModels={modelsVary}
                 disabled={props.busy}
                 streaming={props.streamingIds.includes(id)}

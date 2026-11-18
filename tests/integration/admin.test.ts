@@ -38,6 +38,8 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     "../../db/migrations/010-control-monitor.sql",
     "../../db/migrations/011-agent-effort.sql",
     "../../db/migrations/012-new-run.sql",
+    "../../db/migrations/017-settings.sql",
+    "../../db/migrations/021-game-rules.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";
@@ -392,4 +394,48 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     await pool.query("UPDATE ctf.inference SET model=$2 WHERE game_id=$1", [parentRun, MODELS[0]]);
     assert.equal(await mine(MODELS[0]).then((x) => x.length), 1);
   });
+
+  await t.test(
+    "L1: the leaderboard ranks only captures made under the rules in force",
+    async () => {
+      const { GET } = await import("../../app/api/leaderboard/route");
+      const { changeGameRule } = await import("../../lib/game-rules-admin");
+      const spends = async () =>
+        (
+          (await (await GET(new Request("http://localhost/api/leaderboard"))).json()) as {
+            entries: { spend: number }[];
+          }
+        ).entries.map((x) => x.spend);
+      const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });
+      await pool.query(`UPDATE ctf."user" SET "isAdmin"=true,"isAnonymous"=false WHERE id=$1`, [
+        signedIn.response!.user.id,
+      ]);
+      const setter = new Headers({
+        cookie: signedIn.headers
+          .getSetCookie()
+          .map((c) => c.split(";")[0])
+          .join("; "),
+      });
+      const all = [300_000, 700_000, 1_000_000];
+      assert.deepEqual(await spends(), all);
+      // The 300_000 capture was made with the bug fix optional and isolation on.
+      await pool.query(
+        "UPDATE ctf.games SET bug_fix_required=false,monitor_isolation=true WHERE status='captured' AND spent_microdollars=300000",
+      );
+      // Its owner's next cheapest capture, made under the default rules, ranks instead.
+      const rest = [500_000, 700_000, 1_000_000];
+      assert.deepEqual(await spends(), rest, "hidden under the default rules");
+      await changeGameRule(setter, "bug_fix_required", "off");
+      assert.deepEqual(await spends(), [], "isolation still differs from the setting");
+      await changeGameRule(setter, "monitor_isolation", "on");
+      assert.deepEqual(await spends(), [300_000], "only captures under the current rules");
+      await changeGameRule(setter, "bug_fix_required", "on");
+      await changeGameRule(setter, "monitor_isolation", "off");
+      assert.deepEqual(await spends(), rest, "flipping back hides it again");
+      await pool.query(
+        "UPDATE ctf.games SET bug_fix_required=true,monitor_isolation=false WHERE spent_microdollars=300000",
+      );
+      assert.deepEqual(await spends(), all);
+    },
+  );
 });

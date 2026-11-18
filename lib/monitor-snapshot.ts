@@ -212,11 +212,12 @@ export async function captureCommittedMonitorSnapshot(input: {
   return inRepeatableRead(async (client) => {
     const { rows: targets } = await client.query<{
       userId: string;
+      isolated: boolean;
       revision: string;
       observedEpoch: string;
       observedAt: Date;
     }>(
-      `SELECT g.owner_id AS "userId",g.observation_revision::text AS revision,
+      `SELECT g.owner_id AS "userId",g.monitor_isolation AS isolated,g.observation_revision::text AS revision,
          o.epoch::text AS "observedEpoch",o.observed_at AS "observedAt"
        FROM ctf.games g JOIN ctf.agent_sessions s ON s.game_id=g.id
          JOIN ctf.transcript_observations o ON o.session_id=s.id AND o.version=$3
@@ -249,8 +250,8 @@ export async function captureCommittedMonitorSnapshot(input: {
            SELECT o.version,o.observed_at FROM ctf.transcript_observations o
            WHERE o.session_id=s.id ORDER BY o.version DESC LIMIT 1
          ) head ON true
-       WHERE g.owner_id=$1 ORDER BY s.id`,
-      [target.userId],
+       WHERE g.owner_id=$1 AND (NOT $2 OR g.id=$3) ORDER BY s.id`,
+      [target.userId, target.isolated, gameId],
     );
     const { commands: legacyCommands } = await loadSessions(client, [sessionId]);
     const { rows: operationTable } = await client.query<{ available: string | null }>(

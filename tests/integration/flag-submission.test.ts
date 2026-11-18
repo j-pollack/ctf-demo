@@ -66,6 +66,12 @@ test(
     );
     await pool.query(migration);
     await pool.query(migration);
+    const rules = await readFile(
+      new URL("../../db/migrations/021-game-rules.sql", import.meta.url),
+      "utf8",
+    );
+    await pool.query(rules);
+    await pool.query(rules);
     const legacy = (
       await pool.query(
         `SELECT submission_transport,messages,tokens_used,blocks,reserved_microdollars
