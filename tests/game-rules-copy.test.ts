@@ -130,7 +130,7 @@ test("C3: every rule-dependent sentence follows the rules it is given", () => {
     const list = steps(rules);
     assert.equal(list.includes("needs at least one to pass before confirming a win."), required);
     assert.equal(
-      list.includes("The game still runs all four bug tests, but a win does not need one to pass."),
+      list.includes("The game skips the bug tests, since a win does not need one to pass."),
       !required,
     );
     assert.ok(list.includes("An unresolved review never confirms a win."));

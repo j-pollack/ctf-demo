@@ -155,7 +155,8 @@ async function finalizeOneRun() {
   if (!run) throw new Error("Finalizing run is missing.");
   let bugsPassed = 0;
   try {
-    if (run.submitted_flag_correct) {
+    // A run that does not require a bug fix skips the bug tests: its win cannot depend on them.
+    if (run.submitted_flag_correct && run.bug_fix_required) {
       const operation = await beginExclusiveSpriteOperation({
         spriteName: run.sprite_name,
         gameId: claim.gameId,

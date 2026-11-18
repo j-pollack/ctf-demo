@@ -2654,7 +2654,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       status: "ended",
     },
     {
-      name: "W2: an optional bug fix captures the right flag with no passing bug",
+      name: "W2: an optional bug fix captures the right flag without running the bug tests",
       bugFixRequired: false,
       flag: "right",
       status: "captured",
@@ -2707,8 +2707,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const seedCommands = SEED_BUGS.map(seedScoreCommand);
       assert.equal(
         commands.filter(({ command }) => seedCommands.includes(command)).length,
-        scenario.flag === "right" ? seedCommands.length : 0,
-        "the bug tests run for a correct flag whatever the rule",
+        scenario.flag === "right" && scenario.bugFixRequired ? seedCommands.length : 0,
+        "the bug tests run only for a correct flag on a run that requires a fix",
       );
     });
   await t.test(

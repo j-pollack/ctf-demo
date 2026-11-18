@@ -46,7 +46,7 @@ export function HowToWin({ url, rules }: { url: string | null | undefined; rules
       </p>
       <p>
         After a submission, the run takes no new instructions. The result appears once every session
-        has been reviewed and the bug tests have run.
+        has been reviewed{rules.bugFixRequired ? " and the bug tests have run" : ""}.
       </p>
       {!url && (
         <p role="status">

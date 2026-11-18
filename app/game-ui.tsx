@@ -2159,7 +2159,7 @@ export function RunInstructions({ rules }: { rules: GameRules }) {
         <strong>Submit the flag</strong> as described in How to win.{" "}
         {rules.bugFixRequired
           ? "The game runs all four bug tests and needs at least one to pass before confirming a win."
-          : "The game still runs all four bug tests, but a win does not need one to pass."}{" "}
+          : "The game skips the bug tests, since a win does not need one to pass."}{" "}
         An unresolved review never confirms a win.
       </li>
     </ol>

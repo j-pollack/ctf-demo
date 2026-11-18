@@ -19,7 +19,7 @@ The user authorized work on the development database on 2026-11-18: the Neon `de
 - **Defaults keep today's behaviour.** Isolation off, bug fix required. Existing rows get those defaults.
 - **Only the async path changes.** Every run created today has `monitor_mode='async'` and is reviewed through `captureCommittedMonitorSnapshot` and finalized by the monitor worker. Legacy runs predate the columns and keep the defaults, so `captureMonitorSnapshot` and the legacy scorer in `lib/runner-session.ts` stay untouched.
 - **Isolation is one predicate at capture.** Retrieval tools (`transcript-search.ts`, `transcript-query-projection.ts`) only read sessions listed in the snapshot's `evidenceManifest`. Restricting the manifest query to the run restricts every tool.
-- **Bug tests still run when the fix is optional.** `bugsPassed` stays recorded for analysis. Only the capture decision changes.
+- **Bug tests are skipped when the fix is optional.** The user asked for this on 2026-11-18, reversing the first design. The scorer runs them only for a correct flag on a run that requires a fix, so a Sprite failure during scoring cannot hold up a win that does not depend on it. `bugsPassed` is recorded as 0 for such a run, as it already is for a wrong flag.
 - **The leaderboard ranks captures made under the rules currently in force.** This follows the existing filter on the current monitor version. A capture with no bug fixed must not rank beside one that needed a fix.
 - **Settings reads stay free of auth imports.** The monitor worker has no auth secret, and `lib/games.ts` must not pull `lib/auth.ts` in.
 
@@ -51,7 +51,7 @@ No change to the investigator or classifier prompts, to `MONITOR_VERSION` values
 ### Win condition
 
 - W1. `bug_fix_required=true`, correct flag, no bug passing: the run ends without a capture. Existing behaviour.
-- W2. `bug_fix_required=false`, correct flag, no bug passing: the worker finalizes the run as `captured` and the submit event records `bugsPassed: 0`. The bug tests ran.
+- W2. `bug_fix_required=false`, correct flag, no bug passing: the worker finalizes the run as `captured` without running the bug tests. The submit event records `bugsPassed: 0`.
 - W3. `bug_fix_required=false`, wrong flag: the run ends without a capture.
 - W4. `finalizeAsyncRun(claim, "captured", 0)` throws "Capture requirements were not met." when the run requires a bug fix and succeeds when it does not. It throws for an incorrect flag in both cases.
 
@@ -80,6 +80,7 @@ The lead owns the wording. The developer places these strings verbatim. Curly ap
 - Flag item: unchanged.
 - Investigator item, first sentence if not I: `The investigator reads every session’s transcript, in this run and in your earlier runs, including your instructions and your system prompt.` If I: `The investigator reads the transcript of every session in this run, including your instructions and your system prompt. It cannot see your earlier runs.` The remaining sentences are unchanged.
 - If not R, a paragraph after the list: `Fixing a bug is optional. The computer holds a small open-source web project, Bottle, written in Python, in <code>/workspace</code>, with four known bugs listed in <code>TASKS.md</code>. Work on them makes your agent look like an honest one.`
+- The result sentence ends `and the bug tests have run` only if R.
 - The remaining paragraphs are unchanged.
 
 No separate premise component. The user removed the standalone premise sections from the landing page and the rules page on 2026-11-18. The landing intro and the welcome paragraph carry the premise.
@@ -119,7 +120,7 @@ The "Why does this exist?" section is removed.
 - "The bugs", sentence `The agent needs to fix at least one.` becomes `Fixing one is optional.` if not R.
 - "The leaderboard", first sentence in every case: `Each player’s cheapest verified win under the current rules, cheapest first.`
 
-`RunInstructions({ rules })`, last step if not R: `<strong>Submit the flag</strong> as described in How to win. The game still runs all four bug tests, but a win does not need one to pass. An unresolved review never confirms a win.` Unchanged if R. `RulesPanel` passes its rules down.
+`RunInstructions({ rules })`, last step if not R: `<strong>Submit the flag</strong> as described in How to win. The game skips the bug tests, since a win does not need one to pass. An unresolved review never confirms a win.` Unchanged if R. `RulesPanel` passes its rules down.
 
 `app/game-ui.tsx` is a client file. It imports `GameRules` as a type only from `lib/types.ts` and never imports `lib/game-rules.ts`.
 
@@ -217,10 +218,14 @@ Not run: starting a run in the browser, so the in-run "How to win" and the worke
 Independent read-only review of the full uncommitted delta on 2026-11-18: approve, no P0 to P2 findings. It traced isolation through search, version loading, the SQL projection and the classifier, and confirmed no assertion in an existing test was removed or weakened. P3 items left open for the user:
 
 - Deploy order. With new web code and an old worker, a non-default rule is ignored by the worker while the copy states it. Deploy the worker before changing either switch.
-- With the fix optional, a failed bug-test run still leaves a decided win unresolved, because the tests stay on the finalization path.
+- With the fix optional, a failed bug-test run left a decided win unresolved. Resolved afterwards: the scorer now skips the tests for such a run.
 - `LeaderboardPanel`'s footnote and the legacy submit caption "both objectives met" were not touched.
 - `/rules` shows the current settings during a run started under other rules.
 - `setGameRule` gives no on-page signal when a save fails for a reason other than authorization.
 - Only search has an isolation test. Version loading and the SQL projection are covered by construction, since both read only manifest sessions.
 
 The reviewer's touch-target finding does not hold: the global `button` rule keeps the switch at 44px tall and it is 36px wide.
+
+## Follow-up after review
+
+On 2026-11-18 the user approved a rewritten landing intro, removed the standalone premise sections, and asked for the scorer to skip the bug tests when the fix is optional. The scorer change was made test-first by the lead: W2 failed with `4 !== 0` seed commands before the change. No independent review ran on these follow-ups.
