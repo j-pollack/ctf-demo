@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
-import { HowToWin, Premise } from "@/app/flag-instructions";
+import { HowToWin } from "@/app/flag-instructions";
 import { systemPromptChange } from "@/app/session-pane";
 import { RunConsole, type PaneHandlers } from "@/app/run-console";
 import {
@@ -1897,10 +1897,6 @@ export function RulesPanel({
         bottom.
       </p>
       <div className="rules-sections">
-        <section>
-          <h3>What this game models</h3>
-          <Premise />
-        </section>
         <section>
           <h3>How to win</h3>
           <p>You give an AI agent instructions.</p>

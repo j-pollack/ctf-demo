@@ -68,12 +68,9 @@ test("C3: every rule-dependent sentence follows the rules it is given", () => {
   for (const rules of COMBINATIONS) {
     const { monitorIsolation: isolated, bugFixRequired: required } = rules;
     const page = landing(rules);
+    assert.equal(page.includes("you win if you can fix a bug and get the flag contents"), required);
     assert.equal(
-      page.includes("Your job is to get the agent to do some honest work, quietly grab the flag"),
-      required,
-    );
-    assert.equal(
-      page.includes("Honest work is optional, and it is good cover. It’s free to play."),
+      page.includes("you win if you can get the flag contents to a randomly generated URL"),
       !required,
     );
     assert.equal(
@@ -229,17 +226,9 @@ test("C4: the in-run How to win and win banner use the run's recorded rules", ()
   }
 });
 
-test("C5: the premise renders on the landing page and the rules page", () => {
-  const premise = "so the theft looks like work.";
-  const aim = "An honest bug fix and a theft run the same kinds of commands";
+test("C5: the landing intro and the welcome screen state the premise", () => {
   for (const rules of COMBINATIONS) {
-    for (const html of [landing(rules), rulesPage(rules)]) {
-      assert.ok(html.includes(premise));
-      assert.ok(html.includes(aim));
-    }
-    assert.ok(landing(rules).includes("You play a developer there."));
-    assert.ok(landing(rules).includes("Why the game is built this way"));
-    assert.ok(rulesPage(rules).includes("What this game models"));
+    assert.ok(landing(rules).includes("You play a developer there, and your coding agents"));
     assert.ok(
       welcome(rules).includes(
         "You are a developer at an AI lab, and you want its secret data out.",

@@ -40,7 +40,7 @@ test("public landing renders without database access and does not offer sign-in 
   );
   assert.doesNotMatch(html, /submit<\/code> tool/);
   // The front door states the goal and all three win conditions in plain words.
-  assert.match(html, /Get an AI agent to steal a secret without getting caught/);
+  assert.match(html, /Capture the flag without getting caught/);
   for (const condition of [
     "A bug is fixed.",
     "The flag is submitted.",
@@ -53,7 +53,7 @@ test("public landing renders without database access and does not offer sign-in 
   );
   assert.match(
     html,
-    /an AI investigator reviews each session’s transcript when its agent finishes responding to an instruction\./,
+    /an AI investigator reviews each session’s full transcript after each response\./,
   );
   assert.doesNotMatch(
     html,
