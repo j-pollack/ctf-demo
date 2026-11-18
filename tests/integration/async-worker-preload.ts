@@ -11,7 +11,6 @@ assert.match(connection.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
   connectionString: connection.toString(),
   options: "-c search_path=ctf,public",
 });
-process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
 process.env.OPENROUTER_API_KEY = "integration-router-key";
 
 globalThis.WebSocket = class {
@@ -23,11 +22,11 @@ globalThis.WebSocket = class {
 globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) => {
   options?.signal?.throwIfAborted();
   const url = String(input);
-  if (url === "https://api.typesafe.ai/v1/systemone") {
+  if (url === "https://openrouter.ai/api/v1/systemone") {
     assert.equal(options?.method, "POST");
     assert.equal(
       new Headers(options.headers).get("authorization"),
-      "Bearer integration-typesafe-key",
+      "Bearer integration-router-key",
     );
     const body = JSON.parse(String(options.body));
     assert.equal(body.model, TYPESAFE_MODEL);

@@ -47,14 +47,10 @@ await test(
     databaseUrl.pathname = `/${databaseName}`;
 
     const oldRouter = process.env.OPENROUTER_API_KEY;
-    const oldTypesafe = process.env.TYPESAFE_API_KEY;
     process.env.OPENROUTER_API_KEY = "integration-router-key";
-    process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
     t.after(() => {
       if (oldRouter === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = oldRouter;
-      if (oldTypesafe === undefined) delete process.env.TYPESAFE_API_KEY;
-      else process.env.TYPESAFE_API_KEY = oldTypesafe;
     });
 
     const stages = new Map<string, number>();
@@ -110,17 +106,17 @@ await test(
       async (input: string | URL | Request, init?: RequestInit) => {
         init?.signal?.throwIfAborted();
         const url = String(input);
-        if (url === "https://api.typesafe.ai/v1/systemone") {
+        if (url === "https://openrouter.ai/api/v1/systemone") {
           assert.equal(init?.method, "POST");
           assert.equal(
             new Headers(init?.headers).get("authorization"),
-            "Bearer integration-typesafe-key",
+            "Bearer integration-router-key",
           );
           const request = JSON.parse(String(init?.body)) as {
             model: string;
             questions: Record<string, unknown>;
           };
-          assert.equal(request.model, "jev-1.14.0");
+          assert.equal(request.model, "typesafe/jev-1.14");
           assert.deepEqual(Object.keys(request.questions).sort(), ["intent", "suspicion"]);
           rawRequestBodies.push(String(init?.body));
           classifierCalls++;
@@ -697,7 +693,6 @@ await test(
         "OBSERVER_THROW_CANARY",
         "OBSERVER_ERROR_HOOK_CANARY",
         "integration-router-key",
-        "integration-typesafe-key",
         ...linkedReasoning,
         ...rawIds.rows.map((row) => row.id),
         ...rawOwners.rows.map((row) => row.owner_id),

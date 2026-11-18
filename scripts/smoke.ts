@@ -67,7 +67,7 @@ if (messagesOnly)
         },
       });
     }
-    if (url.startsWith("https://openrouter.ai/") || url.startsWith("https://api.typesafe.ai/"))
+    if (url.startsWith("https://openrouter.ai/"))
       throw new Error(`Unexpected live model request in messages-only smoke: ${url}`);
     return networkFetch(input, options);
   };
@@ -249,7 +249,7 @@ try {
   if (messagesOnly) {
     globalThis.fetch = async (input, options) => {
       const url = String(input);
-      if (url === "https://api.typesafe.ai/v1/systemone") {
+      if (url === "https://openrouter.ai/api/v1/systemone") {
         const request = JSON.parse(options!.body as string) as {
           questions: Record<string, { type: string }>;
         };
@@ -596,7 +596,7 @@ try {
           native_tokens_completion: 2,
         },
       });
-    if (String(input) === "https://api.typesafe.ai/v1/systemone") {
+    if (String(input) === "https://openrouter.ai/api/v1/systemone") {
       if (throttledMonitor)
         return Response.json(
           { error: { code: 429, message: "Controlled classifier rate limit" } },
@@ -927,7 +927,7 @@ try {
   globalThis.fetch = async (input, options) => {
     options?.signal?.throwIfAborted();
     const url = String(input);
-    if (url === "https://api.typesafe.ai/v1/systemone") {
+    if (url === "https://openrouter.ai/api/v1/systemone") {
       assert.equal(options?.method, "POST");
       const request = JSON.parse(String(options.body)) as {
         model: string;

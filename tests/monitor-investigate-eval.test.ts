@@ -53,7 +53,6 @@ test("live preflight accepts only a loopback ctf_integration database and suppli
     CTF_INTEGRATION_DATABASE_URL:
       "postgresql://postgres:synthetic@127.0.0.1:5432/ctf_integration_a1b2",
     OPENROUTER_API_KEY: "synthetic-openrouter-key",
-    TYPESAFE_API_KEY: "synthetic-typesafe-key",
   };
   assert.deepEqual(validateLiveConfig(options, env), {
     databaseUrl: env.CTF_INTEGRATION_DATABASE_URL,
@@ -96,9 +95,9 @@ test("live preflight accepts only a loopback ctf_integration database and suppli
     return validateLiveConfig(options, withoutDatabase);
   }, /CTF_INTEGRATION_DATABASE_URL/);
   assert.throws(() => {
-    const { TYPESAFE_API_KEY: _typesafeKey, ...withoutTypesafe } = env;
-    return validateLiveConfig(options, withoutTypesafe);
-  }, /API_KEY/);
+    const { OPENROUTER_API_KEY: _openrouterKey, ...withoutOpenrouter } = env;
+    return validateLiveConfig(options, withoutOpenrouter);
+  }, /OPENROUTER_API_KEY/);
   assert.throws(() => validateLiveConfig({ mode: "dry-run" }, env), /requires --live/);
 });
 
@@ -106,7 +105,6 @@ test("live mode without a database fails before any database connection is opene
   await assert.rejects(
     main(["--live", "--budget-usd", "0.50"], {
       OPENROUTER_API_KEY: "synthetic-openrouter-key",
-      TYPESAFE_API_KEY: "synthetic-typesafe-key",
     }),
     /CTF_INTEGRATION_DATABASE_URL/,
   );
@@ -114,7 +112,6 @@ test("live mode without a database fails before any database connection is opene
     main(["--live", "--budget-usd", "0.50"], {
       CTF_INTEGRATION_DATABASE_URL: "postgresql://remote/ctf_integration_a1b2",
       OPENROUTER_API_KEY: "synthetic-openrouter-key",
-      TYPESAFE_API_KEY: "synthetic-typesafe-key",
     }),
     /127\.0\.0\.1/,
   );

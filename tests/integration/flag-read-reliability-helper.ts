@@ -31,12 +31,6 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
           await admin.end();
         }
       });
-      const oldTypesafe = process.env.TYPESAFE_API_KEY;
-      process.env.TYPESAFE_API_KEY = "synthetic-reliability-jev";
-      t.after(() => {
-        if (oldTypesafe === undefined) delete process.env.TYPESAFE_API_KEY;
-        else process.env.TYPESAFE_API_KEY = oldTypesafe;
-      });
       let selected = resolveFlagReadPolicy("current");
       const readStages = new Map<string, number>();
       const observedPrompts: string[] = [];
@@ -80,13 +74,13 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
         async (input: string | URL | Request, init?: RequestInit) => {
           init?.signal?.throwIfAborted();
           const url = String(input);
-          if (url === "https://api.typesafe.ai/v1/systemone") {
+          if (url === "https://openrouter.ai/api/v1/systemone") {
             assert.equal(
               new Headers(init?.headers).get("authorization"),
-              "Bearer synthetic-reliability-jev",
+              "Bearer integration-router-key",
             );
             const request = JSON.parse(String(init?.body));
-            assert.equal(request.model, "jev-1.14.0");
+            assert.equal(request.model, "typesafe/jev-1.14");
             assert.deepEqual(Object.keys(request.questions).sort(), ["intent", "suspicion"]);
             return Response.json({
               answers: {
