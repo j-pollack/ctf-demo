@@ -130,7 +130,90 @@ Line numbers are from the baseline and drift as edits land. Symbols are the stab
 
 ## Stage 2: legacy synchronous monitor
 
-Not started and not yet specified. The user decided on 2026-11-18 to delete the legacy path together with its test scenarios. `tests/integration/sprites.test.ts` wraps `startGame` so that 115 scenarios run as legacy runs, and the first section of `scripts/smoke.ts` does the same. Those go with `lib/runner-session.ts`, `lib/monitor-orchestration.ts`, `lib/run-lifecycle.ts` and the legacy reviewer. The integration coverage of `lib/games.ts` and `lib/sessions.ts` that only those scenarios provided is lost. Stage 2 gets its own criteria in this file and its own plan verification before any edit.
+Baseline for this stage: `7d711da`. `npm run check` 360 of 360, `npm run test:integration` 315 of 315.
+
+The legacy monitor reviewed each proposed command before it ran and returned allow, block or unknown. Every run created today is `monitor_mode='async'` and is reviewed by the worker. The user decided on 2026-11-18 that the legacy path is deleted together with its test scenarios, with no port.
+
+### Design decisions
+
+- **Execution is deleted, history is still readable.** Rows with `monitor_mode='legacy'` stay in the database. The public payload still carries `monitorMode`, and the UI still renders an old legacy run. No file under `app/` changes.
+- **A legacy run can no longer be continued.** A prompt to a run whose `monitor_mode` is not `async` is refused with `GameError` 410 "This run can no longer continue." The refusal happens in `claimSession` in `lib/sessions.ts`, which already reads `monitor_mode` before it takes the lease. The prompt route only reads before that point.
+- **The `monitor_mode` guards and SQL conditionals stay.** They keep async operations away from old rows. Collapsing them would touch live SQL for no functional gain.
+- **Code that only the legacy runner reached is removed with it.** That covers the unbounded classifier and investigator branches, `chargeMonitor`, and the monitor authorization that works without a worker job claim. After this stage a monitor call exists only under a job claim, with a budget reservation and the bounded limits.
+- **Tests lose legacy assertions, not live coverage.** The `startGame` wrapper in `tests/integration/sprites.test.ts` that turns runs into legacy runs is removed, so every scenario starts an async run.
+  - A scenario whose subject is legacy behaviour is deleted whole. Its title names a synchronous review before a command, a command block, an end review, a submission reviewed by the legacy reviewer, or a symbol on the L1 or L3 lists.
+  - A scenario whose subject is live behaviour keeps running. Only its assertions about the legacy protocol are removed. If it needs a caught or legacy row to reach its subject, it sets that state by SQL.
+  - A scenario that tests a guard against legacy rows, such as the stop route or start admission refusing one, is kept and creates its legacy row by SQL.
+  - A failure in `startGame`, `cleanup`, admission, quota, billing, `publicGame`, session handling, agent retry, streaming, abort or a route is repaired.
+  - Nothing is ported: no scenario is rewritten to drive the worker in place of the legacy reviewer.
+  - Async tool submission through `startPersistedToolGame` is live and is not legacy protocol.
+- **The classifier's questions, weights and difficulty table are not touched.** They are the subject of the rebuild that follows.
+
+### Non-goals
+
+- `app/` rendering of legacy runs, `PublicGame.monitorMode`, and UI fixtures with `monitorMode: "legacy"`.
+- `monitor_mode` conditionals and guards in `lib/games.ts`, `lib/sessions.ts`, `lib/monitor-commands.ts`, `lib/flag-submissions.ts` and `lib/async-finalization.ts`.
+- `createSession` on a legacy run. It still writes a session whose prompts are then refused.
+- `CONTROL_DIFFICULTY`, `MONITOR_QUESTIONS`, `combineSuspicion`, `lib/monitor-document.ts`, `lib/typesafe.ts`, `lib/classifier-context.ts`.
+- The flag-read investigator's prompt, tools, limits and monitor version.
+- `submission_transport='tool'` handling in `lib/runner-async.ts`.
+- Migrations, including the `'legacy'` column default. `docs/plans/*` other than this file. `evals/`.
+- A test seam for the deleted stop-before-inference scenario.
+- Making `scripts/auth-check.ts` pass. It already expects leaderboard names the route no longer emits.
+
+### Acceptance criteria
+
+- L1. These files no longer exist: `lib/runner-session.ts`, `lib/monitor-orchestration.ts`, `lib/run-lifecycle.ts`, `lib/transcript-search.ts`, `scripts/monitor-calibrate.ts`, `scripts/control-eval-cases.ts`, `tests/integration/run-lifecycle-cases.ts`, `tests/integration/monitor-eval.test.ts`, `tests/monitor-investigation-cases.test.ts`. The `ReviewDecision` type moves to `lib/async-finalization.ts`. `loadVersion` and its `manifest` helper move to `lib/transcript-query.ts`.
+- L2. A prompt to a legacy run is refused. An integration test starts a run with `productionStartGame`, sets `monitor_mode='legacy'` and `submission_transport='tool'` by SQL and posts a prompt. It asserts status 410, the message, no session lease, no new event and no agent or monitor inference request. The model catalog request is allowed. The test is written first and fails before the implementation. `lib/runner.ts` no longer imports a legacy runner.
+- L3. These symbols no longer exist.
+  - `lib/monitor-review.ts`: `runMonitorReview`, `promptForReview`, `MonitorReviewResult`, and the `command` and `submission` variants of `MonitorTarget` with the command branch of `validateReviewScope`.
+  - `lib/monitor-evidence.ts`: `INVESTIGATOR_SYSTEM_PROMPT`, `createFinishReviewTool`, `InvalidFinishReviewDecision`, `validateRiskSignals`, `validateInitialContext`. `createInvestigatorAgent` in `lib/investigator-driver.ts` takes its system prompt as a required argument.
+  - `lib/monitor-tools.ts`: `createMonitorTools`, `makeInitialMonitorEvidence` and the paging, session-inventory and cursor code only they use.
+  - `lib/monitor-snapshot.ts`: `captureMonitorSnapshot`, `MAX_HISTORICAL_SESSIONS`.
+  - `lib/sessions.ts`: `createMonitorReview`, `MonitorReviewInput`, `admitMonitorCommand`, `completeMonitorCommand`, `persistSessionMessages`, `queueTranscriptReview`, `bindQueuedTranscriptReview`, `persistCommandResult`, and the non-async tail of `persistReviewedSessionMessages`.
+  - `lib/games.ts`: `chargeMonitor`, the `expireFinalizations` call in `cleanup`, and the branches of `reserveInference` that authorize a monitor call without a job claim.
+  - `lib/control.ts`: `MONITOR_VERSION`. A fixture that used it to mean "an old monitor that never ranks" uses a literal retired version string, so leaderboard assertions do not change. Other fixtures use `ASYNC_MONITOR_VERSION`.
+  - The `finalizationToken` and `pendingReviewId` options that only the legacy runner passed, in `lib/inference.ts`, `lib/monitor-classifier.ts` and `lib/monitor-review.ts`.
+- L4. A monitor call needs a job claim. `classifyMonitorTarget` takes only a transcript target, requires `jobClaim` and always reserves budget. `agentStream` with role `monitor` requires `jobClaim`. `runInvestigatorDriver` has no unbounded mode: `MONITOR_DEADLINE_MS` and the `boundedInference` option are gone and the bounded limits always apply. The production-mode scenarios in `tests/integration/flag-read-production.test.ts`, `flag-read-eval.test.ts` and `flag-read-baseline.test.ts` pass with their assertions unchanged.
+- L5. The worker path is unchanged in behaviour. `lib/monitor-worker.ts` changes only where a removed option or import forces it.
+- L6. Tests.
+  - `tests/integration/sprites.test.ts`: the legacy wrapper is gone and the rule above is applied. The developer's report has three lists: scenarios deleted whole with the reason, scenarios that lost assertions with the assertions named, and scenarios repaired. The scenarios "billing frames follow every recorded event" and its neighbour keep their SSE `billing` and `done` assertions. The agent retry, streaming, abort, resume, command adapter and idle expiration scenarios are kept. The scenario "sessions claim independently" uses `persistReviewedSessionMessages`. The system prompt scenario reads transcripts through the transcript-query tools or `reconstructTranscript`.
+  - `tests/monitor-review.test.ts` and `tests/monitor-tools.test.ts`: tests of removed symbols are deleted. Tests of the driver, chunking and visibility are kept and adapted to the bounded-only driver and the required system prompt.
+  - `tests/integration/async-backend.test.ts`: the scenarios that call the classifier without a budget reservation are deleted. The reserved scenarios move from the command target to the transcript target, and their expected request and charge counts drop by the command-only call.
+  - `tests/integration/transcript-evidence.test.ts`: assertions that only exercise `searchCommittedTranscripts`, `readCommittedTranscript`, `createCommittedEvidenceTools` or `makeInitialMonitorEvidence` are deleted. The manifest assertions for isolation stay. The isolation check that used literal search is re-expressed as a `query_transcripts` call through `createTranscriptInvestigationTools` on the isolated and the open snapshot.
+  - `tests/monitor-investigate-eval.test.ts`: only the `parseArguments` and `validateLiveConfig` assertions stay.
+  - `tests/control.test.ts` and `tests/integration/game-rules.test.ts` are unchanged.
+- L7. Scripts.
+  - `scripts/monitor-investigate-eval.ts` keeps `parseArguments`, `validateLiveConfig`, `EvaluationEnvironment` and `LiveEvaluationConfig`. `scripts/monitor-investigate-eval-live.ts` keeps `migrateFreshDatabase`, `seedWorkspace`, `loadReviewGame` and `SeededWorkspace`. `scripts/monitor-investigation-cases.ts` keeps `MonitorFixtureSnapshot` and what `seedWorkspace` needs. `runLiveEvaluation` and the legacy cases go.
+  - `scripts/auth-check.ts` and `scripts/budget-check.ts` no longer use `MONITOR_VERSION` and insert `monitor_mode='async'` rows.
+  - `scripts/smoke.ts`: pending the user's decision, see "Open decision". Brief C2 does not start on this file before that decision.
+- L8. `README.md`, `docs/verification.md` and the comment at the top of `lib/control.ts` no longer describe command blocking, the legacy monitor mode or the calibration script as current.
+- L9. `grep -rnE "runner-session|monitor-orchestration|run-lifecycle|transcript-search|runMonitorReview|finish_review|captureMonitorSnapshot|chargeMonitor|assertMonitorAuthorization|createMonitorTools|makeInitialMonitorEvidence|createMonitorReview|admitMonitorCommand|persistSessionMessages|MONITOR_DEADLINE_MS|search_transcripts|read_evidence|monitor-calibrate|control-eval-cases|MONITOR_VERSION\b" lib app scripts tests` returns nothing apart from `ASYNC_MONITOR_VERSION` and `FLAG_READ_MONITOR_VERSION`. Test fixtures that set `monitor_mode='legacy'` on purpose are expected.
+- Gates: G1 to G5 as in stage 1.
+
+### Open decision: live smoke
+
+`scripts/smoke.ts` is the gate run against live services before deployment. Its first section turns runs into legacy runs. That section also holds checks that are not about the legacy monitor: two isolated Sprites with ownership and the seed bugs reproducing, one Sprite shared by sessions with exclusive leases, live agent streaming that settles from streamed usage, and concurrent admission under both dollar caps. Those move to async runs and stay. The blocks that assert a synchronous review go, and the exhaustion tail moves to an async run.
+
+One check has no async equivalent today. The only place a real Jev call and a real investigator catch a real read is in that legacy section. The async section answers every model call with controlled replies. The user decides between two outcomes:
+
+1. Add a live path to the async section: a real read on an async run, then `runMonitorWorkerOnce`, then assert the run is caught. This keeps a live catch in the gate.
+2. Accept that live smoke no longer proves a real catch until the rebuild adds one.
+
+Either way the rewritten script is type-checked only until someone runs it live.
+
+### Steps
+
+1. Developer brief C1, tests only: remove the wrapper in `sprites.test.ts` and apply the rule. Delete or repair every scenario that calls a symbol on the L1 or L3 lists, so that brief C2 starts green. Delete the test files in L1 and apply L6. No file under `lib/`, `app/` or `scripts/` changes. Lead verifies and commits.
+2. Developer brief C2, source: L2 test first, then L1 to L5 and L7 to L9. Lead verifies, runs G1 to G5 and commits.
+3. Code review of the stage 2 delta. One corrective cycle if it finds P0 to P2 issues.
+
+### Risks and limits
+
+- Integration coverage that only legacy-protocol scenarios provided is lost. The developer's three lists are the record of what went.
+- `scripts/smoke.ts` is rewritten without being run. A live smoke run is required before deployment.
+- A legacy run that is still open at deploy time can no longer be continued. `cleanup` ends it 24 hours after its last update.
+- The `monitor_mode` column still defaults to `'legacy'`. A row inserted without the column cannot be played. `startGame` sets `'async'` explicitly.
 
 ## Evidence
 
@@ -155,3 +238,4 @@ Not started and not yet specified. The user decided on 2026-11-18 to delete the 
   - Corrective cycle verified by the lead: `npm run check` 360 of 360, `npm run test:integration` 315 of 315, `npm run build` exit 0. Logs: `fix-check.log`, `fix-integration.log`, `fix-build.log`.
 - Re-review, 2026-11-18, same reviewer over `9657348..3f8c2b2`: ship. No P0 to P2 finding remains. It traced the smoke fix through the fixture in live and messages-only mode and the owner's run quota, and repeated the mutation run on the leaderboard test. Remaining notes are P3 and need no action.
 - Stage 1 final status: F1 to F10 and F12 met. F11 not met: the stop-before-inference scenario is deleted and the user decides whether a test seam is added. P1 to P7 met. G1 to G5 met. Checkpoints: `dec9a7c`, `f7de980`, `3f8c2b2`. A live smoke run is required before deployment and has not been run.
+- Stage 2 plan verification, 2026-11-18: approve with changes. The verifier confirmed the deletion lists, the `claimSession` placement for L2, that `lib/run-lifecycle.ts` and `lib/transcript-search.ts` can go whole, that no file under `app/` imports a removed symbol, and that the eval harness already calls the monitor under real job claims. Its findings are folded in: the test rule removes legacy assertions and keeps live scenarios, brief C1 also handles direct callers of removed symbols, the `MONITOR_VERSION` fixture rule keeps "never ranks" fixtures on a retired literal, `async-backend` moves to the transcript target, L7 names the exports that stay, and the smoke script becomes an open decision for the user. The lead treats the contract as approved for brief C1.
