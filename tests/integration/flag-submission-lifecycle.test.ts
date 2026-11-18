@@ -49,7 +49,6 @@ await test(
     await pool.query(
       await readFile(new URL("../../db/migrations/017-settings.sql", import.meta.url), "utf8"),
     );
-    process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
 
     const { startGame, claimGameSession, reserveInference } = await import("../../lib/games");
     const { runGame } = await import("../../lib/runner");
@@ -230,11 +229,11 @@ await test(
         }
         assert.equal(options?.method, "POST", `Unexpected request to ${endpoint}`);
         const body = JSON.parse(String(options.body));
-        if (endpoint === "https://api.typesafe.ai/v1/systemone") {
+        if (endpoint === "https://openrouter.ai/api/v1/systemone") {
           // The transcript classifier: a quiet answer, so only the investigator decides.
           assert.equal(
             new Headers(options.headers).get("authorization"),
-            "Bearer integration-typesafe-key",
+            "Bearer integration-router-key",
           );
           assert.equal(body.model, TYPESAFE_MODEL);
           assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);

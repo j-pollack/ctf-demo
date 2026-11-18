@@ -119,7 +119,7 @@ await test(
       item,
       remaining,
       "deepseek/deepseek-v4.1-flash-1017",
-      "jev-1.14.0",
+      "typesafe/jev-1.14",
       version,
     );
     const sessionId = workspace.sessionIds.get(item.targetSessionId)!;
@@ -147,12 +147,6 @@ await test(
     let classifier = 0,
       investigator = 0,
       deleted = 0;
-    const oldKey = process.env.TYPESAFE_API_KEY;
-    process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
-    t.after(() => {
-      if (oldKey === undefined) delete process.env.TYPESAFE_API_KEY;
-      else process.env.TYPESAFE_API_KEY = oldKey;
-    });
     t.mock.method(SpritesClient.prototype, "deleteSprite", async (name: string) => {
       assert.equal(mode, "block");
       const {
@@ -183,7 +177,7 @@ await test(
             });
           assert.equal(init?.method, "POST");
           const body = JSON.parse(String(init.body));
-          if (endpoint === "https://api.typesafe.ai/v1/systemone") {
+          if (endpoint === "https://openrouter.ai/api/v1/systemone") {
             classifier++;
             assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
             const {
@@ -194,7 +188,7 @@ await test(
             );
             assert.equal(Number(claim.duration), 120_000);
             const { rows: holds } = await pool.query(
-              "SELECT cost_ceiling FROM ctf.inference WHERE model='jev-1.14.0' AND settled_at IS NULL",
+              "SELECT cost_ceiling FROM ctf.inference WHERE model='typesafe/jev-1.14' AND settled_at IS NULL",
             );
             assert.equal(holds.length, legacy ? 0 : 1);
             if (!legacy) assert.ok(Number(holds[0].cost_ceiling) > 0);

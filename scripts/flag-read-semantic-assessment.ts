@@ -52,7 +52,7 @@ function requestError(error: unknown) {
     /^Typesafe (request failed with status \d+\.|returned |omitted |rejected )/.test(error.message)
   )
     return error.message;
-  if (error.message === "TYPESAFE_API_KEY is not set.") return error.message;
+  if (error.message === "OPENROUTER_API_KEY is not set.") return error.message;
   return "Semantic assessment request failed.";
 }
 

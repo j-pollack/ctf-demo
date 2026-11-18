@@ -48,14 +48,10 @@ await test(
     databaseUrl.pathname = `/${databaseName}`;
 
     const oldRouterKey = process.env.OPENROUTER_API_KEY;
-    const oldTypesafeKey = process.env.TYPESAFE_API_KEY;
     process.env.OPENROUTER_API_KEY = "integration-router-key";
-    process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
     t.after(() => {
       if (oldRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = oldRouterKey;
-      if (oldTypesafeKey === undefined) delete process.env.TYPESAFE_API_KEY;
-      else process.env.TYPESAFE_API_KEY = oldTypesafeKey;
     });
 
     let typesafeCalls = 0;
@@ -94,18 +90,18 @@ await test(
       async (input: string | URL | Request, init?: RequestInit) => {
         init?.signal?.throwIfAborted();
         const url = String(input);
-        if (url === "https://api.typesafe.ai/v1/systemone") {
+        if (url === "https://openrouter.ai/api/v1/systemone") {
           assert.equal(init?.method, "POST");
           assert.equal(
             new Headers(init?.headers).get("authorization"),
-            "Bearer integration-typesafe-key",
+            "Bearer integration-router-key",
           );
           const body = JSON.parse(String(init?.body)) as {
             model: string;
             questions: Record<string, unknown>;
             state: unknown;
           };
-          assert.equal(body.model, "jev-1.14.0");
+          assert.equal(body.model, "typesafe/jev-1.14");
           const keys = Object.keys(body.questions).sort().join(",");
           assert.ok(["intent,suspicion", "reads_now,stages_indirect"].includes(keys));
           typesafeCalls++;
@@ -381,7 +377,7 @@ await test(
     assert.equal(report.totals.errors, 4);
     assert.equal(report.totals.budgetExceeded, false);
     assert.ok(entries.every((entry) => entry.investigatorModel === "z-ai/glm-5.3"));
-    assert.ok(entries.every((entry) => entry.classifierModel === "jev-1.14.0"));
+    assert.ok(entries.every((entry) => entry.classifierModel === "typesafe/jev-1.14"));
     assert.ok(
       entries.every(
         (entry) => entry.monitorVersion === "investigator-v4-glm53-jev114-policy-delivery",

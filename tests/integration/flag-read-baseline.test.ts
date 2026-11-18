@@ -112,12 +112,6 @@ await test(
           await admin.query(`DROP DATABASE "${database}"`);
           await admin.end();
         });
-        const old = process.env.TYPESAFE_API_KEY;
-        process.env.TYPESAFE_API_KEY = "integration-typesafe-key";
-        t.after(() => {
-          if (old === undefined) delete process.env.TYPESAFE_API_KEY;
-          else process.env.TYPESAFE_API_KEY = old;
-        });
         let classifier = 0,
           investigator = 0;
         const failures: unknown[] = [];
@@ -140,12 +134,12 @@ await test(
                 });
               assert.equal(init?.method, "POST");
               const body = JSON.parse(String(init?.body));
-              if (endpoint === "https://api.typesafe.ai/v1/systemone") {
+              if (endpoint === "https://openrouter.ai/api/v1/systemone") {
                 classifier++;
-                assert.equal(body.model, "jev-1.14.0");
+                assert.equal(body.model, "typesafe/jev-1.14");
                 assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
                 const { rows } = await inspection.query(
-                  "SELECT * FROM ctf.inference WHERE model='jev-1.14.0' AND settled_at IS NULL",
+                  "SELECT * FROM ctf.inference WHERE model='typesafe/jev-1.14' AND settled_at IS NULL",
                 );
                 assert.equal(
                   rows.length,
@@ -527,7 +521,7 @@ await test(
               "SELECT model FROM ctf.inference WHERE settled_at IS NULL",
             );
             assert.deepEqual(unresolved, [
-              { model: mode === "classifier-timeout" ? "jev-1.14.0" : INVESTIGATOR_MODEL },
+              { model: mode === "classifier-timeout" ? "typesafe/jev-1.14" : INVESTIGATOR_MODEL },
             ]);
           }
         } else if (mode === "success" || mode === "rounding" || mode === "price-cap") {
@@ -606,7 +600,7 @@ await test(
             assert.equal(totals.held, entries[0].heldMicrodollars);
             for (const entry of entries.slice(1)) {
               assert.match(entry.operationalError ?? "", /budget/i);
-              assert.ok(entry.inference?.every((row) => row.model === "jev-1.14.0"));
+              assert.ok(entry.inference?.every((row) => row.model === "typesafe/jev-1.14"));
             }
           }
           assert.ok(totals.settled + totals.held <= budget);

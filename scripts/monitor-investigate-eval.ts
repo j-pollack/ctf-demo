@@ -14,7 +14,6 @@ export type EvaluationEnvironment = {
   [key: string]: string | undefined;
   CTF_INTEGRATION_DATABASE_URL?: string | undefined;
   OPENROUTER_API_KEY?: string | undefined;
-  TYPESAFE_API_KEY?: string | undefined;
 };
 
 export type LiveEvaluationConfig = {
@@ -106,10 +105,8 @@ export function validateLiveConfig(
 ): LiveEvaluationConfig {
   if (options.mode !== "live" || options.budgetMicrodollars === undefined)
     throw new Error("Live evaluation requires --live and a total budget.");
-  if (!env.OPENROUTER_API_KEY || !env.TYPESAFE_API_KEY)
-    throw new Error(
-      "Live evaluation requires OPENROUTER_API_KEY and TYPESAFE_API_KEY in the process environment.",
-    );
+  if (!env.OPENROUTER_API_KEY)
+    throw new Error("Live evaluation requires OPENROUTER_API_KEY in the process environment.");
   const raw = env.CTF_INTEGRATION_DATABASE_URL;
   if (!raw) throw new Error("Live evaluation requires CTF_INTEGRATION_DATABASE_URL.");
   let database: URL;

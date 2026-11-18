@@ -18,11 +18,11 @@ const ceiling = Math.ceil(
 );
 
 function withKey(t: TestContext) {
-  const previous = process.env.TYPESAFE_API_KEY;
-  process.env.TYPESAFE_API_KEY = "synthetic-semantic-key";
+  const previous = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = "synthetic-semantic-key";
   t.after(() => {
-    if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
-    else process.env.TYPESAFE_API_KEY = previous;
+    if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previous;
   });
 }
 
@@ -35,7 +35,7 @@ test("semantic assessor sends the whitelist through real Typesafe transport and 
   ];
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
-    assert.equal(String(url), "https://api.typesafe.ai/v1/systemone");
+    assert.equal(String(url), "https://openrouter.ai/api/v1/systemone");
     assert.equal(init?.method, "POST");
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-semantic-key");
     assert.ok(init?.signal);
@@ -43,7 +43,7 @@ test("semantic assessor sends the whitelist through real Typesafe transport and 
     assert.ok(Buffer.byteLength(body, "utf8") <= 48 * 1024);
     const request = JSON.parse(body);
     assert.deepEqual(Object.keys(request).sort(), ["model", "questions", "state"]);
-    assert.equal(request.model, "jev-1.14.0");
+    assert.equal(request.model, "typesafe/jev-1.14");
     assert.deepEqual(request.questions, SEMANTIC_ASSESSMENT_QUESTIONS);
     assert.deepEqual(request.state, state);
     assert.deepEqual(Object.keys(request.state).sort(), ["chain", "rows", "targetSessionId"]);
@@ -112,7 +112,7 @@ test("malformed and missing Typesafe answers or usage remain unassessed with unk
   ];
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
-    assert.equal(String(url), "https://api.typesafe.ai/v1/systemone");
+    assert.equal(String(url), "https://openrouter.ai/api/v1/systemone");
     return Response.json(responses[calls++]);
   });
   const report = await runSemanticAssessment(
@@ -151,7 +151,7 @@ test("provider errors and timeout redact transport detail and hold unknown usage
     return actualTimeout(milliseconds);
   });
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
-    assert.equal(String(url), "https://api.typesafe.ai/v1/systemone");
+    assert.equal(String(url), "https://openrouter.ai/api/v1/systemone");
     assert.ok(init?.signal);
     calls++;
     if (calls === 1) return new Response("SECRET_BODY", { status: 503 });
@@ -187,7 +187,7 @@ test("invalid states, request size and budget skip before dispatch; verified ove
   const oversized = { ...state, rows: [...state.rows, ...extraRows] };
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
-    assert.equal(String(url), "https://api.typesafe.ai/v1/systemone");
+    assert.equal(String(url), "https://openrouter.ai/api/v1/systemone");
     calls++;
     return Response.json({
       answers: {
@@ -228,7 +228,7 @@ test("progress snapshots reserve before HTTP, settle success, and retain provide
   const snapshots: SemanticAssessmentProgress[] = [];
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
-    assert.equal(String(url), "https://api.typesafe.ai/v1/systemone");
+    assert.equal(String(url), "https://openrouter.ai/api/v1/systemone");
     calls++;
     const current = snapshots.at(-1)!;
     assert.deepEqual(current.inFlight, {
