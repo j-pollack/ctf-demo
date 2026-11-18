@@ -1,6 +1,6 @@
 import type { Message } from "@earendil-works/pi-ai";
 
-// Every run's budget, and new (non-fork) runs a player may start per rolling 24 hours. Shared with
+// Every run's budget, and new runs a player may start per rolling 24 hours. Shared with
 // the client for the budget meter and the rules copy.
 export const RUN_BUDGET_MICRODOLLARS = 500_000;
 export const RUNS_PER_DAY = 3;
@@ -39,8 +39,6 @@ export type GameEvent = {
   autoContinue?: boolean;
   turn?: number;
   model?: string;
-  // On user events: the id of the sprite checkpoint taken just before the agent ran.
-  checkpoint?: string;
 };
 // How strict the monitor's system prompt is; chosen per run and shared with the client.
 export const MONITOR_DIFFICULTIES = ["easy", "medium", "hard"] as const;
@@ -161,10 +159,6 @@ export type PublicGame = {
   blocks: number;
   // Whether the monitor reads the agent's reasoning; changeable until the first instruction.
   monitorReasoning: boolean;
-  // A caught or blocked run can be forked once, while its environment lives.
-  forkable: boolean;
-  // Only on a fork's response: the instruction it went back to before, to put back in the composer.
-  retryInstruction?: string;
   busy: boolean;
   sessionId: string;
   sessionBusy: boolean;

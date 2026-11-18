@@ -28,7 +28,7 @@ import { completeAsyncCommand, dispatchAsyncCommand } from "./monitor-commands";
 import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
 import { configuredFlagEndpoint } from "./flag-submission-protocol";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
-import { checkpointEnvironment, executeCommand, SPRITE_WORKDIR } from "./sprites";
+import { executeCommand, SPRITE_WORKDIR } from "./sprites";
 import { repairMessages } from "./transcript-repair";
 import type { GameEvent } from "./types";
 
@@ -57,7 +57,6 @@ export async function runAsyncGame(
   let directory: string | undefined;
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   let failure: unknown;
-  let checkpoint: string | undefined;
   let phase = "";
   let heartbeatBusy = false;
   let receiptReceived = false;
@@ -367,8 +366,7 @@ export async function runAsyncGame(
               generation,
             );
             if (turnsDelta) game.turns++;
-            if (message.role === "user")
-              await emit({ kind: "user", text: textOf(message), checkpoint });
+            if (message.role === "user") await emit({ kind: "user", text: textOf(message) });
             if (message.role === "assistant" && turnsDelta) {
               const commands = message.content.flatMap((part) =>
                 part.type === "toolCall" && part.name === "sprite_exec"
@@ -395,11 +393,6 @@ export async function runAsyncGame(
     });
     if (signal.aborted) throw new Error("Response stopped.");
     await assertLease(game);
-    const { rows: count } = await db.query<{ total: number }>(
-      "SELECT count(*)::int AS total FROM ctf.agent_sessions WHERE game_id=$1",
-      [game.id],
-    );
-    if ((count[0]?.total ?? 0) === 1) checkpoint = await checkpointEnvironment(game.sprite_name);
     await session.agent.prompt(instructionMessage(prompt, game.system_prompt));
     await persistence;
     if (failure && game.status === "active") throw failure;

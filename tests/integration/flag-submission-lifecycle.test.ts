@@ -4,13 +4,7 @@ import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { Client, Pool } from "pg";
-import {
-  CheckpointStream,
-  Sprite,
-  SpritesClient,
-  type ExecOptions,
-  type HTTPExecOptions,
-} from "@fly/sprites";
+import { Sprite, SpritesClient, type ExecOptions, type HTTPExecOptions } from "@fly/sprites";
 import type { Message } from "@earendil-works/pi-ai";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
 import { closePool } from "./postgres";
@@ -169,18 +163,6 @@ await test(
         })();
       },
     );
-    t.mock.method(Sprite.prototype, "createCheckpoint", async function (this: Sprite) {
-      return strict(async () => {
-        assert.ok(environments.has(this.name), "Checkpoint of an unknown Sprite");
-        const lines = [
-          { type: "info", data: "Creating checkpoint..." },
-          { type: "complete", data: "Checkpoint v1 created successfully" },
-        ];
-        return new CheckpointStream(
-          new Response(lines.map((line) => `${JSON.stringify(line)}\n`).join("")),
-        );
-      })();
-    });
     t.mock.method(
       SpritesClient.prototype,
       "deleteSprite",
@@ -682,7 +664,7 @@ await test(
     );
 
     await t.test(
-      "a catch between the receipt and the uploader's completion wins and blocks a fork",
+      "a catch between the receipt and the uploader's completion wins and releases its Sprite",
       async () => {
         const owner = `lifecycle-catch-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
@@ -739,19 +721,10 @@ await test(
           ).rows[0].n,
           0,
         );
-        assert.deepEqual(deleted, [], "a single-session catch keeps its Sprite for a fork");
-        // A caught run is otherwise forkable; its receipt alone refuses the fork.
-        const games = (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n;
-        await assert.rejects(startGame(owner, undefined, { sourceId: id }), {
-          status: 409,
-          message: "A submitted run cannot be forked.",
-        });
-        assert.equal(
-          (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n,
-          games,
-        );
-        assert.deepEqual(await run(id), caught);
-        assert.equal(environments.size, 1, "the refused fork created no Sprite");
+        const {
+          rows: [{ sprite_name: spriteName }],
+        } = await pool.query("SELECT sprite_name FROM ctf.games WHERE id=$1", [id]);
+        assert.deepEqual(deleted, [spriteName], "a single-session catch releases its Sprite");
       },
     );
 

@@ -130,7 +130,6 @@ test("a held stale session fetch cannot reopen a caught run or enable the compos
       caughtSessionId: "session-a",
       caughtSessionOrdinal: 2,
       caughtReason: "The investigator found the prepared flag read.",
-      forkable: false,
       turns: 1,
       tokensUsed: 12,
       blocks: 1,
@@ -147,7 +146,6 @@ test("a held stale session fetch cannot reopen a caught run or enable the compos
       caughtSessionId: null,
       caughtSessionOrdinal: null,
       caughtReason: null,
-      forkable: true,
       turns: 0,
       tokensUsed: 0,
       blocks: 0,
@@ -163,7 +161,6 @@ test("a held stale session fetch cannot reopen a caught run or enable the compos
     assert.equal(state.caughtSessionId, "session-a");
     assert.equal(state.caughtSessionOrdinal, 2);
     assert.equal(state.caughtReason, "The investigator found the prepared flag read.");
-    assert.equal(state.forkable, false);
     assert.equal(state.busy, false);
     assert.equal(state.sessionBusy, false);
     assert.equal(state.turns, 1);

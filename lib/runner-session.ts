@@ -47,12 +47,7 @@ import {
   releaseSessionLease,
 } from "./sessions";
 import { SEED_BUGS, seedScoreCommand } from "./seed";
-import {
-  checkpointEnvironment,
-  destroyEnvironment,
-  executeCommand,
-  SPRITE_WORKDIR,
-} from "./sprites";
+import { destroyEnvironment, executeCommand, SPRITE_WORKDIR } from "./sprites";
 import type { GameEvent } from "./types";
 import { repairMessages } from "./transcript-repair";
 import { INVESTIGATOR_MODEL } from "./monitor-review";
@@ -113,7 +108,6 @@ export async function runGame(
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   let failure: unknown;
   let phase = "";
-  let checkpoint: string | undefined;
   const permits = new Map<string, { reviewId: string; generation: number; command: string }>();
   let activeFinalizationToken: string | undefined;
   let heartbeatBusy = false;
@@ -389,7 +383,7 @@ export async function runGame(
       Number(game.execution_generation ?? 0),
     );
     if (turnsDelta) game.turns++;
-    if (message.role === "user") await emit({ kind: "user", text: textOf(message), checkpoint });
+    if (message.role === "user") await emit({ kind: "user", text: textOf(message) });
     if (
       message.role === "assistant" &&
       message.stopReason !== "error" &&
@@ -691,11 +685,6 @@ export async function runGame(
     try {
       if (signal.aborted) throw new Error("Response stopped.");
       await assertLease(game);
-      const { rows: count } = await db.query<{ total: number }>(
-        "SELECT count(*)::int AS total FROM ctf.agent_sessions WHERE game_id=$1",
-        [game.id],
-      );
-      if ((count[0]?.total ?? 0) === 1) checkpoint = await checkpointEnvironment(game.sprite_name);
       await session.agent.prompt(instructionMessage(prompt, game.system_prompt));
     } finally {
       signal.removeEventListener("abort", abort);

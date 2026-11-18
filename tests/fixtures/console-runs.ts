@@ -51,7 +51,6 @@ export function run(sessions: SessionSummary[], overrides: Partial<PublicGame> =
     turns: sessions.reduce((total, item) => total + item.turns, 0),
     blocks: 0,
     monitorReasoning: true,
-    forkable: false,
     busy: false,
     sessionId: first.id,
     sessionBusy: first.busy,

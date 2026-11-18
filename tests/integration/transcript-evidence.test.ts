@@ -9,7 +9,6 @@ import {
   persistTranscriptEvidence,
   reconstructTranscript,
 } from "../../lib/transcript-evidence";
-import { stripInheritedHiddenReasoning } from "../../lib/fork-transcript";
 
 const parentURL = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(parentURL.hostname, "127.0.0.1");
@@ -407,70 +406,7 @@ test(
       } finally {
         emptyClient.release();
       }
-      const parentId = randomUUID();
-      const childId = randomUUID();
-      const hidden = "legacy parent private thought";
-      const fresh = "new child visible thought";
-      const inherited = [
-        {
-          role: "assistant",
-          content: [
-            { type: "thinking", thinking: hidden, thinkingSignature: "secret-signature" },
-            { type: "text", text: "public inherited step" },
-          ],
-          timestamp: 1,
-        },
-      ] as unknown as Message[];
-      const safeCopy = stripInheritedHiddenReasoning(inherited);
-      await insert(parentId, owner, inherited);
-      await pool.query("UPDATE ctf.games SET monitor_reasoning=false WHERE id=$1", [parentId]);
-      await insert(childId, owner, safeCopy);
-      const childClient = await pool.connect();
-      try {
-        await childClient.query("BEGIN");
-        await persistTranscriptEvidence(childClient, {
-          gameId: parentId,
-          sessionId: parentId,
-          runRevision: 0,
-          messages: inherited,
-        });
-        await persistTranscriptEvidence(childClient, {
-          gameId: childId,
-          sessionId: childId,
-          runRevision: 0,
-          messages: safeCopy,
-        });
-        await persistTranscriptEvidence(childClient, {
-          gameId: childId,
-          sessionId: childId,
-          runRevision: 1,
-          messages: [
-            ...safeCopy,
-            {
-              role: "assistant",
-              content: [{ type: "thinking", thinking: fresh }],
-              timestamp: 2,
-            } as Message,
-          ],
-        });
-        await childClient.query("COMMIT");
-      } finally {
-        childClient.release();
-      }
-      const childSnapshot = await captureCommittedMonitorSnapshot({
-        gameId: childId,
-        sessionId: childId,
-        epoch: 1,
-        targetVersion: 2,
-      });
       const { makeInitialMonitorEvidence } = await import("../../lib/monitor-tools");
-      const initial = makeInitialMonitorEvidence(childSnapshot, childId, {
-        includeReasoning: true,
-      });
-      assert.ok(!JSON.stringify(initial).includes(hidden));
-      assert.ok(JSON.stringify(initial).includes(fresh));
-      assert.equal((await searchCommittedTranscripts(childSnapshot, hidden, true)).length, 0);
-      assert.equal((await searchCommittedTranscripts(childSnapshot, fresh, true)).length, 1);
       const toolId = randomUUID();
       const argumentsWithPunctuation = {
         "10": "ten",

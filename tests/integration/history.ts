@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { Pool } from "pg";
 
@@ -92,7 +92,6 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       [ids],
     );
     const actualModel = MODELS[1];
-    const otherModel = MODELS.find((model) => model !== actualModel)!;
     await pool.query("UPDATE ctf.agent_sessions SET agent_model=$2 WHERE game_id=$1", [
       ids[1],
       actualModel,
@@ -339,54 +338,6 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     );
     assert.equal((await board.json()).entries.length, 1);
 
-    const mixedOwner = randomUUID(),
-      mixedParent = randomUUID(),
-      mixedChild = randomUUID();
-    await pool.query(
-      `INSERT INTO ctf."user"(id,name,email,"emailVerified","isAnonymous","createdAt","updatedAt")
-       VALUES($1,$1,$2,true,false,now(),now())`,
-      [mixedOwner, `${mixedOwner}@example.invalid`],
-    );
-    await pool.query(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
-        token_budget,status,monitor_difficulty,forked_from)
-       VALUES($1::uuid,$2::uuid,($1::uuid)::text,'hash',$4,'monitor',$6,100,'ended',$5,NULL),
-             ($3::uuid,$2::uuid,($3::uuid)::text,'hash',$4,'monitor',$6,100,'captured',$5,$1::uuid)`,
-      [
-        mixedParent,
-        mixedOwner,
-        mixedChild,
-        actualModel,
-        difficultyOf(ids[1]),
-        ASYNC_MONITOR_VERSION,
-      ],
-    );
-    await pool.query(
-      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
-       VALUES($1,$1,1,$3,'medium',''),($2,$2,1,$4,'medium','')`,
-      [mixedParent, mixedChild, actualModel, otherModel],
-    );
-    await pool.query(
-      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,session_id)
-       VALUES($1,$2,$3,'agent',$4,100,0,$2),($5,$6,$3,'agent',$7,100,0,$6)`,
-      [randomUUID(), mixedParent, legacyDay, actualModel, randomUUID(), mixedChild, otherModel],
-    );
-    const mixedBoard = await leaderboard(
-      new Request(`http://localhost/api/leaderboard?agent=${encodeURIComponent(actualModel)}`),
-    );
-    const mixedEntries = (await mixedBoard.json()).entries;
-    assert.equal(
-      mixedEntries.length,
-      1,
-      "a fork that used multiple models is not attributed to either",
-    );
-    assert.ok(
-      mixedEntries.every(
-        (entry: { name: string }) =>
-          entry.name !==
-          `Player ${createHash("sha256").update(mixedOwner).digest("hex").slice(0, 6)}`,
-      ),
-    );
-    assert.equal((await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count, "25");
+    assert.equal((await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count, "23");
   });
 }

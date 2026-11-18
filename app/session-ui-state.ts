@@ -57,7 +57,6 @@ export function preserveTerminalRunState(current: PublicGame, next: PublicGame):
     busy: current.busy,
     sessionBusy: current.sessionBusy,
     sessions: current.sessions,
-    forkable: current.forkable,
     tokenBudget: current.tokenBudget,
     tokensUsed: current.tokensUsed,
     budgetMicrodollars: current.budgetMicrodollars,

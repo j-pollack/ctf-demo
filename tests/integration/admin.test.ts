@@ -311,33 +311,18 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     ],
   );
 
-  // A fork inherits its parent's spend and turns: count it as a run, but sum those once. Blocks
-  // are each run's own, so they sum over every run.
-  const base = (await adminStats()).totals;
   const parentRun = await game("m2", "blocked", 400_000, 0, 3, 1);
   const childRun = await game("m2", "captured", 700_000, 0, 5, 0);
-  await pool.query(
-    "UPDATE ctf.games SET agent_model=$3,forked_from=CASE WHEN id=$2 THEN $1::uuid END WHERE id IN ($1,$2)",
-    [parentRun, childRun, MODELS[0]],
-  );
+  await pool.query("UPDATE ctf.games SET agent_model=$2 WHERE id IN ($1,$3)", [
+    parentRun,
+    MODELS[0],
+    childRun,
+  ]);
   await pool.query(
     `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
     VALUES($1,$2,(now() AT TIME ZONE 'UTC')::date,'agent','other/model',10,10,10,400000,now())`,
     [randomUUID(), parentRun],
   );
-  const forked = await adminStats();
-  assert.deepEqual(
-    {
-      runs: forked.totals.runs - base.runs,
-      captures: forked.totals.captures - base.captures,
-      spend: forked.totals.spend - base.spend,
-      turns: forked.totals.turns - base.turns,
-      blocks: forked.totals.blocks - base.blocks,
-    },
-    { runs: 2, captures: 1, spend: 700_000, turns: 5, blocks: 1 },
-  );
-  assert.equal(forked.outcomes.find((x) => x.status === "blocked")?.spend, 0);
-  assert.equal(forked.spenders.find((x) => x.who === "two@example.invalid")?.spend, 700_000);
 
   await user("m3", "three@example.invalid", false, "2026-09-04T00:00:00Z");
   // Runs against another monitor model and difficulty; one against an old monitor version never ranks.
@@ -358,7 +343,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
         x.spend,
       ]),
       [
-        ["mon/a", "hard", 6, 3, 5_000_000],
+        ["mon/a", "hard", 6, 3, 5_400_000],
         ["mon/a", "easy", 1, 1, 400_000],
         ["mon/b", "hard", 1, 1, 500_000],
         ["mon/c", "hard", 1, 1, 300_000],
@@ -367,7 +352,6 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   });
 
   await t.test("the leaderboard ranks hard runs only, current monitor only", async () => {
-    // The agent filter looks at the whole lineage's inference, not just the last run.
     const { GET } = await import("../../app/api/leaderboard/route");
     const get = async (query: string) =>
       (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()) as {
@@ -387,12 +371,6 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     const body = await get("");
     assert.ok(!("seasons" in body) && !("currentSeasonId" in body));
     assert.equal(body.entries.find((x) => x.spend === 700_000)?.monitor_reasoning, true);
-    // The agent filter excludes a lineage that used another agent model for any turn.
-    const mine = async (agent: string) =>
-      (await spends(`?agent=${encodeURIComponent(agent)}`)).filter((x) => x === 700_000);
-    assert.equal(await mine(MODELS[0]).then((x) => x.length), 0);
-    await pool.query("UPDATE ctf.inference SET model=$2 WHERE game_id=$1", [parentRun, MODELS[0]]);
-    assert.equal(await mine(MODELS[0]).then((x) => x.length), 1);
   });
 
   await t.test(

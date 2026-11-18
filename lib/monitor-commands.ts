@@ -120,7 +120,7 @@ export async function dispatchAsyncCommand(input: {
       throw new GameError("This response has stopped.", 409);
     const { rowCount: exclusive } = await client.query(
       `SELECT 1 FROM ctf.sprite_operations WHERE sprite_name=$1
-       AND kind IN ('score','restore','delete') AND status IN ('running','unknown') LIMIT 1`,
+       AND kind IN ('score','delete') AND status IN ('running','unknown') LIMIT 1`,
       [run.sprite_name],
     );
     if (exclusive) throw new GameError("The environment is being finalized.", 409);
@@ -237,7 +237,7 @@ export async function completeAsyncCommand(input: {
 export async function beginExclusiveSpriteOperation(input: {
   spriteName: string;
   gameId: string;
-  kind: "score" | "restore" | "delete";
+  kind: "score" | "delete";
 }) {
   return transaction(async (client) => {
     await lockSprite(client, input.spriteName);
@@ -278,11 +278,7 @@ export async function deleteSpriteIfEligible(spriteName: string) {
     const {
       rows: [eligible],
     } = await client.query<{ okay: boolean }>(
-      `SELECT bool_and(g.status IN ('captured','exhausted','ended')
-         OR (g.status='caught' AND (SELECT count(*) FROM ctf.agent_sessions s WHERE s.game_id=g.id)>1)
-         OR (g.status IN ('blocked','caught') AND
-           (g.updated_at<now()-interval '25 hours' OR
-             EXISTS(SELECT 1 FROM ctf.games c WHERE c.forked_from=g.id)))) AS okay
+      `SELECT bool_and(g.status IN ('captured','exhausted','ended','blocked','caught')) AS okay
        FROM ctf.games g WHERE g.sprite_name=$1`,
       [spriteName],
     );

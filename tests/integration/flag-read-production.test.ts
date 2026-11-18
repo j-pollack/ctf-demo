@@ -470,7 +470,15 @@ await test(
     );
     assert.equal(game.monitor_version, version);
     assert.equal(game.status, mode === "block" ? "caught" : "active");
-    assert.equal(deleted, 0, "a single-session caught run remains forkable");
+    assert.equal(
+      deleted,
+      mode === "block" ? 1 : 0,
+      "a caught single-session run's Sprite is deleted in the same worker pass",
+    );
+    const {
+      rows: [spriteRow],
+    } = await pool.query("SELECT sprite_deleted_at FROM ctf.games WHERE id=$1", [workspace.gameId]);
+    assert.equal(spriteRow.sprite_deleted_at !== null, mode === "block");
     assert.equal(
       game.spent,
       mode === "overrun"
