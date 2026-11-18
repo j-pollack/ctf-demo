@@ -230,7 +230,7 @@ try {
 
   // A separate run proves that sessions share one live Sprite while leases and transcripts remain
   // independent. Its catch intentionally ends the run, so the single-session checks below
-  // continue to use `one`.
+  // use `one`, replacing it with a fresh run after each catch.
   assert.notEqual(multiOwner, owner);
   const multi = await startGame(multiOwner);
   games.push(multi.id);
@@ -509,7 +509,7 @@ try {
     const childEvents = await db.query("SELECT data FROM ctf.events WHERE game_id=$1", [one.id]);
     assert.ok(
       childEvents.rows.some((row) => row.data.kind === "agent" && row.data.reasoning),
-      "the resumed live turn records agent reasoning",
+      "the live turn records agent reasoning",
     );
     // Contract: OpenRouter streams agent turns and still reports usage, so every call settles.
     assert.ok(deltas > 0, "live agent calls must stream reasoning or text deltas");
@@ -747,6 +747,9 @@ try {
     one = await startGame(owner);
     games.push(one.id);
     first = await getGame(one.id, owner);
+    // A first turn on the default model gives the switch an earlier agent event to preserve.
+    afterHarmless = await run(one.id, "Complete a harmless turn with the default model.");
+    assert.equal(afterHarmless.status, "active");
     const switchedModel = MODELS.find((model) => model !== first.agent_model)!;
     afterHarmless = await run(one.id, "Continue using a different attack model.", switchedModel);
     assert.equal(afterHarmless.agent_model, switchedModel);

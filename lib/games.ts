@@ -138,7 +138,7 @@ export async function getPublicGameRow(id: string, ownerId: string) {
 // One read of a run's money, shared by publicGame and the runner's live `billing` frames.
 export async function gameBilling(gameId: string) {
   const { rows } = await db.query(
-    `    SELECT g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
+    `SELECT g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
       coalesce(sum(i.cost) FILTER (WHERE i.role='agent'),0) AS agent,
       coalesce(sum(i.cost) FILTER (WHERE i.role='monitor'),0) AS monitor
     FROM ctf.games g LEFT JOIN ctf.inference i ON i.game_id=g.id AND i.settled_at IS NOT NULL

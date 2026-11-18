@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { Pool } from "pg";
 
@@ -338,6 +338,48 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     );
     assert.equal((await board.json()).entries.length, 1);
 
-    assert.equal((await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count, "23");
+    const mixedOwner = randomUUID(),
+      mixedGame = randomUUID(),
+      otherModel = MODELS.find((model) => model !== actualModel)!;
+    await pool.query(
+      `INSERT INTO ctf."user"(id,name,email,"emailVerified","isAnonymous","createdAt","updatedAt")
+       VALUES($1,$1,$2,true,false,now(),now())`,
+      [mixedOwner, `${mixedOwner}@example.invalid`],
+    );
+    await pool.query(
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+        token_budget,status,monitor_difficulty)
+       VALUES($1::uuid,$2::uuid,($1::uuid)::text,'hash',$3,'monitor',$4,100,'captured','hard')`,
+      [mixedGame, mixedOwner, actualModel, ASYNC_MONITOR_VERSION],
+    );
+    await pool.query(
+      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
+       VALUES($1,$1,1,$2,'medium','')`,
+      [mixedGame, actualModel],
+    );
+    await pool.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,session_id)
+       VALUES($1,$2,$3,'agent',$4,100,0,$2),($5,$2,$3,'agent',$6,100,0,$2)`,
+      [randomUUID(), mixedGame, legacyDay, actualModel, randomUUID(), otherModel],
+    );
+    const mixedName = `Player ${createHash("sha256").update(mixedOwner).digest("hex").slice(0, 6)}`;
+    const namesOn = async (query: string) =>
+      (
+        (await (
+          await leaderboard(new Request(`http://localhost/api/leaderboard${query}`))
+        ).json()) as {
+          entries: { name: string }[];
+        }
+      ).entries.map((entry) => entry.name);
+    assert.ok(
+      (await namesOn("")).includes(mixedName),
+      "the mixed-model capture is otherwise ranked",
+    );
+    for (const model of [actualModel, otherModel])
+      assert.ok(
+        !(await namesOn(`?agent=${encodeURIComponent(model)}`)).includes(mixedName),
+        `a run that used another attack model is not attributed to ${model}`,
+      );
+    assert.equal((await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count, "24");
   });
 }
