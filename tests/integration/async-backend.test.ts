@@ -160,7 +160,7 @@ await test(
           if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
           else process.env.OPENROUTER_API_KEY = oldKey;
         });
-        for (const reserveBudget of [false, true]) {
+        {
           for (const scenario of [
             "retry-success",
             "claim-lost",
@@ -168,9 +168,9 @@ await test(
             "exhausted",
             "unrelated-error",
             "pinned-only",
-            ...(reserveBudget ? ["budget-denied" as const] : []),
+            "budget-denied",
           ] as const) {
-            await t.test(`${reserveBudget ? "reserved" : "legacy"} ${scenario}`, async (t) => {
+            await t.test(`reserved ${scenario}`, async (t) => {
               const id = await seed(`classifier-${randomUUID()}`);
               const messages = [
                 { role: "user", content: "keep this instruction", timestamp: 0 },
@@ -206,15 +206,10 @@ await test(
               );
               const game = (await pool.query("SELECT * FROM ctf.games WHERE id=$1", [id])).rows[0];
               const controller = new AbortController();
-              let commandCalls = 0;
               const documents: {
                 transcript: { role: string; text: string }[];
                 omissions: { sizeLimitMessages: number };
               }[] = [];
-              let commandDone!: () => void;
-              const commandCompleted = new Promise<void>((resolve) => {
-                commandDone = resolve;
-              });
               t.mock.method(
                 globalThis,
                 "fetch",
@@ -227,27 +222,6 @@ await test(
                   init?.signal?.throwIfAborted();
                   const body = JSON.parse(String(init?.body));
                   assert.equal(body.model, TYPESAFE_MODEL);
-                  if (typeof body.state === "string") {
-                    assert.equal(body.state, "printf harmless");
-                    assert.deepEqual(Object.keys(body.questions).sort(), [
-                      "reads_now",
-                      "stages_indirect",
-                    ]);
-                    assert.equal(
-                      ++commandCalls,
-                      1,
-                      "context retries must not repeat command evaluation",
-                    );
-                    commandDone();
-                    return Response.json({
-                      answers: {
-                        reads_now: { type: "noul", noul: 0 },
-                        stages_indirect: { type: "noul", noul: 0 },
-                      },
-                      usage: { input_tokens: 1000 },
-                    });
-                  }
-                  await commandCompleted;
                   assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
                   assert.ok(
                     Buffer.byteLength(JSON.stringify(body.state)) <=
@@ -255,22 +229,20 @@ await test(
                         Buffer.byteLength(JSON.stringify(body.questions)),
                   );
                   documents.push(body.state);
-                  if (reserveBudget) {
-                    const { rows: reservations } = await pool.query(
-                      "SELECT cost_ceiling,settled_at FROM ctf.inference WHERE game_id=$1 AND review_id=$2",
-                      [id, reviewId],
-                    );
-                    assert.equal(
-                      reservations.length,
-                      documents.length + 1,
-                      "every context attempt reserves before dispatch",
-                    );
-                    assert.ok(
-                      reservations.some(
-                        (row) => row.settled_at === null && Number(row.cost_ceiling) > 0,
-                      ),
-                    );
-                  }
+                  const { rows: reservations } = await pool.query(
+                    "SELECT cost_ceiling,settled_at FROM ctf.inference WHERE game_id=$1 AND review_id=$2",
+                    [id, reviewId],
+                  );
+                  assert.equal(
+                    reservations.length,
+                    documents.length,
+                    "every context attempt reserves before dispatch",
+                  );
+                  assert.ok(
+                    reservations.some(
+                      (row) => row.settled_at === null && Number(row.cost_ceiling) > 0,
+                    ),
+                  );
                   assert.equal(body.state.transcript[0].text, "keep this instruction");
                   assert.equal(
                     body.state.transcript.at(-1).text,
@@ -329,11 +301,11 @@ await test(
                 lease: "",
                 reviewId,
                 messages: [...messages],
-                target: { kind: "command", command: "printf harmless" },
+                target: { kind: "transcript" },
                 signal: controller.signal,
                 executionGeneration: Number(game.execution_generation),
                 jobClaim: claim!,
-                reserveBudget,
+                reserveBudget: true,
               });
               if (scenario === "retry-success") assert.equal((await classification).suspicion, 0);
               else
@@ -353,9 +325,8 @@ await test(
                 documents.length,
                 scenario === "retry-success" ? 2 : scenario === "exhausted" ? 5 : 1,
               );
-              assert.equal(commandCalls, 1);
-              const expectedTokens = scenario === "retry-success" ? 3000 : 1000;
-              const expectedCost = scenario === "retry-success" ? 126 : 42;
+              const expectedTokens = scenario === "retry-success" ? 2000 : 0;
+              const expectedCost = scenario === "retry-success" ? 84 : 0;
               const charges = (
                 await pool.query(
                   "SELECT tokens,cost,cost_ceiling,settled_at FROM ctf.inference WHERE game_id=$1 AND review_id=$2",
@@ -364,12 +335,9 @@ await test(
               ).rows;
               const settled = charges.filter((charge) => charge.settled_at !== null);
               const held = charges.filter((charge) => charge.settled_at === null);
-              assert.equal(charges.length, reserveBudget ? documents.length + 1 : 1);
-              assert.equal(settled.length, reserveBudget && scenario === "retry-success" ? 2 : 1);
-              assert.equal(
-                held.length,
-                reserveBudget ? documents.length - (scenario === "retry-success" ? 1 : 0) : 0,
-              );
+              assert.equal(charges.length, documents.length);
+              assert.equal(settled.length, scenario === "retry-success" ? 1 : 0);
+              assert.equal(held.length, documents.length - (scenario === "retry-success" ? 1 : 0));
               assert.equal(
                 settled.reduce((sum, charge) => sum + Number(charge.tokens), 0),
                 expectedTokens,
@@ -379,8 +347,7 @@ await test(
                 expectedCost,
               );
               const heldCost = held.reduce((sum, charge) => sum + Number(charge.cost_ceiling), 0);
-              if (reserveBudget)
-                assert.ok(heldCost > 0, "dispatched rejections retain unknown usage holds");
+              assert.ok(heldCost > 0, "dispatched rejections retain unknown usage holds");
               const balances = (
                 await pool.query("SELECT reserved_microdollars FROM ctf.games WHERE id=$1", [id])
               ).rows[0];

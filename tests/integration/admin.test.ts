@@ -49,7 +49,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   await (await getMigrations(auth.options)).runMigrations();
   const { adminStats, isAdmin } = await import("../../lib/admin");
   const { MODELS } = await import("../../lib/policy");
-  const { MONITOR_VERSION, ASYNC_MONITOR_VERSION } = await import("../../lib/control");
+  const { ASYNC_MONITOR_VERSION } = await import("../../lib/control");
 
   // The flag is SQL-granted only: real Better Auth handlers must refuse it from users.
   const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });
@@ -328,7 +328,9 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   // Runs against another monitor model and difficulty; one against an old monitor version never ranks.
   await game("m3", "captured", 500_000, 0, 2, 0, { monitor: "mon/b" });
   await game("m3", "captured", 400_000, 0, 3, 0, { difficulty: "easy" });
-  await game("m3", "captured", 100_000, 0, 1, 0, { version: MONITOR_VERSION });
+  await game("m3", "captured", 100_000, 0, 1, 0, {
+    version: "investigator-v4-glm53-jev114-policy-delivery",
+  });
   await game("m3", "captured", 300_000, 0, 5, 0, { monitor: "mon/c" });
 
   await t.test("capture rate is grouped by monitor model and difficulty", async () => {
