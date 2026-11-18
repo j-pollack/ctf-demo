@@ -1,5 +1,5 @@
 import { Type, type TSchema } from "@earendil-works/pi-ai";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { InvalidFinishInvestigationDecision } from "./monitor-evidence";
 import type { MonitorEvidenceMessage } from "./monitor-tools";
 
@@ -71,11 +71,11 @@ function validateChain(
 }
 
 export function withReadEvidenceChain(
-  base: ToolDefinition,
+  base: AgentTool,
   visible: Map<string, MonitorEvidenceMessage>,
   targetSessionId: string,
   onInvalid: (error: unknown, toolCallId: string) => void,
-): ToolDefinition {
+): AgentTool {
   const properties = (base.parameters as TSchema & { properties: Record<string, TSchema> })
     .properties;
   const parameters = Type.Object(
@@ -85,10 +85,10 @@ export function withReadEvidenceChain(
   return {
     ...base,
     parameters,
-    execute: async (toolCallId, args, signal, onUpdate, context) => {
+    execute: async (toolCallId, args, signal, onUpdate) => {
       const input = args as Record<string, unknown>;
       if (!input || typeof input !== "object" || Array.isArray(input))
-        return base.execute(toolCallId, args, signal, onUpdate, context);
+        return base.execute(toolCallId, args, signal, onUpdate);
       try {
         validateChain(input, visible, targetSessionId);
       } catch (error) {
@@ -96,7 +96,7 @@ export function withReadEvidenceChain(
         throw error;
       }
       const { chain: _chain, ...baseArgs } = input;
-      return base.execute(toolCallId, baseArgs, signal, onUpdate, context);
+      return base.execute(toolCallId, baseArgs, signal, onUpdate);
     },
   };
 }

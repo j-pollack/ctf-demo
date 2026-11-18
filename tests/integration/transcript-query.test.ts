@@ -129,13 +129,7 @@ test(
       const call = async (name: string, args: unknown) => {
         const tool = tools.piTools.find((item) => item.name === name);
         assert.ok(tool, name);
-        const response = await tool.execute(
-          randomUUID(),
-          args as never,
-          undefined,
-          undefined,
-          {} as never,
-        );
+        const response = await tool.execute(randomUUID(), args as never, undefined, undefined);
         const content = response.content[0];
         assert.equal(content?.type, "text");
         return JSON.parse(content.text);
@@ -149,13 +143,7 @@ test(
       const validateCall = async (name: string, args: unknown) => {
         const tool = validationTools.piTools.find((item) => item.name === name);
         assert.ok(tool);
-        const response = await tool.execute(
-          randomUUID(),
-          args as never,
-          undefined,
-          undefined,
-          {} as never,
-        );
+        const response = await tool.execute(randomUUID(), args as never, undefined, undefined);
         assert.equal(response.content[0]?.type, "text");
         return JSON.parse(response.content[0].text);
       };
@@ -263,7 +251,7 @@ test(
       }) => {
         const response = await canonicalTools.piTools
           .find((tool) => tool.name === "read_transcript")!
-          .execute(randomUUID(), args, undefined, undefined, {} as never);
+          .execute(randomUUID(), args, undefined, undefined);
         assert.equal(response.content[0]?.type, "text");
         return JSON.parse(response.content[0].text);
       };
