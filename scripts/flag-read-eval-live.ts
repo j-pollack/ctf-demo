@@ -81,7 +81,6 @@ async function createClaim(
   workspace: SeededWorkspace,
   enqueueMonitorJob: typeof import("../lib/monitor-jobs").enqueueMonitorJob,
   claimMonitorJob: typeof import("../lib/monitor-jobs").claimMonitorJob,
-  boundedBaseline: boolean,
 ) {
   const sessionId = workspace.sessionIds.get(item.targetSessionId);
   if (!sessionId) throw new Error(`${item.id}: target session was not seeded.`);
@@ -123,9 +122,7 @@ async function createClaim(
   );
   let claim: Awaited<ReturnType<typeof claimMonitorJob>>;
   try {
-    claim = await claimMonitorJob(
-      boundedBaseline ? BOUNDED_INVESTIGATOR_POLICY.claimMs : undefined,
-    );
+    claim = await claimMonitorJob(BOUNDED_INVESTIGATOR_POLICY.claimMs);
   } finally {
     await pool.query("UPDATE ctf.agent_sessions SET lease_until=$2 WHERE id=$1", [
       sessionId,
@@ -156,7 +153,6 @@ async function reviewCase(
     inference: typeof import("../lib/inference");
   },
   testObserver?: InvestigationObserver,
-  boundedBaseline = false,
   timing: InvestigatorTiming = BOUNDED_INVESTIGATOR_POLICY,
 ): Promise<FlagReadEntry> {
   const started = Date.now();
@@ -166,7 +162,6 @@ async function reviewCase(
     workspace,
     modules.jobs.enqueueMonitorJob,
     modules.jobs.claimMonitorJob,
-    boundedBaseline,
   );
   const reviewId = randomUUID();
   await pool.query(
@@ -232,12 +227,10 @@ async function reviewCase(
       reviewId,
       messages: [...target.messages],
       target: { kind: "transcript" },
-      signal: boundedBaseline
-        ? AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)])
-        : signal,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: claim,
-      reserveBudget: boundedBaseline,
+      reserveBudget: true,
     });
     await modules.sessions.updateMonitorClassifierSignals(reviewId, classifier.signals);
     const result = await modules.investigator.runFlagReadInvestigation(
@@ -251,9 +244,9 @@ async function reviewCase(
         signal,
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
-        deadlineAt: boundedBaseline ? Date.now() + timing.deadlineMs : undefined,
+        deadlineAt: Date.now() + timing.deadlineMs,
       },
-      { observer, searchStrategy: selectedPolicy.searchStrategy, boundedBaseline },
+      { observer, searchStrategy: selectedPolicy.searchStrategy },
     );
     if (
       result.monitorVersion !== selectedPolicy.monitorVersion ||
@@ -365,13 +358,12 @@ export async function runFlagReadLiveEvaluation(
   testObserver?: InvestigationObserver,
   options: {
     searchStrategy?: FlagReadSearchStrategy;
-    boundedBaseline?: boolean;
     timing?: InvestigatorTiming;
     onEntry?: (entry: FlagReadEntry) => void | Promise<void>;
   } = {},
 ): Promise<FlagReadEntry[]> {
   const timing = resolveInvestigatorTiming(options.timing);
-  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy ?? "current");
+  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy);
   const { Pool } = await import("pg");
   const pool = new Pool({
     connectionString: config.databaseUrl,
@@ -464,12 +456,11 @@ export async function runFlagReadLiveEvaluation(
         selectedPolicy,
         modules,
         testObserver,
-        options.boundedBaseline,
         timing,
       );
       entries.push(entry);
       usedMicrodollars += entry.settledMicrodollars + entry.heldMicrodollars;
-      accountingOverrun ||= Boolean(options.boundedBaseline && entry.accountingOverrun);
+      accountingOverrun ||= Boolean(entry.accountingOverrun);
       await options.onEntry?.(entry);
     }
     return entries;

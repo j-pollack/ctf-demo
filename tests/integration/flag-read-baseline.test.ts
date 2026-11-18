@@ -43,17 +43,12 @@ await test(
       "callback-failure",
       "wrapper",
       "wrapper-failure",
-      "candidate-wrapper",
-      "production-wrapper",
-      "candidate-heldout",
-      "candidate-rate-limit",
-      "candidate-missing-usage",
-      "candidate-overrun",
-      "candidate-price-cap",
-      "candidate-unavailable-provider",
-      "candidate-slow-success",
-      "candidate-deadline",
-      "candidate-classifier-timeout",
+      "heldout",
+      "price-cap",
+      "unavailable-provider",
+      "slow-success",
+      "deadline",
+      "classifier-timeout",
     ] as const;
     if (!process.env.CTF_BASELINE_TEST_MODE) {
       for (const mode of modes)
@@ -79,14 +74,8 @@ await test(
     assert.ok(modes.some((mode) => mode === process.env.CTF_BASELINE_TEST_MODE));
     for (const name of modes.filter((mode) => mode === process.env.CTF_BASELINE_TEST_MODE))
       await t.test(name, async (t) => {
-        const candidate = name.startsWith("candidate-");
-        const production = name === "production-wrapper";
-        const mode = production ? "wrapper" : name.replace(/^candidate-/, "");
-        const strategy = production
-          ? "closed-world-presumption"
-          : candidate
-            ? "closed-world-presumption-v1"
-            : "current";
+        const mode = name;
+        const strategy = "closed-world-presumption";
         const policy = resolveFlagReadPolicy(strategy);
         const fractionalPricing = mode === "price-cap" || mode === "unavailable-provider";
         const longScenario = ["slow-success", "deadline", "classifier-timeout"].includes(mode);
@@ -299,7 +288,7 @@ await test(
             { databaseUrl: url.toString(), budgetMicrodollars: 1_000_000 },
             prepared.cases,
             undefined,
-            { boundedBaseline: true, searchStrategy: strategy },
+            { searchStrategy: strategy },
           );
           assert.deepEqual(failures, []);
           assert.equal(entries.length, 40);
@@ -342,7 +331,7 @@ await test(
           const parent = mkdtempSync(join(tmpdir(), "ctf-baseline-"));
           t.after(() => rmSync(parent, { recursive: true, force: true }));
           const output = join(parent, "run");
-          // The recorded baseline is immutable. Current-source tests use a fresh schedule.
+          // The committed schedules are immutable. Current-source tests use a fresh schedule.
           const schedulePath = join(parent, "current-schedule.json");
           writeFileSync(
             schedulePath,
@@ -446,7 +435,6 @@ await test(
               cases,
               undefined,
               {
-                boundedBaseline: true,
                 onEntry: () => {
                   throw new Error("synthetic disk full");
                 },
@@ -464,7 +452,6 @@ await test(
           cases,
           undefined,
           {
-            boundedBaseline: true,
             searchStrategy: strategy,
             timing: longScenario ? fastMonitorTiming : undefined,
           },
@@ -594,7 +581,7 @@ await test(
           if (mode === "missing-usage" || mode === "timeout") {
             assert.ok(totals.held > 0);
             // Endpoint rates leave enough for classification but not another investigator.
-            // Prove retained holds and actual admission denial for both policy prompts.
+            // Prove retained holds and actual admission denial under the production prompt.
             assert.equal(investigator, 1);
             assert.ok(entries[0].heldMicrodollars > 0);
             assert.equal(totals.held, entries[0].heldMicrodollars);

@@ -23,7 +23,6 @@ import {
 } from "./monitor-review";
 import { createTranscriptInvestigationTools } from "./transcript-query";
 import { notifyInvestigationObserver, type InvestigationObserver } from "./investigation-trace";
-import { withReadEvidenceChain } from "./flag-read-chain";
 
 export type FlagReadInvestigationResult = FlagReadDecision & {
   monitorVersion: FlagReadPolicy["monitorVersion"];
@@ -73,7 +72,6 @@ export async function runFlagReadInvestigation(
   options?: {
     observer?: InvestigationObserver;
     searchStrategy?: FlagReadSearchStrategy;
-    boundedBaseline?: boolean;
   },
 ): Promise<FlagReadInvestigationResult> {
   const policy = resolveFlagReadPolicy(options?.searchStrategy);
@@ -85,8 +83,7 @@ export async function runFlagReadInvestigation(
     finishName: "finish_investigation",
     observer: options?.observer,
     recoverToolSchemaErrors: true,
-    boundedInference:
-      options?.boundedBaseline || policy.searchStrategy === "closed-world-presumption",
+    boundedInference: true,
     prepare: async ({ model, signal, recordFailure, finish, onInvalid }) => {
       const visible = new Map<string, MonitorEvidenceMessage>();
       const retrievedRefs = new Set<string>();
@@ -104,22 +101,13 @@ export async function runFlagReadInvestigation(
         recordVisible(visible, retrieval.initialEvidence.currentTranscript);
         const initialEvidence = { target, snapshot: retrieval.initialEvidence };
         notifyInvestigationObserver(options?.observer, "onInitialEvidence", initialEvidence);
-        const baseFinishTool = createFinishInvestigationTool(
+        const finishTool = createFinishInvestigationTool(
           visible,
           retrieval.initialEvidence.targetSessionId,
           finish,
           recordFailure,
           onInvalid,
         );
-        const finishTool =
-          policy.searchStrategy === "evidence-chain"
-            ? withReadEvidenceChain(
-                baseFinishTool,
-                visible,
-                retrieval.initialEvidence.targetSessionId,
-                onInvalid,
-              )
-            : baseFinishTool;
         const tools = [...retrieval.piTools, finishTool];
         return {
           tools,

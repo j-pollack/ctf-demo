@@ -16,7 +16,7 @@ const cases = JSON.parse(text);
 test("explicit held-out selection freezes 40 cases and scores only that split", () => {
   const corpus = syntheticHeldoutCorpus(text);
   const items = JSON.parse(corpus);
-  const schedule = buildSchedule(corpus, {}, "closed-world-presumption-v1", "test");
+  const schedule = buildSchedule(corpus, {}, "closed-world-presumption", "test");
   assert.equal(schedule.split, "test");
   assert.equal(schedule.cases.length, 40);
   assert.equal(new Set(schedule.cases.map((item) => item.pair)).size, 20);
@@ -45,7 +45,7 @@ test("explicit held-out selection freezes 40 cases and scores only that split", 
     latencyMs: 1,
     settledMicrodollars: 1,
     heldMicrodollars: 0,
-    searchStrategy: "closed-world-presumption-v1" as const,
+    searchStrategy: "closed-world-presumption" as const,
     ...schedule.policy,
   }));
   const summary = summarizeBaseline(corpus, entries, schedule);
@@ -73,56 +73,47 @@ test("explicit held-out selection freezes 40 cases and scores only that split", 
 });
 
 test("bounded schedules freeze DigitalOcean pricing and the 90-second investigation", () => {
-  for (const strategy of ["current", "closed-world-presumption-v1"] as const) {
-    const schedule = buildSchedule(text, {}, strategy);
-    assert.equal(schedule.execution.investigatorDeadlineMs, 90_000);
-    assert.equal(schedule.execution.classifierDeadlineMs, 15_000);
-    assert.equal(schedule.execution.reviewClaimMs, 120_000);
-    assert.deepEqual(schedule.execution.provider, {
-      only: ["digitalocean"],
-      allow_fallbacks: false,
-      require_parameters: true,
-      max_price: { prompt: 0.91, completion: 2.86, request: 0 },
-    });
-    assert.equal(schedule.budget.pricing.investigator.inputUsdPerMillion, 0.91);
-    assert.equal(schedule.budget.pricing.investigator.outputUsdPerMillion, 2.86);
-  }
+  const schedule = buildSchedule(text, {});
+  assert.equal(schedule.execution.investigatorDeadlineMs, 90_000);
+  assert.equal(schedule.execution.classifierDeadlineMs, 15_000);
+  assert.equal(schedule.execution.reviewClaimMs, 120_000);
+  assert.deepEqual(schedule.execution.provider, {
+    only: ["digitalocean"],
+    allow_fallbacks: false,
+    require_parameters: true,
+    max_price: { prompt: 0.91, completion: 2.86, request: 0 },
+  });
+  assert.equal(schedule.budget.pricing.investigator.inputUsdPerMillion, 0.91);
+  assert.equal(schedule.budget.pricing.investigator.outputUsdPerMillion, 2.86);
 });
 
-test("candidate schedule changes policy only and summaries enforce the saved arm", () => {
-  const current = buildSchedule(text, { source: "same" });
-  const candidate = buildSchedule(text, { source: "same" }, "closed-world-presumption-v1");
-  assert.equal(candidate.policy.strategy, "closed-world-presumption-v1");
-  assert.notEqual(candidate.policy.promptHash, current.policy.promptHash);
-  assert.deepEqual({ ...candidate, policy: current.policy }, current);
+test("the production strategy is the default, records the production policy and its summaries enforce the saved prompt hash", () => {
+  assert.equal(parseBaselineStrategy("closed-world-presumption"), "closed-world-presumption");
+  assert.throws(() => parseBaselineStrategy("focused"), /strategy/);
+  assert.throws(() => buildSchedule(text, {}, "focused" as "closed-world-presumption"), /strategy/);
+  const production = resolveFlagReadPolicy("closed-world-presumption");
+  const schedule = buildSchedule(text, { source: "same" }, "closed-world-presumption");
+  assert.deepEqual(schedule, buildSchedule(text, { source: "same" }));
+  assert.equal(schedule.policy.strategy, "closed-world-presumption");
+  assert.equal(schedule.policy.monitorVersion, production.monitorVersion);
+  assert.equal(schedule.policy.promptHash, production.promptHash);
   const entry = {
-    caseId: candidate.cases[0].id,
-    readOccurred: candidate.cases[0].readOccurred,
+    caseId: schedule.cases[0].id,
+    readOccurred: schedule.cases[0].readOccurred,
     observableSufficiency: "sufficient" as const,
     flagReadDetected: false,
     investigationComplete: true,
     latencyMs: 10,
     settledMicrodollars: 12,
     heldMicrodollars: 0,
-    searchStrategy: "closed-world-presumption-v1" as const,
-    ...candidate.policy,
+    searchStrategy: "closed-world-presumption" as const,
+    ...schedule.policy,
   };
-  assert.equal(summarizeBaseline(text, [entry], candidate).settledMicrodollars, 12);
-  assert.throws(() => summarizeBaseline(text, [entry], current), /policy\/model/);
-  assert.throws(() => buildSchedule(text, {}, "focused" as "current"), /strategy/);
-});
-
-test("the production strategy is accepted and records the production policy", () => {
-  assert.equal(parseBaselineStrategy("closed-world-presumption"), "closed-world-presumption");
-  assert.throws(() => parseBaselineStrategy("focused"), /strategy/);
-  const production = resolveFlagReadPolicy("closed-world-presumption");
-  const v1 = resolveFlagReadPolicy("closed-world-presumption-v1");
-  const schedule = buildSchedule(text, { source: "same" }, "closed-world-presumption");
-  assert.equal(schedule.policy.strategy, "closed-world-presumption");
-  assert.equal(schedule.policy.monitorVersion, production.monitorVersion);
-  assert.equal(schedule.policy.promptHash, production.promptHash);
-  assert.notEqual(schedule.policy.monitorVersion, v1.monitorVersion);
-  assert.notEqual(schedule.policy.promptHash, v1.promptHash);
+  assert.equal(summarizeBaseline(text, [entry], schedule).settledMicrodollars, 12);
+  assert.throws(
+    () => summarizeBaseline(text, [{ ...entry, promptHash: "changed" }], schedule),
+    /policy\/model/,
+  );
 });
 
 test("baseline freezes all 36 dev pairs once and excludes locked tests", () => {
@@ -162,7 +153,7 @@ test("missing results remain incomplete and unknown policy is rejected", () => {
     latencyMs: 20,
     settledMicrodollars: 100,
     heldMicrodollars: 50,
-    searchStrategy: "current" as const,
+    searchStrategy: "closed-world-presumption" as const,
     monitorVersion: schedule.policy.monitorVersion,
     promptHash: schedule.policy.promptHash,
     investigatorModel: schedule.policy.investigatorModel,

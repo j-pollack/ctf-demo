@@ -22,8 +22,6 @@ const productionVersion = "investigator-v14-glm53-jev114-presumption-digitalocea
 const modes = [
   "allow",
   "block",
-  "legacy",
-  "legacy-context",
   "unknown-version",
   "unavailable",
   "overrun",
@@ -97,16 +95,8 @@ await test(
       delete (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool;
     });
     await migrateFreshDatabase(pool);
-    const legacy = mode === "legacy" || mode === "legacy-context";
-    const policy = resolveFlagReadPolicy(legacy ? "current" : undefined);
-    const version =
-      mode === "unknown-version"
-        ? "unsupported-policy-version"
-        : mode === "legacy-context"
-          ? "investigator-v8-glm53-jev114-context32k"
-          : legacy
-            ? policy.monitorVersion
-            : productionVersion;
+    const policy = resolveFlagReadPolicy();
+    const version = mode === "unknown-version" ? "unsupported-policy-version" : productionVersion;
     const item = flagReadCases[0];
     const remaining =
       mode === "budget-between" || mode === "budget-two-call"
@@ -190,8 +180,8 @@ await test(
             const { rows: holds } = await pool.query(
               "SELECT cost_ceiling FROM ctf.inference WHERE model='typesafe/jev-1.14' AND settled_at IS NULL",
             );
-            assert.equal(holds.length, legacy ? 0 : 1);
-            if (!legacy) assert.ok(Number(holds[0].cost_ceiling) > 0);
+            assert.equal(holds.length, 1);
+            assert.ok(Number(holds[0].cost_ceiling) > 0);
             if (mode === "classifier-timeout")
               await delay(fastMonitorDelays.classifierMs, undefined, { signal: init.signal! });
             return Response.json({
@@ -207,17 +197,12 @@ await test(
           if (exemptModes.includes(mode)) assert.equal(body.max_tokens, 8192);
           assert.equal(body.messages[0].content, policy.systemPrompt);
           assert.equal(body.reasoning.effort, "high");
-          assert.deepEqual(
-            body.provider,
-            legacy
-              ? { require_parameters: true }
-              : {
-                  require_parameters: true,
-                  only: ["digitalocean"],
-                  allow_fallbacks: false,
-                  max_price: { prompt: 0.91, completion: 2.86, request: 0 },
-                },
-          );
+          assert.deepEqual(body.provider, {
+            require_parameters: true,
+            only: ["digitalocean"],
+            allow_fallbacks: false,
+            max_price: { prompt: 0.91, completion: 2.86, request: 0 },
+          });
           const {
             rows: [reservation],
           } = await pool.query(
@@ -225,8 +210,8 @@ await test(
           );
           assert.equal(
             reservation.cost,
-            Math.ceil((reservation.token_ceiling - body.max_tokens) * (legacy ? 1 : 0.91) * 2) +
-              Math.ceil(body.max_tokens * (legacy ? 2 : 2.86)),
+            Math.ceil((reservation.token_ceiling - body.max_tokens) * 0.91 * 2) +
+              Math.ceil(body.max_tokens * 2.86),
           );
           if (mode === "unavailable")
             return Response.json(
@@ -456,7 +441,7 @@ await test(
       mode === "classifier-timeout" ? 0 : 1,
       "single transport attempt; no fallback or retry inside a review",
     );
-    const success = ["allow", "block", "legacy", "legacy-context", "slow-success"].includes(mode);
+    const success = ["allow", "block", "slow-success"].includes(mode);
     assert.equal(job.status, success ? (mode === "block" ? "caught" : "caught-up") : "queued");
     assert.equal(
       Number(job.covered_version),
@@ -494,7 +479,7 @@ await test(
     } = await pool.query(
       "SELECT coalesce(sum(cost) FILTER(WHERE settled_at IS NOT NULL),0)::int AS spent,coalesce(sum(cost_ceiling) FILTER(WHERE settled_at IS NULL),0)::int AS held FROM ctf.inference",
     );
-    if (!legacy) assert.deepEqual(accounting, { spent: game.spent, held: game.held });
+    assert.deepEqual(accounting, { spent: game.spent, held: game.held });
     if (["deadline", "classifier-timeout"].includes(mode)) assert.ok(game.held > 0);
     else assert.equal(game.held, 0);
     if (mode === "overrun") assert.match(job.reason, /reserved|allowance/i);

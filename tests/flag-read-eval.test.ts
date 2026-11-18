@@ -157,16 +157,16 @@ test("report identifies the selected immutable policy even when a case fails", (
         latencyMs: 10,
         settledMicrodollars: 0,
         heldMicrodollars: 5,
-        searchStrategy: "focused",
-        monitorVersion: "focused-version",
-        promptHash: "focused-prompt-hash",
+        searchStrategy: "closed-world-presumption",
+        monitorVersion: "production-version",
+        promptHash: "production-prompt-hash",
       },
     ],
     100,
   );
   assert.deepEqual(report.policy, {
-    searchStrategy: "focused",
-    monitorVersion: "focused-version",
-    promptHash: "focused-prompt-hash",
+    searchStrategy: "closed-world-presumption",
+    monitorVersion: "production-version",
+    promptHash: "production-prompt-hash",
   });
 });

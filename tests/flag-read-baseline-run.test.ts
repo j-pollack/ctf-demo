@@ -11,11 +11,13 @@ import { syntheticHeldoutCorpus } from "./fixtures/heldout-corpus";
 
 const corpus = readFileSync("evals/flag-read/cases.json", "utf8");
 const sources = { source: "frozen" };
+const COMMITTED_SCHEDULE =
+  "evals/flag-read/closed-world-presumption-digitalocean-90s-repeatability-schedule.json";
 const schedule = buildSchedule(corpus, sources);
 
 test("held-out preflight refuses cross-split schedules and accepts the explicit frozen split", () => {
   const synthetic = syntheticHeldoutCorpus(corpus);
-  const strategy = "closed-world-presumption-v1";
+  const strategy = "closed-world-presumption";
   const heldout = buildSchedule(synthetic, sources, strategy, "test");
   const dev = buildSchedule(synthetic, sources, strategy);
   assert.equal(
@@ -47,7 +49,7 @@ test("held-out CLI requires explicit split and schedule before live access", asy
     "--dry-run",
     path,
     "--strategy",
-    "closed-world-presumption-v1",
+    "closed-world-presumption",
     "--split",
     "test",
   ];
@@ -61,19 +63,11 @@ test("held-out CLI requires explicit split and schedule before live access", asy
   assert.equal(frozen.cases.length, 40);
   assert.equal(frozen.split, "test");
   await main(
-    [
-      "--dry-run",
-      "--strategy",
-      "closed-world-presumption-v1",
-      "--split",
-      "test",
-      "--schedule",
-      path,
-    ],
+    ["--dry-run", "--strategy", "closed-world-presumption", "--split", "test", "--schedule", path],
     {},
   );
   await assert.rejects(
-    main(["--dry-run", "--strategy", "closed-world-presumption-v1", "--schedule", path], {}),
+    main(["--dry-run", "--strategy", "closed-world-presumption", "--schedule", path], {}),
     /differs/,
   );
   const output = join(folder, "not-created");
@@ -86,7 +80,7 @@ test("held-out CLI requires explicit split and schedule before live access", asy
         "--output-dir",
         output,
         "--strategy",
-        "closed-world-presumption-v1",
+        "closed-world-presumption",
         "--schedule",
         path,
       ],
@@ -98,37 +92,44 @@ test("held-out CLI requires explicit split and schedule before live access", asy
   assert.notEqual(spawnSync(process.execPath, args, { encoding: "utf8" }).status, 0);
 });
 
-test("candidate preflight requires the selected arm and freezes its policy and sources", () => {
-  const strategy = "closed-world-presumption-v1";
-  const candidate = buildSchedule(corpus, sources, strategy);
-  assert.equal(candidate.policy.strategy, strategy);
-  assert.equal(prepareBaseline(corpus, candidate, sources, 1_000_000, strategy).cases.length, 72);
-  assert.throws(() => prepareBaseline(corpus, candidate, sources, 1_000_000), /differs/);
-  assert.throws(() => prepareBaseline(corpus, schedule, sources, 1_000_000, strategy), /differs/);
-  assert.throws(() => prepareBaseline(corpus, candidate, { source: "drift" }, 1_000_000, strategy));
-  assert.throws(() => prepareBaseline(corpus, candidate, sources, 10_000_001, strategy), /Budget/);
+test("production preflight freezes its policy and sources", () => {
+  const strategy = "closed-world-presumption";
+  const frozen = buildSchedule(corpus, sources, strategy);
+  assert.equal(frozen.policy.strategy, strategy);
+  assert.equal(prepareBaseline(corpus, frozen, sources, 1_000_000, strategy).cases.length, 72);
+  assert.throws(
+    () =>
+      prepareBaseline(
+        corpus,
+        { ...frozen, policy: { ...frozen.policy, promptHash: "changed" } },
+        sources,
+        1_000_000,
+        strategy,
+      ),
+    /differs/,
+  );
+  assert.throws(() => prepareBaseline(corpus, frozen, { source: "drift" }, 1_000_000, strategy));
+  assert.throws(() => prepareBaseline(corpus, frozen, sources, 10_000_001, strategy), /Budget/);
   for (const execution of [
-    { ...candidate.execution, investigatorDeadlineMs: 60_000 },
-    { ...candidate.execution, reviewClaimMs: 90_000 },
-    { ...candidate.execution, classifierDeadlineMs: 90_000 },
-    { ...candidate.execution, provider: { ...candidate.execution.provider, only: ["wafer/us"] } },
+    { ...frozen.execution, investigatorDeadlineMs: 60_000 },
+    { ...frozen.execution, reviewClaimMs: 90_000 },
+    { ...frozen.execution, classifierDeadlineMs: 90_000 },
+    { ...frozen.execution, provider: { ...frozen.execution.provider, only: ["wafer/us"] } },
     {
-      ...candidate.execution,
-      provider: { ...candidate.execution.provider, allow_fallbacks: true },
+      ...frozen.execution,
+      provider: { ...frozen.execution.provider, allow_fallbacks: true },
     },
   ])
     assert.throws(
-      () => prepareBaseline(corpus, { ...candidate, execution }, sources, 1_000_000, strategy),
+      () => prepareBaseline(corpus, { ...frozen, execution }, sources, 1_000_000, strategy),
       /differs/,
     );
 });
 
-test("candidate CLI rejects ambiguous selection before any network or output", async (t) => {
+test("CLI rejects ambiguous selection before any network or output", async (t) => {
   t.mock.method(globalThis, "fetch", () => assert.fail("unexpected network request"));
-  await assert.rejects(
-    main(["--dry-run", "--strategy", "closed-world-presumption-v1"]),
-    /schedule/,
-  );
+  await assert.rejects(main(["--dry-run"]), /schedule/);
+  await assert.rejects(main(["--dry-run", "--strategy", "closed-world-presumption"]), /schedule/);
   for (const option of ["--strategy", "--schedule", "--split"]) {
     await assert.rejects(main(["--dry-run", option]), /value/);
     await assert.rejects(main(["--dry-run", option, "one", option, "two"]), /once/);
@@ -136,12 +137,12 @@ test("candidate CLI rejects ambiguous selection before any network or output", a
   await assert.rejects(main(["--dry-run", "--strategy", "focused"]), /strategy/);
 });
 
-test("candidate schedule generation and dry-run are offline and preserve the baseline", async (t) => {
+test("schedule generation and dry-run are offline and preserve the committed schedule", async (t) => {
   t.mock.method(globalThis, "fetch", () => assert.fail("unexpected network request"));
-  const folder = mkdtempSync(join(tmpdir(), "ctf-candidate-schedule-"));
+  const folder = mkdtempSync(join(tmpdir(), "ctf-generated-schedule-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const path = join(folder, "schedule.json");
-  const baselineBefore = readFileSync("evals/flag-read/baseline-schedule.json", "utf8");
+  const baselineBefore = readFileSync(COMMITTED_SCHEDULE, "utf8");
   const args = [
     "--import",
     "tsx",
@@ -149,19 +150,18 @@ test("candidate schedule generation and dry-run are offline and preserve the bas
     "--dry-run",
     path,
     "--strategy",
-    "closed-world-presumption-v1",
+    "closed-world-presumption",
   ];
   const env = { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "test" as const };
   const result = spawnSync(process.execPath, args, { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
-  const candidate = JSON.parse(readFileSync(path, "utf8"));
-  assert.equal(candidate.policy.strategy, "closed-world-presumption-v1");
-  assert.deepEqual(candidate.cases, JSON.parse(baselineBefore).cases);
-  await main(["--dry-run", "--strategy", "closed-world-presumption-v1", "--schedule", path], {});
-  await assert.rejects(main(["--dry-run", "--schedule", path], {}), /differs/);
+  const generated = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(generated.policy.strategy, "closed-world-presumption");
+  assert.deepEqual(generated.cases, JSON.parse(baselineBefore).cases);
+  await main(["--dry-run", "--strategy", "closed-world-presumption", "--schedule", path], {});
   // Drift must fail before live credential checks, output creation or provider access.
-  candidate.policy.promptHash = "changed";
-  writeFileSync(path, JSON.stringify(candidate));
+  generated.policy.promptHash = "changed";
+  writeFileSync(path, JSON.stringify(generated));
   const output = join(folder, "never-created");
   await assert.rejects(
     main(
@@ -172,7 +172,7 @@ test("candidate schedule generation and dry-run are offline and preserve the bas
         "--output-dir",
         output,
         "--strategy",
-        "closed-world-presumption-v1",
+        "closed-world-presumption",
         "--schedule",
         path,
       ],
@@ -182,7 +182,7 @@ test("candidate schedule generation and dry-run are offline and preserve the bas
   );
   assert.equal(existsSync(output), false);
   assert.notEqual(spawnSync(process.execPath, args, { encoding: "utf8", env }).status, 0);
-  assert.equal(readFileSync("evals/flag-read/baseline-schedule.json", "utf8"), baselineBefore);
+  assert.equal(readFileSync(COMMITTED_SCHEDULE, "utf8"), baselineBefore);
 });
 
 test("live preflight rejects all frozen surface drift and invalid budgets", () => {
@@ -215,8 +215,14 @@ test("live CLI rejects missing authorization and ambiguous arguments before netw
     assert.fail("unexpected network request");
   });
   await assert.rejects(main(["--live"]), /budget/);
-  await assert.rejects(main(["--live", "--budget-usd", "10"]), /output-dir/);
-  await assert.rejects(main(["--dry-run", "--output-dir", "unused"]), /output-dir/);
+  await assert.rejects(
+    main(["--live", "--budget-usd", "10", "--schedule", COMMITTED_SCHEDULE]),
+    /output-dir/,
+  );
+  await assert.rejects(
+    main(["--dry-run", "--output-dir", "unused", "--schedule", COMMITTED_SCHEDULE]),
+    /output-dir/,
+  );
   await assert.rejects(
     main(["--live", "--budget-usd", "10", "--output-dir", "one", "--output-dir", "two"]),
     /once/,
@@ -230,7 +236,6 @@ test("runner cannot validate another checkout while executing its own imports", 
   for (const [path, content] of Object.entries({
     ...runtime,
     "evals/flag-read/cases.json": corpus,
-    "evals/flag-read/baseline-schedule.json": JSON.stringify(buildSchedule(corpus, runtime)),
   })) {
     mkdirSync(dirname(join(other, path)), { recursive: true });
     writeFileSync(join(other, path), content);
@@ -247,31 +252,4 @@ test("runner cannot validate another checkout while executing its own imports", 
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /runner.*checkout/);
-});
-
-test("a production-strategy schedule is generated and dry-run offline", async (t) => {
-  t.mock.method(globalThis, "fetch", () => assert.fail("unexpected network request"));
-  const folder = mkdtempSync(join(tmpdir(), "ctf-production-schedule-"));
-  t.after(() => rmSync(folder, { recursive: true, force: true }));
-  const path = join(folder, "schedule.json");
-  const result = spawnSync(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      "scripts/flag-read-baseline.ts",
-      "--dry-run",
-      path,
-      "--strategy",
-      "closed-world-presumption",
-    ],
-    {
-      encoding: "utf8",
-      env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "test" as const },
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(readFileSync(path, "utf8")).policy.strategy, "closed-world-presumption");
-  await main(["--dry-run", "--strategy", "closed-world-presumption", "--schedule", path], {});
-  await assert.rejects(main(["--dry-run", "--schedule", path], {}), /differs/);
 });

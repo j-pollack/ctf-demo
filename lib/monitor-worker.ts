@@ -35,7 +35,6 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
   } = await db.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1", [claim.gameId]);
   if (!game) throw new Error("Monitor job run is missing.");
   const policy = flagReadPolicyForRun(game.monitor_version);
-  const bounded = policy.searchStrategy === "closed-world-presumption";
   const {
     rows: [session],
   } = await db.query<GameRow>(
@@ -76,12 +75,10 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     reviewId,
     messages: [...current.messages],
     target: { kind: "transcript" },
-    signal: bounded
-      ? AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)])
-      : signal,
+    signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
     executionGeneration: Number(game.execution_generation),
     jobClaim: claim,
-    reserveBudget: bounded,
+    reserveBudget: true,
   });
   await updateMonitorClassifierSignals(reviewId, classifier.signals);
   await db.query(
@@ -110,7 +107,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
       signal,
       jobClaim: claim,
       includeReasoning: game.monitor_reasoning,
-      deadlineAt: bounded ? Date.now() + timing.deadlineMs : undefined,
+      deadlineAt: Date.now() + timing.deadlineMs,
     },
     { searchStrategy: policy.searchStrategy },
   );

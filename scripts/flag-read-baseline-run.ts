@@ -34,7 +34,7 @@ export function prepareBaseline(
   schedule: unknown,
   sources: Record<string, string>,
   budget?: number,
-  strategy: BaselineStrategy = "current",
+  strategy: BaselineStrategy = "closed-world-presumption",
   split: BaselineSplit = "dev",
 ) {
   const expected = buildSchedule(corpus, sources, strategy, split);
@@ -75,23 +75,21 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   if (options.mode === "help") {
     if (selections.size) throw new Error("--help cannot be combined with other options.");
     console.log(
-      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--strategy current|closed-world-presumption|closed-world-presumption-v1 --schedule FILE] [--split dev|test]. Candidate and test-split runs require an explicit schedule.",
+      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--strategy closed-world-presumption] --schedule FILE [--split dev|test]. A schedule file is required.",
     );
     return;
   }
-  const strategy = parseBaselineStrategy(selections.get("--strategy") ?? "current");
+  const strategy = parseBaselineStrategy(
+    selections.get("--strategy") ?? "closed-world-presumption",
+  );
   const split = parseBaselineSplit(selections.get("--split") ?? "dev");
   const schedulePath = selections.get("--schedule");
-  if ((strategy !== "current" || split === "test") && !schedulePath)
-    throw new Error("Candidate or test selection requires an explicit --schedule FILE.");
+  if (!schedulePath) throw new Error("An explicit --schedule FILE is required.");
   const output = selections.get("--output-dir");
   if ((options.mode === "live") !== Boolean(output))
     throw new Error("Only live mode requires --output-dir NEW_DIRECTORY.");
   const corpus = readFileSync("evals/flag-read/cases.json", "utf8");
-  const scheduleText = readFileSync(
-    schedulePath ?? "evals/flag-read/baseline-schedule.json",
-    "utf8",
-  );
+  const scheduleText = readFileSync(schedulePath, "utf8");
   const prepared = prepareBaseline(
     corpus,
     JSON.parse(scheduleText),
@@ -159,7 +157,6 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
     const { runFlagReadLiveEvaluation } = await import("./flag-read-eval-live");
     await runFlagReadLiveEvaluation(config, prepared.cases, undefined, {
       searchStrategy: strategy,
-      boundedBaseline: true,
       onEntry: (entry) => {
         // Stop before another case if serialization or disk persistence fails.
         writeFileSync(journal, `${JSON.stringify(entry)}\n`);
