@@ -45,7 +45,7 @@ test("flag read finish derives completion and requires target-anchored canonical
   const base = { reason: "A successful read is visible in the target tool result." };
   const cite = (row: MonitorEvidenceMessage) => ({ ref: row.ref });
   const execute = (id: string, args: unknown) =>
-    tool.execute(id, args as never, undefined, undefined, {} as never);
+    tool.execute(id, args as never, undefined, undefined);
   await assert.rejects(
     execute("model-completion", {
       ...base,
@@ -138,8 +138,7 @@ test("flag read citations resolve complete multibyte chunks within both byte lim
     () => assert.fail("invalid citations must remain correctable"),
     () => {},
   );
-  const execute = (args: unknown) =>
-    tool.execute("citation", args as never, undefined, undefined, {} as never);
+  const execute = (args: unknown) => tool.execute("citation", args as never, undefined, undefined);
   await execute({
     flagReadDetected: true,
     reason: "The target read succeeded.",
@@ -185,7 +184,6 @@ test("flag read citations resolve complete multibyte chunks within both byte lim
       } as never,
       undefined,
       undefined,
-      {} as never,
     ),
     /evidence/i,
   );

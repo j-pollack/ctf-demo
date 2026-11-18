@@ -126,7 +126,6 @@ test(
                   },
                   undefined,
                   undefined,
-                  {} as never,
                 );
               const content = result.content[0];
               assert.equal(content.type, "text");

@@ -116,17 +116,9 @@ export function testSelectedPolicy(strategy: FlagReadSearchStrategy) {
           assert.equal(request.max_tokens, 8_192);
           assert.equal(request.reasoning?.effort, "high");
           const systemMessages = request.messages.filter((message) => message.role === "system");
+          assert.equal(systemMessages.length, 1);
           const actualPrompt = systemMessages[0]?.content;
           assert.equal(actualPrompt, selected.systemPrompt);
-          const isolatedCwd = /^<cwd>\n\/[^\n]*\/tripwire-monitor-[A-Za-z0-9]+\n<\/cwd>$/;
-          assert.ok(
-            systemMessages
-              .slice(1)
-              .every(
-                (message) => message.content === "" || isolatedCwd.test(message.content ?? ""),
-              ),
-            "later Pi system messages contain only isolated working-directory context",
-          );
           if (selected.searchStrategy === "focused") {
             assert.match(
               actualPrompt,

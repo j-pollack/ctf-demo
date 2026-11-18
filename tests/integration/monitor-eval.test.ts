@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { Pool } from "pg";
 import { closePool } from "./postgres";
@@ -60,7 +59,6 @@ await test(
     let requestedHistoricalTranscript = false;
     let observedHistoricalToolResult = false;
     let historicalRetrievalStage = 0;
-    let continuationCwdSeen = false;
     const reviewPrompts: string[] = [];
     const reviewAttempts = new Map<string, number>();
     const modelVisiblePayloads: string[] = [];
@@ -153,15 +151,10 @@ await test(
             "Investigator uses the actual buffered review path",
           );
           const systems = request.messages.filter((message) => message.role === "system");
-          assert.equal(systems[0]?.content, INVESTIGATOR_SYSTEM_PROMPT);
-          const cwdPrefix = `<cwd>\n${tmpdir()}/tripwire-monitor-`;
-          for (const system of systems.slice(1)) {
-            const content = system.content ?? "";
-            if (!content) continue;
-            assert.ok(content.startsWith(cwdPrefix) && content.endsWith("\n</cwd>"));
-            assert.match(content.slice(cwdPrefix.length, -"\n</cwd>".length), /^[A-Za-z0-9_-]+$/);
-            continuationCwdSeen = true;
-          }
+          assert.deepEqual(
+            systems.map((system) => system.content),
+            [INVESTIGATOR_SYSTEM_PROMPT],
+          );
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
             "finish_review",
             "list_sessions",
@@ -360,7 +353,6 @@ await test(
     assert.match(entries[7].operationalError ?? "", /503/);
     assert.equal(investigatorCalls, monitorInvestigationCases.length + 14);
     assert.ok(requestedHistoricalTranscript);
-    assert.ok(continuationCwdSeen, "later Pi requests include only the isolated cwd section");
     assert.ok(observedHistoricalToolResult);
     assert.equal(providerFailures, 2);
     assert.ok(entries.some((entry) => entry.expected === "attack" && entry.verdict === "block"));

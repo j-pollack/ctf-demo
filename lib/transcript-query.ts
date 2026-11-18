@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Value } from "typebox/value";
 import {
   evidenceMessages,
@@ -80,7 +80,7 @@ export async function createTranscriptInvestigationTools(
   currentSessionId: string,
   options: TranscriptInvestigationOptions,
 ): Promise<{
-  piTools: ToolDefinition[];
+  piTools: AgentTool[];
   initialEvidence: TranscriptInvestigationInitialEvidence;
   readonly retrievalCalls: number;
   dispose: () => Promise<void>;
@@ -218,110 +218,105 @@ export async function createTranscriptInvestigationTools(
     },
     { additionalProperties: false },
   );
-  const piTools: ToolDefinition[] = [
-    defineTool({
-      name: "query_transcripts",
-      label: "Query frozen transcripts",
-      description:
-        "Run bounded read-only SQLite over frozen owner transcript deltas. SQL rows are leads, not citations. Use read_transcript for exact evidence.",
-      parameters: queryParameters,
-      executionMode: "sequential",
-      execute: async (_id, args) => {
-        const valid = Value.Check(queryParameters, args);
-        return run(async () => {
-          if (!valid) return recover(new Error("Invalid query_transcripts arguments."));
-          const key = digest(args.sql);
-          let result = resultCache.get(key);
-          if (!result && args.cursor) return recover(new Error("Invalid cursor."));
-          if (!result) {
-            const queried = await runTranscriptSql(projection.projection, args.sql, signal);
-            if (!queried.ok) return queried;
-            result = queried;
-            resultCache.set(key, result);
-          }
-          try {
-            const offset = parseCursor(args.cursor, "query", key, result.rows.length);
-            const selected = page(result.rows, offset);
-            return {
-              ok: true,
-              rows: selected.rows,
-              citationEligible: false,
-              remaining: result.rows.length - selected.nextOffset,
-              truncated: result.truncated,
-              ...(selected.nextOffset < result.rows.length
-                ? { nextCursor: cursor("query", key, selected.nextOffset) }
-                : {}),
-            };
-          } catch (error) {
-            return recover(error);
-          }
-        });
-      },
-    }),
-    defineTool({
-      name: "read_transcript",
-      label: "Read exact committed transcript",
-      description:
-        "Read an exact immutable committed version with stable citation refs. Defaults to the latest allowed observation for that session.",
-      parameters: readParameters,
-      executionMode: "sequential",
-      execute: async (_id, args) => {
-        const valid = Value.Check(readParameters, args);
-        return run(async () => {
-          if (!valid) return recover(new Error("Invalid read_transcript arguments."));
-          const entry = aliases.get(args.sessionId);
-          if (!entry) return recover(new Error("Unknown evidence session."));
-          const selected = args.observationRef
-            ? observationRefs.get(args.observationRef)
-            : { sessionId: args.sessionId, version: entry.version };
-          if (
-            !selected ||
-            selected.sessionId !== args.sessionId ||
-            selected.version > entry.version
-          )
-            return recover(new Error("Unknown evidence observation."));
-          const ref = committedObservationRef(snapshot, entry.sessionId, selected.version);
-          const key = `${args.sessionId}:${ref}`;
-          let offset: number;
-          try {
-            offset = parseCursor(args.cursor, "read", key, Number.MAX_SAFE_INTEGER);
-          } catch (error) {
-            return recover(error);
-          }
-          const source = await loadVersion(snapshot, entry.sessionId, selected.version);
-          const rows = canonicalMessages(
-            snapshot,
-            entry.sessionId,
-            selected.version,
-            source.messages,
-            options.includeReasoning &&
-              target.reasoningVisible &&
-              entry.reasoningVisible &&
-              source.reasoningVisible,
-          );
-          if (offset > rows.length) return recover(new Error("Invalid cursor."));
-          let chosen: ReturnType<typeof page<MonitorEvidenceMessage>>;
-          try {
-            chosen = page(rows, offset);
-          } catch (error) {
-            return recover(error);
-          }
-          if (signal.aborted) throw new Error("Transcript investigation was cancelled.");
-          await assertTranscriptQueryAccess(snapshot);
-          options.onPage(chosen.rows);
+  const queryTranscriptsTool: AgentTool<typeof queryParameters> = {
+    name: "query_transcripts",
+    label: "Query frozen transcripts",
+    description:
+      "Run bounded read-only SQLite over frozen owner transcript deltas. SQL rows are leads, not citations. Use read_transcript for exact evidence.",
+    parameters: queryParameters,
+    executionMode: "sequential",
+    execute: async (_id, args) => {
+      const valid = Value.Check(queryParameters, args);
+      return run(async () => {
+        if (!valid) return recover(new Error("Invalid query_transcripts arguments."));
+        const key = digest(args.sql);
+        let result = resultCache.get(key);
+        if (!result && args.cursor) return recover(new Error("Invalid cursor."));
+        if (!result) {
+          const queried = await runTranscriptSql(projection.projection, args.sql, signal);
+          if (!queried.ok) return queried;
+          result = queried;
+          resultCache.set(key, result);
+        }
+        try {
+          const offset = parseCursor(args.cursor, "query", key, result.rows.length);
+          const selected = page(result.rows, offset);
           return {
             ok: true,
-            rows: chosen.rows,
-            observationRef: ref,
-            remaining: rows.length - chosen.nextOffset,
-            ...(chosen.nextOffset < rows.length
-              ? { nextCursor: cursor("read", key, chosen.nextOffset) }
+            rows: selected.rows,
+            citationEligible: false,
+            remaining: result.rows.length - selected.nextOffset,
+            truncated: result.truncated,
+            ...(selected.nextOffset < result.rows.length
+              ? { nextCursor: cursor("query", key, selected.nextOffset) }
               : {}),
           };
-        });
-      },
-    }),
-  ];
+        } catch (error) {
+          return recover(error);
+        }
+      });
+    },
+  };
+  const readTranscriptTool: AgentTool<typeof readParameters> = {
+    name: "read_transcript",
+    label: "Read exact committed transcript",
+    description:
+      "Read an exact immutable committed version with stable citation refs. Defaults to the latest allowed observation for that session.",
+    parameters: readParameters,
+    executionMode: "sequential",
+    execute: async (_id, args) => {
+      const valid = Value.Check(readParameters, args);
+      return run(async () => {
+        if (!valid) return recover(new Error("Invalid read_transcript arguments."));
+        const entry = aliases.get(args.sessionId);
+        if (!entry) return recover(new Error("Unknown evidence session."));
+        const selected = args.observationRef
+          ? observationRefs.get(args.observationRef)
+          : { sessionId: args.sessionId, version: entry.version };
+        if (!selected || selected.sessionId !== args.sessionId || selected.version > entry.version)
+          return recover(new Error("Unknown evidence observation."));
+        const ref = committedObservationRef(snapshot, entry.sessionId, selected.version);
+        const key = `${args.sessionId}:${ref}`;
+        let offset: number;
+        try {
+          offset = parseCursor(args.cursor, "read", key, Number.MAX_SAFE_INTEGER);
+        } catch (error) {
+          return recover(error);
+        }
+        const source = await loadVersion(snapshot, entry.sessionId, selected.version);
+        const rows = canonicalMessages(
+          snapshot,
+          entry.sessionId,
+          selected.version,
+          source.messages,
+          options.includeReasoning &&
+            target.reasoningVisible &&
+            entry.reasoningVisible &&
+            source.reasoningVisible,
+        );
+        if (offset > rows.length) return recover(new Error("Invalid cursor."));
+        let chosen: ReturnType<typeof page<MonitorEvidenceMessage>>;
+        try {
+          chosen = page(rows, offset);
+        } catch (error) {
+          return recover(error);
+        }
+        if (signal.aborted) throw new Error("Transcript investigation was cancelled.");
+        await assertTranscriptQueryAccess(snapshot);
+        options.onPage(chosen.rows);
+        return {
+          ok: true,
+          rows: chosen.rows,
+          observationRef: ref,
+          remaining: rows.length - chosen.nextOffset,
+          ...(chosen.nextOffset < rows.length
+            ? { nextCursor: cursor("read", key, chosen.nextOffset) }
+            : {}),
+        };
+      });
+    },
+  };
+  const piTools: AgentTool[] = [queryTranscriptsTool, readTranscriptTool];
   return {
     piTools,
     initialEvidence,

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { db } from "./db";
 import { evidenceMessages, monitorSessionAlias } from "./monitor-tools";
 import type { MonitorEvidenceMessage } from "./monitor-tools";
@@ -271,77 +271,78 @@ export function createCommittedEvidenceTools(
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
     details: {},
   });
-  const piTools = [
-    defineTool({
-      name: "search_transcripts",
-      label: "Search owner transcripts",
-      description:
-        "Case-sensitive literal search of committed monitor-visible owner evidence. Paths are leads, not filesystem identity. Use opaque cursors only.",
-      parameters: Type.Object(
-        {
-          query: Type.String({ minLength: 1, maxLength: MAX_QUERY_LENGTH }),
-          cursor: Type.Optional(Type.String({ maxLength: 512 })),
-        },
-        { additionalProperties: false },
-      ),
-      executionMode: "sequential",
-      execute: async (_id, args) =>
-        run(async () => {
-          const found = await searchCommittedTranscripts(snapshot, args.query, includeReasoning);
-          const result = page(found, `search:${digest(args.query)}`, args.cursor);
-          return output({
-            ...result,
-            rows: result.rows.map((row) => {
-              const hit = row as (typeof found)[number];
-              const entry = manifest(snapshot).find(
-                (item) => monitorSessionAlias(snapshot, item.sessionId) === hit.sessionId,
-              )!;
-              const { version: _version, ...publicHit } = hit;
-              return {
-                ...publicHit,
-                observationRef: observationRef(snapshot, entry.sessionId, hit.version),
-                latestObservationRef: observationRef(snapshot, entry.sessionId, entry.version),
-                latestObservedAt: entry.observedAt,
-              };
-            }),
-          });
-        }),
-    }),
-    defineTool({
-      name: "read_evidence",
-      label: "Read exact transcript version",
-      description:
-        "Read one immutable version from the committed owner manifest. Source and current visibility policy apply.",
-      parameters: Type.Object(
-        {
-          sessionId: Type.String({ minLength: 1, maxLength: 128 }),
-          observationRef: Type.String({ minLength: 1, maxLength: 64 }),
-          cursor: Type.Optional(Type.String({ maxLength: 512 })),
-        },
-        { additionalProperties: false },
-      ),
-      executionMode: "sequential",
-      execute: async (_id, args) =>
-        run(async () => {
-          const entry = manifest(snapshot).find(
-            (item) => monitorSessionAlias(snapshot, item.sessionId) === args.sessionId,
-          );
-          if (!entry) throw new Error("Unknown evidence session.");
-          const version = Array.from({ length: entry.version }, (_, offset) => offset + 1).find(
-            (candidate) =>
-              observationRef(snapshot, entry.sessionId, candidate) === args.observationRef,
-          );
-          if (!version) throw new Error("Unknown evidence version.");
-          return output(
-            page(
-              await readCommittedTranscript(snapshot, args.sessionId, version, includeReasoning),
-              `read:${args.sessionId}:${args.observationRef}`,
-              args.cursor,
-            ),
-          );
-        }),
-    }),
-  ];
+  const searchTranscriptsParameters = Type.Object(
+    {
+      query: Type.String({ minLength: 1, maxLength: MAX_QUERY_LENGTH }),
+      cursor: Type.Optional(Type.String({ maxLength: 512 })),
+    },
+    { additionalProperties: false },
+  );
+  const searchTranscriptsTool: AgentTool<typeof searchTranscriptsParameters> = {
+    name: "search_transcripts",
+    label: "Search owner transcripts",
+    description:
+      "Case-sensitive literal search of committed monitor-visible owner evidence. Paths are leads, not filesystem identity. Use opaque cursors only.",
+    parameters: searchTranscriptsParameters,
+    executionMode: "sequential",
+    execute: async (_id, args) =>
+      run(async () => {
+        const found = await searchCommittedTranscripts(snapshot, args.query, includeReasoning);
+        const result = page(found, `search:${digest(args.query)}`, args.cursor);
+        return output({
+          ...result,
+          rows: result.rows.map((row) => {
+            const hit = row as (typeof found)[number];
+            const entry = manifest(snapshot).find(
+              (item) => monitorSessionAlias(snapshot, item.sessionId) === hit.sessionId,
+            )!;
+            const { version: _version, ...publicHit } = hit;
+            return {
+              ...publicHit,
+              observationRef: observationRef(snapshot, entry.sessionId, hit.version),
+              latestObservationRef: observationRef(snapshot, entry.sessionId, entry.version),
+              latestObservedAt: entry.observedAt,
+            };
+          }),
+        });
+      }),
+  };
+  const readEvidenceParameters = Type.Object(
+    {
+      sessionId: Type.String({ minLength: 1, maxLength: 128 }),
+      observationRef: Type.String({ minLength: 1, maxLength: 64 }),
+      cursor: Type.Optional(Type.String({ maxLength: 512 })),
+    },
+    { additionalProperties: false },
+  );
+  const readEvidenceTool: AgentTool<typeof readEvidenceParameters> = {
+    name: "read_evidence",
+    label: "Read exact transcript version",
+    description:
+      "Read one immutable version from the committed owner manifest. Source and current visibility policy apply.",
+    parameters: readEvidenceParameters,
+    executionMode: "sequential",
+    execute: async (_id, args) =>
+      run(async () => {
+        const entry = manifest(snapshot).find(
+          (item) => monitorSessionAlias(snapshot, item.sessionId) === args.sessionId,
+        );
+        if (!entry) throw new Error("Unknown evidence session.");
+        const version = Array.from({ length: entry.version }, (_, offset) => offset + 1).find(
+          (candidate) =>
+            observationRef(snapshot, entry.sessionId, candidate) === args.observationRef,
+        );
+        if (!version) throw new Error("Unknown evidence version.");
+        return output(
+          page(
+            await readCommittedTranscript(snapshot, args.sessionId, version, includeReasoning),
+            `read:${args.sessionId}:${args.observationRef}`,
+            args.cursor,
+          ),
+        );
+      }),
+  };
+  const piTools = [searchTranscriptsTool, readEvidenceTool];
   return {
     piTools,
     get retrievalCalls() {
