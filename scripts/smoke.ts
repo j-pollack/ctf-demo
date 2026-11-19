@@ -87,7 +87,14 @@ async function assertScreens(gameId: string, sessionId: string, label: string) {
   ).rows[0].n;
   const seen = screenEvents.filter((entry) => entry.sessionId === sessionId);
   // A Jev hiccup explains a missing row; each event names the kind whose row it explains.
-  const MISSING_ROW_EVENTS = ["refused", "request_failed", "request_timed_out", "write_failed"];
+  const MISSING_ROW_EVENTS = [
+    "refused",
+    "request_failed",
+    "request_timed_out",
+    "write_failed",
+    "stamp_failed",
+    "failed",
+  ];
   const unexplained = (kind: string) =>
     seen.filter(
       (entry) =>

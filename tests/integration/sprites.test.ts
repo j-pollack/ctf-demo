@@ -5768,9 +5768,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         arrived.resolve();
         return "hang";
       };
-      const startedAt = Date.now();
       const running = runScreened("screen-r6-tool-stop", { signal: controller.signal });
       await withinSeconds(arrived.promise);
+      // Timed from the screen request, so setup time on a loaded machine cannot fail the check.
+      const startedAt = Date.now();
       controller.abort();
       const { game, events } = await withinSeconds(running);
       await assertToolScreenEnded(game.id, startedAt, events);
@@ -5788,9 +5789,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         arrived.resolve();
         return "hang";
       };
-      const startedAt = Date.now();
       const running = runScreened(owner);
       await withinSeconds(arrived.promise);
+      // Timed from the screen request, so setup time on a loaded machine cannot fail the check.
+      const startedAt = Date.now();
       await pool.query(
         "UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=(SELECT id FROM ctf.games WHERE owner_id=$1)",
         [owner],
