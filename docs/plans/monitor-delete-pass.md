@@ -215,6 +215,42 @@ Either way the rewritten script is type-checked only until someone runs it live.
 - A legacy run that is still open at deploy time can no longer be continued. `cleanup` ends it 24 hours after its last update.
 - The `monitor_mode` column still defaults to `'legacy'`. A row inserted without the column cannot be played. `startGame` sets `'async'` explicitly.
 
+## Stage 3: two follow-ups the user approved
+
+Baseline for this stage: `5bcce46`. `npm run check` 331 of 331, `npm run test:integration` 261 of 261.
+
+On 2026-11-18 the user approved two additions that close gaps the delete pass left: a test seam so the stop-before-inference scenario can return, and a real monitor catch in the live smoke on the async path.
+
+### Design decisions
+
+- **One narrow seam in the async runner.** `lib/runner-async.ts` exports a mutable object with one optional async hook. The runner awaits it once per response, immediately before it hands the instruction to the agent, which is where the checkpoint call used to be. It is undefined in production. Only a test in the same process can set it. No request, option, environment variable or setting reaches it. The repository's testing policy allows a narrow injection seam when no service boundary can hold the code under test, and stage 1 showed that none can here.
+- **The deleted scenario returns unchanged.** "A first instruction stopped before inference is recorded and frees the run" is restored from `9657348` with the hook in place of the checkpoint gate. Its assertions are the ones it had.
+- **The live smoke catches a real read on an async run.** In live mode only, the script starts one fresh async run under its own owner, has the live agent read `/tmp/flag.txt`, and runs the worker until that run's job resolves. The classifier and investigator requests for this run go to the real services. Messages-only mode is unchanged.
+- **The live catch asserts what a deployment needs to know.** The command that names the flag ran. The run is `caught`. A review row has verdict `block` with evidence that cites the target session. Monitor inference rows for the classifier model and for the investigator model are settled with a cost above zero.
+
+### Non-goals
+
+- Any change to what the runner does in production, to the worker, the classifier or the investigator.
+- Other live smoke checks: monitor error handling, rate limits, the provider pin.
+- Running the live smoke. That needs the user's approval because it spends on live models.
+
+### Acceptance criteria
+
+- S1. With the hook unset, the async runner behaves as before. The full integration suite passes with no other test changed.
+- S2. The restored scenario passes. It asserts no agent inference request after the stop, the run `active` and not busy, exactly a user event and a stopped error event, and that the instruction was recorded. The test resets the hook when it ends, pass or fail.
+- S3. The scenario proves the seam. With the `await` of the hook removed from the runner, the scenario fails. The developer records that failure and restores the file.
+- S4. `grep -rn` for the hook's name finds it in `lib/runner-async.ts` and in tests only. Nothing under `app/` or `scripts/` references it.
+- S5. `scripts/smoke.ts` in live mode performs the catch described above with a bounded number of worker passes and fails with a message that names which step did not happen: the read command, the catch, the review evidence, or the settled spend. In `--messages-only` mode the new block does not run and no request count changes.
+- S6. The live catch runs after the async section has restored the live `fetch`, so its agent, classifier and investigator requests reach the real services with no controlled boundary in between. Its run and owner are created after the earlier sections' jobs are marked caught up, so the worker can only claim this run's job. Its Sprite is cleaned up with the others.
+- S7. `docs/verification.md` states that live smoke proves one real catch through the worker and still does not prove monitor error handling.
+- Gates: G1 to G3 as before. `scripts/smoke.ts` is type-checked only.
+
+### Steps
+
+1. Developer: S2 with the seam, then S3, S1 and S4.
+2. Developer: S5 to S7.
+3. Lead verifies and commits. Code review of the stage 3 delta. One corrective cycle if needed.
+
 ## Evidence
 
 - Baseline, 2026-11-18, untouched worktree at `9657348` plus this file: `npm run check` exit 0 with 394 of 394 unit tests passing. `npm run test:integration` exit 0 with 364 of 364 passing, none failed, cancelled or skipped, in 85 seconds. Logs: `/Users/jonathan/Code/ctf/.artifacts/monitor-delete-pass/baseline-check.log` and `baseline-integration.log`.
