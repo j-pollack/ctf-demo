@@ -11,7 +11,12 @@ import {
 import { providerTranscript } from "../lib/inference";
 import { runInvestigatorDriver } from "../lib/investigator-driver";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
-import { createInvestigatorAgent, guardInvestigatorStream } from "../lib/monitor-review";
+import {
+  createInvestigatorAgent,
+  guardInvestigatorStream,
+  validateReviewScope,
+  type RunMonitorReviewInput,
+} from "../lib/monitor-review";
 
 const SYSTEM_PROMPT = "Review the target.";
 
@@ -337,4 +342,45 @@ test("replayed reasoning is counted once in the provider context", async () => {
   assert.equal(calls, 3);
   assert.equal(failure, undefined);
   assert.ok(done);
+});
+
+test("review scope accepts only the captured target of this game and owner", () => {
+  const session = { id: "session-1", messages: [] };
+  const snapshot = {
+    snapshotId: "snapshot-1",
+    gameId: "game-1",
+    userId: "owner-1",
+    targetSessionId: "session-1",
+    revision: 1,
+    omittedSessions: 0,
+    sessions: [session],
+    commands: [],
+  };
+  const input = (overrides: Record<string, unknown> = {}, snapshotOverrides = {}) =>
+    ({
+      game: { id: "game-1", owner_id: "owner-1" },
+      reviewId: "review-1",
+      snapshot: { ...snapshot, ...snapshotOverrides },
+      currentSessionId: "session-1",
+      target: { kind: "transcript" },
+      riskSignals: {},
+      signal: new AbortController().signal,
+      ...overrides,
+    }) as unknown as RunMonitorReviewInput;
+  const scope = validateReviewScope(input());
+  assert.deepEqual(scope.target, { kind: "transcript" });
+  assert.deepEqual(scope.snapshot, snapshot);
+  assert.notEqual(scope.snapshot, snapshot, "the snapshot is copied");
+  const mismatch = /Monitor review scope does not match the captured snapshot\./;
+  assert.throws(
+    () => validateReviewScope(input({}, { targetSessionId: "session-0" })),
+    mismatch,
+    "a historical same-owner session is not the target",
+  );
+  assert.throws(() => validateReviewScope(input({}, { userId: "owner-2" })), mismatch);
+  assert.throws(() => validateReviewScope(input({}, { gameId: "game-2" })), mismatch);
+  assert.throws(
+    () => validateReviewScope(input({ target: { kind: "command" } })),
+    /Invalid monitor target\./,
+  );
 });

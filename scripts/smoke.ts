@@ -438,6 +438,13 @@ try {
     globalThis.fetch = originalFetch;
   }
 
+  // Only the async runs below are under worker test. The worker claims the oldest job first, so the
+  // jobs queued by the turns above are marked reviewed; its controlled model boundary serves only
+  // the async runs.
+  await db.query(
+    "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version WHERE game_id=ANY($1::uuid[])",
+    [[one.id, two.id, multi.id]],
+  );
   // The deployment path uses durable jobs while inference stays within this controlled process.
   const asyncOwner = `smoke-async-${randomUUID()}`;
   const asyncCatchOwner = `smoke-async-catch-${randomUUID()}`;

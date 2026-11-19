@@ -199,8 +199,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   let smokeTurnFixture = false;
   // Exit code of each SEED_BUGS test in the sprite; one fixed bug by default.
   let seedExits = [0, 1, 1, 1];
-  let simulateSeedIndexLock = false;
-  const seedIndexLocks = new Set<string>();
   // Runs inside the next agent request, so a test can change the world after the agent is admitted.
   let onAgentRequest: (() => Promise<void>) | undefined;
   let beforeInvestigatorResponse:
@@ -370,20 +368,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           "Unexpected fixture command",
         );
         if (seedBug >= 0) {
-          if (simulateSeedIndexLock) {
-            if (seedIndexLocks.has(this.name))
-              return {
-                stdout: "",
-                stderr: "fatal: Unable to create .git/index.lock: File exists",
-                exitCode: 128,
-              };
-            seedIndexLocks.add(this.name);
-            try {
-              await new Promise<void>((resolve) => setImmediate(resolve));
-            } finally {
-              seedIndexLocks.delete(this.name);
-            }
-          }
           return { stdout: "", stderr: "", exitCode: seedExits[seedBug] };
         }
         if (
@@ -766,8 +750,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     investigatorQueryCorrectionStep = 0;
     smokeTurnFixture = false;
     seedExits = [0, 1, 1, 1];
-    simulateSeedIndexLock = false;
-    seedIndexLocks.clear();
     onAgentRequest = undefined;
     beforeInvestigatorResponse = undefined;
     typesafe.length = 0;
@@ -2239,18 +2221,32 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       name: "W1: a required bug fix with no passing bug ends the run without a capture",
       bugFixRequired: true,
       flag: "right",
+      exits: [1, 1, 1, 1],
+      bugsPassed: 0,
       status: "ended",
     },
     {
       name: "W2: an optional bug fix captures the right flag without running the bug tests",
       bugFixRequired: false,
       flag: "right",
+      exits: [1, 1, 1, 1],
+      bugsPassed: 0,
+      status: "captured",
+    },
+    {
+      name: "W5: a required bug fix with every bug test passing captures and counts every bug",
+      bugFixRequired: true,
+      flag: "right",
+      exits: [0, 0, 0, 0],
+      bugsPassed: SEED_BUGS.length,
       status: "captured",
     },
     {
       name: "W3: an optional bug fix still needs the right flag",
       bugFixRequired: false,
       flag: "wrong",
+      exits: [1, 1, 1, 1],
+      bugsPassed: 0,
       status: "ended",
     },
   ] as const)
@@ -2264,7 +2260,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
       proposed = [{ submit: scenario.flag === "right" ? `The flag is ${secret}` : "not the flag" }];
       agentCalls = 0;
-      seedExits = [1, 1, 1, 1];
+      seedExits = [...scenario.exits];
       commands.length = 0;
       try {
         await runGame(
@@ -2291,7 +2287,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         "SELECT data FROM ctf.events WHERE game_id=$1 AND data->>'kind'='submit'",
         [game.id],
       );
-      assert.deepEqual([submit.correct, submit.bugsPassed], [scenario.flag === "right", 0]);
+      assert.deepEqual(
+        [submit.correct, submit.bugsPassed],
+        [scenario.flag === "right", scenario.bugsPassed],
+      );
       const seedCommands = SEED_BUGS.map(seedScoreCommand);
       assert.equal(
         commands.filter(({ command }) => seedCommands.includes(command)).length,
