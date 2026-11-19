@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Value } from "typebox/value";
+import { db } from "./db";
+import { reconstructTranscript } from "./transcript-evidence";
 import {
   evidenceMessages,
   monitorSessionAlias,
   type MonitorEvidenceMessage,
 } from "./monitor-tools";
-import { loadVersion } from "./transcript-search";
 import {
   assertTranscriptQueryAccess,
   committedObservationRef,
@@ -38,6 +39,51 @@ export type TranscriptInvestigationOptions = {
 
 function digest(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function manifest(snapshot: MonitorSnapshot) {
+  if (!snapshot.evidenceManifest) throw new Error("Committed evidence is unavailable.");
+  return snapshot.evidenceManifest;
+}
+
+export async function loadVersion(snapshot: MonitorSnapshot, sessionId: string, version: number) {
+  const source = manifest(snapshot).find((entry) => entry.sessionId === sessionId);
+  if (!source || version > source.version) throw new Error("Unknown evidence version.");
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const {
+      rows: [permission],
+    } = await client.query<{
+      ownerId: string;
+      reasoningVisible: boolean;
+      reviewReasoningVisible: boolean;
+    }>(
+      `SELECT g.owner_id AS "ownerId",g.monitor_reasoning AS "reasoningVisible",
+         target.monitor_reasoning AS "reviewReasoningVisible"
+       FROM ctf.agent_sessions s JOIN ctf.games g ON g.id=s.game_id
+         JOIN ctf.games target ON target.id=$2 AND target.owner_id=g.owner_id WHERE s.id=$1`,
+      [sessionId, snapshot.gameId],
+    );
+    const capturedReviewReasoning =
+      manifest(snapshot).find((item) => item.sessionId === snapshot.targetSessionId)
+        ?.reasoningVisible ?? false;
+    if (
+      !permission ||
+      permission.ownerId !== snapshot.userId ||
+      (source.reasoningVisible && !permission.reasoningVisible) ||
+      (capturedReviewReasoning && !permission.reviewReasoningVisible)
+    )
+      throw new Error("Evidence capture is no longer available under current permissions.");
+    const messages = await reconstructTranscript(client, sessionId, version);
+    await client.query("COMMIT");
+    return { messages, reasoningVisible: source.reasoningVisible && permission.reasoningVisible };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function canonicalMessages(

@@ -12,7 +12,6 @@ import { assertLease, reserveInference, settleInference, transaction, type GameR
 import { db } from "./db";
 import { GameError, inputCeiling, MODELS, PLAYER_AGENT_EFFORT } from "./policy";
 import type { AgentEffort } from "./types";
-import { assertMonitorAuthorization } from "./run-lifecycle";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 
 export type TrustedInferenceOptions = {
@@ -21,8 +20,6 @@ export type TrustedInferenceOptions = {
   reviewId?: string;
   effort?: AgentEffort;
   maxOutputTokens?: number;
-  finalizationToken?: string;
-  pendingReviewId?: string;
   jobClaim?: MonitorJobClaim;
   stage?: string;
   singleAttempt?: boolean;
@@ -399,8 +396,6 @@ export async function infer(
     {
       sessionId,
       reviewId: trusted.reviewId,
-      finalizationToken: trusted.finalizationToken,
-      pendingReviewId: trusted.pendingReviewId,
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: trusted.jobClaim,
     },
@@ -434,26 +429,15 @@ export async function infer(
       requestSignal.throwIfAborted();
       return;
     }
-    if (!trusted.jobClaim && (!game.lease || !trusted.reviewId))
-      throw new GameError("Monitor review authorization is required.", 409);
+    const { jobClaim } = trusted;
+    if (!jobClaim) throw new GameError("Monitor review authorization is required.", 409);
     await transaction(async (client) => {
       const { rows } = await client.query<{ execution_generation: string }>(
         "SELECT execution_generation FROM ctf.games WHERE id=$1 FOR UPDATE",
         [game.id],
       );
-      if (
-        !rows[0] ||
-        (!trusted.jobClaim &&
-          Number(rows[0].execution_generation) !== Number(game.execution_generation ?? 0))
-      )
-        throw new GameError("This response has stopped.", 409);
-      if (trusted.jobClaim) await assertMonitorJobClaim(client, trusted.jobClaim);
-      else
-        await assertMonitorAuthorization(client, game.id, sessionId, game.lease!, {
-          reviewId: trusted.reviewId,
-          finalizationToken: trusted.finalizationToken,
-          pendingReviewId: trusted.pendingReviewId,
-        });
+      if (!rows[0]) throw new GameError("This response has stopped.", 409);
+      await assertMonitorJobClaim(client, jobClaim);
     });
     requestSignal.throwIfAborted();
   };

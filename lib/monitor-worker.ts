@@ -78,7 +78,6 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
     executionGeneration: Number(game.execution_generation),
     jobClaim: claim,
-    reserveBudget: true,
   });
   await updateMonitorClassifierSignals(reviewId, classifier.signals);
   await db.query(

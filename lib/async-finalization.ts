@@ -3,7 +3,18 @@ import { randomUUID } from "node:crypto";
 import { transaction } from "./games";
 import { GameError, hasSecret } from "./policy";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
-import type { ReviewDecision } from "./run-lifecycle";
+
+export type ReviewDecision = {
+  verdict: "allow" | "block" | "unknown";
+  reason?: string;
+  evidence?: unknown;
+  operationalError?: string;
+  latencyMs?: number;
+  calls?: number;
+  retrievalCalls?: number;
+  initialEvidenceCount?: number;
+  retrievedRefs?: string[];
+};
 
 export async function catchAsyncRun(
   claim: MonitorJobClaim,

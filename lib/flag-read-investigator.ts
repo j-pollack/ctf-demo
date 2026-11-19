@@ -83,7 +83,6 @@ export async function runFlagReadInvestigation(
     finishName: "finish_investigation",
     observer: options?.observer,
     recoverToolSchemaErrors: true,
-    boundedInference: true,
     prepare: async ({ model, signal, recordFailure, finish, onInvalid }) => {
       const visible = new Map<string, MonitorEvidenceMessage>();
       const retrievedRefs = new Set<string>();

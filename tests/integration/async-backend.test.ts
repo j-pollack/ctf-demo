@@ -305,7 +305,6 @@ await test(
                 signal: controller.signal,
                 executionGeneration: Number(game.execution_generation),
                 jobClaim: claim!,
-                reserveBudget: true,
               });
               if (scenario === "retry-success") assert.equal((await classification).suspicion, 0);
               else

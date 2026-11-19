@@ -3169,6 +3169,28 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.ok(!sent.some(({ data }) => (data as GameEvent | null)?.kind === "error"));
   });
 
+  await t.test("an instruction to a legacy run is refused before anything runs", async () => {
+    const who = await member();
+    const game = await startLegacyGame(who.id);
+    const requestsBefore = requests.length;
+    const typesafeBefore = typesafe.length;
+    const eventCount = async () =>
+      (await pool.query("SELECT count(*)::int AS n FROM ctf.events WHERE game_id=$1", [game.id]))
+        .rows[0].n;
+    const eventsBefore = await eventCount();
+    const response = await instruct(who, game.id);
+    assert.equal(response.status, 410);
+    assert.deepEqual(await response.json(), { error: "This run can no longer continue." });
+    assert.deepEqual(await sessionLease(game.id), {
+      lease: null,
+      lease_until: null,
+      stop_requested_at: null,
+    });
+    assert.equal(await eventCount(), eventsBefore, "no event recorded");
+    assert.equal(requests.length, requestsBefore, "no agent or monitor inference");
+    assert.equal(typesafe.length, typesafeBefore, "no monitoring");
+  });
+
   await t.test("starting a new run stops the open run's responses and ends it", async () => {
     const { POST } = await import("../../app/api/games/route");
     const start = (who: { cookie: string }) =>
@@ -3216,12 +3238,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     // A legacy response cannot be asked to stop, so its run is still refused, and at once.
     const other = await member();
     const legacy = await startLegacyGame(other.id);
-    const { claimGameSession } = await import("../../lib/games");
-    const leased = await claimGameSession(legacy.id, legacy.id, other.id);
+    // A legacy run can no longer be claimed, so the response it once held is set by SQL.
+    const lease = randomUUID();
+    await pool.query(
+      "UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()+interval '270 seconds' WHERE id=$1",
+      [legacy.id, lease],
+    );
     const refused = await withinSeconds(start(other), 2);
     assert.equal(refused.status, 409);
     assert.equal((await readRun(other, legacy.id)).status, "active");
-    await releaseSessionLease(legacy.id, legacy.id, leased.lease!);
+    await releaseSessionLease(legacy.id, legacy.id, lease);
   });
 
   await t.test("an admin-set attacker model pins new runs and later instructions", async () => {

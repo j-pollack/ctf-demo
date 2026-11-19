@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 import { db } from "./db";
 import { isAdmin } from "./admin";
 import { currentGameRules } from "./game-rules";
-import { ASYNC_MONITOR_VERSION, MONITOR_TOKEN_MICRODOLLARS } from "./control";
+import { ASYNC_MONITOR_VERSION } from "./control";
 import {
   AGENT_MODEL,
   PLAYER_AGENT_EFFORT,
@@ -31,8 +31,6 @@ import { configuredFlagEndpoint, flagEndpointUrl } from "./flag-submission-proto
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 import { listSessionSummaries, claimSession } from "./sessions";
-import { assertMonitorAuthorization } from "./run-lifecycle";
-import { expireFinalizations } from "./run-lifecycle";
 
 export type GameRow = {
   id: string;
@@ -355,23 +353,6 @@ export async function record(
 export async function cleanup() {
   await reconcileInference();
   await expireUnverifiableHolds();
-  const expiredFinalizations = await expireFinalizations();
-  if (expiredFinalizations.length) {
-    const { rows } = await db.query<{ sprite_name: string }>(
-      "SELECT sprite_name FROM ctf.games WHERE id=ANY($1::uuid[])",
-      [expiredFinalizations],
-    );
-    await Promise.all(
-      rows.map(async ({ sprite_name }) => {
-        try {
-          const { deleteSpriteIfEligible } = await import("./monitor-commands");
-          await deleteSpriteIfEligible(sprite_name);
-        } catch {
-          // The terminal Sprite remains eligible for the ordinary cleanup retry below.
-        }
-      }),
-    );
-  }
   await db.query(
     "UPDATE ctf.games SET status='ended',state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE status='creating' AND updated_at<now()-interval '5 minutes'",
   );
@@ -699,8 +680,6 @@ export async function reserveInference(
   context: {
     sessionId?: string;
     reviewId?: string;
-    finalizationToken?: string;
-    pendingReviewId?: string;
     executionGeneration?: number;
     jobClaim?: MonitorJobClaim;
   } = {},
@@ -740,16 +719,8 @@ export async function reserveInference(
     )
       throw new GameError("This response has stopped.", 409);
     if (role === "monitor") {
-      if (context.jobClaim) {
-        await assertMonitorJobClaim(client, context.jobClaim);
-      } else if (!lease || !context.reviewId)
-        throw new GameError("Monitor review authorization is required.", 409);
-      else
-        await assertMonitorAuthorization(client, gameId, sessionId, lease, {
-          reviewId: context.reviewId,
-          finalizationToken: context.finalizationToken,
-          pendingReviewId: context.pendingReviewId,
-        });
+      if (!context.jobClaim) throw new GameError("Monitor review authorization is required.", 409);
+      await assertMonitorJobClaim(client, context.jobClaim);
     }
     const available =
       Number(game.budget_microdollars) -
@@ -816,108 +787,6 @@ export async function reserveInference(
       [id, gameId, day, role, model, tokens, cost, sessionId, context.reviewId ?? null],
     );
     return { id, maxTokens, tokens, cost };
-  });
-}
-// Charges one Typesafe monitor call: a pre-settled inference row plus the day's and the run's spend,
-// in one transaction. It never reserves, so reconcile/expire (which need settled_at IS NULL) skip it.
-export async function chargeMonitor(
-  gameId: string,
-  lease: string | null,
-  inputTokens: number,
-  sessionId = gameId,
-  reviewId?: string,
-  executionGeneration?: number,
-  authorization: {
-    finalizationToken?: string;
-    pendingReviewId?: string;
-    dispatched?: boolean;
-    jobClaim?: MonitorJobClaim;
-  } = {},
-) {
-  if (!Number.isFinite(inputTokens) || inputTokens < 0) throw new Error("Invalid monitor usage.");
-  // Round fulfilled classifier usage to integer microdollars.
-  const cost = Math.round(inputTokens * MONITOR_TOKEN_MICRODOLLARS);
-  const tokens = Math.ceil(inputTokens);
-  await transaction(async (client) => {
-    const day = (await client.query("SELECT (now() AT TIME ZONE 'UTC')::date::text AS day")).rows[0]
-      .day as string;
-    await client.query("INSERT INTO ctf.daily_spend(day) VALUES($1) ON CONFLICT DO NOTHING", [day]);
-    const spend = (
-      await client.query("SELECT * FROM ctf.daily_spend WHERE day=$1 FOR UPDATE", [day])
-    ).rows[0];
-    const game = (
-      await client.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId])
-    ).rows[0];
-    const session =
-      game &&
-      (
-        await client.query<{ lease: string; lease_until: Date }>(
-          "SELECT lease,lease_until FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE",
-          [gameId, sessionId],
-        )
-      ).rows[0];
-    if (!game || !session) throw new GameError("This response has stopped.", 409);
-    if (authorization.jobClaim) {
-      const { rowCount } = await client.query(
-        `SELECT 1 FROM ctf.monitor_reviews WHERE id=$1 AND game_id=$2 AND session_id=$3
-         AND job_id=$4 AND job_claim_token=$5 FOR UPDATE`,
-        [
-          reviewId,
-          gameId,
-          sessionId,
-          authorization.jobClaim.jobId,
-          authorization.jobClaim.claimToken,
-        ],
-      );
-      if (!rowCount) throw new GameError("The dispatched monitor review was not found.", 409);
-    } else if (reviewId && authorization.dispatched) {
-      const { rowCount } = await client.query(
-        `SELECT id FROM ctf.monitor_reviews
-         WHERE id=$1 AND game_id=$2 AND session_id=$3 AND originating_lease=$4 FOR UPDATE`,
-        [reviewId, gameId, sessionId, lease],
-      );
-      if (!rowCount) throw new GameError("The dispatched monitor review was not found.", 409);
-    } else if (reviewId && session.lease !== lease) {
-      throw new GameError("This response has stopped.", 409);
-    }
-    if (
-      !authorization.dispatched &&
-      !authorization.jobClaim &&
-      ((executionGeneration !== undefined &&
-        Number(game.execution_generation) !== executionGeneration) ||
-        !lease ||
-        session.lease !== lease ||
-        new Date(session.lease_until).getTime() <= Date.now())
-    )
-      throw new GameError("This response has stopped.", 409);
-    if (reviewId && lease && !authorization.dispatched && !authorization.jobClaim)
-      await assertMonitorAuthorization(client, gameId, sessionId, lease, {
-        reviewId,
-        finalizationToken: authorization.finalizationToken,
-        pendingReviewId: authorization.pendingReviewId,
-      });
-    else if (!authorization.dispatched && !authorization.jobClaim && game.status !== "active")
-      throw new GameError("This response has stopped.", 409);
-    if (
-      !authorization.dispatched &&
-      Number(spend.charged) + Number(spend.reserved) >= DAILY_CAP_MICRODOLLARS
-    )
-      throw new GameError(
-        "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
-        429,
-      );
-    const { rowCount: inserted } = await client.query(
-      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,generation_id,settled_at,session_id,review_id)
-      VALUES($1,$2,$3,'monitor','typesafe',$4,$5,$4,$5,NULL,now(),$6,$7)
-      ON CONFLICT DO NOTHING`,
-      [randomUUID(), gameId, day, tokens, cost, sessionId, reviewId ?? null],
-    );
-    if (!inserted) return;
-    await client.query("UPDATE ctf.daily_spend SET charged=charged+$2 WHERE day=$1", [day, cost]);
-    await client.query(
-      "UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2 WHERE id=$1",
-      [gameId, cost],
-    );
   });
 }
 export async function settleInference(

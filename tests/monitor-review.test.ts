@@ -19,7 +19,6 @@ test("the bounded investigator respects caller cancellation and expired deadline
   const config = {
     systemPrompt: SYSTEM_PROMPT,
     finishName: "finish",
-    boundedInference: true,
     prepare: () => assert.fail("cancelled or expired work must not prepare an investigator"),
   };
   await assert.rejects(

@@ -230,7 +230,6 @@ async function reviewCase(
       signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: claim,
-      reserveBudget: true,
     });
     await modules.sessions.updateMonitorClassifierSignals(reviewId, classifier.signals);
     const result = await modules.investigator.runFlagReadInvestigation(

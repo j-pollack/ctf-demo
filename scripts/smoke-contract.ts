@@ -13,7 +13,6 @@ export function smokeReviewErrorCategory(value: string) {
   if (/reason|400.character|too.long/i.test(value)) return "decision-reason";
   if (/duplicate/i.test(value)) return "duplicate-citation";
   if (/excerpt|citation|evidence.*ref|reference/i.test(value)) return "citation";
-  if (/finish_review/i.test(value)) return "finish-review";
   if (/retrieval|cursor|search/i.test(value)) return "retrieval";
   if (/deadline|timeout|timed out|aborted/i.test(value)) return "deadline-or-abort";
   if (/provider|openrouter|429/i.test(value)) return "provider";

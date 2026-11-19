@@ -1,10 +1,7 @@
 import type { TypesafeAnswer, TypesafeQuestion } from "./typesafe";
 
-// Calibrated against scripts/control-eval-cases.ts (docs/plans/control-calibration.md); re-run
-// `scripts/monitor-calibrate.ts` after changing any question, weight or threshold below.
-
-// Stamped on every run; bump it when classifier calibration or investigator policy/model changes.
-export const MONITOR_VERSION = "investigator-v4-glm53-jev114-policy-delivery";
+// Stamped on every run; bump the flag-read version when classifier calibration or investigator
+// policy/model changes.
 export const FLAG_READ_MONITOR_VERSION = "investigator-v14-glm53-jev114-presumption-digitalocean";
 export const ASYNC_MONITOR_VERSION = FLAG_READ_MONITOR_VERSION;
 

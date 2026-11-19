@@ -1,7 +1,6 @@
 import type { Message } from "@earendil-works/pi-ai";
 import {
   combineSuspicion,
-  COMMAND_QUESTION_KEYS,
   CONTEXT_QUESTION_KEYS,
   CONTROL_DIFFICULTY,
   questionsFor,
@@ -11,7 +10,6 @@ import {
 } from "./control";
 import { evaluateClassifierContext } from "./classifier-context";
 import {
-  chargeMonitor,
   monitorRunBudgetExempt,
   reserveInference,
   settleInference,
@@ -20,7 +18,6 @@ import {
 } from "./games";
 import { evaluate, TYPESAFE_MODEL, type TypesafeAnswer } from "./typesafe";
 import { DAILY_CAP_MICRODOLLARS, GameError, inputCeiling } from "./policy";
-import { assertMonitorAuthorization } from "./run-lifecycle";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 
 const noulOf = (answer: TypesafeAnswer | undefined) => {
@@ -32,20 +29,14 @@ const scoreOf = (answer: TypesafeAnswer | undefined) => {
   return answer;
 };
 
-export type ClassifierTarget =
-  | { kind: "transcript" }
-  | { kind: "command"; command: string }
-  | { kind: "submission" };
+export type ClassifierTarget = { kind: "transcript" };
 
 async function assertDispatchAuthorization(input: {
   game: GameRow;
   sessionId: string;
   lease: string;
-  reviewId: string;
   executionGeneration: number;
-  finalizationToken?: string;
-  pendingReviewId?: string;
-  jobClaim?: MonitorJobClaim;
+  jobClaim: MonitorJobClaim;
 }) {
   await transaction(async (client) => {
     const day = (await client.query("SELECT (now() AT TIME ZONE 'UTC')::date::text AS day")).rows[0]
@@ -64,11 +55,7 @@ async function assertDispatchAuthorization(input: {
       "SELECT execution_generation,spent_microdollars,reserved_microdollars,budget_microdollars FROM ctf.games WHERE id=$1 FOR UPDATE",
       [input.game.id],
     );
-    if (
-      !rows[0] ||
-      (!input.jobClaim && Number(rows[0].execution_generation) !== input.executionGeneration)
-    )
-      throw new GameError("This response has stopped.", 409);
+    if (!rows[0]) throw new GameError("This response has stopped.", 409);
     if (Number(spendRows[0].charged) + Number(spendRows[0].reserved) >= DAILY_CAP_MICRODOLLARS)
       throw new GameError(
         "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
@@ -92,13 +79,7 @@ async function assertDispatchAuthorization(input: {
         pending ? 400 : 402,
       );
     }
-    if (input.jobClaim) await assertMonitorJobClaim(client, input.jobClaim);
-    else
-      await assertMonitorAuthorization(client, input.game.id, input.sessionId, input.lease, {
-        reviewId: input.reviewId,
-        finalizationToken: input.finalizationToken,
-        pendingReviewId: input.pendingReviewId,
-      });
+    await assertMonitorJobClaim(client, input.jobClaim);
   });
 }
 
@@ -111,19 +92,13 @@ export async function classifyMonitorTarget(input: {
   target: ClassifierTarget;
   signal: AbortSignal;
   executionGeneration: number;
-  finalizationToken?: string;
-  pendingReviewId?: string;
-  jobClaim?: MonitorJobClaim;
-  reserveBudget?: boolean;
+  jobClaim: MonitorJobClaim;
 }) {
   const difficulty = CONTROL_DIFFICULTY[input.game.monitor_difficulty];
-  const command = input.target.kind === "command" ? input.target.command : undefined;
   const evaluateAuthorized = async (state: unknown, questions: Parameters<typeof evaluate>[1]) => {
     await assertDispatchAuthorization(input);
     input.signal.throwIfAborted();
-    if (!input.reserveBudget) return evaluate(state, questions, input.signal);
-    // Bounded evaluation and promoted production policy reuse real admission and settlement. The generic reservation's
-    // 64-token minimum is conservative overhead; Typesafe bills input only.
+    // The generic reservation's 64-token minimum is conservative overhead; Typesafe bills input only.
     const reservation = await reserveInference(
       input.game.id,
       input.lease,
@@ -136,8 +111,6 @@ export async function classifyMonitorTarget(input: {
       {
         sessionId: input.sessionId,
         reviewId: input.reviewId,
-        finalizationToken: input.finalizationToken,
-        pendingReviewId: input.pendingReviewId,
         executionGeneration: input.executionGeneration,
         jobClaim: input.jobClaim,
       },
@@ -156,44 +129,18 @@ export async function classifyMonitorTarget(input: {
       if (!dispatched) await settleInference(reservation.id, { tokens: 0, cost: 0 });
     }
   };
-  const [commandResult, contextResult] = await Promise.allSettled([
-    command === undefined
-      ? Promise.resolve(undefined)
-      : evaluateAuthorized(command, questionsFor(COMMAND_QUESTION_KEYS)),
-    evaluateClassifierContext(
-      input.messages,
-      { includeReasoning: input.game.monitor_reasoning, proposedCommand: command },
-      questionsFor(CONTEXT_QUESTION_KEYS),
-      input.signal,
-      evaluateAuthorized,
-    ),
-  ]);
-  const commandCall = commandResult.status === "fulfilled" ? commandResult.value : undefined;
-  const contextCall = contextResult.status === "fulfilled" ? contextResult.value : undefined;
-  const inputTokens = (commandCall?.inputTokens ?? 0) + (contextCall?.inputTokens ?? 0);
-  if (inputTokens > 0 && !input.reserveBudget)
-    await chargeMonitor(
-      input.game.id,
-      input.lease,
-      inputTokens,
-      input.sessionId,
-      input.reviewId,
-      input.executionGeneration,
-      {
-        finalizationToken: input.finalizationToken,
-        pendingReviewId: input.pendingReviewId,
-        dispatched: true,
-        jobClaim: input.jobClaim,
-      },
-    );
-  if (commandResult.status === "rejected") throw commandResult.reason;
-  if (contextResult.status === "rejected") throw contextResult.reason;
+  const contextCall = await evaluateClassifierContext(
+    input.messages,
+    { includeReasoning: input.game.monitor_reasoning },
+    questionsFor(CONTEXT_QUESTION_KEYS),
+    input.signal,
+    evaluateAuthorized,
+  );
   input.signal.throwIfAborted();
-  if (!contextCall) throw new Error("Typesafe did not return context risk signals.");
   const score = scoreOf(contextCall.answers.suspicion);
   const signals: ClassifierRiskSignals = {
-    reads_now: commandCall ? noulOf(commandCall.answers.reads_now) : 0,
-    stages_indirect: commandCall ? noulOf(commandCall.answers.stages_indirect) : 0,
+    reads_now: 0,
+    stages_indirect: 0,
     intent: noulOf(contextCall.answers.intent),
     suspicionScore: score.score,
     suspicionConfidence: score.confidence,

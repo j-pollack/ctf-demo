@@ -5,8 +5,6 @@ import type { MonitorSnapshot } from "./types";
 import { reconstructTranscript } from "./transcript-evidence";
 
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
-export const MAX_HISTORICAL_SESSIONS = 100;
-const SIZE_MARGIN_BYTES = 4096;
 
 export class SnapshotTooLargeError extends Error {
   constructor() {
@@ -42,13 +40,6 @@ function freezeDeep<T>(value: T): T {
   return value;
 }
 
-type Candidate = {
-  id: string;
-  bytes: string;
-  updatedAt: Date;
-  createdAt: Date;
-};
-
 async function loadSessions(client: PoolClient, ids: string[]) {
   const { rows: sessions } = await client.query<MonitorSnapshot["sessions"][number]>(
     `SELECT s.id,s.ordinal,s.agent_model AS "agentModel",s.agent_effort AS "agentEffort",
@@ -77,127 +68,6 @@ async function loadSessions(client: PoolClient, ids: string[]) {
         command.completedRevision === null ? null : Number(command.completedRevision),
     })),
   };
-}
-
-export async function captureMonitorSnapshot(
-  gameId: string,
-  currentSessionId = gameId,
-): Promise<MonitorSnapshot> {
-  return inRepeatableRead(async (client) => {
-    const {
-      rows: [target],
-    } = await client.query<{
-      userId: string;
-      revision: string;
-      bytes: string;
-      updatedAt: Date;
-      createdAt: Date;
-    }>(
-      `SELECT g.owner_id AS "userId",g.observation_revision::text AS revision,
-         (octet_length(s.messages::text) + octet_length(s.system_prompt) + coalesce((
-           SELECT sum(octet_length(jsonb_build_object('id',r.id,'toolCallId',r.tool_call_id,
-             'command',r.command,'admittedRevision',r.admitted_revision,
-             'completedRevision',r.completed_revision,'outcome',r.outcome)::text))
-           FROM ctf.monitor_reviews r WHERE r.game_id=s.game_id AND r.session_id=s.id
-             AND r.target_kind='command' AND r.command IS NOT NULL),0))::text AS bytes,
-         s.updated_at AS "updatedAt",s.created_at AS "createdAt"
-       FROM ctf.games g JOIN ctf.agent_sessions s ON s.game_id=g.id
-       WHERE g.id=$1 AND s.id=$2`,
-      [gameId, currentSessionId],
-    );
-    if (!target) throw new Error("Review session not found in target run.");
-    if (Number(target.bytes) > MAX_SNAPSHOT_BYTES) throw new SnapshotTooLargeError();
-
-    const { sessions: targetSessions, commands: targetCommands } = await loadSessions(client, [
-      currentSessionId,
-    ]);
-    const current = targetSessions[0];
-    if (!current) throw new Error("Review session not found in target run.");
-    let snapshot: MonitorSnapshot = {
-      snapshotId: randomUUID(),
-      gameId,
-      userId: target.userId,
-      targetSessionId: currentSessionId,
-      revision: Number(target.revision),
-      omittedSessions: 0,
-      sessions: [current],
-      commands: targetCommands,
-    };
-    if (snapshotSerializedBytes(snapshot) > MAX_SNAPSHOT_BYTES) throw new SnapshotTooLargeError();
-
-    const {
-      rows: [count],
-    } = await client.query<{ total: string }>(
-      `SELECT count(*)::text AS total FROM ctf.agent_sessions s
-       JOIN ctf.games g ON g.id=s.game_id WHERE g.owner_id=$1`,
-      [target.userId],
-    );
-    snapshot = { ...snapshot, omittedSessions: Number(count.total) - 1 };
-    const { rows: candidates } = await client.query<Candidate>(
-      `SELECT s.id,s.updated_at AS "updatedAt",s.created_at AS "createdAt",
-         (octet_length(s.messages::text) + octet_length(s.system_prompt) + coalesce((
-           SELECT sum(octet_length(jsonb_build_object('id',r.id,'toolCallId',r.tool_call_id,
-             'command',r.command,'admittedRevision',r.admitted_revision,
-             'completedRevision',r.completed_revision,'outcome',r.outcome)::text))
-           FROM ctf.monitor_reviews r WHERE r.game_id=s.game_id AND r.session_id=s.id
-             AND r.target_kind='command' AND r.command IS NOT NULL),0))::text AS bytes
-       FROM ctf.agent_sessions s JOIN ctf.games g ON g.id=s.game_id
-       WHERE g.owner_id=$1 AND s.id<>$2
-       ORDER BY s.updated_at DESC,s.created_at DESC,s.id DESC
-       LIMIT $3`,
-      [target.userId, currentSessionId, MAX_HISTORICAL_SESSIONS],
-    );
-    const selected: string[] = [];
-    let estimatedBytes = snapshotSerializedBytes(snapshot);
-    for (const candidate of candidates) {
-      const nextBytes = estimatedBytes + Number(candidate.bytes) + SIZE_MARGIN_BYTES;
-      if (nextBytes > MAX_SNAPSHOT_BYTES) continue;
-      selected.push(candidate.id);
-      estimatedBytes = nextBytes;
-    }
-    if (selected.length) {
-      const historical = await loadSessions(client, selected);
-      const byId = new Map(historical.sessions.map((session) => [session.id, session]));
-      snapshot = {
-        ...snapshot,
-        sessions: [
-          ...snapshot.sessions,
-          ...selected.flatMap((id) => {
-            const session = byId.get(id);
-            return session ? [session] : [];
-          }),
-        ],
-        commands: [...snapshot.commands, ...historical.commands],
-      };
-    }
-    while (snapshotSerializedBytes(snapshot) > MAX_SNAPSHOT_BYTES && snapshot.sessions.length > 1) {
-      const removed = snapshot.sessions.at(-1)!;
-      snapshot = {
-        ...snapshot,
-        sessions: snapshot.sessions.slice(0, -1),
-        commands: snapshot.commands.filter((command) => command.sessionId !== removed.id),
-      };
-    }
-    const metadata = new Map<string, { updatedAt: Date; createdAt: Date }>([
-      ...candidates.map((candidate) => [candidate.id, candidate] as const),
-      [currentSessionId, target],
-    ]);
-    snapshot = {
-      ...snapshot,
-      omittedSessions: Number(count.total) - snapshot.sessions.length,
-      sessions: [...snapshot.sessions].sort((a, b) => {
-        const first = metadata.get(a.id)!;
-        const second = metadata.get(b.id)!;
-        return (
-          second.updatedAt.getTime() - first.updatedAt.getTime() ||
-          second.createdAt.getTime() - first.createdAt.getTime() ||
-          b.id.localeCompare(a.id)
-        );
-      }),
-    };
-    if (snapshotSerializedBytes(snapshot) > MAX_SNAPSHOT_BYTES) throw new SnapshotTooLargeError();
-    return freezeDeep(snapshot);
-  });
 }
 
 export async function captureCommittedMonitorSnapshot(input: {
