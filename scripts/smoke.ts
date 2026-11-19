@@ -873,6 +873,21 @@ try {
       settledModels.includes(TYPESAFE_MODEL) && settledModels.includes(INVESTIGATOR_MODEL),
       `settled spend: settled monitor models were [${settledModels.join(", ")}]. ${diagnostics}`,
     );
+    // The annotation pass settles its own Jev row beside the classifier's, so a review that
+    // annotated needs two settled Jev rows.
+    const catching = (
+      await db.query<{ jev: string; annotated: boolean }>(
+        `SELECT (SELECT count(*) FROM ctf.inference i WHERE i.review_id=r.id AND i.role='monitor'
+                   AND i.model=$2 AND i.settled_at IS NOT NULL AND i.cost>0) AS jev,
+                EXISTS(SELECT 1 FROM ctf.tool_call_annotations a WHERE a.review_id=r.id) AS annotated
+         FROM ctf.monitor_reviews r WHERE r.game_id=$1 AND r.verdict='block'`,
+        [liveCatch.id, TYPESAFE_MODEL],
+      )
+    ).rows;
+    assert.ok(
+      catching.some((review) => Number(review.jev) >= (review.annotated ? 2 : 1)),
+      `settled spend: no catching review settled its classifier and annotation Jev rows. ${diagnostics}`,
+    );
     console.log(
       "Live monitor catch passed: real flag read, worker review, evidence and settled spend.",
     );

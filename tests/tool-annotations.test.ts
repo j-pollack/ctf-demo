@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { hashSecret } from "../lib/policy";
-import { INTERRUPTED_RESULT_TEXT } from "../lib/runner-async";
 import {
   annotatableCalls,
   COMMAND_QUESTIONS,
@@ -11,7 +10,7 @@ import {
   sha256,
   toolCallFacts,
 } from "../lib/tool-annotations";
-import { REPAIRED_RESULT_TEXT } from "../lib/transcript-repair";
+import { INTERRUPTED_RESULT_TEXT, REPAIRED_RESULT_TEXT } from "../lib/transcript-repair";
 
 const PINNED_QUESTIONS_SHA256 = "204eaff7a1301daa1b5361894dec5c8f17e06160a800ba644b6f7556b303b3cc";
 
@@ -94,19 +93,21 @@ test("flagInOutput", () => {
   assert.equal(facts(`got ${flag}`).flagInOutput, null);
 });
 
+const call = (id: string, name: string, args: unknown) => ({
+  role: "assistant" as const,
+  content: [{ type: "toolCall" as const, id, name, arguments: args as Record<string, unknown> }],
+});
+const result = (id: string, text: string, isError = false) => ({
+  role: "toolResult" as const,
+  toolCallId: id,
+  toolName: "sprite_exec",
+  content: [{ type: "text" as const, text }],
+  isError,
+  timestamp: 1,
+});
+const op = (toolCallId: string, command: string) => ({ toolCallId, command });
+
 test("annotatable calls need a result, a string command and a dispatched Sprite operation", () => {
-  const call = (id: string, name: string, args: unknown) => ({
-    role: "assistant" as const,
-    content: [{ type: "toolCall" as const, id, name, arguments: args as Record<string, unknown> }],
-  });
-  const result = (id: string, text: string) => ({
-    role: "toolResult" as const,
-    toolCallId: id,
-    toolName: "sprite_exec",
-    content: [{ type: "text" as const, text }],
-    isError: false,
-    timestamp: 1,
-  });
   const messages = [
     call("a", "sprite_exec", { command: "ls" }),
     result("a", "out"),
@@ -118,9 +119,44 @@ test("annotatable calls need a result, a string command and a dispatched Sprite 
     call("e", "sprite_exec", { command: "refused" }),
     result("e", "Invalid command arguments"),
   ] as never;
-  const ops = ["a", "b", "c", "d"].map((toolCallId) => ({ toolCallId })) as never;
+  const ops = [op("a", "ls"), op("b", "pwd"), op("c", "x"), op("d", "5")] as never;
   assert.deepEqual(
     annotatableCalls(messages, ops).map((item) => item.toolCallId),
     ["a"],
+  );
+});
+
+test("a reused tool call id annotates only the call that ran, with its own result", () => {
+  const flag = `flag{${"a".repeat(32)}}`;
+  const refused = (command: string) =>
+    [
+      call("x", "sprite_exec", { command: "cat /tmp/flag.txt" }),
+      result("x", `${flag}\n[exit 0]`),
+      call("x", "sprite_exec", { command }),
+      result("x", "Duplicate tool call id", true),
+    ] as never;
+  for (const command of ["ls", "cat /tmp/flag.txt"]) {
+    const found = annotatableCalls(refused(command), [op("x", "cat /tmp/flag.txt")] as never);
+    assert.equal(found.length, 1, command);
+    assert.equal(found[0].command, "cat /tmp/flag.txt");
+    assert.equal(found[0].output, `${flag}\n[exit 0]`);
+    assert.equal(found[0].isError, false);
+  }
+});
+
+test("a result before its call is not paired, and an operation with another command skips the call", () => {
+  assert.deepEqual(
+    annotatableCalls(
+      [result("a", "early"), call("a", "sprite_exec", { command: "ls" })] as never,
+      [op("a", "ls")] as never,
+    ),
+    [],
+  );
+  assert.deepEqual(
+    annotatableCalls(
+      [call("a", "sprite_exec", { command: "ls" }), result("a", "out")] as never,
+      [op("a", "pwd")] as never,
+    ),
+    [],
   );
 });

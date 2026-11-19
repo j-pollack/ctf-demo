@@ -335,24 +335,27 @@ export async function main(
   let spentTokens = 0;
   let status = "completed";
   let failure: unknown;
+  let dispatched: Request | undefined;
   try {
     run: for (const item of items) {
       const answers: Record<string, Record<string, number>> = {};
       let tokens = 0;
       for (const request of requestsOf(item)) {
-        if ((spentTokens + tokens + ceilingTokens(request)) * MONITOR_TOKEN_MICRODOLLARS > budget) {
+        if ((spentTokens + ceilingTokens(request)) * MONITOR_TOKEN_MICRODOLLARS > budget) {
           status = "stopped:budget";
           break run;
         }
+        dispatched = request;
         const result = await evaluate(
           request.state,
           request.questions,
           AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         );
+        dispatched = undefined;
         tokens += result.inputTokens;
+        spentTokens += result.inputTokens;
         answers[request.part] = answersOfNoul(result.answers);
       }
-      spentTokens += tokens;
       const line: Line = {
         source: item.source,
         id: item.id,
@@ -377,6 +380,8 @@ export async function main(
   } catch (error) {
     status = "failed";
     failure = error;
+    // A request that was sent without usable usage is counted at its ceiling.
+    if (dispatched) spentTokens += ceilingTokens(dispatched);
   }
   writeFileSync(
     join(directory, "summary.json"),
@@ -395,6 +400,8 @@ export async function main(
     )}\n`,
   );
   if (failure) throw failure;
+  if (status !== "completed")
+    throw new Error(`The measurement is incomplete (${status}); see ${directory}.`);
   return { status, lines };
 }
 

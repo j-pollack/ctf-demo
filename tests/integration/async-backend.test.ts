@@ -2157,6 +2157,60 @@ await test(
         assert.equal(recorded.length, 2);
       });
 
+      await t.test("a reused tool call id is annotated once, with the call that ran", async () => {
+        reset();
+        const ran: Call = {
+          id: "dup",
+          command: "cat /tmp/flag.txt",
+          output: `${FLAG}\n[exit 0]`,
+        };
+        const refused: Call = {
+          id: "dup",
+          command: "ls",
+          output: "Duplicate tool call id",
+          isError: true,
+          operation: false,
+        };
+        const id = await seedRun([ran]);
+        await commit(id, transcript([ran, refused]));
+        await work(id);
+        const stored = await rows(id);
+        assert.equal(stored.length, 1);
+        assert.equal(stored[0].command_sha256, sha256(ran.command));
+        assert.equal(stored[0].output_sha256, sha256(ran.output!));
+        assert.equal(stored[0].facts.flagInOutput, true);
+        assert.equal(recorded.length, 2);
+        reset();
+        await commit(id, [
+          ...transcript([ran, refused]),
+          { role: "user", content: "again", timestamp: 100 },
+        ]);
+        await work(id);
+        assert.equal(recorded.length, 0);
+      });
+
+      await t.test("a deadline that cuts the pass short drops the oldest calls", async () => {
+        reset({ annotationDelayMs: 200 });
+        const ten: Call[] = Array.from({ length: 10 }, (_, index) => ({
+          id: `order-${index}`,
+          command: `echo ${index}`,
+          output: `${index}\n[exit 0]`,
+        }));
+        const id = await seedRun(ten);
+        await commit(id, transcript(ten));
+        await work(id, { ...fastMonitorTiming, annotationDeadlineMs: 350 });
+        const written = (await rows(id)).map((row) => row.tool_call_id).sort();
+        assert.ok(written.length >= 1 && written.length < ten.length, "the deadline cut the pass");
+        assert.deepEqual(
+          written,
+          ten
+            .slice(ten.length - written.length)
+            .map((call) => call.id)
+            .sort(),
+          "only the newest calls have rows",
+        );
+      });
+
       await t.test("W4: calls without a dispatched result are not annotated", async () => {
         reset();
         const calls: Call[] = [
@@ -2363,6 +2417,11 @@ await test(
           jobClaim: { ...claim!, runBudgetExempt: true },
         };
         await Promise.all([annotateToolCalls(input), annotateToolCalls(input)]);
+        assert.equal(recorded.length, 12, "both passes dispatched");
+        assert.equal(
+          (await annotationInference(id)).filter((row) => row.settled_at !== null).length,
+          2,
+        );
         assert.deepEqual(
           (await rows(id)).map((row) => row.tool_call_id),
           ["call-1", "call-2", "call-3"],

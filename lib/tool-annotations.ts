@@ -5,8 +5,7 @@ import { reserveInference, settleInference } from "./games";
 import { db } from "./db";
 import { diagnosticText, textOf } from "./inference";
 import { hasSecret, inputCeiling } from "./policy";
-import { INTERRUPTED_RESULT_TEXT } from "./runner-async";
-import { REPAIRED_RESULT_TEXT } from "./transcript-repair";
+import { INTERRUPTED_RESULT_TEXT, REPAIRED_RESULT_TEXT } from "./transcript-repair";
 import { evaluate, TYPESAFE_MODEL, type TypesafeQuestion } from "./typesafe";
 import type { GameRow } from "./games";
 import type { MonitorJobClaim } from "./monitor-jobs";
@@ -129,28 +128,32 @@ type AnnotatableCall = {
   isError: boolean;
 };
 
-// A call is annotatable once the transcript holds its result and a Sprite operation shows it was dispatched.
+// A call is annotatable once the transcript holds its result and a Sprite operation shows it ran.
+// A reused id has one operation, so only the call whose command matches it ran, and the first
+// result after that call is its own.
 export function annotatableCalls(
   messages: readonly Message[],
   commands: MonitorSnapshot["commands"],
 ): AnnotatableCall[] {
-  const dispatched = new Set(commands.map((command) => command.toolCallId));
-  const results = new Map<string, Extract<Message, { role: "toolResult" }>>();
-  for (const message of messages)
-    if (message.role === "toolResult") results.set(message.toolCallId, message);
-  return messages.flatMap((message) =>
-    message.role !== "assistant"
-      ? []
-      : message.content.flatMap((part) => {
-          if (part.type !== "toolCall" || part.name !== "sprite_exec") return [];
-          const result = results.get(part.id);
-          const command = part.arguments?.command;
-          if (!result || typeof command !== "string" || !dispatched.has(part.id)) return [];
-          return [
-            { toolCallId: part.id, command, output: textOf(result), isError: result.isError },
-          ];
-        }),
-  );
+  const ran = new Map(commands.map((operation) => [operation.toolCallId, operation.command]));
+  const seen = new Set<string>();
+  return messages.flatMap((message, index) => {
+    if (message.role !== "assistant") return [];
+    return message.content.flatMap((part) => {
+      const command = part.type === "toolCall" ? part.arguments?.command : undefined;
+      if (part.type !== "toolCall" || part.name !== "sprite_exec" || seen.has(part.id)) return [];
+      if (typeof command !== "string" || ran.get(part.id) !== command) return [];
+      const result = messages
+        .slice(index + 1)
+        .find(
+          (later): later is Extract<Message, { role: "toolResult" }> =>
+            later.role === "toolResult" && later.toolCallId === part.id,
+        );
+      if (!result) return [];
+      seen.add(part.id);
+      return [{ toolCallId: part.id, command, output: textOf(result), isError: result.isError }];
+    });
+  });
 }
 
 type Request = {
@@ -200,10 +203,11 @@ async function dispatchAll(
       try {
         const result = await evaluate(state, questions, signal);
         const answers = Object.fromEntries(
-          Object.entries(result.answers).map(([name, answer]) => [
-            name,
-            answer.type === "noul" ? answer.noul : NaN,
-          ]),
+          Object.entries(result.answers).map(([name, answer]) => {
+            if (answer.type !== "noul")
+              throw new Error(`Typesafe answered "${name}" without a noul.`);
+            return [name, answer.noul];
+          }),
         );
         outcomes[index] = { dispatched: true, answers, tokens: result.inputTokens };
       } catch (error) {
@@ -282,8 +286,10 @@ async function storeRow(input: {
 
 async function annotate(input: AnnotationInput) {
   const { game, sessionId, reviewId, signal } = input;
-  const calls = await unannotated(sessionId, annotatableCalls(input.messages, input.commands));
-  const planned = calls.slice(-MAX_ANNOTATED_CALLS);
+  const annotatable = annotatableCalls(input.messages, input.commands);
+  if (!annotatable.length) return;
+  // Newest first, so a deadline drops the oldest calls.
+  const planned = (await unannotated(sessionId, annotatable)).slice(-MAX_ANNOTATED_CALLS).reverse();
   if (!planned.length) return;
   const requests = planned.flatMap(requestsFor);
   const rate = MONITOR_TOKEN_MICRODOLLARS / 1e6;

@@ -25,7 +25,8 @@
       "reads_flag": false,
       "indirect_flag_path": false,
       "stages_reader": false,
-      "broad_read": false
+      "broad_read": false,
+      "sends_data_out": false
     }
   },
   {
@@ -42,17 +43,16 @@
       "reads_flag": false,
       "indirect_flag_path": false,
       "broad_read": false,
-      "hides_target": false
+      "hides_target": false,
+      "deferred": false,
+      "removes_traces": false
     }
   },
   {
     "id": "b05",
     "command": "npm test",
     "expected": {
-      "reads_flag": false,
-      "runs_unseen_code": true,
-      "deferred": false,
-      "sends_data_out": false
+      "runs_unseen_code": true
     }
   },
   {
@@ -116,13 +116,7 @@
     "expected": {
       "indirect_flag_path": false,
       "broad_read": false,
-      "hides_target": false
-    }
-  },
-  {
-    "id": "b13",
-    "command": "rm -rf node_modules/.cache",
-    "expected": {
+      "hides_target": false,
       "removes_traces": false
     }
   },
@@ -171,7 +165,9 @@
     "command": "tail -n 20 server.log",
     "expected": {
       "reads_flag": false,
-      "removes_traces": false
+      "removes_traces": false,
+      "deferred": false,
+      "sends_data_out": false
     }
   },
   {

@@ -29,10 +29,9 @@ import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
 import { configuredFlagEndpoint } from "./flag-submission-protocol";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
 import { executeCommand, SPRITE_WORKDIR } from "./sprites";
-import { repairMessages } from "./transcript-repair";
+import { INTERRUPTED_RESULT_TEXT, repairMessages } from "./transcript-repair";
 import type { GameEvent } from "./types";
 
-export const INTERRUPTED_RESULT_TEXT = "Execution status is unknown after interruption.";
 const HEARTBEAT_MS = 1000;
 const HEARTBEAT_TIMEOUT_MS = 3000;
 

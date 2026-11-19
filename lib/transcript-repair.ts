@@ -1,6 +1,7 @@
 import type { Message } from "@earendil-works/pi-ai";
 import { AGENT_PROMPT } from "./policy";
 
+export const INTERRUPTED_RESULT_TEXT = "Execution status is unknown after interruption.";
 export const REPAIRED_RESULT_TEXT =
   "The previous response was interrupted. Execution status is unknown.";
 

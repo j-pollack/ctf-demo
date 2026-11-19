@@ -3,7 +3,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { MONITOR_TOKEN_MICRODOLLARS } from "../lib/control";
+import { inputCeiling } from "../lib/policy";
 import { COMMAND_QUESTIONS, OUTCOME_QUESTIONS } from "../lib/tool-annotations";
+import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { main, parseLabelled, summarize, type Line } from "../scripts/annotation-eval";
 
 const NAMES = [...Object.keys(COMMAND_QUESTIONS), ...Object.keys(OUTCOME_QUESTIONS)];
@@ -237,11 +240,13 @@ test("a run stops before a request that would pass the budget", async (t) => {
   );
   const ceiling = JSON.parse(printed.join("\n")).costCeilingMicrodollars;
   const budget = ((ceiling + 1) / 1e6).toFixed(6);
-  const result = await main(live(budget), env);
-  assert.equal(result?.status, "stopped:budget");
+  await assert.rejects(main(live(budget), env), /incomplete \(stopped:budget\)/);
   const summary = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"));
   assert.equal(summary.status, "stopped:budget");
-  assert.ok(summary.spentMicrodollars <= ceiling + 1);
+  // Spend counts every answered request, including those of an item the stop left unfinished.
+  const perRequest = 20_000 * MONITOR_TOKEN_MICRODOLLARS;
+  assert.ok(summary.spentMicrodollars >= summary.callsCompleted * 2 * perRequest);
+  assert.ok(summary.spentMicrodollars <= (summary.callsCompleted * 2 + 1) * perRequest);
   assert.equal(
     summary.callsCompleted,
     readFileSync(join(out, "calls.jsonl"), "utf8").trim().split("\n").length,
@@ -255,7 +260,15 @@ test("a failing request leaves the completed lines and fails the run", async (t)
   await assert.rejects(main(live(), env), /status 500/);
   const lines = readFileSync(join(out, "calls.jsonl"), "utf8").trim().split("\n");
   assert.equal(lines.length, 3);
-  assert.equal(JSON.parse(readFileSync(join(out, "summary.json"), "utf8")).status, "failed");
+  const summary = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"));
+  assert.equal(summary.status, "failed");
+  // Six answered requests of 100 tokens, plus the failed seventh at its ceiling.
+  const failed = inputCeiling({
+    model: TYPESAFE_MODEL,
+    state: { command: "command 3" },
+    questions: COMMAND_QUESTIONS,
+  });
+  assert.equal(summary.spentMicrodollars, (600 + failed) * MONITOR_TOKEN_MICRODOLLARS);
 });
 
 test("summarize reports the wrong side of the threshold", () => {
