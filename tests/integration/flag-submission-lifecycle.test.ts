@@ -745,6 +745,70 @@ await test(
       },
     );
 
+    // The tool-result screen sits between the command's return and its record. An upload that
+    // arrives there is refused as one for a completed command, so a screen cannot change an outcome.
+    await t.test(
+      "an upload that arrives while its command's tool-result screen is in flight is stale",
+      async () => {
+        const owner = `lifecycle-screen-window-${randomUUID()}`;
+        const { id, secret } = await startRun(owner);
+        const command = uploadCommand;
+        agentScript = [{ commands: [command] }, { text: "Done." }];
+        let target: Record<string, string> | undefined;
+        execHandlers.set(command, async ({ env }) => {
+          target = env;
+          return output("uploaded");
+        });
+        let release = () => {};
+        const held = new Promise<void>((resolve) => (release = resolve));
+        screenFake.controls.hold = async (kind) => {
+          if (kind === "tool_output") await held;
+        };
+        const response = await respond(id, id, owner, "Upload the flag");
+        for (
+          const until = Date.now() + 10_000;
+          !screenFake.requests.some(({ kind }) => kind === "tool_output");
+          await delay(10)
+        )
+          assert.ok(Date.now() < until, "the tool-result screen was never sent");
+        const late = await receive(target, secret).finally(release);
+        await response.done;
+        assert.equal(late, "stale");
+        assert.equal(
+          (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id])).rowCount,
+          0,
+        );
+        assert.deepEqual(await run(id), {
+          status: "active",
+          submitted_flag_correct: null,
+          generation: 0,
+          promoted_at: null,
+          correct: null,
+          jobs: 0,
+          submits: 0,
+        });
+        const [uploader] = await operation(id, command);
+        assert.equal(uploader.status, "completed");
+        const screens = (
+          await pool.query(
+            "SELECT settled_at IS NOT NULL AS settled FROM ctf.inference WHERE game_id=$1 AND role='screen' ORDER BY created_at",
+            [id],
+          )
+        ).rows;
+        assert.deepEqual(
+          screens.map(({ settled }) => settled),
+          [true, true],
+          "the instruction screen and the tool-result screen are both settled",
+        );
+        assert.equal(
+          (await pool.query("SELECT reserved_microdollars FROM ctf.games WHERE id=$1", [id]))
+            .rows[0].reserved_microdollars,
+          "0",
+        );
+        assert.equal(agentRequests, 2);
+      },
+    );
+
     // Holds the run row lock so the receipt and the uploader's completion queue in a chosen order.
     const lockRun = async (gameId: string) => {
       const locker = new Client({
@@ -802,6 +866,17 @@ await test(
             ).rows.filter(({ kind }) => kind === "tool_output"),
             [],
           );
+          // The instruction's reservation is the only screen reservation of the response.
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int AS n FROM ctf.inference WHERE game_id=$1 AND role='screen'",
+                [gameId],
+              )
+            ).rows[0].n,
+            1,
+            "no tool result reserved a screen",
+          );
         },
         restore: () => {
           console.error = original;
@@ -817,53 +892,56 @@ await test(
         const owner = `lifecycle-race-stale-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
         const stopped = screenStopped();
-        const command = uploadCommand;
-        agentScript = [{ commands: [command] }, { text: "Done." }];
-        let race: Promise<string> | undefined;
-        execHandlers.set(command, async ({ env }) => {
-          const lock = await lockRun(id);
-          // The Sprite has returned; the receipt arrives once the completion is waiting to commit.
-          race = (async () => {
-            try {
-              await queued(completion);
-              const result = receive(env, secret);
-              await queued(receipt);
-              await lock.release();
-              return await result;
-            } catch (error) {
-              await lock.release().catch(() => {});
-              throw error;
-            }
-          })();
-          return output("uploaded");
-        });
-        const sent = await (
-          await respond(id, id, owner, "Upload the flag")
-        ).done.finally(stopped.restore);
-        await stopped.assertStopped(id);
-        assert.equal(await race, "stale");
-        const [uploader] = await operation(id, command);
-        assert.equal(uploader.status, "completed");
-        assert.equal(
-          (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id])).rowCount,
-          0,
-        );
-        assert.deepEqual(await run(id), {
-          status: "active",
-          submitted_flag_correct: null,
-          generation: 0,
-          promoted_at: null,
-          correct: null,
-          jobs: 0,
-          submits: 0,
-        });
-        // With no receipt, play continues: the agent's next turn was admitted.
-        assert.equal(agentRequests, 2);
-        assert.ok(
-          sent.some(
-            ({ type, data }) => type === "event" && (data as { text: string }).text === "Done.",
-          ),
-        );
+        try {
+          const command = uploadCommand;
+          agentScript = [{ commands: [command] }, { text: "Done." }];
+          let race: Promise<string> | undefined;
+          execHandlers.set(command, async ({ env }) => {
+            const lock = await lockRun(id);
+            // The Sprite has returned; the receipt arrives once the completion is waiting to commit.
+            race = (async () => {
+              try {
+                await queued(completion);
+                const result = receive(env, secret);
+                await queued(receipt);
+                await lock.release();
+                return await result;
+              } catch (error) {
+                await lock.release().catch(() => {});
+                throw error;
+              }
+            })();
+            return output("uploaded");
+          });
+          const sent = await (await respond(id, id, owner, "Upload the flag")).done;
+          await stopped.assertStopped(id);
+          assert.equal(await race, "stale");
+          const [uploader] = await operation(id, command);
+          assert.equal(uploader.status, "completed");
+          assert.equal(
+            (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id]))
+              .rowCount,
+            0,
+          );
+          assert.deepEqual(await run(id), {
+            status: "active",
+            submitted_flag_correct: null,
+            generation: 0,
+            promoted_at: null,
+            correct: null,
+            jobs: 0,
+            submits: 0,
+          });
+          // With no receipt, play continues: the agent's next turn was admitted.
+          assert.equal(agentRequests, 2);
+          assert.ok(
+            sent.some(
+              ({ type, data }) => type === "event" && (data as { text: string }).text === "Done.",
+            ),
+          );
+        } finally {
+          stopped.restore();
+        }
       },
     );
 
@@ -873,46 +951,52 @@ await test(
         const owner = `lifecycle-race-accepted-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
         const stopped = screenStopped();
-        const command = uploadCommand;
-        agentScript = [{ commands: [command] }];
-        let race: Promise<string> | undefined;
-        execHandlers.set(command, async ({ env }) => {
-          const lock = await lockRun(id);
-          const result = receive(env, secret);
-          await queued(receipt);
-          // The Sprite returns; the receipt commits after that and before the completion.
-          race = (async () => {
-            try {
-              await queued(completion);
-              await lock.release();
-              return await result;
-            } catch (error) {
-              await lock.release().catch(() => {});
-              throw error;
-            }
-          })();
-          return output("uploaded");
-        });
-        await (await respond(id, id, owner, "Upload the flag")).done.finally(stopped.restore);
-        await stopped.assertStopped(id);
-        assert.equal(await race, "accepted");
-        const [uploader] = await operation(id, command);
-        assert.equal(uploader.status, "completed");
-        const promoted = await run(id);
-        assert.ok(promoted.promoted_at);
-        assert.deepEqual(
-          { ...promoted, promoted_at: undefined },
-          {
-            status: "finalizing",
-            submitted_flag_correct: true,
-            generation: 1,
-            promoted_at: undefined,
-            correct: true,
-            jobs: 1,
-            submits: 1,
-          },
-        );
-        assert.equal(agentRequests, 1);
+        try {
+          const command = uploadCommand;
+          agentScript = [{ commands: [command] }];
+          let race: Promise<string> | undefined;
+          execHandlers.set(command, async ({ env }) => {
+            const lock = await lockRun(id);
+            const result = receive(env, secret);
+            await queued(receipt);
+            // The Sprite returns; the receipt commits after that and before the completion.
+            race = (async () => {
+              try {
+                await queued(completion);
+                await lock.release();
+                return await result;
+              } catch (error) {
+                await lock.release().catch(() => {});
+                throw error;
+              }
+            })();
+            return output("uploaded");
+          });
+          await (
+            await respond(id, id, owner, "Upload the flag")
+          ).done;
+          await stopped.assertStopped(id);
+          assert.equal(await race, "accepted");
+          const [uploader] = await operation(id, command);
+          assert.equal(uploader.status, "completed");
+          const promoted = await run(id);
+          assert.ok(promoted.promoted_at);
+          assert.deepEqual(
+            { ...promoted, promoted_at: undefined },
+            {
+              status: "finalizing",
+              submitted_flag_correct: true,
+              generation: 1,
+              promoted_at: undefined,
+              correct: true,
+              jobs: 1,
+              submits: 1,
+            },
+          );
+          assert.equal(agentRequests, 1);
+        } finally {
+          stopped.restore();
+        }
       },
     );
   },

@@ -23,8 +23,10 @@ export async function receiveFlagSubmission(input: {
     // after the games row, then the session and operation rows, are locked in that order.
     const {
       rows: [found],
-    } = await client.query<{ game_id: string }>(
-      "SELECT game_id FROM ctf.sprite_operations WHERE submission_token_hash=$1 AND kind='command'",
+    } = await client.query<{ game_id: string; arrived_at: number }>(
+      // The arrival time is the database clock, as epoch seconds so no precision is lost in transit.
+      `SELECT game_id,extract(epoch FROM clock_timestamp())::float8 AS arrived_at
+       FROM ctf.sprite_operations WHERE submission_token_hash=$1 AND kind='command'`,
       [tokenHash],
     );
     if (!found) return "unauthorized";
@@ -86,13 +88,16 @@ export async function receiveFlagSubmission(input: {
     );
     const {
       rows: [lockedOperation],
-    } = await client.query<{ status: string }>(
-      "SELECT status FROM ctf.sprite_operations WHERE id=$1 FOR UPDATE",
-      [operation.id],
+    } = await client.query<{ status: string; open: boolean }>(
+      // Open until the command returned, judged by when this upload arrived, not when it got its locks.
+      `SELECT status,(returned_at IS NULL OR $2::float8 < extract(epoch FROM returned_at)) AS open
+       FROM ctf.sprite_operations WHERE id=$1 FOR UPDATE`,
+      [operation.id, found.arrived_at],
     );
     if (
       Number(run.execution_generation) !== Number(operation.execution_generation) ||
       lockedOperation?.status !== "running" ||
+      !lockedOperation.open ||
       !operation.originating_lease ||
       session?.lease !== operation.originating_lease ||
       !session?.lease_until ||

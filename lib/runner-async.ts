@@ -24,7 +24,11 @@ import {
 } from "./games";
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
 import { instructionMessage } from "./monitor-visibility";
-import { completeAsyncCommand, dispatchAsyncCommand } from "./monitor-commands";
+import {
+  completeAsyncCommand,
+  dispatchAsyncCommand,
+  markCommandReturned,
+} from "./monitor-commands";
 import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
 import { configuredFlagEndpoint } from "./flag-submission-protocol";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
@@ -139,6 +143,25 @@ export async function runAsyncGame(
   };
   const heartbeat = setInterval(() => void checkHeartbeat(), HEARTBEAT_MS);
 
+  // A command's upload authority ends when it returns, before its result is screened. If that cannot
+  // be recorded the result is not screened, so a screen never lengthens the window.
+  const stampReturned = async (operationId: string) => {
+    try {
+      await markCommandReturned(operationId);
+      return true;
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "text_screen.stamp_failed",
+          sessionId,
+          kind: "tool_output",
+          durationMs: 0,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+      return false;
+    }
+  };
   const emitBilling = async () => {
     try {
       send("billing", await gameBilling(game.id));
@@ -219,7 +242,8 @@ export async function runAsyncGame(
             ? { TARGET: `${submissionUrl}/${dispatch.submissionToken}` }
             : undefined,
         );
-        await screenTexts(screenContext, [{ kind: "tool_output", ref: id, text: output }]);
+        if (await stampReturned(dispatch.id))
+          await screenTexts(screenContext, [{ kind: "tool_output", ref: id, text: output }]);
         return { content: [{ type: "text" as const, text: output }], details: {} };
       },
     });

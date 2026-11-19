@@ -72,6 +72,11 @@ test(
     );
     await pool.query(rules);
     await pool.query(rules);
+    const returned = await readFile(
+      new URL("../../db/migrations/024-command-returned.sql", import.meta.url),
+      "utf8",
+    );
+    await pool.query(returned);
     const legacy = (
       await pool.query(
         `SELECT submission_transport,messages,tokens_used,blocks,reserved_microdollars

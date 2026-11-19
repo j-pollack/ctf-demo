@@ -5,6 +5,8 @@ import {
   INSTRUCTION_QUESTIONS,
   OUTPUT_QUESTIONS,
   SCREEN_DEADLINE_MS,
+  SCREEN_RESPONSE_BUDGET_MS,
+  createScreenBreaker,
   SYSTEM_PROMPT_QUESTIONS,
   screenPlan,
 } from "../lib/text-screen";
@@ -67,11 +69,11 @@ test("question sets player-v1, system-v1 and output-v1 are pinned", () => {
   });
   assert.equal(
     sha(INSTRUCTION_QUESTIONS),
-    "dc7bb84a023ecca05ce6e6d9a321402be95d989c6f6996c4dca610e37aee5f6e",
+    "ece2b79d75af20ed957d7ab4f69fca3b74d1b7a8b4afc0b5a0119adf2462b951",
   );
   assert.equal(
     sha(SYSTEM_PROMPT_QUESTIONS),
-    "6021459f15d24e85b020f65079f8465cd050548272dea7a37336d589314f4565",
+    "fda1fe4acbbb787c45570002ed549e17b968793abd3c36b4d91845ca4db97eac",
   );
   assert.equal(
     sha(OUTPUT_QUESTIONS),
@@ -120,4 +122,16 @@ test("each screened text is sent as its own small state under its own set", () =
     ],
   );
   assert.ok(plan.every((request) => request.ceiling > 1024));
+});
+
+test("the breaker stops screening once the response's screens have taken the budget", () => {
+  assert.equal(SCREEN_RESPONSE_BUDGET_MS, 10_000);
+  const breaker = createScreenBreaker();
+  assert.equal(breaker.spend(9_999), false);
+  assert.equal(breaker.tripped(), false);
+  assert.equal(breaker.spend(1), true);
+  assert.equal(breaker.trip(), true);
+  assert.equal(breaker.trip(), false);
+  assert.equal(breaker.tripped(), true);
+  assert.equal(createScreenBreaker(50).spend(50), true);
 });

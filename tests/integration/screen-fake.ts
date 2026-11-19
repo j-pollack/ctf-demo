@@ -18,6 +18,10 @@ export function createScreenFake() {
     behave: (_kind: ScreenKind, _index: number): ScreenBehaviour => "answer",
     // Delays every answer, so a scenario can tell one screen's duration from another's.
     delayMs: 0,
+    // Holds a request, after it is logged, until the returned promise settles.
+    hold: undefined as undefined | ((kind: ScreenKind, index: number) => Promise<void>),
+    // Adds an answer to a question that was not asked.
+    extraAnswer: false,
     // Replaces the usage block of an answer, for the no-usage case.
     omitUsage: false,
   };
@@ -27,6 +31,8 @@ export function createScreenFake() {
     controls.behave = () => "answer";
     controls.omitUsage = false;
     controls.delayMs = 0;
+    controls.hold = undefined;
+    controls.extraAnswer = false;
   };
   const response = async (body: { questions: unknown; state: unknown }, signal?: AbortSignal) => {
     const sets = await import("../../lib/text-screen");
@@ -52,12 +58,16 @@ export function createScreenFake() {
         if (signal?.aborted) return reject(signal.reason);
         signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
       });
+    await controls.hold?.(kind, index);
     if (controls.delayMs) await new Promise((resolve) => setTimeout(resolve, controls.delayMs));
     if (typeof behaviour === "number")
       return new Response("fixture failure", { status: behaviour });
     return Response.json({
       answers: Object.fromEntries(
-        Object.keys(body.questions as object).map((name) => [name, { type: "noul", noul: 0.25 }]),
+        [
+          ...Object.keys(body.questions as object),
+          ...(controls.extraAnswer ? ["unasked_question"] : []),
+        ].map((name) => [name, { type: "noul", noul: 0.25 }]),
       ),
       ...(controls.omitUsage ? {} : { usage: { input_tokens: controls.tokens[kind] } }),
     });

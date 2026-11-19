@@ -120,6 +120,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     await pool.query(
       await readFile(new URL("../../db/migrations/023-text-screens.sql", import.meta.url), "utf8"),
     );
+  for (let pass = 0; pass < 2; pass++)
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/024-command-returned.sql", import.meta.url),
+        "utf8",
+      ),
+    );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
@@ -5218,7 +5225,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   });
 
   // Text screening: Jev's answers about each instruction, system prompt and tool result.
-  const { SCREEN_DEADLINE_MS } = await import("../../lib/text-screen");
+  const {
+    SCREEN_DEADLINE_MS,
+    INSTRUCTION_QUESTIONS,
+    OUTPUT_QUESTIONS,
+    createScreenBreaker,
+    screenTexts,
+  } = await import("../../lib/text-screen");
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
   const parseLogged = (text: string): Record<string, unknown> | undefined => {
     try {
@@ -5535,6 +5548,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       ],
     );
     assert.ok((logged[0].durationMs as number) >= SCREEN_DEADLINE_MS - 50);
+    assert.equal(logged[1].reason, "deadline");
     assert.deepEqual(
       (await screenRows(slow.game.id)).map(({ kind }) => kind),
       ["instruction"],
@@ -5719,6 +5733,122 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
     },
   );
+
+  // The command has returned when its tool result is screened, so its outcome stays completed.
+  const assertToolScreenEnded = async (
+    gameId: string,
+    startedAt: number,
+    events: Record<string, unknown>[],
+  ) => {
+    assert.ok(
+      Date.now() - startedAt < SCREEN_DEADLINE_MS,
+      "the response did not wait out the deadline",
+    );
+    assert.deepEqual(
+      (await outcomesOf(gameId)).commands.map(({ status }) => status),
+      ["completed"],
+    );
+    const screens = await screenInference(gameId);
+    assert.equal(screens.length, 2, "the instruction and the tool result were reserved");
+    assert.ok(screens.every(({ settled_at }) => settled_at));
+    assert.equal(Number((await row(gameId)).reserved_microdollars), 0);
+    assert.deepEqual(
+      screenEvents(events).map(({ event, kind }) => [event, kind]),
+      [["text_screen.request_failed", "tool_output"]],
+    );
+  };
+
+  await t.test(
+    "R6: a stop during a tool-result screen settles it and keeps the command",
+    async () => {
+      const controller = new AbortController();
+      const arrived = Promise.withResolvers<void>();
+      screenFake.controls.behave = (kind) => {
+        if (kind !== "tool_output") return "answer";
+        arrived.resolve();
+        return "hang";
+      };
+      const startedAt = Date.now();
+      const running = runScreened("screen-r6-tool-stop", { signal: controller.signal });
+      await withinSeconds(arrived.promise);
+      controller.abort();
+      const { game, events } = await withinSeconds(running);
+      await assertToolScreenEnded(game.id, startedAt, events);
+      assert.equal((await row(game.id)).status, "active");
+    },
+  );
+
+  await t.test(
+    "R6: a lease lost during a tool-result screen settles it and keeps the command",
+    async () => {
+      const owner = "screen-r6-tool-lease";
+      const arrived = Promise.withResolvers<void>();
+      screenFake.controls.behave = (kind) => {
+        if (kind !== "tool_output") return "answer";
+        arrived.resolve();
+        return "hang";
+      };
+      const startedAt = Date.now();
+      const running = runScreened(owner);
+      await withinSeconds(arrived.promise);
+      await pool.query(
+        "UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=(SELECT id FROM ctf.games WHERE owner_id=$1)",
+        [owner],
+      );
+      const { game, events } = await withinSeconds(running);
+      await assertToolScreenEnded(
+        game.id,
+        startedAt,
+        events.filter(({ event }) => event !== "game.response.failed"),
+      );
+    },
+  );
+
+  await t.test(
+    "R6b: screening stops once the response's screens have used the budget",
+    async () => {
+      const owner = "screen-r6b";
+      const game = await productionStartGame(owner);
+      const leased = await claimGame(game.id, owner);
+      screenFake.controls.delayMs = 200;
+      const context = {
+        game: leased,
+        sessionId: game.id,
+        lease: leased.lease!,
+        generation: Number(leased.execution_generation),
+        stop: new AbortController().signal,
+        breaker: createScreenBreaker(300),
+      };
+      const events = await withLogs(async () => {
+        for (const ref of ["a", "b", "c", "d"])
+          await screenTexts(context, [{ kind: "tool_output", ref, text: `${ref}\n[exit 0]` }]);
+      });
+      assert.deepEqual(
+        (await screenRows(game.id)).map(({ ref }) => ref),
+        ["a", "b"],
+      );
+      assert.equal(screenFake.requests.length, 2, "later screens sent nothing");
+      assert.equal((await screenInference(game.id)).length, 2, "later screens reserved nothing");
+      assert.deepEqual(
+        screenEvents(events).map(({ event, kind, reason }) => [event, kind, reason]),
+        [["text_screen.screening_stopped", "tool_output", "budget"]],
+      );
+      assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+    },
+  );
+
+  await t.test("a row stores exactly the questions that were asked", async () => {
+    screenFake.controls.extraAnswer = true;
+    const { game, events } = await runScreened("screen-extra-answer");
+    assert.deepEqual(screenEvents(events), []);
+    const rows = await screenRows(game.id);
+    assert.equal(rows.length, 2);
+    for (const { kind, answers } of rows)
+      assert.deepEqual(
+        Object.keys(answers).sort(),
+        Object.keys(kind === "tool_output" ? OUTPUT_QUESTIONS : INSTRUCTION_QUESTIONS).sort(),
+      );
+  });
 
   await t.test("R8: player text is keyed by its hash, once per distinct text", async () => {
     const owner = "screen-r8";

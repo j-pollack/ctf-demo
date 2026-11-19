@@ -34,6 +34,7 @@ try {
     "021-game-rules.sql",
     "022-tool-call-annotations.sql",
     "023-text-screens.sql",
+    "024-command-returned.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

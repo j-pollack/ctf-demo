@@ -53,6 +53,7 @@ await test(
       "migrations/021-game-rules.sql",
       "migrations/022-tool-call-annotations.sql",
       "migrations/023-text-screens.sql",
+      "migrations/024-command-returned.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);

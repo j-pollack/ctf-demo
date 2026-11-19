@@ -147,6 +147,14 @@ export async function dispatchAsyncCommand(input: {
   });
 }
 
+// Ends the command's upload authority. One statement, no transaction and no lock beyond its own row.
+export async function markCommandReturned(operationId: string) {
+  await db.query(
+    "UPDATE ctf.sprite_operations SET returned_at=clock_timestamp() WHERE id=$1 AND status='running' AND returned_at IS NULL",
+    [operationId],
+  );
+}
+
 export async function completeAsyncCommand(input: {
   dispatchId: string;
   gameId: string;

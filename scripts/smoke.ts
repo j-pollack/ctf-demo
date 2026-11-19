@@ -86,18 +86,25 @@ async function assertScreens(gameId: string, sessionId: string, label: string) {
     )
   ).rows[0].n;
   const seen = screenEvents.filter((entry) => entry.sessionId === sessionId);
-  const refused = seen.filter((e) => e.event === "text_screen.refused" && e.kind === "tool_output");
+  // A Jev hiccup explains a missing row; each event names the kind whose row it explains.
+  const MISSING_ROW_EVENTS = ["refused", "request_failed", "request_timed_out", "write_failed"];
+  const unexplained = (kind: string) =>
+    seen.filter(
+      (entry) =>
+        entry.kind === kind &&
+        MISSING_ROW_EVENTS.some((name) => entry.event === `text_screen.${name}`),
+    ).length;
   const stopped = seen.some((entry) => entry.event === "text_screen.screening_stopped");
   const outputs = rows.filter((row) => row.kind === "tool_output").length;
-  assert.equal(
-    rows.filter((row) => row.kind === "instruction").length,
-    1,
-    `${label}: instruction row`,
+  const instructions = rows.filter((row) => row.kind === "instruction").length;
+  assert.ok(
+    instructions === 1 || (instructions === 0 && unexplained("instruction") > 0),
+    `${label}: ${instructions} instruction rows, ${unexplained("instruction")} explained misses`,
   );
-  const expected = completed - refused.length;
+  const expected = completed - unexplained("tool_output");
   assert.ok(
     stopped ? outputs <= expected : outputs === expected,
-    `${label}: ${outputs} tool_output rows for ${completed} completed commands, ${refused.length} refused, stopped=${stopped}`,
+    `${label}: ${outputs} tool_output rows for ${completed} completed commands, ${unexplained("tool_output")} explained misses, stopped=${stopped}`,
   );
   return rows;
 }

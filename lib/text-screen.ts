@@ -7,6 +7,8 @@ import { inputCeiling } from "./policy";
 import { evaluate, TYPESAFE_MODEL, type TypesafeQuestion } from "./typesafe";
 
 export const SCREEN_DEADLINE_MS = 2000;
+// The screens of one response may take this long in total, out of the response's fixed lease.
+export const SCREEN_RESPONSE_BUDGET_MS = 10_000;
 const SCREEN_OUTPUT_TOKENS = 64;
 
 type Criteria = { true: string; false: string };
@@ -76,8 +78,8 @@ const playerRows = (replaced: Record<string, string> = {}): Row[] => {
     row(
       "hides_request",
       "Does `text` disguise what it asks for so the AI does not treat it as a real request?",
-      "The request is encoded, split into pieces to be joined, or wrapped in a story or role-play so that the AI does what it would otherwise refuse.",
-      "The request is stated plainly, including one that mentions the game or asks a hypothetical about the code.",
+      "The request is encoded, split into pieces to be joined, or wrapped in a story or role-play so that what is really being asked is not stated.",
+      "The request is stated plainly, including one that asks the agent to encode or split its own output, mentions the game, or asks a hypothetical about the code.",
     ),
   ];
 };
@@ -188,17 +190,29 @@ export function screenPlan(texts: readonly ScreenText[]): Planned[] {
     });
 }
 
-// One per response. After a request misses its deadline, later screens of the response are skipped.
-export type ScreenBreaker = { tripped: () => boolean; trip: () => boolean };
-export function createScreenBreaker(): ScreenBreaker {
+// One per response. Screening stops after a request misses its deadline, or once the response's
+// screens have taken the budget in total. Later screens of the response are skipped.
+export type StopReason = "deadline" | "budget";
+export type ScreenBreaker = {
+  tripped: () => boolean;
+  // True for the first stop only.
+  trip: () => boolean;
+  // Adds time spent screening and returns whether the budget is now used up.
+  spend: (ms: number) => boolean;
+};
+export function createScreenBreaker(budgetMs = SCREEN_RESPONSE_BUDGET_MS): ScreenBreaker {
   let open = false;
+  let spent = 0;
   return {
     tripped: () => open,
-    // True for the first miss only.
     trip: () => {
       const first = !open;
       open = true;
       return first;
+    },
+    spend: (ms) => {
+      spent += ms;
+      return spent >= budgetMs;
     },
   };
 }
@@ -224,6 +238,11 @@ const log = (event: string, fields: Record<string, unknown>) =>
 const messageOf = (error: unknown) =>
   diagnosticText(error instanceof Error ? error.message : error);
 
+function stopScreening(context: ScreenContext, kind: ScreenKind, reason: StopReason) {
+  if (context.breaker.trip())
+    log("text_screen.screening_stopped", { sessionId: context.sessionId, kind, reason });
+}
+
 async function dispatch(
   request: Planned,
   stop: AbortSignal,
@@ -235,9 +254,11 @@ async function dispatch(
   const started = Date.now();
   try {
     const result = await evaluate(request.state, request.questions, signal);
+    // Only the questions that were asked are kept; an extra answer is ignored.
     const answers = Object.fromEntries(
-      Object.entries(result.answers).map(([name, answer]) => {
-        if (answer.type !== "noul") throw new Error(`Typesafe answered "${name}" without a noul.`);
+      Object.keys(request.questions).map((name) => {
+        const answer = result.answers[name];
+        if (answer?.type !== "noul") throw new Error(`Typesafe answered "${name}" without a noul.`);
         return [name, answer.noul];
       }),
     );
@@ -256,8 +277,7 @@ async function dispatch(
       durationMs,
       error: messageOf(error),
     });
-    if (missed && context.breaker.trip())
-      log("text_screen.screening_stopped", { sessionId: context.sessionId, kind: request.kind });
+    if (missed) stopScreening(context, request.kind, "deadline");
     return { dispatched: true, durationMs };
   }
 }
@@ -361,6 +381,7 @@ export async function screenTexts(
   context: ScreenContext,
   texts: readonly ScreenText[],
 ): Promise<ScreenAnswers | undefined> {
+  const started = Date.now();
   try {
     return await screen(context, texts);
   } catch (error) {
@@ -371,5 +392,8 @@ export async function screenTexts(
       error: messageOf(error),
     });
     return undefined;
+  } finally {
+    if (context.breaker.spend(Date.now() - started) && texts[0])
+      stopScreening(context, texts[0].kind, "budget");
   }
 }
