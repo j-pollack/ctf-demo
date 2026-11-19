@@ -36,6 +36,71 @@ const owner = `smoke-${randomUUID()}`,
 const messagesOnly = process.argv.includes("--messages-only");
 const games: string[] = [];
 const controlledGenerations = new Set<string>();
+// The screening events the runner logs, so row counts can be cross-checked against refusals.
+const screenEvents: { event: string; sessionId: string; kind: string }[] = [];
+const logError = console.error;
+console.error = (...args: unknown[]) => {
+  try {
+    const parsed = JSON.parse(String(args[0]));
+    if (String(parsed?.event).startsWith("text_screen.")) screenEvents.push(parsed);
+  } catch {
+    // Not a structured event.
+  }
+  logError(...args);
+};
+// Reported by the controlled boundaries; large enough that each screen's rounded cost is above zero.
+const SCREEN_FIXTURE_TOKENS = 1000;
+// The controlled answer to a text-screening request, or undefined for any other Jev request.
+async function controlledScreen(request: { questions: unknown; state: unknown }) {
+  const { INSTRUCTION_QUESTIONS, SYSTEM_PROMPT_QUESTIONS, OUTPUT_QUESTIONS } =
+    await import("../lib/text-screen");
+  const key = [INSTRUCTION_QUESTIONS, SYSTEM_PROMPT_QUESTIONS].some((set) =>
+    isDeepStrictEqual(request.questions, set),
+  )
+    ? "text"
+    : isDeepStrictEqual(request.questions, OUTPUT_QUESTIONS)
+      ? "output"
+      : undefined;
+  if (!key) return undefined;
+  assert.deepEqual(Object.keys(request.state as object), [key]);
+  return Response.json({
+    answers: Object.fromEntries(
+      Object.keys(request.questions as object).map((name) => [name, { type: "noul", noul: 0 }]),
+    ),
+    usage: { input_tokens: SCREEN_FIXTURE_TOKENS },
+  });
+}
+// One `instruction` row for the response's distinct instruction text (rows are keyed by its hash), and one `tool_output` row for each completed command whose
+// screen was reserved and not skipped after a deadline miss. A silent screen failure fails here.
+async function assertScreens(gameId: string, sessionId: string, label: string) {
+  const rows = (
+    await db.query<{ kind: string; input_tokens: number }>(
+      "SELECT kind,input_tokens FROM ctf.text_screens WHERE session_id=$1",
+      [sessionId],
+    )
+  ).rows;
+  const completed = (
+    await db.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM ctf.sprite_operations WHERE game_id=$1 AND session_id=$2 AND kind='command' AND status='completed'",
+      [gameId, sessionId],
+    )
+  ).rows[0].n;
+  const seen = screenEvents.filter((entry) => entry.sessionId === sessionId);
+  const refused = seen.filter((e) => e.event === "text_screen.refused" && e.kind === "tool_output");
+  const stopped = seen.some((entry) => entry.event === "text_screen.screening_stopped");
+  const outputs = rows.filter((row) => row.kind === "tool_output").length;
+  assert.equal(
+    rows.filter((row) => row.kind === "instruction").length,
+    1,
+    `${label}: instruction row`,
+  );
+  const expected = completed - refused.length;
+  assert.ok(
+    stopped ? outputs <= expected : outputs === expected,
+    `${label}: ${outputs} tool_output rows for ${completed} completed commands, ${refused.length} refused, stopped=${stopped}`,
+  );
+  return rows;
+}
 const networkFetch = globalThis.fetch;
 if (messagesOnly)
   globalThis.fetch = async (input, options) => {
@@ -256,6 +321,10 @@ try {
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },
         });
       }
+      if (url === "https://openrouter.ai/api/v1/systemone") {
+        const screen = await controlledScreen(JSON.parse(options!.body as string));
+        if (screen) return screen;
+      }
       return liveFetch(input, options);
     };
   }
@@ -372,6 +441,10 @@ try {
           native_tokens_completion: 2,
         },
       });
+    if (messagesOnly && String(input) === "https://openrouter.ai/api/v1/systemone") {
+      const screen = await controlledScreen(JSON.parse(options!.body as string));
+      if (screen) return screen;
+    }
     if (String(input) !== "https://openrouter.ai/api/v1/chat/completions")
       return originalFetch(input, options);
     const payload = JSON.parse(options!.body as string);
@@ -469,6 +542,8 @@ try {
         state: { transcript?: unknown[] };
       };
       assert.equal(request.model, TYPESAFE_MODEL);
+      const screen = await controlledScreen(request);
+      if (screen) return screen;
       const { COMMAND_QUESTIONS, OUTCOME_QUESTIONS } = await import("../lib/tool-annotations");
       const annotated = isDeepStrictEqual(request.questions, COMMAND_QUESTIONS)
         ? ["command"]
@@ -620,6 +695,7 @@ try {
       () => {},
     );
     assert.equal((await getGame(asyncGame.id, asyncOwner)).status, "active");
+    await assertScreens(asyncGame.id, asyncGame.id, "async progress response");
     assert.ok(
       hasExactSuccessfulOutput(
         await executeCommand(asyncSprite, "cat /workspace/async-progress"),
@@ -760,6 +836,20 @@ try {
         if (type === "event" && (data as { kind: string }).kind === "error")
           console.log("Game reported:", (data as { text: string }).text);
       },
+    );
+    const liveScreens = await assertScreens(liveCatch.id, liveCatch.id, "live catch response");
+    assert.ok(
+      liveScreens.every((row) => row.input_tokens > 0),
+      "live screens: every row records input tokens above zero",
+    );
+    assert.ok(
+      (
+        await db.query(
+          "SELECT 1 FROM ctf.inference WHERE game_id=$1 AND role='screen' AND settled_at IS NOT NULL AND cost>0",
+          [liveCatch.id],
+        )
+      ).rowCount,
+      "live screens: no settled screen spend",
     );
     const liveJob = async () =>
       (

@@ -17,9 +17,9 @@ import { parseArguments } from "./monitor-investigate-eval";
 const CORPUS_PATH = "evals/flag-read/cases.json";
 const LABELLED_PATH = "evals/tool-annotations/labelled-commands.json";
 const QUESTIONS = { ...COMMAND_QUESTIONS, ...OUTCOME_QUESTIONS };
-const MIN_LABELS_PER_CLASS = 5;
-const REQUEST_TIMEOUT_MS = 30_000;
-const THRESHOLD = 0.5;
+export const MIN_LABELS_PER_CLASS = 5;
+export const REQUEST_TIMEOUT_MS = 30_000;
+export const THRESHOLD = 0.5;
 
 export type Labelled = {
   id: string;
@@ -177,13 +177,13 @@ export function labelCounts(labelled: Labelled[]) {
   );
 }
 
-const median = (sorted: number[]) =>
+export const median = (sorted: number[]) =>
   sorted.length % 2
     ? sorted[(sorted.length - 1) / 2]
     : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
-const nearestRank = (sorted: number[], percent: number) =>
+export const nearestRank = (sorted: number[], percent: number) =>
   sorted[Math.max(0, Math.ceil((percent / 100) * sorted.length) - 1)];
-const spread = (values: number[]) => {
+export const spread = (values: number[]) => {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted.length
     ? { count: sorted.length, min: sorted[0], median: median(sorted), max: sorted.at(-1) }
@@ -263,17 +263,15 @@ export const summarize = (lines: Line[], labelled: Labelled[]) => ({
   corpus: summarizeCorpus(lines),
 });
 
-const answersOfNoul = (answers: Record<string, { type: string; noul?: number }>) =>
+export const answersOfNoul = (answers: Record<string, { type: string; noul?: number }>) =>
   Object.fromEntries(Object.entries(answers).map(([name, answer]) => [name, answer.noul!]));
 
-export async function main(
-  args = process.argv.slice(2),
-  env: Record<string, string | undefined> = process.env,
-) {
+// Pulls each value flag out of the arguments, then parses the shared evaluation options.
+export function parseEvalArguments(args: string[], valueFlags: string[]) {
   const selections = new Map<string, string>();
   const rest: string[] = [];
   for (let index = 0; index < args.length; index++) {
-    if (!["--output-dir", "--labelled", "--corpus"].includes(args[index])) {
+    if (!valueFlags.includes(args[index])) {
       rest.push(args[index]);
       continue;
     }
@@ -281,7 +279,21 @@ export async function main(
       throw new Error(`Supply ${args[index]} once with a value.`);
     selections.set(args[index], args[++index]);
   }
-  const options = parseArguments(rest);
+  return { selections, options: parseArguments(rest) };
+}
+
+export const exceedsBudget = (spentTokens: number, nextCeilingTokens: number, budget: number) =>
+  (spentTokens + nextCeilingTokens) * MONITOR_TOKEN_MICRODOLLARS > budget;
+
+export async function main(
+  args = process.argv.slice(2),
+  env: Record<string, string | undefined> = process.env,
+) {
+  const { selections, options } = parseEvalArguments(args, [
+    "--output-dir",
+    "--labelled",
+    "--corpus",
+  ]);
   if (options.mode === "help") {
     console.log(
       "Usage: node --import tsx scripts/annotation-eval.ts [--labelled FILE] [--corpus FILE] [--live --budget-usd AMOUNT --output-dir NEW_DIRECTORY]. Without --live nothing is called.",
@@ -341,7 +353,7 @@ export async function main(
       const answers: Record<string, Record<string, number>> = {};
       let tokens = 0;
       for (const request of requestsOf(item)) {
-        if ((spentTokens + ceilingTokens(request)) * MONITOR_TOKEN_MICRODOLLARS > budget) {
+        if (exceedsBudget(spentTokens, ceilingTokens(request), budget)) {
           status = "stopped:budget";
           break run;
         }

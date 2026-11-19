@@ -337,6 +337,37 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       new Request(`http://localhost/api/leaderboard?agent=${encodeURIComponent(actualModel)}`),
     );
     assert.equal((await board.json()).entries.length, 1);
+    // Screen rows carry the Jev model and are not an attack model: they change neither view.
+    await pool.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at,session_id)
+       VALUES($1,$2,$3,'screen','typesafe/jev-1.14',100,500,40,210,now(),$2)`,
+      [randomUUID(), ids[1], legacyDay],
+    );
+    const screened = await (
+      await GET(
+        new Request("http://localhost/api/games/history?limit=50", {
+          headers: { cookie: memberCookie },
+        }),
+      )
+    ).json();
+    assert.equal(
+      screened.runs.find((run: { id: string }) => run.id === ids[1]).agentModel,
+      actualModel,
+      "history still shows the attack model with screen rows present",
+    );
+    assert.equal(
+      (
+        await (
+          await leaderboard(
+            new Request(
+              `http://localhost/api/leaderboard?agent=${encodeURIComponent(actualModel)}`,
+            ),
+          )
+        ).json()
+      ).entries.length,
+      1,
+      "the run still ranks under its attack model",
+    );
 
     const mixedOwner = randomUUID(),
       mixedGame = randomUUID(),

@@ -138,7 +138,7 @@ export async function gameBilling(gameId: string) {
   const { rows } = await db.query(
     `SELECT g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
       coalesce(sum(i.cost) FILTER (WHERE i.role='agent'),0) AS agent,
-      coalesce(sum(i.cost) FILTER (WHERE i.role='monitor'),0) AS monitor
+      coalesce(sum(i.cost) FILTER (WHERE i.role IN ('monitor','screen')),0) AS monitor
     FROM ctf.games g LEFT JOIN ctf.inference i ON i.game_id=g.id AND i.settled_at IS NOT NULL
     WHERE g.id=$1 GROUP BY g.id`,
     [gameId],
@@ -657,7 +657,7 @@ export function requestAllowance(
 }
 // A worker-claimed monitor review is admitted without the run budget until settled spend passes the overage ceiling.
 export function monitorRunBudgetExempt(
-  role: "agent" | "monitor",
+  role: InferenceRole,
   claim: MonitorJobClaim | undefined,
   spent: number,
   budget: number,
@@ -668,10 +668,11 @@ export function monitorRunBudgetExempt(
     spent < budget + MONITOR_OVERAGE_MICRODOLLARS
   );
 }
+export type InferenceRole = "agent" | "monitor" | "screen";
 export async function reserveInference(
   gameId: string,
   lease: string | null,
-  role: "agent" | "monitor",
+  role: InferenceRole,
   model: string,
   input: number,
   wantedOutput: number,
@@ -695,6 +696,10 @@ export async function reserveInference(
       await client.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId])
     ).rows[0];
     const sessionId = context.sessionId ?? game?.id;
+    // A screen is authorized like an agent call, by the session lease and generation, never a claim.
+    const leaseHeld = role === "agent" || role === "screen";
+    if (role === "screen" && (context.jobClaim || context.executionGeneration === undefined))
+      throw new GameError("This response has stopped.", 409);
     const session =
       game &&
       (
@@ -705,8 +710,8 @@ export async function reserveInference(
       ).rows[0];
     if (
       !game ||
-      (role === "agent" && game.status !== "active") ||
-      (role === "agent" &&
+      (leaseHeld && game.status !== "active") ||
+      (leaseHeld &&
         game.submission_transport === "http" &&
         !!(await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [gameId]))
           .rowCount) ||

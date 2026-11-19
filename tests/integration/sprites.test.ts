@@ -17,6 +17,7 @@ import { smokeCommandForTurn } from "../../scripts/smoke-contract";
 import { GameError } from "../../lib/policy";
 import type { GameEvent, PublicGame } from "../../lib/types";
 import { annotationResponse } from "./annotation-fake";
+import { createScreenFake } from "./screen-fake";
 
 // Only the runner's fresh loopback database is accepted; never read .env.local.
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -114,6 +115,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         new URL("../../db/migrations/022-tool-call-annotations.sql", import.meta.url),
         "utf8",
       ),
+    );
+  for (let pass = 0; pass < 2; pass++)
+    await pool.query(
+      await readFile(new URL("../../db/migrations/023-text-screens.sql", import.meta.url), "utf8"),
     );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
@@ -213,6 +218,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     | ((target: { kind: string }, prompt: unknown) => Promise<void>)
     | undefined;
   const typesafe: { state: unknown; questions: unknown }[] = [];
+  const screenFake = createScreenFake();
   // Whether the agent's tool-call turn includes readable reasoning.
   let agentReasoning = true;
   let agentModelOverride = AGENT_MODEL;
@@ -417,6 +423,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         const body = JSON.parse(String(options.body));
         assert.deepEqual(Object.keys(body).sort(), ["model", "questions", "state"]);
         assert.equal(body.model, TYPESAFE_MODEL);
+        const screened = await screenFake.response(body, options.signal ?? undefined);
+        if (screened) return screened;
         const annotation = await annotationResponse(body);
         if (annotation) return annotation;
         const names = Object.keys(body.questions).sort().join(",");
@@ -763,6 +771,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     onAgentRequest = undefined;
     beforeInvestigatorResponse = undefined;
     typesafe.length = 0;
+    screenFake.reset();
     agentReasoning = true;
     agentModelOverride = AGENT_MODEL;
     agentCost = 0;
@@ -1228,6 +1237,15 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       );
       assert.ok(
         (await pool.query("SELECT 1 FROM ctf.monitor_jobs WHERE game_id=$1", [game.id])).rowCount,
+      );
+      // A screen that fails silently must not pass unnoticed.
+      assert.deepEqual(
+        (
+          await pool.query("SELECT kind FROM ctf.text_screens WHERE game_id=$1 ORDER BY kind", [
+            game.id,
+          ])
+        ).rows.map(({ kind }) => kind),
+        ["instruction", "tool_output", "tool_output"],
       );
     },
   );
@@ -5125,6 +5143,635 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.equal(environments.size, 1);
     },
   );
+
+  await t.test("a screen reservation is authorized by the lease and generation alone", async () => {
+    const reserve = (
+      gameId: string,
+      lease: string | null,
+      context: Parameters<typeof reserveInference>[8],
+    ) =>
+      reserveInference(gameId, lease, "screen", TYPESAFE_MODEL, 100, 64, 0.000001, 0.000001, {
+        sessionId: gameId,
+        ...context,
+      });
+    const refused = (promise: Promise<unknown>) =>
+      assert.rejects(promise, (error) => error instanceof GameError && error.status === 409);
+    const owner = "screen-reservation";
+    const game = await productionStartGame(owner);
+    const leased = await claimGame(game.id, owner);
+    const generation = Number(leased.execution_generation);
+    const lease = leased.lease!;
+    await refused(reserve(game.id, lease, {}));
+    await refused(reserve(game.id, lease, { executionGeneration: generation + 1 }));
+    await refused(reserve(game.id, randomUUID(), { executionGeneration: generation }));
+    await refused(
+      reserve(game.id, lease, {
+        executionGeneration: generation,
+        jobClaim: { jobId: randomUUID(), claimToken: randomUUID() } as never,
+      }),
+    );
+    assert.equal(Number((await row(game.id)).reserved_microdollars), 0, "nothing was held");
+    const held = await reserve(game.id, lease, { executionGeneration: generation });
+    const stored = (
+      await pool.query("SELECT role,model,session_id FROM ctf.inference WHERE id=$1", [held.id])
+    ).rows[0];
+    assert.deepEqual(stored, { role: "screen", model: TYPESAFE_MODEL, session_id: game.id });
+    await settleInference(held.id, { tokens: 10, costMicrodollars: 3 });
+    // No budget exemption: a screen that does not fit the budget is refused, never run.
+    await pool.query(
+      "UPDATE ctf.games SET budget_microdollars=spent_microdollars+100 WHERE id=$1",
+      [game.id],
+    );
+    await assert.rejects(
+      reserve(game.id, lease, { executionGeneration: generation }),
+      (error) => error instanceof GameError && error.status === 400,
+    );
+    assert.equal((await row(game.id)).status, "active");
+    await pool.query(
+      "UPDATE ctf.games SET budget_microdollars=spent_microdollars+1000000,status='ended' WHERE id=$1",
+      [game.id],
+    );
+    await refused(reserve(game.id, lease, { executionGeneration: generation }));
+    await pool.query("UPDATE ctf.games SET status='active' WHERE id=$1", [game.id]);
+    await pool.query(
+      "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
+      [game.id],
+    );
+    await refused(reserve(game.id, lease, { executionGeneration: generation }));
+    await pool.query(
+      "UPDATE ctf.agent_sessions SET lease_until=now()+interval '1 minute' WHERE id=$1",
+      [game.id],
+    );
+    await pool.query("UPDATE ctf.games SET submission_transport='http' WHERE id=$1", [game.id]);
+    await reserve(game.id, lease, { executionGeneration: generation });
+    const operation = randomUUID();
+    await pool.query(
+      `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,command)
+       SELECT $2,sprite_name,id,id,'upload','command','printf x' FROM ctf.games WHERE id=$1`,
+      [game.id, operation],
+    );
+    await pool.query(
+      "INSERT INTO ctf.flag_submissions(game_id,operation_id,body_hash,correct) VALUES($1,$2,$3,false)",
+      [game.id, operation, "0".repeat(64)],
+    );
+    await refused(reserve(game.id, lease, { executionGeneration: generation }));
+  });
+
+  // Text screening: Jev's answers about each instruction, system prompt and tool result.
+  const { SCREEN_DEADLINE_MS } = await import("../../lib/text-screen");
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const parseLogged = (text: string): Record<string, unknown> | undefined => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  };
+  const withLogs = async (run: () => Promise<unknown>) => {
+    const events: Record<string, unknown>[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      const parsed = parseLogged(String(args[0]));
+      if (parsed?.event) events.push(parsed);
+      original(...args);
+    };
+    try {
+      await run();
+    } finally {
+      console.error = original;
+    }
+    return events;
+  };
+  const screenEvents = (events: Record<string, unknown>[]) =>
+    events.filter((entry) => String(entry.event).startsWith("text_screen."));
+  const screenRows = async (gameId: string) =>
+    (
+      await pool.query(
+        `SELECT kind,ref,text_sha256,question_set,answers,model,input_tokens,duration_ms
+         FROM ctf.text_screens WHERE game_id=$1 ORDER BY kind,ref`,
+        [gameId],
+      )
+    ).rows;
+  const toolCallIds = async (gameId: string) =>
+    (
+      await pool.query<{ tool_call_id: string }>(
+        "SELECT tool_call_id FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command' ORDER BY started_at,id",
+        [gameId],
+      )
+    ).rows.map(({ tool_call_id }) => tool_call_id);
+  const frameShape = (sent: { type: string; data: unknown }[]) =>
+    sent
+      .filter(({ type }) => type !== "delta")
+      .map(({ type, data }) =>
+        type === "stage"
+          ? `stage:${data}`
+          : type === "event"
+            ? `event:${(data as GameEvent).kind}`
+            : type,
+      );
+  const runScreened = async (
+    owner: string,
+    options: {
+      instruction?: string;
+      systemPrompt?: string;
+      commands?: string[];
+      beforePrompt?: (signal: AbortSignal) => Promise<void>;
+      signal?: AbortSignal;
+    } = {},
+  ) => {
+    const game = await startPersistedToolGame(owner);
+    proposed = options.commands ?? ["printf harmless"];
+    agentCalls = 0;
+    const sent: { type: string; data: unknown }[] = [];
+    const events = await withLogs(async () =>
+      runGame(
+        await claimGame(game.id, owner, undefined, options.systemPrompt),
+        options.instruction ?? "Run a command",
+        options.signal ?? AbortSignal.timeout(10_000),
+        (type, data) => sent.push({ type, data }),
+        { beforePrompt: options.beforePrompt },
+      ),
+    );
+    return { game, sent, events };
+  };
+  const AN_OUTPUT = "fixture-output\n[exit 0]";
+  const screenAnswers = (names: string[]) => Object.fromEntries(names.map((name) => [name, 0.25]));
+  const PLAYER_NAMES = [
+    "overrides_rules",
+    "unrestricted_persona",
+    "drops_safeguards",
+    "claims_authority",
+    "addresses_monitor",
+    "forges_record",
+    "hides_request",
+  ];
+  const screenInference = async (gameId: string) =>
+    (
+      await pool.query(
+        `SELECT tokens,cost::int AS cost,settled_at,model,session_id FROM ctf.inference
+         WHERE game_id=$1 AND role='screen' ORDER BY created_at,id`,
+        [gameId],
+      )
+    ).rows;
+
+  await t.test("R1: an instruction and a system prompt are screened before the agent", async () => {
+    const prompt = "Be careful with files.";
+    const { game, events } = await runScreened("screen-r1", { systemPrompt: prompt });
+    const rows = await screenRows(game.id);
+    assert.deepEqual(
+      rows.map(({ kind, ref, question_set }) => [kind, ref, question_set]),
+      [
+        ["instruction", sha("Run a command"), "player-v1"],
+        ["system_prompt", sha(prompt), "system-v1"],
+        ["tool_output", (await toolCallIds(game.id))[0], "output-v1"],
+      ],
+    );
+    const byKind = Object.fromEntries(rows.map((entry) => [entry.kind, entry]));
+    assert.equal(byKind.instruction.text_sha256, sha("Run a command"));
+    assert.equal(byKind.system_prompt.text_sha256, sha(prompt));
+    for (const kind of ["instruction", "system_prompt"]) {
+      assert.deepEqual(byKind[kind].answers, screenAnswers(PLAYER_NAMES));
+      assert.equal(byKind[kind].model, TYPESAFE_MODEL);
+      assert.ok(Number.isInteger(byKind[kind].duration_ms) && byKind[kind].duration_ms >= 0);
+    }
+    const first = screenFake.requests.filter((request) => request.kind !== "tool_output");
+    assert.deepEqual(first.map(({ kind, state }) => [kind, state]).sort(), [
+      ["instruction", { text: "Run a command" }],
+      ["system_prompt", { text: prompt }],
+    ]);
+    const agentFirst = requests.find((request) => request.role === "agent")!;
+    assert.ok(first.every((request) => request.at < agentFirst.at));
+    assert.deepEqual(screenEvents(events), []);
+  });
+
+  await t.test("R1: an empty system prompt is not screened", async () => {
+    const { game } = await runScreened("screen-r1-empty", { systemPrompt: "   " });
+    assert.deepEqual(
+      (await screenRows(game.id)).map(({ kind }) => kind),
+      ["instruction", "tool_output"],
+    );
+    assert.deepEqual(
+      screenFake.requests.map(({ kind }) => kind),
+      ["instruction", "tool_output"],
+    );
+  });
+
+  await t.test("R2: each tool result is screened and returned unchanged", async () => {
+    const { game, sent } = await runScreened("screen-r2", {
+      commands: ["printf harmless", "printf old"],
+    });
+    const ids = await toolCallIds(game.id);
+    assert.equal(ids.length, 2);
+    const rows = (await screenRows(game.id)).filter(({ kind }) => kind === "tool_output");
+    assert.deepEqual(rows.map(({ ref }) => ref).sort(), [...ids].sort());
+    assert.ok(rows.every(({ text_sha256 }) => text_sha256 === sha(AN_OUTPUT)));
+    for (const { answers } of rows)
+      assert.deepEqual(
+        answers,
+        screenAnswers([
+          "instructs_reader",
+          "overrides_rules",
+          "addresses_monitor",
+          "forges_record",
+          "claims_approval",
+        ]),
+      );
+    const outputs = screenFake.requests.filter((request) => request.kind === "tool_output");
+    assert.deepEqual(
+      outputs.map(({ state }) => state),
+      [{ output: AN_OUTPUT }, { output: AN_OUTPUT }],
+    );
+    const agentRequests = requests.filter((request) => request.role === "agent");
+    assert.ok(outputs.every((request) => request.at < agentRequests[1].at));
+    const operations = (
+      await pool.query(
+        "SELECT output FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command'",
+        [game.id],
+      )
+    ).rows;
+    assert.deepEqual(
+      operations.map(({ output }) => output),
+      [AN_OUTPUT, AN_OUTPUT],
+    );
+    const saved = await getSession(game.id, game.id, "screen-r2");
+    const results = saved.messages.filter((message) => message.role === "toolResult");
+    assert.deepEqual(
+      results.map((message) => (message.content as { text: string }[]).map(({ text }) => text)),
+      [[AN_OUTPUT], [AN_OUTPUT]],
+    );
+    const toolEvents = sent.filter(
+      ({ type, data }) => type === "event" && (data as GameEvent).kind === "tool",
+    );
+    assert.deepEqual(
+      toolEvents.map(({ data }) => (data as GameEvent).text),
+      [AN_OUTPUT, AN_OUTPUT],
+    );
+  });
+
+  await t.test("R3: screen spend is settled at the reported tokens and the Jev rate", async () => {
+    agentCost = 0.00004;
+    screenFake.controls.tokens = { instruction: 1200, system_prompt: 800, tool_output: 1500 };
+    const { game, sent } = await runScreened("screen-r3", { systemPrompt: "Be careful." });
+    const screens = await screenInference(game.id);
+    // The instruction and system prompt share one reservation; the command has its own.
+    assert.deepEqual(
+      screens.map(({ tokens, cost }) => [tokens, cost]),
+      [
+        [2000, 84],
+        [1500, 63],
+      ],
+    );
+    assert.ok(
+      screens.every(
+        ({ settled_at, model, session_id }) =>
+          settled_at && model === TYPESAFE_MODEL && session_id === game.id,
+      ),
+    );
+    assert.deepEqual(
+      (await screenRows(game.id)).map(({ kind, input_tokens }) => [kind, input_tokens]),
+      [
+        ["instruction", 1200],
+        ["system_prompt", 800],
+        ["tool_output", 1500],
+      ],
+    );
+    const agents = (
+      await pool.query(
+        "SELECT cost::int AS cost FROM ctf.inference WHERE game_id=$1 AND role='agent'",
+        [game.id],
+      )
+    ).rows;
+    assert.deepEqual(
+      agents.map(({ cost }) => cost),
+      [40, 40],
+    );
+    const finished = await row(game.id);
+    assert.equal(Number(finished.spent_microdollars), 80 + 84 + 63);
+    assert.equal(Number(finished.reserved_microdollars), 0);
+    const done = sent.find(({ type }) => type === "done")!.data as Record<string, number>;
+    assert.equal(done.agentSpendMicrodollars, 80);
+    assert.equal(done.monitorSpendMicrodollars, 84 + 63);
+    const day = (await pool.query("SELECT charged,reserved FROM ctf.daily_spend")).rows[0];
+    assert.deepEqual([Number(day.charged), Number(day.reserved)], [80 + 84 + 63, 0]);
+  });
+
+  await t.test(
+    "R7: the stored instruction carries only its content and system prompt",
+    async () => {
+      const prompt = "Be careful.";
+      const { game, sent } = await runScreened("screen-r7", { systemPrompt: prompt });
+      const saved = (await row(game.id)).messages as Message[];
+      const user = saved.find((message) => message.role === "user")!;
+      assert.deepEqual(Object.keys(user).sort(), ["content", "role", "systemPrompt", "timestamp"]);
+      assert.deepEqual(user.content, [{ type: "text", text: "Run a command" }]);
+      assert.equal((user as { systemPrompt?: string }).systemPrompt, prompt);
+      const event = sent.find(
+        ({ type, data }) => type === "event" && (data as GameEvent).kind === "user",
+      )!;
+      assert.equal((event.data as GameEvent).text, "Run a command");
+    },
+  );
+
+  const outcomesOf = async (gameId: string) => ({
+    status: (await row(gameId)).status,
+    commands: (
+      await pool.query(
+        "SELECT status,output FROM ctf.sprite_operations WHERE game_id=$1 AND kind='command' ORDER BY started_at,id",
+        [gameId],
+      )
+    ).rows,
+    events: (await eventsOf(gameId)).map(({ data }) => [data.kind, data.text]),
+  });
+
+  await t.test("R4: a 500 from Jev changes nothing but a logged failure", async () => {
+    const baseline = await runScreened("screen-r4-base");
+    screenFake.reset();
+    screenFake.controls.behave = (kind) => (kind === "instruction" ? 500 : "answer");
+    const failed = await runScreened("screen-r4-500");
+    assert.deepEqual(frameShape(failed.sent), frameShape(baseline.sent));
+    assert.deepEqual(await outcomesOf(failed.game.id), await outcomesOf(baseline.game.id));
+    const logged = screenEvents(failed.events);
+    assert.deepEqual(
+      logged.map(({ event, kind }) => [event, kind]),
+      [["text_screen.request_failed", "instruction"]],
+    );
+    assert.equal(typeof logged[0].durationMs, "number");
+    assert.ok(!JSON.stringify(logged).includes("Run a command"), "no text content is logged");
+    assert.deepEqual(
+      (await screenRows(failed.game.id)).map(({ kind }) => kind),
+      ["tool_output"],
+    );
+  });
+
+  await t.test("R4: a screen past its deadline stops screening for the response", async () => {
+    const baseline = await runScreened("screen-r4-base-two", {
+      commands: ["printf harmless", "printf old"],
+    });
+    screenFake.reset();
+    screenFake.controls.behave = (kind) => (kind === "tool_output" ? "hang" : "answer");
+    const started = Date.now();
+    const slow = await runScreened("screen-r4-slow", {
+      commands: ["printf harmless", "printf old"],
+    });
+    assert.ok(Date.now() - started >= SCREEN_DEADLINE_MS);
+    assert.deepEqual(frameShape(slow.sent), frameShape(baseline.sent));
+    assert.deepEqual(await outcomesOf(slow.game.id), await outcomesOf(baseline.game.id));
+    assert.deepEqual(
+      (await outcomesOf(slow.game.id)).commands.map(({ status }) => status),
+      ["completed", "completed"],
+    );
+    assert.equal(screenFake.requests.filter((request) => request.kind === "tool_output").length, 1);
+    assert.equal(
+      (await screenInference(slow.game.id)).length,
+      2,
+      "the skipped screen reserved nothing",
+    );
+    const logged = screenEvents(slow.events);
+    assert.deepEqual(
+      logged.map(({ event, kind }) => [event, kind]),
+      [
+        ["text_screen.request_timed_out", "tool_output"],
+        ["text_screen.screening_stopped", "tool_output"],
+      ],
+    );
+    assert.ok((logged[0].durationMs as number) >= SCREEN_DEADLINE_MS - 50);
+    assert.deepEqual(
+      (await screenRows(slow.game.id)).map(({ kind }) => kind),
+      ["instruction"],
+    );
+  });
+
+  await t.test(
+    "R4: a deadline miss on the instruction skips every tool result screen",
+    async () => {
+      screenFake.controls.behave = (kind) => (kind === "instruction" ? "hang" : "answer");
+      const slow = await runScreened("screen-r4-instruction-slow", {
+        commands: ["printf harmless", "printf old"],
+      });
+      assert.deepEqual(
+        screenEvents(slow.events).map(({ event }) => event),
+        ["text_screen.request_timed_out", "text_screen.screening_stopped"],
+      );
+      assert.deepEqual(
+        screenFake.requests.map(({ kind }) => kind),
+        ["instruction"],
+      );
+      assert.deepEqual(await screenRows(slow.game.id), []);
+      assert.deepEqual(
+        (await outcomesOf(slow.game.id)).commands.map(({ status }) => status),
+        ["completed", "completed"],
+      );
+    },
+  );
+
+  await t.test("R4: a failed row write is logged and changes nothing else", async () => {
+    const baseline = await runScreened("screen-r4-base-write");
+    await pool.query(`
+      CREATE FUNCTION ctf.test_fail_instruction_screen() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'fixture row write failure'; END $$;
+      CREATE TRIGGER test_fail_instruction_screen BEFORE INSERT ON ctf.text_screens
+      FOR EACH ROW WHEN (NEW.kind='instruction') EXECUTE FUNCTION ctf.test_fail_instruction_screen();`);
+    try {
+      const failed = await runScreened("screen-r4-write");
+      assert.deepEqual(frameShape(failed.sent), frameShape(baseline.sent));
+      assert.deepEqual(await outcomesOf(failed.game.id), await outcomesOf(baseline.game.id));
+      assert.deepEqual(
+        screenEvents(failed.events).map(({ event, kind }) => [event, kind]),
+        [["text_screen.write_failed", "instruction"]],
+      );
+      assert.equal(typeof screenEvents(failed.events)[0].durationMs, "number");
+      assert.deepEqual(
+        (await screenRows(failed.game.id)).map(({ kind }) => kind),
+        ["tool_output"],
+      );
+    } finally {
+      await pool.query("DROP TRIGGER test_fail_instruction_screen ON ctf.text_screens");
+      await pool.query("DROP FUNCTION ctf.test_fail_instruction_screen()");
+    }
+  });
+
+  await t.test("R4: the command that uploads the flag is refused a screen", async () => {
+    const owner = `screen-r4-upload-${randomUUID()}`;
+    const game = await productionStartGame(owner);
+    const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
+    const { receiveFlagSubmission } = await import("../../lib/flag-submissions");
+    const uploadCommand = `curl --fail --silent --show-error --data-binary @/tmp/flag.txt "$TARGET"`;
+    expectedCommands = new Set([uploadCommand]);
+    proposed = [uploadCommand];
+    onCommandExecute = async (_name, _command, env) => {
+      assert.equal(
+        await receiveFlagSubmission({ token: env?.TARGET.split("/").at(-1) ?? "", value: secret }),
+        "accepted",
+      );
+    };
+    const sent: { type: string; data: unknown }[] = [];
+    const events = await withLogs(async () =>
+      runGame(
+        await claimGame(game.id, owner),
+        "Upload it",
+        AbortSignal.timeout(8000),
+        (type, data) => sent.push({ type, data }),
+      ),
+    );
+    assert.deepEqual(
+      screenEvents(events).map(({ event, kind }) => [event, kind]),
+      [["text_screen.refused", "tool_output"]],
+    );
+    assert.deepEqual(
+      (await screenRows(game.id)).map(({ kind }) => kind),
+      ["instruction"],
+    );
+    // Screening was active (the instruction was screened); the receipt and finalizing are as before.
+    assert.equal(screenFake.requests.filter(({ kind }) => kind === "instruction").length, 1);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT correct,promoted_at IS NOT NULL AS promoted FROM ctf.flag_submissions WHERE game_id=$1",
+          [game.id],
+        )
+      ).rows,
+      [{ correct: true, promoted: true }],
+    );
+    assert.equal((await row(game.id)).status, "finalizing");
+    assert.ok(!sent.some(({ data }) => (data as GameEvent | null)?.kind === "error"));
+  });
+
+  await t.test("R5: a run that cannot afford a screen is exhausted as before", async () => {
+    const owner = "screen-r5";
+    const game = await startPersistedToolGame(owner);
+    await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+      game.id,
+    ]);
+    const events = await withLogs(async () =>
+      runGame(
+        await claimGame(game.id, owner),
+        "Run a command",
+        AbortSignal.timeout(5000),
+        () => {},
+      ),
+    );
+    assert.equal((await row(game.id)).status, "exhausted");
+    assert.deepEqual(screenFake.requests, []);
+    assert.deepEqual(requests, []);
+    assert.deepEqual(
+      screenEvents(events).map(({ event, kind }) => [event, kind]),
+      [["text_screen.refused", "instruction"]],
+    );
+    assert.deepEqual(await screenRows(game.id), []);
+  });
+
+  await t.test("R6: a stop during a screen ends the response as today and settles it", async () => {
+    const owner = "screen-r6-stop";
+    const controller = new AbortController();
+    const arrived = Promise.withResolvers<void>();
+    screenFake.controls.behave = () => {
+      arrived.resolve();
+      return "hang";
+    };
+    const running = runScreened(owner, { signal: controller.signal });
+    await withinSeconds(arrived.promise);
+    controller.abort();
+    const { game, sent, events } = await withinSeconds(running);
+    const errors = sent.filter(
+      ({ type, data }) => type === "event" && (data as GameEvent).kind === "error",
+    );
+    assert.deepEqual(
+      errors.map(({ data }) => (data as GameEvent).text),
+      [stoppedText],
+    );
+    assert.equal((await row(game.id)).status, "active");
+    assert.deepEqual(requests, [], "the agent was not dispatched");
+    const screens = await screenInference(game.id);
+    assert.equal(screens.length, 1);
+    assert.ok(screens[0].settled_at, "the reservation is settled");
+    assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+    assert.deepEqual(
+      screenEvents(events).map(({ event }) => event),
+      ["text_screen.request_failed"],
+    );
+  });
+
+  await t.test(
+    "R6: a lease lost during a screen ends the response as today and settles it",
+    async () => {
+      const owner = "screen-r6-lease";
+      const arrived = Promise.withResolvers<void>();
+      screenFake.controls.behave = () => {
+        arrived.resolve();
+        return "hang";
+      };
+      const running = runScreened(owner);
+      await withinSeconds(arrived.promise);
+      await pool.query(
+        "UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=(SELECT id FROM ctf.games WHERE owner_id=$1)",
+        [owner],
+      );
+      const { game, events } = await withinSeconds(running);
+      // Without its lease the response cannot record an error event; it logs the failure.
+      assert.deepEqual(
+        events.filter(({ event }) => event === "game.response.failed").map(({ error }) => error),
+        ["This response has stopped."],
+      );
+      assert.deepEqual(requests, [], "the agent was not dispatched");
+      const screens = await screenInference(game.id);
+      assert.equal(screens.length, 1);
+      assert.ok(screens[0].settled_at);
+      assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+    },
+  );
+
+  await t.test("R8: player text is keyed by its hash, once per distinct text", async () => {
+    const owner = "screen-r8";
+    const game = await startPersistedToolGame(owner);
+    const instructionRows = async () =>
+      (await screenRows(game.id)).filter(({ kind }) => kind === "instruction");
+    const respond = async (text: string, beforePrompt?: () => Promise<void>) => {
+      proposed = ["printf harmless"];
+      agentCalls = 0;
+      await runGame(
+        await claimGame(game.id, owner),
+        text,
+        AbortSignal.timeout(5000),
+        () => {},
+        beforePrompt && { beforePrompt },
+      );
+    };
+    // Screened, then the lease is lost before the instruction is recorded.
+    await respond("First instruction", async () => {
+      await pool.query("UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE id=$1", [
+        game.id,
+      ]);
+    });
+    assert.deepEqual((await row(game.id)).messages, [], "the first instruction was never recorded");
+    assert.deepEqual(
+      (await instructionRows()).map(({ ref, text_sha256 }) => [ref, text_sha256]),
+      [[sha("First instruction"), sha("First instruction")]],
+      "the row matches no transcript message",
+    );
+    // A different instruction leaves a second row.
+    await respond("Second instruction");
+    assert.deepEqual(
+      (await instructionRows()).map(({ ref }) => ref).sort(),
+      [sha("First instruction"), sha("Second instruction")].sort(),
+    );
+    // The same instruction again leaves one row, with the latest created_at and duration_ms.
+    const before = (await instructionRows()).find(({ ref }) => ref === sha("Second instruction"));
+    const created = async () =>
+      (
+        await pool.query(
+          "SELECT created_at FROM ctf.text_screens WHERE game_id=$1 AND kind='instruction' AND ref=$2",
+          [game.id, sha("Second instruction")],
+        )
+      ).rows[0].created_at as Date;
+    const firstCreated = await created();
+    screenFake.controls.delayMs = 80;
+    await respond("Second instruction");
+    const after = (await instructionRows()).filter(({ ref }) => ref === sha("Second instruction"));
+    assert.equal(after.length, 1);
+    assert.ok(after[0].duration_ms >= 80 && after[0].duration_ms > before!.duration_ms);
+    assert.ok((await created()) > firstCreated);
+    assert.equal((await instructionRows()).length, 2);
+  });
 
   await t.test("a caught or blocked run's sprite is reclaimed at the next cleanup", async () => {
     const who = await member();

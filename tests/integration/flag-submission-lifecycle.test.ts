@@ -8,6 +8,7 @@ import { Sprite, SpritesClient, type ExecOptions, type HTTPExecOptions } from "@
 import type { Message } from "@earendil-works/pi-ai";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
 import { annotationResponse } from "./annotation-fake";
+import { createScreenFake } from "./screen-fake";
 import { closePool } from "./postgres";
 
 // The HTTP flag-submission lifecycle (docs/plans/flag-http-submission.md, "Lifecycle" 3-7) driven
@@ -70,6 +71,7 @@ await test(
     let agentScript: AgentReply[] = [];
     let agentRequests = 0;
     const generations = new Set<string>();
+    const screenFake = createScreenFake();
     const strict =
       <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
       async (...args: A) => {
@@ -219,6 +221,8 @@ await test(
             "Bearer integration-router-key",
           );
           assert.equal(body.model, TYPESAFE_MODEL);
+          const screened = await screenFake.response(body, options.signal ?? undefined);
+          if (screened) return screened;
           const annotation = await annotationResponse(body);
           if (annotation) return annotation;
           assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
@@ -336,6 +340,7 @@ await test(
       execHandlers = new Map();
       agentScript = [];
       agentRequests = 0;
+      screenFake.reset();
     });
     t.afterEach(() =>
       assert.deepEqual(violations, [], "Fake boundaries must not see unexpected operations"),
@@ -645,6 +650,15 @@ await test(
         lease = response.lease;
         await response.done;
         assert.deepEqual(refusals, ["session", "claim", "inference", "dispatch"]);
+        // The instruction was screened; the uploader's own result was refused a screen by its receipt.
+        assert.deepEqual(
+          (
+            await pool.query("SELECT kind FROM ctf.text_screens WHERE game_id=$1 ORDER BY kind", [
+              id,
+            ])
+          ).rows.map(({ kind }) => kind),
+          ["instruction"],
+        );
         // The admitted uploader still completes and promotes the receipt exactly once.
         const [uploader] = await operation(id, command);
         assert.equal(uploader.status, "completed");
@@ -761,6 +775,39 @@ await test(
           return;
       throw new Error(`Nothing queued on ${statement}`);
     };
+    // The race scenarios below hold the run row lock between the command's return and its completion,
+    // so no billing may happen there. They run in the production state where tool results are not
+    // screened: the instruction screen outlasts its deadline, which stops screening for the response.
+    const screenStopped = () => {
+      screenFake.controls.behave = (kind) => (kind === "instruction" ? "hang" : "answer");
+      const events: string[] = [];
+      const original = console.error;
+      console.error = (...args: unknown[]) => {
+        try {
+          const parsed = JSON.parse(String(args[0]));
+          if (String(parsed?.event).startsWith("text_screen.")) events.push(parsed.event);
+        } catch {
+          // Not a structured event.
+        }
+        original(...args);
+      };
+      return {
+        // Checks the precondition: screening stopped, and no tool result was screened.
+        assertStopped: async (gameId: string) => {
+          console.error = original;
+          assert.ok(events.includes("text_screen.screening_stopped"), events.join(","));
+          assert.deepEqual(
+            (
+              await pool.query("SELECT kind FROM ctf.text_screens WHERE game_id=$1", [gameId])
+            ).rows.filter(({ kind }) => kind === "tool_output"),
+            [],
+          );
+        },
+        restore: () => {
+          console.error = original;
+        },
+      };
+    };
     const completion = "SELECT observation_revision,monitor_mode FROM ctf.games";
     const receipt = "SELECT status,monitor_mode,submission_transport";
 
@@ -769,6 +816,7 @@ await test(
       async () => {
         const owner = `lifecycle-race-stale-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
+        const stopped = screenStopped();
         const command = uploadCommand;
         agentScript = [{ commands: [command] }, { text: "Done." }];
         let race: Promise<string> | undefined;
@@ -789,7 +837,10 @@ await test(
           })();
           return output("uploaded");
         });
-        const sent = await (await respond(id, id, owner, "Upload the flag")).done;
+        const sent = await (
+          await respond(id, id, owner, "Upload the flag")
+        ).done.finally(stopped.restore);
+        await stopped.assertStopped(id);
         assert.equal(await race, "stale");
         const [uploader] = await operation(id, command);
         assert.equal(uploader.status, "completed");
@@ -821,6 +872,7 @@ await test(
       async () => {
         const owner = `lifecycle-race-accepted-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
+        const stopped = screenStopped();
         const command = uploadCommand;
         agentScript = [{ commands: [command] }];
         let race: Promise<string> | undefined;
@@ -841,9 +893,8 @@ await test(
           })();
           return output("uploaded");
         });
-        await (
-          await respond(id, id, owner, "Upload the flag")
-        ).done;
+        await (await respond(id, id, owner, "Upload the flag")).done.finally(stopped.restore);
+        await stopped.assertStopped(id);
         assert.equal(await race, "accepted");
         const [uploader] = await operation(id, command);
         assert.equal(uploader.status, "completed");

@@ -376,6 +376,31 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   });
 
   await t.test(
+    "settled screen spend counts in the monitor figure and keeps the ranking",
+    async () => {
+      const { gameBilling } = await import("../../lib/games");
+      const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
+      const { GET } = await import("../../app/api/leaderboard/route");
+      const spends = async (query: string) =>
+        (
+          (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()) as {
+            entries: { spend: number }[];
+          }
+        ).entries.map((x) => x.spend);
+      await pool.query(
+        `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+       VALUES($1,$2,(now() AT TIME ZONE 'UTC')::date,'screen',$3,100,500,40,210,now()),
+             ($4,$2,(now() AT TIME ZONE 'UTC')::date,'screen',$3,100,500,NULL,NULL,NULL)`,
+        [randomUUID(), captured, TYPESAFE_MODEL, randomUUID()],
+      );
+      const billing = await gameBilling(captured);
+      assert.equal(billing.agentSpendMicrodollars, 700_000);
+      assert.equal(billing.monitorSpendMicrodollars, 210, "unsettled holds are not spend");
+      assert.deepEqual(await spends(""), [300_000, 700_000, 1_000_000], "the run still ranks");
+    },
+  );
+
+  await t.test(
     "L1: the leaderboard ranks only captures made under the rules in force",
     async () => {
       const { GET } = await import("../../app/api/leaderboard/route");

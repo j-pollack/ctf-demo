@@ -29,6 +29,7 @@ import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
 import { configuredFlagEndpoint } from "./flag-submission-protocol";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
 import { executeCommand, SPRITE_WORKDIR } from "./sprites";
+import { createScreenBreaker, screenTexts, type ScreenContext } from "./text-screen";
 import { INTERRUPTED_RESULT_TEXT, repairMessages } from "./transcript-repair";
 import type { GameEvent } from "./types";
 
@@ -56,6 +57,15 @@ export async function runAsyncGame(
   const stopRequest = new AbortController();
   const signal = AbortSignal.any([requestSignal, stopRequest.signal]);
   const activeCommands = new Map<string, string>();
+  // Screens only record what Jev says about a text. They never touch the response's state.
+  const screenContext: ScreenContext = {
+    game,
+    sessionId,
+    lease,
+    generation,
+    stop: stop.signal,
+    breaker: createScreenBreaker(),
+  };
   let persistence: Promise<void> = Promise.resolve();
   let directory: string | undefined;
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -209,6 +219,7 @@ export async function runAsyncGame(
             ? { TARGET: `${submissionUrl}/${dispatch.submissionToken}` }
             : undefined,
         );
+        await screenTexts(screenContext, [{ kind: "tool_output", ref: id, text: output }]);
         return { content: [{ type: "text" as const, text: output }], details: {} };
       },
     });
@@ -396,6 +407,11 @@ export async function runAsyncGame(
     });
     if (signal.aborted) throw new Error("Response stopped.");
     await assertLease(game);
+    // Nothing acts on the answers yet.
+    await screenTexts(screenContext, [
+      { kind: "instruction", text: prompt },
+      { kind: "system_prompt", text: game.system_prompt },
+    ]);
     const hook = options.beforePrompt;
     if (hook) await hook(signal);
     await session.agent.prompt(instructionMessage(prompt, game.system_prompt));
