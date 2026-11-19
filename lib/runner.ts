@@ -6,7 +6,10 @@ export function runGame(
   prompt: string,
   signal: AbortSignal,
   send: (type: string, data: unknown) => void,
-  options: { deadlineSignal?: AbortSignal } = {},
+  options: {
+    deadlineSignal?: AbortSignal;
+    beforePrompt?: (signal: AbortSignal) => Promise<void>;
+  } = {},
 ) {
   return runAsyncGame(game, prompt, signal, send, options);
 }

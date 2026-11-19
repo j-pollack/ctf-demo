@@ -3079,6 +3079,62 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   );
 
   await t.test(
+    "a first instruction stopped before inference is recorded and frees the run",
+    async () => {
+      const who = await member();
+      const game = await productionStartGame(who.id);
+      const { claimGameSession } = await import("../../lib/games");
+      let entered!: () => void;
+      const hookEntered = new Promise<void>((resolve) => (entered = resolve));
+      const leased = await claimGameSession(game.id, game.id, who.id);
+      const sent: { type: string; data: unknown }[] = [];
+      const body = runGame(
+        leased,
+        "Controlled integration fixture",
+        AbortSignal.timeout(8000),
+        (type, data) => sent.push({ type, data }),
+        {
+          beforePrompt: (signal) =>
+            new Promise<void>((resolve) => {
+              entered();
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            }),
+        },
+      );
+      await withinSeconds(hookEntered);
+      assert.deepEqual(await (await stopRoute(who, game.id, game.id)).json(), { applied: true });
+      // The hook returns only once a heartbeat has seen the request and aborted the response.
+      await withinSeconds(body);
+      assert.equal(
+        requests.filter(({ role }) => role === "agent").length,
+        0,
+        "no inference after the stop",
+      );
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM ctf.inference WHERE game_id=$1 AND role='agent'",
+            [game.id],
+          )
+        ).rows[0].n,
+        0,
+        "no agent inference row after the stop",
+      );
+      const run = await readRun(who, game.id);
+      assert.equal(run.status, "active");
+      assert.equal(run.busy, false);
+      assert.deepEqual(
+        run.events.map((event) => [event.kind, event.text]),
+        [
+          ["user", "Controlled integration fixture"],
+          ["error", stoppedText],
+        ],
+      );
+      assert.ok(run.events[0].id > 0, "the instruction is recorded, so the run has started");
+    },
+  );
+
+  await t.test(
     "a stop request changes nothing for an idle session, another player or a bad request",
     async () => {
       const who = await member();

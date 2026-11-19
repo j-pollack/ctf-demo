@@ -40,7 +40,10 @@ export async function runAsyncGame(
   prompt: string,
   requestSignal: AbortSignal,
   send: (type: string, data: unknown) => void,
-  options: { deadlineSignal?: AbortSignal } = {},
+  options: {
+    deadlineSignal?: AbortSignal;
+    beforePrompt?: (signal: AbortSignal) => Promise<void>;
+  } = {},
 ) {
   const game = { ...inputGame };
   const http = game.submission_transport === "http";
@@ -393,6 +396,8 @@ export async function runAsyncGame(
     });
     if (signal.aborted) throw new Error("Response stopped.");
     await assertLease(game);
+    const hook = options.beforePrompt;
+    if (hook) await hook(signal);
     await session.agent.prompt(instructionMessage(prompt, game.system_prompt));
     await persistence;
     if (failure && game.status === "active") throw failure;
