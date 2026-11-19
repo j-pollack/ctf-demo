@@ -16,6 +16,7 @@ import { getCurrentSystemMessage, type Message } from "@earendil-works/pi-ai";
 import { smokeCommandForTurn } from "../../scripts/smoke-contract";
 import { GameError } from "../../lib/policy";
 import type { GameEvent, PublicGame } from "../../lib/types";
+import { annotationResponse } from "./annotation-fake";
 
 // Only the runner's fresh loopback database is accepted; never read .env.local.
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -106,6 +107,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   for (let pass = 0; pass < 2; pass++)
     await pool.query(
       await readFile(new URL("../../db/migrations/021-game-rules.sql", import.meta.url), "utf8"),
+    );
+  for (let pass = 0; pass < 2; pass++)
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/022-tool-call-annotations.sql", import.meta.url),
+        "utf8",
+      ),
     );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
@@ -409,6 +417,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         const body = JSON.parse(String(options.body));
         assert.deepEqual(Object.keys(body).sort(), ["model", "questions", "state"]);
         assert.equal(body.model, TYPESAFE_MODEL);
+        const annotation = await annotationResponse(body);
+        if (annotation) return annotation;
         const names = Object.keys(body.questions).sort().join(",");
         assert.equal(names, "intent,suspicion", `Unexpected Typesafe questions: ${names}`);
         const document = body.state as { transcript?: unknown[]; proposedCommand?: string };

@@ -1,6 +1,9 @@
 import type { Message } from "@earendil-works/pi-ai";
 import { AGENT_PROMPT } from "./policy";
 
+export const REPAIRED_RESULT_TEXT =
+  "The previous response was interrupted. Execution status is unknown.";
+
 export function repairMessages(messages: Message[], prompt = AGENT_PROMPT): Message[] {
   const repaired: Message[] = [];
   for (const message of messages) {
@@ -17,12 +20,7 @@ export function repairMessages(messages: Message[], prompt = AGENT_PROMPT): Mess
             role: "toolResult",
             toolCallId: call.id,
             toolName: call.name,
-            content: [
-              {
-                type: "text",
-                text: "The previous response was interrupted. Execution status is unknown.",
-              },
-            ],
+            content: [{ type: "text", text: REPAIRED_RESULT_TEXT }],
             isError: true,
             timestamp: Date.now(),
           });

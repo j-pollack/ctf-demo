@@ -7,6 +7,7 @@ import { Client, Pool } from "pg";
 import { Sprite, SpritesClient, type ExecOptions, type HTTPExecOptions } from "@fly/sprites";
 import type { Message } from "@earendil-works/pi-ai";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
+import { annotationResponse } from "./annotation-fake";
 import { closePool } from "./postgres";
 
 // The HTTP flag-submission lifecycle (docs/plans/flag-http-submission.md, "Lifecycle" 3-7) driven
@@ -218,6 +219,8 @@ await test(
             "Bearer integration-router-key",
           );
           assert.equal(body.model, TYPESAFE_MODEL);
+          const annotation = await annotationResponse(body);
+          if (annotation) return annotation;
           assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
           assert.ok(Array.isArray(body.state.transcript));
           return Response.json({

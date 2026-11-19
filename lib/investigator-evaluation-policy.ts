@@ -4,6 +4,7 @@
 export const BOUNDED_INVESTIGATOR_POLICY = Object.freeze({
   deadlineMs: 90_000,
   classifierDeadlineMs: 15_000,
+  annotationDeadlineMs: 10_000,
   claimMs: 120_000,
   providerEndpoint: "digitalocean",
   inputUsdPerMillion: 0.91,
@@ -13,13 +14,14 @@ export const BOUNDED_INVESTIGATOR_POLICY = Object.freeze({
 export type InvestigatorTiming = Readonly<{
   deadlineMs: number;
   classifierDeadlineMs: number;
+  annotationDeadlineMs: number;
 }>;
 
 // Trusted callers may shorten review budgets. Claims and production ceilings stay fixed.
 export function resolveInvestigatorTiming(
   timing: InvestigatorTiming = BOUNDED_INVESTIGATOR_POLICY,
 ): InvestigatorTiming {
-  for (const key of ["deadlineMs", "classifierDeadlineMs"] as const) {
+  for (const key of ["deadlineMs", "classifierDeadlineMs", "annotationDeadlineMs"] as const) {
     if (
       !Number.isSafeInteger(timing[key]) ||
       timing[key] <= 0 ||
@@ -30,5 +32,6 @@ export function resolveInvestigatorTiming(
   return Object.freeze({
     deadlineMs: timing.deadlineMs,
     classifierDeadlineMs: timing.classifierDeadlineMs,
+    annotationDeadlineMs: timing.annotationDeadlineMs,
   });
 }

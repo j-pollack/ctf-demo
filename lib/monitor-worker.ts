@@ -3,6 +3,7 @@ import { db } from "./db";
 import { claimMonitorJob, finishMonitorJob, type MonitorJobClaim } from "./monitor-jobs";
 import { captureCommittedMonitorSnapshot } from "./monitor-snapshot";
 import { classifyMonitorTarget } from "./monitor-classifier";
+import { annotateToolCalls } from "./tool-annotations";
 import { INVESTIGATOR_MODEL } from "./monitor-review";
 import { detectorToReviewDecision, runFlagReadInvestigation } from "./flag-read-investigator";
 import { completeMonitorReview, updateMonitorClassifierSignals } from "./sessions";
@@ -68,17 +69,33 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     ],
   );
   const signal = AbortSignal.timeout(Math.max(1, claim.claimUntil.getTime() - Date.now() - 1000));
-  const classifier = await classifyMonitorTarget({
-    game: source,
-    sessionId: claim.sessionId,
-    lease: "",
-    reviewId,
-    messages: [...current.messages],
-    target: { kind: "transcript" },
-    signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
-    executionGeneration: Number(game.execution_generation),
-    jobClaim: claim,
-  });
+  const executionGeneration = Number(game.execution_generation);
+  // Both settle before the review goes on, so no annotation pass outlives a failed job.
+  const [classification] = await Promise.allSettled([
+    classifyMonitorTarget({
+      game: source,
+      sessionId: claim.sessionId,
+      lease: "",
+      reviewId,
+      messages: [...current.messages],
+      target: { kind: "transcript" },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
+      executionGeneration,
+      jobClaim: claim,
+    }),
+    annotateToolCalls({
+      game: source,
+      sessionId: claim.sessionId,
+      reviewId,
+      messages: current.messages,
+      commands: snapshot.commands,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timing.annotationDeadlineMs)]),
+      executionGeneration,
+      jobClaim: claim,
+    }),
+  ]);
+  if (classification.status === "rejected") throw classification.reason;
+  const classifier = classification.value;
   await updateMonitorClassifierSignals(reviewId, classifier.signals);
   await db.query(
     `INSERT INTO ctf.events(game_id,session_id,review_id,data)

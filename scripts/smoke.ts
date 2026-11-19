@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import { db } from "../lib/db";
 import {
   claimGameSession,
@@ -468,6 +469,21 @@ try {
         state: { transcript?: unknown[] };
       };
       assert.equal(request.model, TYPESAFE_MODEL);
+      const { COMMAND_QUESTIONS, OUTCOME_QUESTIONS } = await import("../lib/tool-annotations");
+      const annotated = isDeepStrictEqual(request.questions, COMMAND_QUESTIONS)
+        ? ["command"]
+        : isDeepStrictEqual(request.questions, OUTCOME_QUESTIONS)
+          ? ["command", "output"]
+          : undefined;
+      if (annotated) {
+        assert.deepEqual(Object.keys(request.state).sort(), annotated);
+        return Response.json({
+          answers: Object.fromEntries(
+            Object.keys(request.questions).map((name) => [name, { type: "noul", noul: 0 }]),
+          ),
+          usage: { input_tokens: 1 },
+        });
+      }
       assert.deepEqual(Object.keys(request.questions).sort(), ["intent", "suspicion"]);
       assert.ok(Array.isArray(request.state.transcript));
       return Response.json({

@@ -23,6 +23,7 @@ const MIGRATIONS = [
   "019-session-stop.sql",
   "020-http-flag-submission.sql",
   "021-game-rules.sql",
+  "022-tool-call-annotations.sql",
 ];
 
 export type SeededWorkspace = {
