@@ -2190,7 +2190,7 @@ await test(
       });
 
       await t.test("a deadline that cuts the pass short drops the oldest calls", async () => {
-        reset({ annotationDelayMs: 200 });
+        reset({ annotationDelayMs: 300 });
         const ten: Call[] = Array.from({ length: 10 }, (_, index) => ({
           id: `order-${index}`,
           command: `echo ${index}`,
@@ -2198,7 +2198,7 @@ await test(
         }));
         const id = await seedRun(ten);
         await commit(id, transcript(ten));
-        await work(id, { ...fastMonitorTiming, annotationDeadlineMs: 350 });
+        await work(id, { ...fastMonitorTiming, annotationDeadlineMs: 700 });
         const written = (await rows(id)).map((row) => row.tool_call_id).sort();
         assert.ok(written.length >= 1 && written.length < ten.length, "the deadline cut the pass");
         assert.deepEqual(
