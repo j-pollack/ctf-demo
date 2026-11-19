@@ -3085,6 +3085,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       const game = await productionStartGame(who.id);
       const { claimGameSession } = await import("../../lib/games");
       let entered!: () => void;
+      let releasedBy: { name?: string } | undefined;
       const hookEntered = new Promise<void>((resolve) => (entered = resolve));
       const leased = await claimGameSession(game.id, game.id, who.id);
       const sent: { type: string; data: unknown }[] = [];
@@ -3097,7 +3098,18 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
           beforePrompt: (signal) =>
             new Promise<void>((resolve) => {
               entered();
-              signal.addEventListener("abort", () => resolve(), { once: true });
+              if (signal.aborted) {
+                releasedBy = signal.reason;
+                return resolve();
+              }
+              signal.addEventListener(
+                "abort",
+                () => {
+                  releasedBy = signal.reason;
+                  resolve();
+                },
+                { once: true },
+              );
             }),
         },
       );
@@ -3105,6 +3117,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.deepEqual(await (await stopRoute(who, game.id, game.id)).json(), { applied: true });
       // The hook returns only once a heartbeat has seen the request and aborted the response.
       await withinSeconds(body);
+      assert.ok(releasedBy, "the hook was released by an abort");
+      assert.notEqual(
+        releasedBy.name,
+        "TimeoutError",
+        "the stop request, not the request timeout, released the response",
+      );
+      assert.deepEqual(await sessionLease(game.id), {
+        lease: null,
+        lease_until: null,
+        stop_requested_at: null,
+      });
       assert.equal(
         requests.filter(({ role }) => role === "agent").length,
         0,

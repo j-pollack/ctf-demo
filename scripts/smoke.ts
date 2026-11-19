@@ -792,19 +792,36 @@ try {
       [liveCatch.id],
       "the live catch run owns the only claimable monitor job",
     );
-    // One pass plus one per retry delay in lib/monitor-jobs.ts.
+    // finishMonitorJob retries only while attempts are below three and a claim counts as an
+    // attempt, so at most three claims happen and the fourth pass is spare. A pass that claims
+    // nothing is not an attempt: it is bounded separately and waits for next_attempt_at first.
     const LIVE_CATCH_PASSES = 4;
-    for (let pass = 1; pass <= LIVE_CATCH_PASSES; pass++) {
-      await runMonitorWorkerOnce();
+    const LIVE_CATCH_EMPTY_PASSES = 10;
+    const CLOCK_MARGIN_MS = 250;
+    const waitForRetry = (job: { next_attempt_at: Date }) =>
+      new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, job.next_attempt_at.getTime() - Date.now()) + CLOCK_MARGIN_MS,
+        ),
+      );
+    for (let pass = 1, empty = 0; pass <= LIVE_CATCH_PASSES;) {
+      const claimed = await runMonitorWorkerOnce();
       const job = await liveJob();
       if (["caught", "caught-up", "unresolved"].includes(job.status)) break;
-      if (pass === LIVE_CATCH_PASSES) break;
+      if (!claimed) {
+        if (++empty >= LIVE_CATCH_EMPTY_PASSES) {
+          console.log(`Live catch: ${empty} worker passes claimed nothing.`);
+          break;
+        }
+        await waitForRetry(job);
+        continue;
+      }
+      if (pass++ === LIVE_CATCH_PASSES) break;
       console.log(
-        `Live catch pass ${pass} left the job ${job.status}; retrying (${job.reason ?? "no reason"}).`,
+        `Live catch pass ${pass - 1} left the job ${job.status}; retrying (${job.reason ?? "no reason"}).`,
       );
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.max(0, job.next_attempt_at.getTime() - Date.now())),
-      );
+      await waitForRetry(job);
     }
     const finalJob = await liveJob();
     if (!["caught", "caught-up", "unresolved"].includes(finalJob.status))
