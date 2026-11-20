@@ -151,9 +151,11 @@ async function reviewCase(
     games: typeof import("../lib/games");
     finalization: typeof import("../lib/async-finalization");
     inference: typeof import("../lib/inference");
+    review: typeof import("../lib/monitor-review");
   },
   testObserver?: InvestigationObserver,
   timing: InvestigatorTiming = BOUNDED_INVESTIGATOR_POLICY,
+  callLimit?: number,
 ): Promise<FlagReadEntry> {
   const started = Date.now();
   const claim = await createClaim(
@@ -187,6 +189,7 @@ async function reviewCase(
   let retrievedReferences: string[] | undefined;
   let retrievalCalls: number | undefined;
   let calls: number | undefined;
+  let forcedDecision: boolean | undefined;
   let monitorVersion = selectedPolicy.monitorVersion;
   let promptHash = selectedPolicy.promptHash;
   let searchStrategy: FlagReadSearchStrategy = selectedPolicy.searchStrategy;
@@ -244,6 +247,7 @@ async function reviewCase(
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
         deadlineAt: Date.now() + timing.deadlineMs,
+        callLimit,
       },
       { observer, searchStrategy: selectedPolicy.searchStrategy },
     );
@@ -261,6 +265,7 @@ async function reviewCase(
     retrievedReferences = result.retrievedRefs;
     retrievalCalls = result.retrievalCalls;
     calls = result.calls;
+    forcedDecision = result.forcedDecision;
     monitorVersion = result.monitorVersion;
     promptHash = result.promptHash;
     searchStrategy = result.searchStrategy;
@@ -277,9 +282,11 @@ async function reviewCase(
     operationalError =
       modules.inference.diagnosticText(error instanceof Error ? error.message : String(error)) ??
       "Flag-read investigation failed.";
+    calls = modules.review.investigatorCallsOf(error) ?? undefined;
     await modules.sessions.completeMonitorReview(reviewId, {
       operationalError,
       latencyMs: Date.now() - started,
+      calls,
     });
     await modules.jobs.finishMonitorJob(claim, { kind: "error", reason: operationalError });
     // This one-pass evaluator records the retryable error and keeps later cases independent.
@@ -340,6 +347,7 @@ async function reviewCase(
     retrievedReferences,
     retrievalCalls,
     calls,
+    ...(forcedDecision === undefined ? {} : { forcedDecision }),
     monitorVersion,
     promptHash,
     searchStrategy,
@@ -358,6 +366,7 @@ export async function runFlagReadLiveEvaluation(
   options: {
     searchStrategy?: FlagReadSearchStrategy;
     timing?: InvestigatorTiming;
+    callLimit?: number;
     onEntry?: (entry: FlagReadEntry) => void | Promise<void>;
   } = {},
 ): Promise<FlagReadEntry[]> {
@@ -384,6 +393,7 @@ export async function runFlagReadLiveEvaluation(
       games,
       finalization,
       inference,
+      review,
     ] = await Promise.all([
       import("../lib/policy"),
       import("../lib/typesafe"),
@@ -396,6 +406,7 @@ export async function runFlagReadLiveEvaluation(
       import("../lib/games"),
       import("../lib/async-finalization"),
       import("../lib/inference"),
+      import("../lib/monitor-review"),
     ]);
     const modules = {
       policy,
@@ -409,6 +420,7 @@ export async function runFlagReadLiveEvaluation(
       games,
       finalization,
       inference,
+      review,
     };
     const entries: FlagReadEntry[] = [];
     let usedMicrodollars = 0;
@@ -456,6 +468,7 @@ export async function runFlagReadLiveEvaluation(
         modules,
         testObserver,
         timing,
+        options.callLimit,
       );
       entries.push(entry);
       usedMicrodollars += entry.settledMicrodollars + entry.heldMicrodollars;

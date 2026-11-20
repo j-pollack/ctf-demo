@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { flagReadCases } from "../scripts/flag-read-cases";
-import { buildDryRunReport, buildFlagReadReport, parseArguments } from "../scripts/flag-read-eval";
+import {
+  buildDryRunReport,
+  buildFlagReadReport,
+  casesFromExport,
+  parseArguments,
+  parseEvalArguments,
+} from "../scripts/flag-read-eval";
 
 test("read corpus separates completed reads from preparation and uncertain outcomes", () => {
   assert.equal(flagReadCases.length, 14);
@@ -169,4 +175,82 @@ test("report identifies the selected immutable policy even when a case fails", (
     monitorVersion: "production-version",
     promptHash: "production-prompt-hash",
   });
+});
+
+const exported = (overrides: Record<string, unknown> = {}) => ({
+  id: "long-attack-01@abc",
+  kind: "long-attack",
+  targetSessionId: "s2",
+  readOccurred: true,
+  sessions: [
+    { id: "s1", ordinal: 1, messages: [{ role: "user", content: "one", timestamp: 1 }] },
+    { id: "s2", ordinal: 2, messages: [{ role: "user", content: "two", timestamp: 2 }] },
+  ],
+  ...overrides,
+});
+
+test("E1: eval options take a cases file and a call limit", () => {
+  assert.deepEqual(parseEvalArguments(["--cases", "runs.json", "--call-limit", "12"]), {
+    mode: "dry-run",
+    casesFile: "runs.json",
+    callLimit: 12,
+  });
+  assert.deepEqual(parseEvalArguments(["--live", "--budget-usd", "1", "--call-limit", "8"]), {
+    mode: "live",
+    budgetMicrodollars: 1_000_000,
+    callLimit: 8,
+  });
+  for (const limit of ["1", "0", "33", "2.5", "x", ""])
+    assert.throws(() => parseEvalArguments(["--call-limit", limit]), /integer from 2 to 32/);
+  assert.throws(() => parseEvalArguments(["--cases"]), /requires a file path/);
+  assert.throws(
+    () => parseEvalArguments(["--cases", "a", "--cases", "b"]),
+    /only be supplied once/,
+  );
+  assert.throws(() => parseEvalArguments(["--unknown"]), /Unknown option/);
+});
+
+test("E1: an exported run becomes one case with every session in one snapshot", () => {
+  const [item] = casesFromExport([exported()]);
+  assert.equal(item.id, "long-attack-01@abc");
+  assert.equal(item.scenario, "long-attack");
+  assert.equal(item.readOccurred, true);
+  assert.equal(item.targetSessionId, "s2");
+  assert.deepEqual(
+    item.snapshot.sessions.map((session) => [session.id, session.ordinal, session.busy]),
+    [
+      ["s1", 1, false],
+      ["s2", 2, false],
+    ],
+  );
+  const dry = buildDryRunReport([item]);
+  assert.equal(dry.caseCount, 1);
+  assert.equal(dry.network, false);
+  assert.equal(dry.cases[0].sessions, 2);
+  for (const bad of [
+    [],
+    [exported({ targetSessionId: "missing" })],
+    [exported({ sessions: [] })],
+    [exported({ readOccurred: "yes" })],
+    [exported({ sessions: [{ id: "s2", ordinal: 1 }] })],
+  ])
+    assert.throws(() => casesFromExport(bad));
+});
+
+test("E1: the report counts forced decisions", () => {
+  const entry = (forcedDecision: boolean) => ({
+    caseId: String(forcedDecision),
+    readOccurred: false,
+    observableSufficiency: "sufficient" as const,
+    flagReadDetected: false,
+    investigationComplete: true,
+    latencyMs: 1,
+    settledMicrodollars: 1,
+    heldMicrodollars: 0,
+    forcedDecision,
+  });
+  assert.equal(
+    buildFlagReadReport([entry(true), entry(false), entry(true)], 10).totals.forcedDecisions,
+    2,
+  );
 });
