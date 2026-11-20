@@ -1,6 +1,6 @@
 # Investigator verdicts: decide within the budget, and never leave a run stuck
 
-Status: draft. Not yet verified by the plan verifier.
+Status: revised after plan verification on 2026-11-20. Verdict was ready with changes, four blocking findings, all folded in below. Ready for a developer.
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/investigator-verdicts`
 - Branch: `feature/investigator-verdicts`, stacked on `feature/screen-actions` at `3a46faa`
@@ -37,50 +37,71 @@ The lead proposed, and the user has not yet answered, that a review that fails b
 `MONITOR_CALL_LIMIT` stays the number of model requests one review may make. Its value is set from the measurement in E2.
 
 - The first user message of a review states how many model requests the review has.
-- Before the last request, the driver adds a notice to the conversation: this is the final request, call `finish_investigation` now with the evidence already retrieved, and report a read only if that evidence establishes it. On that request the retrieval tools are not offered, if the agent library allows the tool list to change between requests. If it does not, the notice alone is used and the developer reports it.
+- Before the last request, the driver adds a notice to the conversation and offers only `finish_investigation`. The notice says: this is the final request, call `finish_investigation` now with the evidence already retrieved, and report a read only if that evidence establishes it. The agent library's `prepareNextTurnWithContext` hook runs before every request after the first and can return a changed tool list and extra messages. The driver uses it when the next request is the last one the limit allows.
 - A review that reaches its last request and gets a valid decision completes as `allow` or `block` like any other. This is how the user's ruling takes effect for a hard transcript: the investigator either establishes the read from what it has or reports none, and a correct submission then wins.
-- The review records that the last-request notice was used: `ctf.monitor_reviews.forced_decision boolean NOT NULL DEFAULT false`, migration 026.
-- A review whose last request does not produce a valid decision fails as today.
+- The driver's result says whether the notice was used. The review row records it: `ctf.monitor_reviews.forced_decision boolean NOT NULL DEFAULT false`, migration 026.
+- A last request that does not produce a valid decision fails the attempt. A retrieval call fails with the existing "Investigator tool failed" text, because the tool is no longer offered. A plain-text answer fails with the existing "ended without a valid decision" text.
+- The forced decision is triggered by the request count only. A review that reaches its 90 second deadline first fails as today.
+- `RunMonitorReviewInput` gains an optional `callLimit`, an integer from 1 to 32, passed through `runFlagReadInvestigation` the way `deadlineAt` is. Production does not set it. The eval does. No environment variable configures it.
 
-The hashed system prompt text in `lib/monitor-evidence.ts` and `lib/flag-read-policy.ts` does not change, so the prompt hash and `ASYNC_MONITOR_VERSION` do not change. The budget sentence and the notice are messages the driver adds. The version changes once, when the rest of step 4 and step 3 land, so the leaderboard resets once. No run reached the leaderboard through the failure this step fixes: such runs never finalized.
+The library announces a changed tool list with a system message that has empty content, placed mid-conversation. Nothing in this codebase sends one today, and the provider may reject it. The fakes cannot show that. E2 runs the changed driver against the live provider and is the check. If the provider rejects the request, the developer's fallback is to keep the tool list and send the notice alone, and the lead decides after E2.
+
+Version. The hashed system prompt text in `lib/monitor-evidence.ts` and `lib/flag-read-policy.ts` does not change, so the prompt hash does not change. `ASYNC_MONITOR_VERSION` is not bumped in this step, although `lib/control.ts` says to bump it when investigator policy changes, for two reasons. `flagReadPolicyForRun` throws for any version but the current one, so a bump would make every run started before the deploy impossible to review, the stuck run included. And no run reached the leaderboard through the failure this step fixes, because such runs never finalized. The version is bumped once, when the rest of step 4 and step 3 land. That later change has to keep older runs reviewable, or every run still in `finalizing` will end through the retry schedule below.
+
+If E2 changes `MONITOR_CALL_LIMIT`, these follow it: `investigatorCallsPerCase` in `scripts/flag-read-baseline.ts`, the assertion in `tests/integration/flag-read-baseline.test.ts`, and the frozen schedules in `evals/flag-read/`, which the baseline's drift check compares. The lead makes that change after E2, not the developer.
 
 ## A failed review is recorded
 
-When a review attempt throws, the worker completes its `ctf.monitor_reviews` row with the completion time, the number of model requests made, and the failure text in `operational_error`. The job's retry behaviour is unchanged: three attempts, 1 second and 5 seconds apart.
+When a review attempt throws after its `ctf.monitor_reviews` row was inserted, the worker completes that row in `reviewClaim` with the completion time, the failure text in `operational_error`, and the number of investigator requests made.
+
+- The driver attaches the request count to the error it throws. The count is null when the failure came before the investigator started, for example from the classifier.
+- A row that is already completed is left as it is, so a failure after a block or allow was recorded does not hide the original error.
+- The job's retry behaviour is unchanged: three attempts, 1 second and 5 seconds apart.
 
 ## A submitted run always leaves `finalizing`
 
-A monitor job of an async run in `finalizing` that is `unresolved` is requeued by the existing `cleanup()` sweep on a fixed schedule: 15 minutes, 1 hour, 4 hours and 12 hours after it last became `unresolved`. `ctf.monitor_jobs.requeues integer NOT NULL DEFAULT 0`, migration 026, counts them. A requeue sets the job to `queued` with `attempts` 0, due now. Each requeue gives the job three more attempts.
+Both steps below run in the worker's iteration, in `finalizeOneRun` next to `markExpiredFinalizationClaims`. The worker runs about once a second. `cleanup()` is not used for this: it runs from a daily cron, at run start and at the end of a response, so on a quiet day it would run once.
 
-When a job is `unresolved` and its four requeues are used, the run is resolved without that session's verdict by a new function, `resolveUnverifiedRun`, in `lib/async-finalization.ts`. In one transaction, for a run still in `finalizing`:
+**Requeue.** One conditional `UPDATE` requeues a monitor job that is `unresolved`, belongs to an async run in `finalizing`, has `requeues` below 4, and whose `updated_at` is older than the delay for its count: 15 minutes, 1 hour, 4 hours, 12 hours. `ctf.monitor_jobs.requeues integer NOT NULL DEFAULT 0`, migration 026. The update sets `status` to `queued`, `attempts` to 0, `next_attempt_at` and `updated_at` to now, and adds 1 to `requeues`. The run's `state_revision` is bumped. The statement locks the run row before the job row, the order `finishMonitorJob` uses. Two workers running it at once requeue a job once. Both paths into `unresolved` set `updated_at`, so the delay is measured from the last failure. Each requeue gives the job three more attempts.
 
-- If any job of the run is `caught`, nothing is done. A catch always wins.
-- Otherwise the run becomes `UNVERIFIED_SUBMISSION_STATUS`, a named constant with the value `ended`. The run is not a win and not a catch.
-- One event records it: `kind: "monitor"`, `decision: "unverified"`, with a fixed sentence.
-- `state_revision` is bumped, the finalization job becomes `done`, and no bug test is run.
+**Resolution.** `resolveUnverifiedRun` in `lib/async-finalization.ts` ends a run that cannot get a verdict. It locks the run row and acts only if the run is async and in `finalizing` and one of these holds:
 
-The same resolution applies to an async run that has been in `finalizing` for 24 hours with `finalization_error` set. Today nothing moves such a run either.
+- Review: every monitor job of the run is `caught-up`, or `unresolved` with `requeues` at 4, and at least one is the latter. No job is `queued` or `reviewing`.
+- Scoring: the run's finalization job is `unresolved` and its `updated_at` is more than 24 hours old. That timestamp is set when the scoring error is recorded and nothing changes the row afterwards.
 
-Once the run has left `finalizing`, the existing cleanup deletes its Sprite and the run stops counting toward the cap.
+It then, in the same transaction:
+
+- Sets the run to `UNVERIFIED_SUBMISSION_STATUS`, a named constant with the value `ended`. The run is not a win and not a catch.
+- Inserts one event in the session of the unresolved job with the lowest ordinal, or the run's first session for the scoring case: `kind: "monitor"`, `decision: "unverified"`, `cause: "review"` or `"scoring"`, and a fixed sentence. `GameEvent.decision` gains `"unverified"`.
+- Bumps `state_revision` and sets the finalization job to `done`. No bug test is run.
+
+It does not wait for `reserved_microdollars` to reach 0. A later settlement updates the run whatever its status. After it commits, the worker calls `deleteSpriteIfEligible`, as the catch path does. The run stops counting toward the cap as soon as its status changes.
+
+No catch can follow a review resolution, because no job of the run is pending when it happens. `catchAsyncRun` is not changed.
 
 Bounds:
 
-- A requeued review is admitted under the existing monitor allowance: a run's settled spend may reach its budget plus `MONITOR_OVERAGE_MICRODOLLARS`. Past that the review is refused, the attempt fails, and the schedule continues to its end.
+- A requeued review is admitted while the run's settled spend is below its budget plus `MONITOR_OVERAGE_MICRODOLLARS`. Requests already in flight can take it somewhat past that. Once past, the review is refused at the classifier's pre-check, the attempt fails, and the schedule continues to its end.
 - At most 15 attempts are made for one job after a submission: 3 at first and 3 after each of 4 requeues.
-- A run in `finalizing` therefore leaves it within about 18 hours of its last failed review, plus the sweep's interval.
+- The last failed attempt comes about 17 hours and 15 minutes after the first. The run is resolved within a second of it.
+- A requeued review that returns `allow` finalizes through the existing path, which still waits for `reserved_microdollars` to be 0, for open Sprite operations to finish and for leases to expire. A hold that never reconciles is released by the existing 24 hour rule. Those waits are outside this contract.
 
-The run already stuck on production has an `unresolved` job older than 15 minutes. The first sweep after deploy requeues it, and it is reviewed by the changed investigator.
+The run already stuck on production has an `unresolved` job older than 15 minutes, a matching monitor version, nothing reserved and no open Sprite operation. The first worker iteration after deploy requeues it, and it is reviewed by the changed investigator.
 
-## Player-facing text
+## Player-facing state and text
 
-- A run resolved without a verdict shows: "The review could not be completed after repeated attempts. This run ended with no result."
+- `PublicGame` gains `endReason?: "unverified-review" | "unverified-scoring"`, derived from the `unverified` event's `cause`.
+- `endBanner` checks `endReason` before it looks at the submission. Without this an `ended` run with a correct flag reads "Right flag, but no bug fixed", which would be false.
+  - Review: heading "No result", detail "The review could not be completed after repeated attempts, so this run ended with no result. Start a new run to try again."
+  - Scoring: heading "No result", detail "Scoring could not be completed, so this run ended with no result. Start a new run to try again."
+- The `unverified` event renders in the transcript under the header "REVIEW INCOMPLETE", not under "INVESTIGATION ERROR".
+- `PublicGame.monitor` gains `willRetry: boolean`, true when the run is in `finalizing` and an `unresolved` job has requeues left. While it is true the play page says "The review failed and will be retried. The result is not confirmed yet." in place of the texts that read as final.
 - The rules copy "A failed review leaves the result unresolved." becomes "A failed review is retried for up to a day. If it still cannot be completed, the run ends with no result." The sentence "An unresolved review never confirms a win." stays.
-- While retries are pending the existing "unresolved" texts are shown, as today.
 
 ## Measurement
 
-- E1. `scripts/flag-read-eval.ts` accepts `--cases FILE` and `--call-limit N`. A cases file holds exported production runs in the shape `scripts/annotation-eval.ts --corpus` reads: `id`, `kind`, `sessions` with `messages`, plus `targetSessionId` and `readOccurred`. The script reviews the target session of each case once and reports the verdict, the number of model requests, whether the decision was forced, the latency and the cost. Without `--live` it calls nothing.
-- E2. After the build the lead runs it live on the played long chains, the stuck run among them, and on a sample of the other played runs, at limits 8, 12 and 16. The lead sets `MONITOR_CALL_LIMIT` to the lowest value at which no review in the set is forced to decide, if that value keeps a review inside its 90 second deadline. Otherwise the lead keeps 8 and reports. The table goes under Evidence.
+- E1. `scripts/flag-read-eval.ts` accepts `--cases FILE` and `--call-limit N`. A cases file is a JSON array of exported production runs: `id`, `kind`, `targetSessionId`, `readOccurred`, and `sessions`, each with `id`, `ordinal` and `messages`. The script puts every session of a case into one snapshot on one Sprite and fills `agentModel`, `agentEffort`, `turns` and `busy` with fixed values. It reviews the target session of each case once and reports the verdict, the number of model requests, whether the decision was forced, any failure text, the latency and the cost. Without `--live` it calls nothing.
+- E2. After the build the lead runs it live on `/Users/jonathan/Code/ctf/.artifacts/prod-sessions/cases-investigator-budget.json`, twelve played runs with the five long chains and the stuck run among them, at limits 8, 12 and 16. The lead sets `MONITOR_CALL_LIMIT` to the lowest value at which no review in the set is forced to decide, if every review at that value finishes inside its 90 second deadline. Otherwise the lead keeps 8 and reports. The table, with forced decisions and deadline failures at each limit, goes under Evidence.
 
 ## Out of scope
 
@@ -88,43 +109,57 @@ The run already stuck on production has an `unresolved` job older than 15 minute
 - Routing. Step 3.
 - Reusing a failed attempt's retrieved evidence in the next attempt.
 - An admin action to resolve a run by hand.
+- Runs kept in `finalizing` by an open Sprite operation or by a hold that never reconciles.
 
 ## Acceptance
 
-Integration tests use the real worker entry point `runMonitorWorkerOnce`, real Postgres and provider fakes only.
+Integration tests use the real worker entry point `runMonitorWorkerOnce`, real Postgres and provider fakes only. Tests that need time to pass move timestamps in the database. They do not wait.
 
-- D1. A review is told its budget: the first investigator request contains the number of model requests available.
-- D2. An investigator fake that keeps calling retrieval tools receives the notice on its last request, with only `finish_investigation` offered if the library allows it. A valid decision on that request completes the review, the job is `caught-up` or `caught`, and the review row has `forced_decision` true.
+- D1. The first investigator request contains the number of model requests available.
+- D2. An investigator fake that keeps calling retrieval tools receives, on its last request, the notice and a tool list with only `finish_investigation`. A valid decision on that request completes the review, the job is `caught-up` or `caught`, and the review row has `forced_decision` true.
 - D3. A review that finishes before its last request has `forced_decision` false and receives no notice.
-- D4. A last request that returns no valid decision fails the attempt, as today.
-- F1. A failed attempt leaves a `ctf.monitor_reviews` row with `completed_at`, `calls` and `operational_error` set.
-- R1. With a run in `finalizing` and a job `unresolved`, a sweep before 15 minutes changes nothing. A sweep after 15 minutes requeues it with `attempts` 0 and `requeues` 1. The following requeues need 1 hour, 4 hours and 12 hours. Tests move the job's timestamps in the database. They do not wait.
-- R2. A requeued review that returns `allow` lets the run finalize as today: `captured` for a correct flag with the bug requirement met.
-- R3. A requeued review that returns `block` catches the run.
-- R4. An `unresolved` job of an `active` run is not requeued by the sweep.
-- U1. A run in `finalizing` whose job is `unresolved` with 4 requeues used becomes `ended` on the next sweep. One `unverified` event exists, the finalization job is `done`, the run no longer counts toward the cap, and a later cleanup deletes its Sprite through the Sprite fake.
-- U2. The same run with another session's job `caught` is left to the catch.
-- U3. A run in `finalizing` for 24 hours with `finalization_error` set becomes `ended` the same way. One at 23 hours does not.
-- U4. `publicGame` for a run resolved this way reports a status and reason the play page renders with the new sentence. A unit test pins the copy.
-- B1. A requeued review on a run whose settled spend is past its budget plus the overage is refused, fails, and the schedule still ends in U1.
-- M1. Migration 026 applies to a database at 025 and is additive.
-- E1. The eval options have tests against provider fakes: a dry run, a forced decision reported as such, and a case file with two sessions.
+- D4. A last request that answers with a retrieval call fails the attempt with the tool failure text. One that answers with plain text fails with the no-decision text.
+- D5. `callLimit` outside 1 to 32 is rejected. With `callLimit` 3, the notice arrives on the third request.
+- F1. A failed attempt leaves a `ctf.monitor_reviews` row with `completed_at`, `operational_error` and the request count set. When the classifier fails first, the count is null. When the failure comes after the row was completed, the row keeps its first completion.
+- R1. With a run in `finalizing` and a job `unresolved`, an iteration before 15 minutes changes nothing. One after 15 minutes requeues it with `attempts` 0 and `requeues` 1, and the run's `state_revision` moves. The following requeues need 1 hour, 4 hours and 12 hours.
+- R2. A job set `unresolved` by the stale-claim path is requeued the same way.
+- R3. Two worker iterations run at once requeue a job exactly once.
+- R4. A requeued review that returns `allow` lets the run finalize as today: `captured` for a correct flag with the bug requirement met. With a monitor hold still open the run stays in `finalizing` until the hold settles.
+- R5. A requeued review that returns `block` catches the run.
+- R6. An `unresolved` job of an `active` run is not requeued.
+- U1. A run in `finalizing` whose only job is `unresolved` with 4 requeues used becomes `ended` on the next iteration. One `unverified` event with `cause: "review"` exists in that job's session, the finalization job is `done`, the run no longer counts toward the cap, and the Sprite fake received the deletion.
+- U2. The same run with a sibling job `queued` or `reviewing`, or `unresolved` with requeues left, is not resolved.
+- U3. Two iterations at once resolve a run exactly once: one event.
+- U4. A run whose finalization job has been `unresolved` for 24 hours becomes `ended` with `cause: "scoring"`. One at 23 hours does not.
+- U5. `publicGame` for a resolved run returns `endReason`. The banner for it is "No result" with the matching detail, and is not "Right flag, but no bug fixed" for a correct submission. Unit tests pin both sentences and the transcript header.
+- U6. `publicGame` returns `willRetry` true for a finalizing run with requeues left and false once they are used, and the play page text follows it.
+- B1. A requeued review on a run whose settled spend is past its budget plus the overage is refused, the attempt fails, and the schedule still ends in U1.
+- M1. Migration 026 applies to a database at 025 and is additive. Every hand-written migration list includes it: `scripts/setup.ts`, `MIGRATIONS` in `scripts/monitor-investigate-eval-live.ts`, and each integration harness that lists migrations.
+- E1. The eval options have tests against provider fakes: a dry run, a forced decision reported as such, a failure reported with its text, and a case with two sessions.
 - G1. `npm run check`, `npm run test:integration`, `npm run build` and `npm run test:coverage` pass.
 
 ## Risks
 
 - A forced decision can be wrong. Told to decide, the investigator may report no read when one more request would have found it. That outcome is a win for the player, which is the user's ruling. It may also report a read on thin evidence. The decision schema still requires a cited reference in the target session for a positive finding.
 - The investigator's budget becomes something a player attacks on purpose. E2 sizes it against the chains played so far, which are six.
-- A long provider outage ends submitted runs with no result after about 18 hours.
-- Up to 15 review attempts on one run cost money. The overage ceiling bounds it at $0.25 past the run's budget.
+- A provider outage longer than about 17 hours ends submitted runs with no result.
+- Up to 15 review attempts on one run cost money. The overage ceiling bounds it near $0.25 past the run's budget.
+- The provider may reject the last request's changed tool list. E2 is the check.
+- A run's monitor status moves between `unresolved` and `reviewing` while retries are scheduled. `willRetry` keeps the text consistent.
 
 ## Open questions
 
-1. When the retries are used up and there is still no verdict, is a correct submission a win? This contract says no, because by then the cause is a provider failure and not a transcript the investigator could not follow: that case is handled by the forced decision. The user's ruling as worded would say yes. One constant, `UNVERIFIED_SUBMISSION_STATUS`, holds the choice.
+1. When the retries are used up and there is still no verdict, is a correct submission a win? This contract says no, because by then the cause is a provider failure and not a transcript the investigator could not follow: that case is handled by the forced decision. The user's ruling as worded would say yes. Changing the answer is more than the constant: a win also needs the bug test to run and puts the run on the leaderboard, so it would be a follow-up change.
 2. Whether a forced decision is shown to the player, for example "the investigator ran out of budget". This contract stores it and shows nothing.
 
 ## Evidence
 
-- The stuck run's reviews, read from production on 2026-11-20: three attempts at snapshot revision 54, each with 8 investigator requests and one classifier request, 173,672 to 175,773 tokens, $0.062 to $0.079. Two earlier reviews of the same session completed in 3 and 4 requests.
-- Code facts in Problem were mapped by a read-only agent and the cited lines for the call limit, the retry rule and the finalization claim were checked by the lead.
+- The stuck run's reviews, read from production on 2026-11-20: three attempts at snapshot revision 54, each with 8 investigator requests and one classifier request, 173,672 to 175,773 tokens, $0.062 to $0.079. Two earlier reviews of the same session completed in 3 and 4 requests. The run's monitor version equals the current constant, nothing is reserved, and no Sprite operation is open.
+- Code facts in Problem were mapped by a read-only agent. The lead checked the cited lines for the call limit, the retry rule and the finalization claim.
+- Plan verification, 2026-11-20. Verdict: ready with changes, four blocking findings. The lead checked the cron schedule in `vercel.json`, the callers of `cleanup()`, the worker's `finalizeOneRun`, `endBanner` and the library hook before revising.
+  - The requeue and the resolution were in `cleanup()`, which runs once a day on a quiet site. They moved to the worker's iteration.
+  - The resolution did not say what to do about a run's other jobs. It now requires that none is pending.
+  - No public field could carry "ended with no result", and the banner would have said the bug was not fixed. `endReason`, the banner rule and the event header are specified.
+  - The scoring case had no timestamp to measure from and the wrong sentence. It is keyed on the finalization job and has its own text.
+  - Folded in from the smaller findings: the library hook for the last request and its provider risk, the reason for not bumping the version, the files that follow a changed limit, where a failed review is recorded and how the count leaves the driver, the requeue as one conditional update, the billing bound's wording, the case file fields, `willRetry`, and the missing acceptance cases.
 - Not measured yet: how many requests the played long chains need. E2.
