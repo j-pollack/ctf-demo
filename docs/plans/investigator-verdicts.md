@@ -81,25 +81,25 @@ No catch can follow a review resolution, because no job of the run is pending wh
 
 Bounds:
 
-- A requeued review is admitted whatever the run has spent, because the run is in `finalizing`. See the section above. Only the daily cap can refuse it.
+- A requeued review is admitted while the run's settled spend is below its budget plus $1.00, because the run is in `finalizing`. See the section above. Past that, or at the daily cap, it is refused, the attempt fails, and the schedule continues to its end.
 - At most 15 attempts are made for one job after a submission: 3 at first and 3 after each of 4 requeues.
 - The last failed attempt comes about 17 hours and 15 minutes after the first. The run is resolved within a second of it.
 - A requeued review that returns `allow` finalizes through the existing path, which still waits for `reserved_microdollars` to be 0, for open Sprite operations to finish and for leases to expire. A hold that never reconciles is released by the existing 24 hour rule. Those waits are outside this contract.
 
 The run already stuck on production has an `unresolved` job older than 15 minutes, a matching monitor version, nothing reserved and no open Sprite operation. The first worker iteration after deploy requeues it, and it is reviewed by the changed investigator.
 
-## The final review is never refused for the run's budget
+## The final review has its own, higher budget ceiling
 
 Added on 2026-11-20 at the user's request: "final review does not count against the run budget. This way, review can never fail simply because of budget concerns."
 
-Today a review under a worker claim is admitted without the run budget only while the run's settled spend is below its budget plus `MONITOR_OVERAGE_MICRODOLLARS` (`monitorRunBudgetExempt`, `lib/games.ts`). Past that it is refused.
+Today a review under a worker claim is admitted without the run budget only while the run's settled spend is below its budget plus `MONITOR_OVERAGE_MICRODOLLARS`, $0.25 (`monitorRunBudgetExempt`, `lib/games.ts`). Past that it is refused.
 
-- A review under a worker claim of a run in `finalizing` is admitted whatever the run has spent. The ceiling does not apply to it. This holds for the classifier's pre-check and for every investigator request, which both call `monitorRunBudgetExempt`.
-- A review of an `active` run keeps the ceiling as it is.
+- A monitor request under a worker claim for a run in `finalizing` is admitted while the run's settled spend is below its budget plus `FINAL_REVIEW_OVERAGE_MICRODOLLARS`, a new constant of 1,000,000, which is $1.00. This covers every request that goes through `monitorRunBudgetExempt`: the classifier's pre-check, the investigator's requests and the tool-call annotations.
+- A review of an `active` run keeps the $0.25 ceiling.
 - The shared daily cap still applies to every request. A review refused for the daily cap is a failed attempt, and the retry schedule below covers it: its last two delays are 4 and 12 hours, and the cap resets at 00:00 UTC.
 - The review's cost is still recorded on the run and in the daily total, as today.
 
-What bounds the spend without the ceiling: one job gets at most 15 attempts after a submission, and one attempt makes at most `MONITOR_CALL_LIMIT` investigator requests. In the live measurement the most expensive review cost $0.084.
+Why there is a ceiling. The first build of this section had none, and the code review found the consequence. A run has one monitor job per session, a run can have any number of sessions, and a wrong flag also puts a run in `finalizing`. With no ceiling a player could open many cheap sessions, submit, and have every session reviewed whatever it cost. About 120 sessions at the highest review cost measured, $0.084, would spend the whole shared daily cap. The user chose the $1.00 ceiling on 2026-11-20. It bounds one run's total spend at $1.50 plus requests in flight. A run that used its whole budget still gets about 12 final reviews at the highest cost measured, and the runs played so far have 1 to 3 sessions.
 
 ## Player-facing state and text
 
@@ -146,8 +146,9 @@ Integration tests use the real worker entry point `runMonitorWorkerOnce`, real P
 - U4. A run whose finalization job has been `unresolved` for 24 hours becomes `ended` with `cause: "scoring"`. One at 23 hours does not.
 - U5. `publicGame` for a resolved run returns `endReason`. The banner for it is "No result" with the matching detail, and is not "Right flag, but no bug fixed" for a correct submission. Unit tests pin both sentences and the transcript header.
 - U6. `publicGame` returns `willRetry` true for a finalizing run with requeues left and false once they are used, and the play page text follows it.
-- B1. A review of a run in `finalizing` whose settled spend is past its budget plus the overage is admitted: the classifier and the investigator requests are sent, the review completes, and its cost is added to the run's spend. This holds for the first review after a submission and for a requeued one.
-- B2. A review of an `active` run past the same ceiling is refused, as today.
+- B1. A review of a run in `finalizing` whose settled spend is past its budget plus $0.25 and below its budget plus $1.00 is admitted: the classifier and the investigator requests are sent, the review completes, and its cost is added to the run's spend. This holds for the first review after a submission and for a requeued one.
+- B2. A review of an `active` run past its budget plus $0.25 is refused, as today.
+- B4. A review of a run in `finalizing` whose settled spend is at or past its budget plus $1.00 is refused, the attempt fails, and the schedule still ends in U1.
 - B3. A review of a run in `finalizing` that is refused for the daily cap fails the attempt, and the schedule still ends in U1.
 - M1. Migration 026 applies to a database at 025 and is additive. Every hand-written migration list includes it: `scripts/setup.ts`, `MIGRATIONS` in `scripts/monitor-investigate-eval-live.ts`, and each integration harness that lists migrations.
 - E1. The eval options have tests against provider fakes: a dry run, a forced decision reported as such, a failure reported with its text, and a case with two sessions.
@@ -158,7 +159,7 @@ Integration tests use the real worker entry point `runMonitorWorkerOnce`, real P
 - A forced decision can be wrong. Told to decide, the investigator may report no read when one more request would have found it. That outcome is a win for the player, which is the user's ruling. It may also report a read on thin evidence. The decision schema still requires a cited reference in the target session for a positive finding.
 - The investigator's budget becomes something a player attacks on purpose. E2 sizes it against the chains played so far, which are six.
 - A provider outage longer than about 17 hours ends submitted runs with no result.
-- Up to 15 review attempts on one submitted run cost money, and no per-run ceiling bounds them. At the most expensive review measured, $0.084, that is $1.26 for a run whose every attempt fails after spending in full. The daily cap is the backstop.
+- Review attempts on a submitted run cost money: up to 15 for each session's job. The $1.00 ceiling bounds the run, and the daily cap is the backstop.
 - The provider may reject the last request's changed tool list. E2 is the check.
 - A run's monitor status moves between `unresolved` and `reviewing` while retries are scheduled. `willRetry` keeps the text consistent.
 
