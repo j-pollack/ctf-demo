@@ -10,6 +10,7 @@ import {
   PLAYER_AGENT_EFFORT,
   MODELS,
   DAILY_CAP_MICRODOLLARS,
+  FINAL_REVIEW_OVERAGE_MICRODOLLARS,
   MONITOR_OVERAGE_MICRODOLLARS,
   GameError,
   makeSecret,
@@ -708,17 +709,22 @@ export function requestAllowance(
     cost: inputCost + Math.ceil(Math.max(0, maxTokens) * outputRate * 1_000_000),
   };
 }
-// A worker-claimed monitor review is admitted without the run budget until settled spend passes the overage ceiling.
+// A worker-claimed monitor review is admitted without the run budget until settled spend passes a
+// ceiling: budget plus FINAL_REVIEW_OVERAGE_MICRODOLLARS for a run in `finalizing`, budget plus
+// MONITOR_OVERAGE_MICRODOLLARS for any other status.
 export function monitorRunBudgetExempt(
   role: InferenceRole,
   claim: MonitorJobClaim | undefined,
   spent: number,
   budget: number,
+  status: GameStatus,
 ) {
   return (
     role === "monitor" &&
     claim?.runBudgetExempt === true &&
-    spent < budget + MONITOR_OVERAGE_MICRODOLLARS
+    spent <
+      budget +
+        (status === "finalizing" ? FINAL_REVIEW_OVERAGE_MICRODOLLARS : MONITOR_OVERAGE_MICRODOLLARS)
   );
 }
 export type InferenceRole = "agent" | "monitor" | "screen";
@@ -789,6 +795,7 @@ export async function reserveInference(
       context.jobClaim,
       Number(game.spent_microdollars),
       Number(game.budget_microdollars),
+      game.status,
     );
     const allowance = exempt
       ? { maxTokens: wantedOutput }

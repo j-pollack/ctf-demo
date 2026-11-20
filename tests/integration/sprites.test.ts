@@ -2832,18 +2832,94 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     await pool.query("UPDATE ctf.monitor_jobs SET requeues=4 WHERE game_id=$1", [gameId]);
     assert.equal((await monitor())?.willRetry, false);
   });
+  // The final review is admitted whatever the run has spent: the ceiling applies to active runs only.
+  const submittedRun = async (owner: string) => {
+    const game = await startPersistedToolGame(owner);
+    const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
+    proposed = [{ submit: `The flag is ${secret}` }];
+    agentCalls = 0;
+    await runGame(await claimGame(game.id, owner), "Submit", AbortSignal.timeout(5000), () => {});
+    assert.equal((await row(game.id)).status, "finalizing");
+    return game.id;
+  };
+  const pastTheCeiling = async (gameId: string) => {
+    const { MONITOR_OVERAGE_MICRODOLLARS } = await import("../../lib/policy");
+    await pool.query("UPDATE ctf.games SET spent_microdollars=budget_microdollars+$2 WHERE id=$1", [
+      gameId,
+      MONITOR_OVERAGE_MICRODOLLARS + 1,
+    ]);
+  };
+  const reviewSpend = async (gameId: string) =>
+    Number(
+      (
+        await pool.query(
+          `SELECT coalesce(sum(cost),0) AS cost FROM ctf.inference
+           WHERE game_id=$1 AND review_id IS NOT NULL AND settled_at IS NOT NULL`,
+          [gameId],
+        )
+      ).rows[0].cost,
+    );
+  for (const requeued of [false, true])
+    await t.test(
+      `B1: ${requeued ? "a requeued" : "the first"} review of a finalizing run past the overage is admitted`,
+      async () => {
+        const owner = `verdict-admitted-${requeued}`;
+        const gameId = requeued ? await unresolvedRun(owner) : await submittedRun(owner);
+        await pastTheCeiling(gameId);
+        const spentBefore = Number((await row(gameId)).spent_microdollars);
+        const requestsBefore = monitorPayloads().length;
+        const classifierBefore = typesafe.length;
+        const costBefore = await reviewSpend(gameId);
+        if (requeued) await age(gameId, 16);
+        const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+        for (let i = 0; i < 12 && (await row(gameId)).status === "finalizing"; i++)
+          await runMonitorWorkerOnce();
+        assert.ok(typesafe.length > classifierBefore, "the classifier was asked");
+        assert.ok(monitorPayloads().length > requestsBefore, "the investigator was asked");
+        const review = await latestReview(gameId);
+        assert.equal(review.verdict, "allow");
+        assert.equal(review.operational_error, null);
+        assert.equal((await jobOf(gameId)).status, "caught-up");
+        const cost = (await reviewSpend(gameId)) - costBefore;
+        assert.ok(cost > 0);
+        assert.equal(Number((await row(gameId)).spent_microdollars) - spentBefore, cost);
+        assert.equal((await row(gameId)).status, "captured");
+      },
+    );
+  // B2: an active run past the same ceiling is still refused. Already proved by
+  // tests/integration/flag-read-production.test.ts mode "over-ceiling" (review-budget B8) on a
+  // seeded active run, and by the annotation test "W7: a run over its monitor overage sends no
+  // annotation request" in tests/integration/async-backend.test.ts.
   await t.test(
-    "B1: a requeued review past the overage is refused and the schedule still ends",
+    "B4: a finalizing review at budget plus $1.00 is refused and the run ends",
     async () => {
-      const gameId = await unresolvedRun("verdict-overage");
-      const { MONITOR_OVERAGE_MICRODOLLARS } = await import("../../lib/policy");
+      const { FINAL_REVIEW_OVERAGE_MICRODOLLARS } = await import("../../lib/policy");
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      // One microdollar below the ceiling is admitted.
+      const below = await submittedRun("verdict-ceiling-below");
       await pool.query(
         "UPDATE ctf.games SET spent_microdollars=budget_microdollars+$2 WHERE id=$1",
-        [gameId, MONITOR_OVERAGE_MICRODOLLARS + 1],
+        [below, FINAL_REVIEW_OVERAGE_MICRODOLLARS - 1],
       );
-      const before = monitorPayloads().length;
-      investigatorOverride = undefined;
-      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      const classifierAtBelow = typesafe.length;
+      await runMonitorWorkerOnce();
+      // The classifier's own settled cost then takes the run to the ceiling, so only its
+      // admission is asserted here.
+      assert.ok(typesafe.length > classifierAtBelow, "admitted one microdollar below the ceiling");
+      // At the ceiling it is refused before any request, and the schedule still ends.
+      const gameId = await submittedRun("verdict-ceiling-at");
+      await pool.query(
+        "UPDATE ctf.games SET spent_microdollars=budget_microdollars+$2 WHERE id=$1",
+        [gameId, FINAL_REVIEW_OVERAGE_MICRODOLLARS],
+      );
+      const requestsBefore = monitorPayloads().length;
+      const classifierBefore = typesafe.length;
+      await runMonitorWorkerOnce();
+      assert.match((await latestReview(gameId)).operational_error, /budget/i);
+      assert.deepEqual(
+        [(await jobOf(gameId)).status, (await jobOf(gameId)).attempts],
+        ["queued", 1],
+      );
       for (let guard = 0; guard < 40 && (await row(gameId)).status === "finalizing"; guard++) {
         await pool.query(
           "UPDATE ctf.monitor_jobs SET updated_at=now()-interval '13 hours',next_attempt_at=now() WHERE game_id=$1",
@@ -2852,6 +2928,40 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         await runMonitorWorkerOnce();
       }
       assert.equal((await row(gameId)).status, "ended");
+      assert.equal((await jobOf(gameId)).requeues, 4);
+      assert.equal(monitorPayloads().length, requestsBefore, "no investigator request was sent");
+      assert.equal(typesafe.length, classifierBefore, "no classifier request was sent");
+      assert.equal((await unverifiedEvents(gameId)).length, 1);
+    },
+  );
+  await t.test(
+    "B3: a finalizing review refused for the daily cap fails and the run still ends",
+    async () => {
+      const gameId = await submittedRun("verdict-daily-cap");
+      const { DAILY_CAP_MICRODOLLARS } = await import("../../lib/policy");
+      await pool.query(
+        `INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,$1)
+       ON CONFLICT (day) DO UPDATE SET charged=$1`,
+        [DAILY_CAP_MICRODOLLARS],
+      );
+      const before = monitorPayloads().length;
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      await runMonitorWorkerOnce();
+      const review = await latestReview(gameId);
+      assert.match(review.operational_error, /shared inference budget is used up/);
+      assert.deepEqual(
+        [(await jobOf(gameId)).status, (await jobOf(gameId)).attempts],
+        ["queued", 1],
+      );
+      for (let guard = 0; guard < 40 && (await row(gameId)).status === "finalizing"; guard++) {
+        await pool.query(
+          "UPDATE ctf.monitor_jobs SET updated_at=now()-interval '13 hours',next_attempt_at=now() WHERE game_id=$1",
+          [gameId],
+        );
+        await runMonitorWorkerOnce();
+      }
+      assert.equal((await row(gameId)).status, "ended");
+      assert.equal((await jobOf(gameId)).requeues, 4);
       assert.equal(monitorPayloads().length, before, "no investigator request was sent");
       assert.equal((await unverifiedEvents(gameId)).length, 1);
     },

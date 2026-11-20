@@ -19,6 +19,7 @@ import {
 import { evaluate, TYPESAFE_MODEL, type TypesafeAnswer } from "./typesafe";
 import { DAILY_CAP_MICRODOLLARS, GameError, inputCeiling } from "./policy";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
+import type { GameStatus } from "./types";
 
 const noulOf = (answer: TypesafeAnswer | undefined) => {
   if (answer?.type !== "noul") throw new Error("Typesafe returned an unexpected answer shape.");
@@ -48,11 +49,12 @@ async function assertDispatchAuthorization(input: {
     );
     const { rows } = await client.query<{
       execution_generation: string;
+      status: GameStatus;
       spent_microdollars: number;
       reserved_microdollars: number;
       budget_microdollars: number;
     }>(
-      "SELECT execution_generation,spent_microdollars,reserved_microdollars,budget_microdollars FROM ctf.games WHERE id=$1 FOR UPDATE",
+      "SELECT execution_generation,status,spent_microdollars,reserved_microdollars,budget_microdollars FROM ctf.games WHERE id=$1 FOR UPDATE",
       [input.game.id],
     );
     if (!rows[0]) throw new GameError("This response has stopped.", 409);
@@ -67,6 +69,7 @@ async function assertDispatchAuthorization(input: {
         input.jobClaim,
         Number(rows[0].spent_microdollars),
         Number(rows[0].budget_microdollars),
+        rows[0].status,
       ) &&
       Number(rows[0].spent_microdollars) + Number(rows[0].reserved_microdollars) >=
         Number(rows[0].budget_microdollars)
