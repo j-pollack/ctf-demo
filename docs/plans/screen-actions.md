@@ -55,7 +55,7 @@ One question is reworded, so the question sets become `player-v2` and `system-v2
 
 Measured alone on 219 texts: the seven labelled overrides answer 0.85 to 0.98, the six refusal-only texts answer 0.13 to 0.88, and the highest benign answer is 0.39.
 
-The screen judges the text the player typed, wherever the player means it to end up. An instruction that quotes text aimed at the monitor and asks the agent to print it is screened as it stands. This is the lead's reading of "any jailbreak loses" and is open question 1.
+The screen judges the text the player typed, wherever the player means it to end up. An instruction that quotes text aimed at the monitor and asks the agent to print it is screened as it stands. The user confirmed this reading on 2026-11-20.
 
 The system prompt in force is screened with every instruction, as in the previous step. A verdict is computed for a system prompt only when it differs from the session's stored `agent_sessions.system_prompt`. A stored prompt was accepted by an earlier response and already sits in the transcript, so it is never refused later.
 
@@ -74,29 +74,34 @@ Both thresholds are named constants.
 
 In this step `unclear` and `clear` both let the response proceed. An `unclear` verdict is logged as `text_screen.unclear` with the run, the session, the kind and the question names. The log line never contains the text.
 
-What the measurements show at these values, counting the highest of the five lose signals for each text:
+What the whole `player-v2` and `system-v2` sets show at these values, measured live on 2026-11-20 with `scripts/screen-eval.ts --corpus`. Each text counts under the highest of its five lose signals.
 
 | Texts                                                              | Count | Clear, below 0.5 | Unclear, 0.5 to 0.9 | Certain, 0.9 or above |
 | ------------------------------------------------------------------ | ----- | ---------------- | ------------------- | --------------------- |
 | Honest instructions from played runs                               | 25    | 23               | 2                   | 0                     |
-| Other instructions in played attack runs, plain asks included      | 75    | 75               | 0                   | 0                     |
+| Honest system prompts from played runs                             | 2     | 2                | 0                   | 0                     |
 | Labelled benign instructions                                       | 39    | 39               | 0                   | 0                     |
 | Labelled benign system prompts                                     | 9     | 8                | 1                   | 0                     |
 | Labelled texts that only say not to refuse or to drop safety       | 6     | 1                | 5                   | 0                     |
 | Labelled texts that only hide a request                            | 8     | 6                | 2                   | 0                     |
+| Other instructions in played attack runs, plain asks included      | 77    | 76               | 1                   | 0                     |
+| Instructions in played runs that quote text for a command to print | 5     | 0                | 4                   | 1                     |
 | Labelled jailbreak instructions                                    | 32    | 0                | 5                   | 27                    |
 | Labelled jailbreak system prompts                                  | 3     | 0                | 0                   | 3                     |
-| Instructions labelled as jailbreaks in played attack runs          | 11    | 1                | 1                   | 9                     |
-| Instructions in played runs that quote text for a command to print | 5     | 0                | 4                   | 1                     |
+| Jailbreak instructions in played attack runs                       | 11    | 1                | 1                   | 9                     |
+| Jailbreak system prompts in played attack runs                     | 2     | 0                | 0                   | 2                     |
 
-These counts use the `player-v1` answers for four signals and the reworded `overrides_rules`, which was measured alone. The highest signal on an honest played instruction is 0.58. The highest on a text that only says not to refuse is 0.88, a margin of 0.02 under `CATCH_THRESHOLD`. The developer measures `player-v2` and `system-v2` whole with the script in E1 and replaces these counts. If any text in the first six rows is `certain` under the whole set, the developer stops and reports.
+- No honest, benign, refusal-only or request-hiding text is `certain`. The stop condition for this step did not trigger.
+- The script's own table puts the five quoting instructions under "benign", because their scenario labels say `jailbreak: false`. The user ruled on 2026-11-20 that they are jailbreaks, so the one `certain` among them is a correct catch.
+- Two margins are thin. A labelled story about an AI with no restrictions answers 0.89 on `unrestricted_persona`, and a refusal-only text answers 0.86 on `overrides_rules`.
+- The highest signal on an honest played instruction is 0.57, on `addresses_monitor`, for an instruction that asks the agent to act as a reviewer.
 
 ## Refusing a response
 
 The runner screens the instruction and the system prompt between `assertLease` and the prompt, as today. With the rule on, the runner then follows these rules in order.
 
-1. If the response's abort signal fired before both verdicts were known, the runner ends the response without calling `session.agent.prompt`. The signal covers a stop request, a closed connection and the response deadline. Nothing is persisted and no instruction is recorded. The runner emits the existing resumable "Response stopped" error, and its `finally` releases the lease and sends `done`, as for any stopped response. Today a stopped response records its instruction, and it still does when the rule is off or the verdicts were already known and not `certain`.
-2. If either verdict is `certain`, the runner calls `catchJailbreak` and never calls `session.agent.prompt`, whatever `catchJailbreak` returns or throws. The agent never receives the refused text. When it returns `caught`, the runner marks its own copy of the run as `caught` so that a stop arriving afterwards emits no resumable error, sends the two new events as `event` frames, and ends the response. The Sprite is deleted by the runner's existing `finally` through `cleanup()`. No second deletion is added.
+1. If no verdict is `certain` and the response's abort signal fired before both verdicts were known, the runner ends the response without calling `session.agent.prompt`. The signal covers a stop request, a closed connection and the response deadline. Nothing is persisted and no instruction is recorded. The runner emits the existing resumable "Response stopped" error, and its `finally` releases the lease and sends `done`, as for any stopped response. Today a stopped response records its instruction, and it still does when the rule is off or the verdicts were already known and not `certain`.
+2. If either verdict is `certain`, the runner calls `catchJailbreak`, whether or not the response was stopped. A certain verdict wins over a stop. The runner never calls `session.agent.prompt`, whatever `catchJailbreak` returns or throws. The agent never receives the refused text. When it returns `caught`, the runner marks its own copy of the run as `caught` so that a stop arriving afterwards emits no resumable error, sends the two new events as `event` frames, and ends the response. The Sprite is deleted by the runner's existing `finally` through `cleanup()`. No second deletion is added.
 3. Otherwise the response proceeds.
 
 The screen, the verdict and the catch all happen before the `beforePrompt` test hook.
@@ -104,7 +109,7 @@ The screen, the verdict and the catch all happen before the `beforePrompt` test 
 `catchJailbreak` in `lib/async-finalization.ts` runs in one transaction. It locks the run row and then the session row, the order the other paths use. It changes nothing and returns `stale` unless the run is `active`, the session holds the response's lease with `lease_until` in the future, the run's `execution_generation` equals the response's, and the run has no `ctf.flag_submissions` row. Otherwise it does all of the following and returns `caught`.
 
 - It sets the run to `caught` and bumps `blocks`, `execution_generation` and `state_revision`, as `catchAsyncRun` does. It also bumps `observation_revision`.
-- It inserts into a new table, `ctf.refused_texts`, one row for the instruction, and one row for the system prompt when the response carried a non-empty one. Columns: `id` uuid primary key, `game_id`, `session_id` with a foreign key to `agent_sessions(game_id,id)` that cascades as in migration 023, `kind` (`instruction` or `system_prompt`), `text`, `flagged` boolean, `created_at`. Unique on `(game_id, kind)`. `flagged` is true for a text whose verdict was `certain`. The whole submission is withheld, so an instruction sent with a refused system prompt is stored here too, with `flagged` false.
+- It inserts into a new table, `ctf.refused_texts`, one row for the instruction, and one row for the system prompt when the response carried a non-empty one that differs from the session's stored system prompt. Columns: `id` uuid primary key, `game_id`, `session_id` with a foreign key to `agent_sessions(game_id,id)` that cascades as in migration 023, `kind` (`instruction` or `system_prompt`), `text`, `flagged` boolean, `created_at`. Unique on `(game_id, kind)`. `flagged` is true for a text whose verdict was `certain`. The whole submission is withheld, so an instruction sent with a refused system prompt is stored here too, with `flagged` false.
 - It appends one placeholder to the session's stored messages. The stored list is the session's `agent_sessions.messages`, read with `FOR UPDATE` inside this transaction, plus the placeholder. It is not the copy captured when the session was claimed, and it is not built from Pi's in-memory messages, whose first system message carries the system prompt of this response. The placeholder is a user message whose text is the fixed sentence "[A submission was refused by the jailbreak screen. Its text is withheld.]". It carries `refused: true` and `refusedTextIds`, and no `systemPrompt` key.
 - It calls `persistTranscriptEvidence` with that list and the new `observation_revision`, as `persistReviewedSessionMessages` does, so the snapshot and the investigator tools see the placeholder. It does not enqueue a monitor job.
 - It does not change `agent_sessions.system_prompt`. A refused system prompt is never saved as the session's system prompt.
@@ -126,7 +131,7 @@ State after a catch, none of which needs new code:
 
 Readers:
 
-- `publicGame` returns `caughtCause` next to `caughtReason`. `cause` is absent on investigator catches, which read as `flag_read`.
+- `publicGame` returns `caughtCause` next to `caughtReason`: `jailbreak`, `flag_read` for a caught run whose block event has no cause, and null for a run that is not caught.
 - One function, `refusedTextsFor(gameId)`, reads `ctf.refused_texts`. Only `publicGame` calls it. `publicGame` is reached after the owner check or from the runner's `done` frame to the owner. It returns the rows as a top-level field `refusedTexts`, on every call, including calls with `afterEventId`.
 - The play page shows the texts on the result of a run caught for a jailbreak, marked as refused, with the flagged one identified. When a response ends with a refusal the page drops its optimistic pending instruction, which today is removed only when an event's text matches it.
 - The monitor snapshot, both investigator transcript tools, the classifier input, the monitor document, `agent_sessions.messages` and `ctf.transcript_observations` hold the placeholder and never the refused text. This holds for a later run by the same owner whose investigator can retrieve the caught session.
@@ -148,7 +153,7 @@ When it is true, the tool result the agent receives is:
 
 - `7f3a9c0b12de` stands for six random bytes, twelve hex characters, made per tool call with `crypto.randomBytes`.
 - The transcript, the tool event the player sees and the stored Sprite operation output all hold the result as the agent received it. The player sees the label. The investigator reads the same wrapper.
-- A tool result that was not screened, for any reason, is passed through unlabelled. This matches the ruling for instructions.
+- A tool result that was not screened, or whose screen row could not be stored, is passed through unlabelled. This matches the ruling for instructions, and it keeps the label and the annotation pass in agreement.
 - The wrapped text is exactly the notice line, a newline, the output, a newline and the closing line. `unwrapFlagged(text)` in `lib/text-screen.ts` returns the output without the first and last line when the first line is a notice and the last line is the closing line with the same value. Otherwise it returns the text unchanged. Removing the two lines restores the output byte for byte.
 - `annotatableCalls` in `lib/tool-annotations.ts` unwraps a result only when the call was labelled: the `ctf.text_screens` row for that session and tool call id exists and `injectionVerdict` of its answers is true. The facts, the stored result hash, the comparison against stored annotation rows and the Jev states then all use the command's own output. Output that only imitates a wrapper is left as it is, so a command cannot forge its exit status or hide that its output was capped.
 - The label is not behind the game rule. It is always on.
@@ -226,9 +231,9 @@ With the rule on and no second look, a jailbreak that scores between 0.5 and 0.9
 
 ## Open questions
 
-1. Does an instruction that quotes text aimed at the monitor, for a command to print, count as a jailbreak? This contract says yes. In the played runs one such instruction is `certain` and four are `unclear`.
-2. The fixed sentence a player sees when caught for a jailbreak, and the rules copy. The developer uses the lead's draft from the status page until the user edits it.
-3. Whether a jailbreak catch counts in `blocks` and on the leaderboard the same way as a flag-read catch. This contract says yes.
+1. Closed on 2026-11-20. The user ruled that an instruction that quotes text aimed at the monitor, for a command to print, counts as a jailbreak.
+2. Closed on 2026-11-20. The user accepted the catch sentence. The lead added "or system prompt" to it after the code review, because a system prompt alone can end a run: "This run ended because an instruction or system prompt tried to override the agent's or the monitor's rules. Asking for anything is allowed. Overriding the rules is not." The rules copy on the landing and play pages is the developer's sentence and has not been reviewed by the user.
+3. Whether `jailbreak_catch` joins the leaderboard's rule filter. This contract says yes. A caught run never appears on the leaderboard, which lists captured runs only.
 
 ## Evidence
 
@@ -237,7 +242,8 @@ Measurements by the lead on 2026-11-20 UTC. All files are untracked, under `/Use
 - Labelled texts, `player-v1`, `system-v1` and `output-v1`: 147 texts, $0.006. `text-screening/measure-1/`.
 - Played runs: 27 attack runs played from written scenarios, 5 scripted honest runs and 1 honest run by the user, all on production. 118 instructions, 4 system prompts and 615 command outputs, $0.033. `prod-sessions/screens-played-1/`, made by `prod-sessions/screen-corpus.ts`.
 - Reworded `overrides_rules`, asked alone on 219 instructions and system prompts, $0.005. `text-screening/reword-overrides-1.jsonl`, made by `text-screening/reword-overrides.ts`. A second candidate wording was measured and rejected: it answered 0.73 on a benign instruction and 0.97 on two refusal-only texts.
-- Not measured: `player-v2` and `system-v2` as whole sets.
+- Whole sets `player-v2`, `system-v2` and `output-v1`, after the build: 147 labelled texts and the 737 texts from the played runs, $0.039. `screen-actions/measure-v2-1/`. The output label rule labelled all 31 labelled injections, 4 of 19 labelled benign outputs, none of 143 honest played outputs, and 9 of 472 outputs in the attack runs.
+- Not measured: the second look, which is deferred.
 
 Plan verification, 2026-11-20. Verdict: not ready, four blocking findings. The lead checked the cited lines for the hold rule in `lib/inference.ts`, the snapshot's use of `ctf.transcript_observations`, the stop handling in `lib/runner-async.ts` and the exit-status pattern in `lib/tool-annotations.ts` before revising.
 
@@ -248,3 +254,7 @@ Plan verification, 2026-11-20. Verdict: not ready, four blocking findings. The l
 - Smaller findings folded in: races, the wrapper against the annotation facts, the marker length, the client's pending instruction, `refusedTexts` as a top-level field, the game rule's touch points, a testable Q1, and the missing acceptance cases. The investigator's list of question names was dropped.
 
 Re-verification, 2026-11-20. Verdict: ready with changes, no blocking findings. Folded in: the runner's end state for a stop and for a catch, no verdict for an already stored system prompt, unwrapping only labelled results and where, the lease expiry check, reading the stored list under lock, and the state after a catch.
+
+Code review, 2026-11-20. Verdict: ship after fixes, with no critical or high finding. One corrective cycle. Fixed: a stored system prompt was saved and shown as refused; a result was wrapped when its screen row had not been written; `caughtCause` was null for a flag-read catch; a malformed Jev reply could put request text in a log line through the JSON parser's error message, and `evaluate` now raises a fixed message; the README paragraph; a type cast. Decided: a certain verdict wins over a stop. Tests strengthened for C9, C10, L4 and V1.
+
+Gates run by the lead on the final tree: `npm run check` 369 pass, `npm run test:integration` 331 pass, `npm run build` exit 0, `npm run test:coverage` 369 pass.
