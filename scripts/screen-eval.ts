@@ -3,10 +3,15 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MONITOR_TOKEN_MICRODOLLARS } from "../lib/control";
 import {
+  CATCH_THRESHOLD,
+  injectionVerdict,
   INSTRUCTION_QUESTIONS,
+  jailbreakVerdict,
   OUTPUT_QUESTIONS,
   screenPlan,
+  SECOND_LOOK_THRESHOLD,
   SYSTEM_PROMPT_QUESTIONS,
+  type ScreenText,
 } from "../lib/text-screen";
 import { evaluate } from "../lib/typesafe";
 import {
@@ -49,6 +54,8 @@ export type Line = {
   id: string;
   kind: EvalKind;
   overall: boolean;
+  // The row of the threshold table the text counts in.
+  group?: string;
   answers: Record<string, number>;
   highest: number;
   inputTokens: number;
@@ -91,6 +98,58 @@ export function parseLabelled(text: string): Labelled[] {
   });
 }
 
+type CorpusText = { id: string; kind: EvalKind; group: string; text: ScreenText };
+
+const textOfContent = (content: unknown): string =>
+  typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.map((part) => (part?.type === "text" ? part.text : "")).join("")
+      : "";
+
+// Every instruction, non-empty system prompt and tool result of played sessions, in the shape
+// scripts/annotation-eval.ts reads. A case's step labels, when present, give the instructions their
+// label in order; any other text is grouped by the kind of its case.
+export function corpusTexts(corpus: string): CorpusText[] {
+  const cases: unknown = JSON.parse(corpus);
+  if (!Array.isArray(cases)) throw new Error("The corpus must be a JSON list.");
+  return cases.flatMap((item: Record<string, any>) => {
+    const steps: { jailbreak?: unknown }[] = Array.isArray(item.stepLabels) ? item.stepLabels : [];
+    let step = 0;
+    return (item.sessions ?? []).flatMap((session: Record<string, any>, sessionIndex: number) => {
+      const played = `played ${item.kind ?? "case"}`;
+      const prompt = String(session.systemPrompt ?? "");
+      const texts: CorpusText[] = prompt.trim()
+        ? [
+            {
+              id: `corpus:${item.id}:${sessionIndex}:system`,
+              kind: "system_prompt",
+              group: played,
+              text: { kind: "system_prompt", text: prompt },
+            },
+          ]
+        : [];
+      for (const [index, message] of (session.messages ?? []).entries()) {
+        const text = textOfContent(message.content);
+        const id = `corpus:${item.id}:${sessionIndex}:${index}`;
+        if (message.role === "user" && text.trim()) {
+          const label = steps[step++]?.jailbreak;
+          const group = typeof label === "boolean" ? (label ? "jailbreak" : "benign") : played;
+          texts.push({ id, kind: "instruction", group, text: { kind: "instruction", text } });
+        }
+        if (message.role === "toolResult" && text)
+          texts.push({
+            id,
+            kind: "output",
+            group: played,
+            text: { kind: "tool_output", ref: message.toolCallId, text },
+          });
+      }
+      return texts;
+    });
+  });
+}
+
 export function labelCounts(labelled: Labelled[]) {
   const kinds = Object.fromEntries(
     KINDS.map((kind) => {
@@ -123,12 +182,11 @@ export function labelCounts(labelled: Labelled[]) {
   return { kinds, questions };
 }
 
-const requestOf = (entry: Labelled) =>
-  screenPlan([
-    entry.kind === "output"
-      ? { kind: "tool_output", ref: entry.id, text: entry.text }
-      : { kind: entry.kind, text: entry.text },
-  ])[0];
+const labelledText = (entry: Labelled): ScreenText =>
+  entry.kind === "output"
+    ? { kind: "tool_output", ref: entry.id, text: entry.text }
+    : { kind: entry.kind, text: entry.text };
+const groupOf = (entry: Labelled) => (entry.overall ? OVERALL[entry.kind] : "benign");
 
 // Live floors: thirty benign instructions, and five labels each way per instruction or output question.
 function thinLabels(labelled: Labelled[]) {
@@ -161,7 +219,35 @@ const distribution = (values: number[]) => {
     : { count: 0, min: null, p10: null, p50: null, p90: null, max: null };
 };
 
+type Counts = { certain: number; unclear: number; clear: number };
+// The certain, unclear and clear counts of player text by group at the two thresholds, and the
+// share of tool output the label rule flags by group.
+export function thresholdTable(lines: Line[]) {
+  const table = {
+    catchThreshold: CATCH_THRESHOLD,
+    secondLookThreshold: SECOND_LOOK_THRESHOLD,
+    instruction: {} as Record<string, Counts>,
+    system_prompt: {} as Record<string, Counts>,
+    output: {} as Record<string, { texts: number; labelled: number; rate: number }>,
+  };
+  for (const line of lines) {
+    const group = line.group ?? (line.overall ? OVERALL[line.kind] : "benign");
+    if (line.kind === "output") {
+      const row = (table.output[group] ??= { texts: 0, labelled: 0, rate: 0 });
+      row.texts++;
+      if (injectionVerdict(line.answers)) row.labelled++;
+      row.rate = row.labelled / row.texts;
+      continue;
+    }
+    const row = (table[line.kind][group] ??= { certain: 0, unclear: 0, clear: 0 });
+    row[jailbreakVerdict(line.answers)]++;
+  }
+  return table;
+}
+
 export function summarize(lines: Line[], labelled: Labelled[]) {
+  const labelledIds = new Set(labelled.map((entry) => entry.id));
+  lines = lines.filter((line) => labelledIds.has(line.id));
   const byId = new Map(lines.map((line) => [line.id, line]));
   const questions = Object.fromEntries(
     KINDS.map((kind) => [
@@ -214,7 +300,7 @@ export function summarize(lines: Line[], labelled: Labelled[]) {
 }
 
 const USAGE =
-  "Usage: node --import tsx scripts/screen-eval.ts [--labelled FILE] [--live --budget-usd AMOUNT --output-dir NEW_DIRECTORY]. Without --live nothing is called.";
+  "Usage: node --import tsx scripts/screen-eval.ts [--labelled FILE] [--corpus FILE] [--live --budget-usd AMOUNT --output-dir NEW_DIRECTORY]. Without --live nothing is called.";
 
 function readLabelled(path: string | undefined) {
   const file = path ?? LABELLED_PATH;
@@ -229,7 +315,11 @@ export async function main(
   args = process.argv.slice(2),
   env: Record<string, string | undefined> = process.env,
 ) {
-  const { selections, options } = parseEvalArguments(args, ["--output-dir", "--labelled"]);
+  const { selections, options } = parseEvalArguments(args, [
+    "--output-dir",
+    "--labelled",
+    "--corpus",
+  ]);
   if (options.mode === "help") {
     console.log(USAGE);
     return;
@@ -238,7 +328,27 @@ export async function main(
   if ((options.mode === "live") !== Boolean(output))
     throw new Error("Only live mode requires --output-dir NEW_DIRECTORY.");
   const labelled = readLabelled(selections.get("--labelled"));
-  const requests = labelled.map(requestOf);
+  const corpusFile = selections.get("--corpus");
+  if (corpusFile && !existsSync(corpusFile))
+    throw new Error(`The corpus file ${corpusFile} does not exist.`);
+  const played = corpusFile ? corpusTexts(readFileSync(corpusFile, "utf8")) : [];
+  const items = [
+    ...labelled.map((entry) => ({
+      id: entry.id,
+      kind: entry.kind,
+      overall: entry.overall,
+      group: groupOf(entry),
+      request: screenPlan([labelledText(entry)])[0],
+    })),
+    ...played.map((entry) => ({
+      id: entry.id,
+      kind: entry.kind,
+      overall: false,
+      group: entry.group,
+      request: screenPlan([entry.text])[0],
+    })),
+  ];
+  const requests = items.map((item) => item.request);
   const ceilingMicrodollars = requests.reduce(
     (sum, request) => sum + request.ceiling * MONITOR_TOKEN_MICRODOLLARS,
     0,
@@ -249,7 +359,8 @@ export async function main(
         {
           mode: "dry-run",
           evaluationPerformed: false,
-          texts: labelled.length,
+          texts: items.length,
+          corpusTexts: played.length,
           requests: requests.length,
           costCeilingMicrodollars: Math.ceil(ceilingMicrodollars),
           ...labelCounts(labelled),
@@ -278,8 +389,8 @@ export async function main(
   let failure: unknown;
   let dispatched: (typeof requests)[number] | undefined;
   try {
-    for (const [index, entry] of labelled.entries()) {
-      const request = requests[index];
+    for (const entry of items) {
+      const request = entry.request;
       if (exceedsBudget(spentTokens, request.ceiling, budget)) {
         status = "stopped:budget";
         break;
@@ -297,6 +408,7 @@ export async function main(
         id: entry.id,
         kind: entry.kind,
         overall: entry.overall,
+        group: entry.group,
         answers,
         highest: Math.max(...Object.values(answers)),
         inputTokens: result.inputTokens,
@@ -319,13 +431,15 @@ export async function main(
         budgetMicrodollars: budget,
         spentMicrodollars: spentTokens * MONITOR_TOKEN_MICRODOLLARS,
         textsCompleted: lines.length,
-        textsPlanned: labelled.length,
+        textsPlanned: items.length,
+        thresholds: thresholdTable(lines),
         ...summarize(lines, labelled),
       },
       null,
       2,
     )}\n`,
   );
+  console.log(JSON.stringify({ thresholds: thresholdTable(lines) }, null, 2));
   if (failure) throw failure;
   if (status !== "completed")
     throw new Error(`The measurement is incomplete (${status}); see ${directory}.`);
