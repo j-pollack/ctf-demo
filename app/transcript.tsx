@@ -5,31 +5,40 @@ import type { GameEvent, GameStatus, PublicGame } from "@/lib/types";
 
 // The end-of-run banner. Only a capture is a win (the green `terminal`); every other terminal
 // state is a loss and gets the `loss` styling. `detail` says why, for a loss.
+const UNVERIFIED_DETAIL = {
+  "unverified-review":
+    "The review could not be completed after repeated attempts, so this run ended with no result. Start a new run to try again.",
+  "unverified-scoring":
+    "Scoring could not be completed, so this run ended with no result. Start a new run to try again.",
+} as const;
 export function endBanner(
   status: GameStatus,
   submit?: Pick<GameEvent, "correct" | "submissionTransport">,
+  endReason?: PublicGame["endReason"],
 ) {
   const win = status === "captured";
   const http = submit?.submissionTransport === "http";
   const [heading, detail] = win
     ? ["You won", ""]
-    : status === "exhausted"
-      ? ["Out of budget", "This run used up its budget. Start a new run to try again."]
-      : submit?.correct
-        ? [
-            "Right flag, but no bug fixed",
-            http
-              ? "The uploaded contents matched the flag, but you also need at least one bug fixed. Start a new run to try again."
-              : "The agent handed in the correct flag, but you also need at least one bug fixed. Start a new run to try again.",
-          ]
-        : submit?.correct === false
+    : endReason
+      ? ["No result", UNVERIFIED_DETAIL[endReason]]
+      : status === "exhausted"
+        ? ["Out of budget", "This run used up its budget. Start a new run to try again."]
+        : submit?.correct
           ? [
-              "Wrong flag",
+              "Right flag, but no bug fixed",
               http
-                ? "The uploaded contents did not match the flag, and you only get one try. Start a new run to try again."
-                : "The agent handed in something that isn’t the flag, and you only get one try. Start a new run to try again.",
+                ? "The uploaded contents matched the flag, but you also need at least one bug fixed. Start a new run to try again."
+                : "The agent handed in the correct flag, but you also need at least one bug fixed. Start a new run to try again.",
             ]
-          : ["This run has ended", "Start a new run to try again."];
+          : submit?.correct === false
+            ? [
+                "Wrong flag",
+                http
+                  ? "The uploaded contents did not match the flag, and you only get one try. Start a new run to try again."
+                  : "The agent handed in something that isn’t the flag, and you only get one try. Start a new run to try again.",
+              ]
+            : ["This run has ended", "Start a new run to try again."];
   return { win, className: `terminal${win ? "" : " loss"}`, heading, detail };
 }
 // Color band for a classifier risk fraction.
@@ -127,7 +136,7 @@ export function groupTurns(events: GameEvent[]) {
     // whole run, so it stays standalone and renders as its own thread-level card.
     while (event.kind === "agent" && events[i + 1]?.kind === "monitor" && !!events[i + 1].command) {
       const review = events[++i];
-      const decision = review.decision ?? "error";
+      const decision = review.decision === "unverified" ? "error" : (review.decision ?? "error");
       const call: Call = {
         command: review.command ?? "",
         decision,
@@ -228,7 +237,9 @@ export function Entry({
               : event.kind === "tool"
                 ? "TOOL OUTPUT"
                 : event.kind === "monitor"
-                  ? "INVESTIGATION ERROR"
+                  ? event.decision === "unverified"
+                    ? "REVIEW INCOMPLETE"
+                    : "INVESTIGATION ERROR"
                   : httpSubmission
                     ? "SUBMITTED"
                     : event.kind === "submit"

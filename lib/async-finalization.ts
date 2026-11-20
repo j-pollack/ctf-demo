@@ -3,10 +3,11 @@ import { db } from "./db";
 import { randomUUID } from "node:crypto";
 import { transaction } from "./games";
 import { GameError, hasSecret } from "./policy";
-import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
+import { diagnosticText } from "./inference";
+import { assertMonitorJobClaim, MAX_REQUEUES, type MonitorJobClaim } from "./monitor-jobs";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { JAILBREAK_CATCH_TEXT, REFUSED_PLACEHOLDER_TEXT } from "./text-screen";
-import type { GameEvent } from "./types";
+import { UNVERIFIED_SUBMISSION_STATUS, type GameEvent } from "./types";
 
 export type ReviewDecision = {
   verdict: "allow" | "block" | "unknown";
@@ -394,4 +395,102 @@ export async function finalizeAsyncRun(
     );
     return true;
   });
+}
+
+const SCORING_GIVE_UP_HOURS = 24;
+const UNVERIFIED_TEXT = {
+  review:
+    "The review could not be completed after repeated attempts. This run ended with no result.",
+  scoring: "Scoring could not be completed. This run ended with no result.",
+} as const;
+
+// Ends a submitted run that cannot get a verdict. Returns its Sprite name when it did.
+export async function resolveUnverifiedRun(gameId: string): Promise<string | null> {
+  return transaction(async (client) => {
+    const {
+      rows: [run],
+    } = await client.query<{ sprite_name: string; turns: number }>(
+      `SELECT sprite_name,turns FROM ctf.games
+       WHERE id=$1 AND status='finalizing' AND monitor_mode='async' FOR UPDATE`,
+      [gameId],
+    );
+    if (!run) return null;
+    const {
+      rows: [unresolved],
+    } = await client.query<{ session_id: string }>(
+      `SELECT j.session_id FROM ctf.monitor_jobs j
+       JOIN ctf.agent_sessions s ON s.game_id=j.game_id AND s.id=j.session_id
+       WHERE j.game_id=$1 AND j.status='unresolved' AND j.requeues>=$2
+         AND NOT EXISTS (SELECT 1 FROM ctf.monitor_jobs o WHERE o.game_id=$1
+           AND (o.status NOT IN ('caught-up','unresolved')
+             OR (o.status='unresolved' AND o.requeues<$2)))
+       ORDER BY s.ordinal LIMIT 1`,
+      [gameId, MAX_REQUEUES],
+    );
+    let cause: "review" | "scoring" = "review";
+    let sessionId = unresolved?.session_id;
+    if (!sessionId) {
+      const {
+        rows: [first],
+      } = await client.query<{ id: string }>(
+        `SELECT s.id FROM ctf.finalization_jobs f JOIN ctf.agent_sessions s ON s.game_id=f.game_id
+         WHERE f.game_id=$1 AND f.status='unresolved'
+           AND f.updated_at<now()-($2::int * interval '1 hour')
+         ORDER BY s.ordinal LIMIT 1`,
+        [gameId, SCORING_GIVE_UP_HOURS],
+      );
+      if (!first) return null;
+      cause = "scoring";
+      sessionId = first.id;
+    }
+    await client.query(
+      "UPDATE ctf.games SET status=$2,state_revision=state_revision+1,updated_at=now() WHERE id=$1",
+      [gameId, UNVERIFIED_SUBMISSION_STATUS],
+    );
+    await client.query("INSERT INTO ctf.events(game_id,session_id,data) VALUES($1,$2,$3)", [
+      gameId,
+      sessionId,
+      JSON.stringify({
+        kind: "monitor",
+        text: UNVERIFIED_TEXT[cause],
+        decision: "unverified",
+        cause,
+        turn: run.turns,
+      } satisfies Omit<GameEvent, "id">),
+    ]);
+    await client.query(
+      `UPDATE ctf.finalization_jobs SET status='done',claim_token=NULL,claim_until=NULL,
+       updated_at=now() WHERE game_id=$1`,
+      [gameId],
+    );
+    return run.sprite_name;
+  });
+}
+
+export async function resolveUnverifiedRuns(): Promise<string[]> {
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT g.id FROM ctf.games g WHERE g.status='finalizing' AND g.monitor_mode='async' AND (
+       EXISTS (SELECT 1 FROM ctf.monitor_jobs j WHERE j.game_id=g.id AND j.status='unresolved'
+         AND j.requeues>=$1)
+       OR EXISTS (SELECT 1 FROM ctf.finalization_jobs f WHERE f.game_id=g.id
+         AND f.status='unresolved' AND f.updated_at<now()-($2::int * interval '1 hour')))`,
+    [MAX_REQUEUES, SCORING_GIVE_UP_HOURS],
+  );
+  const sprites: string[] = [];
+  for (const { id } of rows) {
+    try {
+      const sprite = await resolveUnverifiedRun(id);
+      if (sprite) sprites.push(sprite);
+    } catch (error) {
+      // One run's failure must not stop the others; the next iteration tries it again.
+      console.error(
+        JSON.stringify({
+          event: "monitor.unverified.failed",
+          gameId: id,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+    }
+  }
+  return sprites;
 }

@@ -9,6 +9,9 @@ export {
   createInvestigatorAgent,
   guardInvestigatorStream,
   runInvestigatorDriver,
+  investigatorCallsOf,
+  investigatorForcedOf,
+  budgetLine,
 } from "./investigator-driver";
 
 export type MonitorTarget = { kind: "transcript" };
@@ -21,6 +24,8 @@ export type RunMonitorReviewInput = {
   riskSignals: ClassifierRiskSignals;
   signal: AbortSignal;
   deadlineAt?: number;
+  // Model requests this review may make, 1 to 32. Production leaves it unset.
+  callLimit?: number;
   jobClaim?: MonitorJobClaim;
   includeReasoning?: boolean;
 };

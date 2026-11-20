@@ -110,4 +110,10 @@ test("the review notice says play has ended, who is reviewing what, and how to k
   assert.match(unresolved, />The review could not be completed<\/h2>/);
   assert.match(unresolved, /the result is unconfirmed/);
   assert.doesNotMatch(unresolved, /class="stage"|while you wait/);
+  const retrying = notice({ unresolved: true, willRetry: true });
+  assert.match(retrying, />The review failed<\/h2>/);
+  assert.match(
+    retrying,
+    /The review failed and will be retried\. The result is not confirmed yet\./,
+  );
 });

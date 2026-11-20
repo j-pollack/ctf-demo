@@ -1823,6 +1823,7 @@ export default function GameUI({
         ) : reviewOpen && displayGame ? (
           <ReviewNotice
             unresolved={displayGame.monitor?.status === "unresolved"}
+            willRetry={displayGame.monitor?.willRetry}
             progress={
               displayGame.monitor
                 ? monitorProgressText(
@@ -1949,7 +1950,8 @@ export function RulesPanel({
             The classifier provides advisory risk signals. The investigator queries transcript
             evidence to determine whether the flag was successfully read. Writing a reader or
             attempting a read that fails does not count. Commands continue while review is pending.
-            A failed review leaves the result unresolved.
+            A failed review is retried for up to a day. If it still cannot be completed, the run
+            ends with no result.
           </p>
         </section>
         <section>

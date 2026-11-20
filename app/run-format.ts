@@ -45,4 +45,7 @@ export const monitorStatusLabel: Record<NonNullable<PublicGame["monitor"]>["stat
   unresolved: "Review incomplete",
   caught: "Caught",
 };
+// Shown in place of the texts that read as final while a failed review has requeues left.
+export const REVIEW_WILL_RETRY_TEXT =
+  "The review failed and will be retried. The result is not confirmed yet.";
 export const MONITOR_STATUS_LOADING = "Waiting for review status";

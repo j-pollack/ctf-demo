@@ -4,7 +4,7 @@ import type { GameEvent, PublicGame, SessionSummary } from "@/lib/types";
 import { runHasStarted, type SessionUIMap } from "@/app/session-ui-state";
 import { PENDING_SESSION, runModelsVary, type InspectorMode } from "@/app/session-layout";
 import { hasRiskObservations, runPeakRisk, runRiskSeries } from "@/app/run-risk";
-import { money } from "@/app/run-format";
+import { money, REVIEW_WILL_RETRY_TEXT } from "@/app/run-format";
 import { BlockedNotice, endBanner, isEndReview } from "@/app/transcript";
 import { RunBar } from "@/app/run-bar";
 import { RunInspector, type SessionDecision } from "@/app/run-inspector";
@@ -108,6 +108,7 @@ function OutcomeStrip({
         game.submissionTransport === "http"
           ? { correct: game.submissionCorrect, submissionTransport: "http" }
           : events.findLast((event) => event.kind === "submit"),
+        game.endReason,
       )
     : null;
   return (
@@ -150,7 +151,11 @@ function OutcomeStrip({
           {game.monitorMode !== "async" ? (
             FINALIZING_COPY.legacy
           ) : game.monitor?.status === "unresolved" ? (
-            FINALIZING_COPY.unresolved
+            game.monitor.willRetry ? (
+              REVIEW_WILL_RETRY_TEXT
+            ) : (
+              FINALIZING_COPY.unresolved
+            )
           ) : (
             <>
               <i aria-hidden="true" />

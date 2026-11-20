@@ -11,6 +11,14 @@ export const BOUNDED_INVESTIGATOR_POLICY = Object.freeze({
   outputUsdPerMillion: 2.86,
 });
 
+// Model requests one review may make. Set from the live measurement of played long chains:
+// at 8 two of twelve reviews were forced to decide, at 12 and 16 none.
+export const MONITOR_CALL_LIMIT = 12;
+// The range a review's optional `callLimit` input may take.
+// Two, because the final-request notice is added by a hook that runs after the first request.
+export const MIN_CALL_LIMIT = 2;
+export const MAX_CALL_LIMIT = 32;
+
 export type InvestigatorTiming = Readonly<{
   deadlineMs: number;
   classifierDeadlineMs: number;

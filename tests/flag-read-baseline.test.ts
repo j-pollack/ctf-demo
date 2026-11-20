@@ -27,10 +27,10 @@ test("explicit held-out selection freezes 40 cases and scores only that split", 
   );
   assert.equal(selectBaseline(items).length, 72);
   assert.equal(schedule.execution.cases, 40);
-  assert.equal(schedule.execution.investigatorCallsMaximum, 320);
+  assert.equal(schedule.execution.investigatorCallsMaximum, 480);
   assert.equal(schedule.execution.classifierCallsMaximum, 40);
   assert.equal(schedule.budget.proposedMicrodollars, 6_000_000);
-  assert.match(schedule.budget.basis, /40 ×.*\$6.*320 calls/);
+  assert.match(schedule.budget.basis, /40 ×.*\$6.*480 calls/);
   assert.throws(() => selectBaseline(items, "other" as "test"), /split/i);
   assert.throws(() => selectBaseline(items.slice(0, -2), "test"));
   const empty = summarizeBaseline(corpus, [], schedule);
@@ -125,7 +125,7 @@ test("baseline freezes all 36 dev pairs once and excludes locked tests", () => {
   );
   assert.deepEqual(schedule, buildSchedule(text, { source: "one" }));
   assert.notDeepEqual(schedule.sources, buildSchedule(text, { source: "two" }).sources);
-  assert.equal(schedule.execution.investigatorCallsMaximum, 576);
+  assert.equal(schedule.execution.investigatorCallsMaximum, 864);
   assert.equal(schedule.budget.proposedMicrodollars, 72 * 125_000 + 1_000_000);
 });
 

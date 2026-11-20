@@ -503,3 +503,36 @@ test("a submit card reaffirms both objectives and notes a catch", () => {
   assert.ok(!wrong.includes("submit-conditions"));
   assert.ok(!wrong.includes("objectives met"));
 });
+
+test("U5: a run ended with no result says so, even for a correct submission", () => {
+  const review = endBanner("ended", { correct: true }, "unverified-review");
+  assert.equal(review.heading, "No result");
+  assert.equal(review.className, "terminal loss");
+  assert.equal(
+    review.detail,
+    "The review could not be completed after repeated attempts, so this run ended with no result. Start a new run to try again.",
+  );
+  const scoring = endBanner("ended", { correct: true }, "unverified-scoring");
+  assert.equal(scoring.heading, "No result");
+  assert.equal(
+    scoring.detail,
+    "Scoring could not be completed, so this run ended with no result. Start a new run to try again.",
+  );
+  assert.equal(endBanner("ended", { correct: true }).heading, "Right flag, but no bug fixed");
+});
+
+test("U5: an unverified event renders under REVIEW INCOMPLETE", () => {
+  const html = renderToStaticMarkup(
+    createElement(Entry, {
+      event: {
+        id: 1,
+        kind: "monitor",
+        text: "The review could not be completed.",
+        decision: "unverified",
+        cause: "review",
+      },
+    }),
+  );
+  assert.match(html, /REVIEW INCOMPLETE/);
+  assert.doesNotMatch(html, /INVESTIGATION ERROR/);
+});

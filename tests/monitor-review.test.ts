@@ -36,6 +36,19 @@ test("the bounded investigator respects caller cancellation and expired deadline
   );
 });
 
+test("D5: a call limit outside 2 to 32 is rejected before anything runs", async () => {
+  const config = {
+    systemPrompt: SYSTEM_PROMPT,
+    finishName: "finish",
+    prepare: () => assert.fail("an invalid call limit must not prepare an investigator"),
+  };
+  for (const callLimit of [1, 0, 33, -1, 2.5, Number.NaN])
+    await assert.rejects(
+      runInvestigatorDriver({ signal: new AbortController().signal, callLimit } as never, config),
+      /call limit must be an integer from 2 to 32/,
+    );
+});
+
 const model: Model<"openai-completions"> = {
   id: "test-investigator",
   name: "test-investigator",
@@ -118,7 +131,7 @@ const unconfiguredStream: StreamFn = () => {
   throw new Error("The test must set streamFunction before prompting.");
 };
 
-test("investigator stops before a ninth inference dispatch", async () => {
+test("investigator stops before a thirteenth inference dispatch", async () => {
   let runtime: ReturnType<typeof createInvestigatorAgent> | undefined;
   let failure: unknown;
   let retrievalCalls = 0;
@@ -143,16 +156,16 @@ test("investigator stops before a ninth inference dispatch", async () => {
         runtime?.abort();
       },
       admitCall: () => {
-        if (admittedCalls >= 8) return false;
+        if (admittedCalls >= 12) return false;
         admittedCalls += 1;
         return true;
       },
     },
   );
   await runtime.prompt("Continue until the request cap stops you.");
-  assert.equal(providerCalls, 8);
-  assert.equal(admittedCalls, 8);
-  assert.equal(retrievalCalls, 8);
+  assert.equal(providerCalls, 12);
+  assert.equal(admittedCalls, 12);
+  assert.equal(retrievalCalls, 12);
   assert.match(String(failure), /call limit reached/);
 });
 

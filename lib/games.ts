@@ -20,6 +20,7 @@ import {
   MONITOR_DIFFICULTIES,
   RUN_BUDGET_MICRODOLLARS,
   RUNS_PER_DAY,
+  UNVERIFIED_SUBMISSION_STATUS,
   type AgentEffort,
   type GameEvent,
   type GameStatus,
@@ -29,7 +30,7 @@ import {
 import { createEnvironment } from "./sprites";
 import { configuredFlagEndpoint, flagEndpointUrl } from "./flag-submission-protocol";
 import { persistTranscriptEvidence } from "./transcript-evidence";
-import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
+import { assertMonitorJobClaim, MAX_REQUEUES, type MonitorJobClaim } from "./monitor-jobs";
 import { listSessionSummaries, claimSession } from "./sessions";
 
 export type GameRow = {
@@ -187,6 +188,7 @@ export async function publicGame(
     unresolved: boolean;
     has_pending_review: boolean;
     uncertain_command: boolean;
+    will_retry: boolean;
     last_reviewed_at: Date | null;
     finalization_error: string | null;
     submission_pending: boolean;
@@ -206,10 +208,11 @@ export async function publicGame(
       coalesce(bool_or(j.status='reviewing'),false) AS reviewing,
       coalesce(bool_or(j.status='unresolved'),false) AS unresolved,
       coalesce(bool_or(j.status IN ('queued','reviewing')),false) AS has_pending_review,
+      g.status='finalizing' AND coalesce(bool_or(j.status='unresolved' AND j.requeues<$2),false) AS will_retry,
       max(j.last_reviewed_at) AS last_reviewed_at
      FROM ctf.games g LEFT JOIN ctf.monitor_jobs j ON j.game_id=g.id
      WHERE g.id=$1 GROUP BY g.id`,
-    [game.id],
+    [game.id, MAX_REQUEUES],
   );
   if (!monitorState) throw new GameError("Run not found.", 404);
   const monitor =
@@ -232,6 +235,7 @@ export async function publicGame(
           totalUpdates: Number(monitorState.total_updates),
           lastReviewedAt: monitorState.last_reviewed_at?.toISOString() ?? null,
           hasPendingReview: monitorState.has_pending_review,
+          willRetry: monitorState.will_retry,
           ...((monitorState.unresolved ||
             monitorState.finalization_error ||
             monitorState.uncertain_command) &&
@@ -261,6 +265,17 @@ export async function publicGame(
       [game.id],
     )
   ).rows[0];
+  const unverified =
+    monitorState.status === UNVERIFIED_SUBMISSION_STATUS
+      ? (
+          await db.query<{ cause: string | null }>(
+            `SELECT data->>'cause' AS cause FROM ctf.events
+             WHERE game_id=$1 AND data->>'kind'='monitor' AND data->>'decision'='unverified'
+             ORDER BY id DESC LIMIT 1`,
+            [game.id],
+          )
+        ).rows[0]
+      : undefined;
   const selected = sessions.find((session) => session.id === selectedSessionId);
   if (!selected) throw new GameError("Session not found.", 404);
   const { rows } = await db.query<{ id: string; data: Omit<GameEvent, "id"> }>(
@@ -286,6 +301,12 @@ export async function publicGame(
     }),
     stateRevision: monitorState.state_revision,
     ...(monitor && { monitor }),
+    ...(unverified && {
+      endReason:
+        unverified.cause === "scoring"
+          ? ("unverified-scoring" as const)
+          : ("unverified-review" as const),
+    }),
     agentModel: selected.agentModel,
     agentEffort: selected.agentEffort,
     monitorDifficulty: game.monitor_difficulty,

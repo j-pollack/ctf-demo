@@ -1,6 +1,7 @@
 "use client";
 import React from "react";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@ui-sdk/react/dialog";
+import { REVIEW_WILL_RETRY_TEXT } from "@/app/run-format";
 import type { GameStatus } from "@/lib/types";
 
 export { DialogTitle } from "@ui-sdk/react/dialog";
@@ -75,11 +76,14 @@ export function reviewNoticeOpen(
 
 export function ReviewNotice({
   unresolved,
+  willRetry = false,
   progress,
   onClose,
 }: {
   // The investigator could not finish, so no result is coming from this review.
   unresolved: boolean;
+  // The failed review is requeued, so the result is not final.
+  willRetry?: boolean;
   // Sessions still waiting, when the server reports them.
   progress: string | null;
   onClose: () => void;
@@ -87,10 +91,13 @@ export function ReviewNotice({
   if (unresolved)
     return (
       <>
-        <DialogTitle>The review could not be completed</DialogTitle>
+        <DialogTitle>
+          {willRetry ? "The review failed" : "The review could not be completed"}
+        </DialogTitle>
         <p>
-          Play has ended. The investigator could not finish reviewing this run, so the result is
-          unconfirmed.
+          {willRetry
+            ? REVIEW_WILL_RETRY_TEXT
+            : "Play has ended. The investigator could not finish reviewing this run, so the result is unconfirmed."}
         </p>
         <button type="button" className="primary" onClick={onClose}>
           Read the transcripts

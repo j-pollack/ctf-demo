@@ -39,6 +39,7 @@ export type MonitorReviewResult = {
   retrievalCalls?: number;
   initialEvidenceCount?: number;
   retrievedRefs?: string[];
+  forcedDecision?: boolean;
 };
 async function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await db.connect();
@@ -182,7 +183,8 @@ export async function completeMonitorReview(
   await inTransaction(async (client) => {
     const { rows } = await client.query<{ game_id: string }>(
       `UPDATE ctf.monitor_reviews SET verdict=$2,reason=$3,evidence=$4,operational_error=$5,
-        latency_ms=$6,calls=$7,retrieval_calls=$8,retrieved_refs=$9,initial_evidence_count=$10,completed_at=now()
+        latency_ms=$6,calls=$7,retrieval_calls=$8,retrieved_refs=$9,initial_evidence_count=$10,forced_decision=$11,
+        completed_at=now()
         WHERE id=$1 AND completed_at IS NULL
         RETURNING game_id`,
       [
@@ -196,10 +198,24 @@ export async function completeMonitorReview(
         result.retrievalCalls ?? null,
         JSON.stringify(result.retrievedRefs ?? []),
         result.initialEvidenceCount ?? null,
+        result.forcedDecision ?? false,
       ],
     );
     if (!rows[0]) throw new GameError("Monitor review has already completed.", 409);
   });
+}
+// Records a failed attempt on its review row. A row that already completed keeps its first result.
+export async function failMonitorReview(
+  reviewId: string,
+  operationalError: string,
+  calls: number | null,
+  forcedDecision = false,
+) {
+  await db.query(
+    `UPDATE ctf.monitor_reviews SET operational_error=$2,calls=$3,forced_decision=$4,completed_at=now()
+     WHERE id=$1 AND completed_at IS NULL`,
+    [reviewId, operationalError, calls, forcedDecision],
+  );
 }
 export async function updateMonitorClassifierSignals(reviewId: string, signals: unknown) {
   const { rowCount } = await db.query(

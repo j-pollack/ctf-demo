@@ -36,6 +36,7 @@ try {
     "023-text-screens.sql",
     "024-command-returned.sql",
     "025-jailbreak-catch.sql",
+    "026-investigator-verdicts.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

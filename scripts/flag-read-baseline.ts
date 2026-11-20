@@ -8,7 +8,10 @@ import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
 import { INVESTIGATOR_MODEL } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { baselineSources } from "./flag-read-baseline-files";
-import { BOUNDED_INVESTIGATOR_POLICY } from "../lib/investigator-evaluation-policy";
+import {
+  BOUNDED_INVESTIGATOR_POLICY,
+  MONITOR_CALL_LIMIT,
+} from "../lib/investigator-evaluation-policy";
 
 type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -89,8 +92,8 @@ export function buildSchedule(
       attemptsPerCase: 1,
       retries: 0,
       cases: count,
-      investigatorCallsPerCase: 8,
-      investigatorCallsMaximum: count * 8,
+      investigatorCallsPerCase: MONITOR_CALL_LIMIT,
+      investigatorCallsMaximum: count * MONITOR_CALL_LIMIT,
       classifierCallsPerCase: 1,
       classifierCallsMaximum: count,
       investigatorOutputTokensPerCall: 8192,
@@ -133,7 +136,7 @@ export function buildSchedule(
         },
         note: "Frozen DigitalOcean endpoint rate ceilings feed reservations and max_price; no provider fallback. Price increases beyond these ceilings fail rather than expand the budget. Actual charges are persisted; reservation overruns stop subsequent dispatch.",
       },
-      basis: `${count} × $0.125 allowance + $1 contingency = $${proposedMicrodollars / 1e6}. This is a proposed stop budget, not a guarantee that all cases finish. At the frozen rate, ${count * 8} calls each consuming all 8192 output tokens would cost $${((count * 8 * 8192 * BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion) / 1e6).toFixed(7)} in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.`,
+      basis: `${count} × $0.125 allowance + $1 contingency = $${proposedMicrodollars / 1e6}. This is a proposed stop budget, not a guarantee that all cases finish. At the frozen rate, ${count * MONITOR_CALL_LIMIT} calls each consuming all 8192 output tokens would cost $${((count * MONITOR_CALL_LIMIT * 8192 * BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion) / 1e6).toFixed(7)} in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.`,
     },
     artifacts: {
       entries: "entries.jsonl",

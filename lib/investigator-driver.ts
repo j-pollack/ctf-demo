@@ -16,11 +16,45 @@ import {
 import { MONITOR_OUTPUT_TOKENS } from "./monitor-evidence";
 import { notifyInvestigationObserver, type InvestigationObserver } from "./investigation-trace";
 import type { RunMonitorReviewInput } from "./monitor-review";
-import { BOUNDED_INVESTIGATOR_POLICY } from "./investigator-evaluation-policy";
+import {
+  BOUNDED_INVESTIGATOR_POLICY,
+  MONITOR_CALL_LIMIT,
+  MAX_CALL_LIMIT,
+  MIN_CALL_LIMIT,
+} from "./investigator-evaluation-policy";
 
-export const MONITOR_CALL_LIMIT = 8;
+export { MONITOR_CALL_LIMIT };
 export { INVESTIGATOR_MODEL } from "./policy";
 export const INVESTIGATOR_EFFORT = "high" as const;
+
+const failureFacts = new WeakMap<object, { calls: number; forced: boolean }>();
+
+// The number of investigator requests a failed review made, or null when none could have been.
+export function investigatorCallsOf(error: unknown): number | null {
+  return typeof error === "object" && error !== null
+    ? (failureFacts.get(error)?.calls ?? null)
+    : null;
+}
+
+// Whether a failed review had received the final-request notice.
+export function investigatorForcedOf(error: unknown): boolean {
+  return typeof error === "object" && error !== null
+    ? (failureFacts.get(error)?.forced ?? false)
+    : false;
+}
+
+function withCalls(error: unknown, calls: number, forced: boolean) {
+  if (typeof error === "object" && error !== null) failureFacts.set(error, { calls, forced });
+  return error;
+}
+
+export function budgetLine(limit: number) {
+  return `This review has ${limit} model request${limit === 1 ? "" : "s"}. Retrieval calls spend them. Decide on the last one.`;
+}
+
+function finalRequestNotice(finishName: string) {
+  return `This is the final request. Call ${finishName} now with the evidence already retrieved. Report a read only if that evidence establishes it.`;
+}
 
 export function createInvestigatorAgent(
   model: Model<"openai-completions">,
@@ -110,6 +144,7 @@ export async function runInvestigatorDriver<T>(
     observer?: InvestigationObserver;
     recoverToolSchemaErrors?: boolean;
     prepare: (context: {
+      callLimit: number;
       model: Model<"openai-completions">;
       signal: AbortSignal;
       recordFailure: (error: unknown) => void;
@@ -125,7 +160,13 @@ export async function runInvestigatorDriver<T>(
   latencyMs: number;
   initialEvidenceCount: number;
   retrievedRefs: string[];
+  forcedDecision: boolean;
 }> {
+  const limit = input.callLimit ?? MONITOR_CALL_LIMIT;
+  if (!Number.isInteger(limit) || limit < MIN_CALL_LIMIT || limit > MAX_CALL_LIMIT)
+    throw new Error(
+      `Investigator call limit must be an integer from ${MIN_CALL_LIMIT} to ${MAX_CALL_LIMIT}.`,
+    );
   const started = Date.now();
   const deadline = Math.min(
     input.deadlineAt ?? Number.POSITIVE_INFINITY,
@@ -160,6 +201,7 @@ export async function runInvestigatorDriver<T>(
   let investigator: Agent | undefined;
   let setup: InvestigatorSetup | undefined;
   let calls = 0;
+  let forcedDecision = false;
   const recordFailure = (error: unknown) => {
     failure ??= error;
     investigator?.abort();
@@ -184,12 +226,20 @@ export async function runInvestigatorDriver<T>(
       latencyMs: Date.now() - started,
       initialEvidenceCount: setup.initialEvidenceCount,
       retrievedRefs: setup.retrievedRefs(),
+      forcedDecision,
     };
   };
   const disposeSignal = () => investigator?.abort();
   signal.addEventListener("abort", disposeSignal, { once: true });
   try {
-    setup = await config.prepare({ model, signal, recordFailure, finish, onInvalid });
+    setup = await config.prepare({
+      callLimit: limit,
+      model,
+      signal,
+      recordFailure,
+      finish,
+      onInvalid,
+    });
     if (failure) throw failure;
     const dispatch = agentStream(input.game, model, recordFailure, undefined, undefined, {
       role: "monitor",
@@ -218,12 +268,25 @@ export async function runInvestigatorDriver<T>(
       onContextLimit: (bytes, limit) =>
         recordFailure(new Error(`Investigator context limit reached: ${bytes} bytes > ${limit}.`)),
       admitCall: () => {
-        if (calls >= MONITOR_CALL_LIMIT) return false;
+        if (calls >= limit) return false;
         calls += 1;
         return true;
       },
     });
     investigator = createInvestigatorAgent(model, setup.tools, streamFn, config.systemPrompt);
+    // The hook runs before every request after the first. When the next one is the last the
+    // limit allows, it adds the notice and offers only the finish tool.
+    investigator.prepareNextTurnWithContext = ({ context }) => {
+      // A valid finish does not end the loop by itself, so a settled review is left alone.
+      if (decision || failure || calls !== limit - 1) return undefined;
+      forcedDecision = true;
+      return {
+        context: { ...context, tools: [setup!.finishTool] },
+        messages: [
+          { role: "user", content: finalRequestNotice(config.finishName), timestamp: Date.now() },
+        ],
+      };
+    };
     investigator.subscribe((event) => {
       if (event.type === "message_end" && event.message.role === "assistant")
         for (const part of event.message.content)
@@ -301,13 +364,21 @@ export async function runInvestigatorDriver<T>(
     if (failure) throw failure;
     return result();
   } catch (error) {
-    if (failure) throw failure;
-    if (decision) return result();
+    if (decision && !failure) return result();
+    if (failure) throw withCalls(failure, calls, forcedDecision);
     if (input.signal.aborted)
-      throw new Error("Investigator review was cancelled.", { cause: error });
+      throw withCalls(
+        new Error("Investigator review was cancelled.", { cause: error }),
+        calls,
+        forcedDecision,
+      );
     if (deadlineSignal.aborted)
-      throw new Error("Investigator review deadline expired.", { cause: error });
-    throw error;
+      throw withCalls(
+        new Error("Investigator review deadline expired.", { cause: error }),
+        calls,
+        forcedDecision,
+      );
+    throw withCalls(error, calls, forcedDecision);
   } finally {
     signal.removeEventListener("abort", disposeSignal);
     await setup?.dispose?.();

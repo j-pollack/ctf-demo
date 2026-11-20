@@ -139,6 +139,11 @@ test("C3: every rule-dependent sentence follows the rules it is given", () => {
       !required,
     );
     assert.ok(list.includes("An unresolved review never confirms a win."));
+    assert.ok(
+      panel.includes(
+        "A failed review is retried for up to a day. If it still cannot be completed, the run ends with no result.",
+      ),
+    );
   }
 });
 

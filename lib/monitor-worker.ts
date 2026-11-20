@@ -1,18 +1,28 @@
 import { randomUUID } from "node:crypto";
 import { db } from "./db";
-import { claimMonitorJob, finishMonitorJob, type MonitorJobClaim } from "./monitor-jobs";
+import {
+  claimMonitorJob,
+  finishMonitorJob,
+  requeueUnresolvedMonitorJobs,
+  type MonitorJobClaim,
+} from "./monitor-jobs";
 import { captureCommittedMonitorSnapshot } from "./monitor-snapshot";
 import { classifyMonitorTarget } from "./monitor-classifier";
 import { annotateToolCalls } from "./tool-annotations";
-import { INVESTIGATOR_MODEL } from "./monitor-review";
+import { INVESTIGATOR_MODEL, investigatorCallsOf, investigatorForcedOf } from "./monitor-review";
 import { detectorToReviewDecision, runFlagReadInvestigation } from "./flag-read-investigator";
-import { completeMonitorReview, updateMonitorClassifierSignals } from "./sessions";
+import {
+  completeMonitorReview,
+  failMonitorReview,
+  updateMonitorClassifierSignals,
+} from "./sessions";
 import {
   catchAsyncRun,
   claimAsyncFinalization,
   failAsyncFinalization,
   finalizeAsyncRun,
   markExpiredFinalizationClaims,
+  resolveUnverifiedRuns,
 } from "./async-finalization";
 import {
   beginExclusiveSpriteOperation,
@@ -29,6 +39,29 @@ import {
   resolveInvestigatorTiming,
   type InvestigatorTiming,
 } from "./investigator-evaluation-policy";
+
+async function recordFailedReview(
+  reviewId: string,
+  error: unknown,
+  returned: { calls: number | null; forced: boolean },
+) {
+  try {
+    await failMonitorReview(
+      reviewId,
+      diagnosticText(error instanceof Error ? error.message : error) ?? "Review failed.",
+      investigatorCallsOf(error) ?? returned.calls,
+      investigatorForcedOf(error) || returned.forced,
+    );
+  } catch (recordError) {
+    console.error(
+      JSON.stringify({
+        event: "monitor.review.failure.unrecorded",
+        reviewId,
+        error: diagnosticText(recordError instanceof Error ? recordError.message : recordError),
+      }),
+    );
+  }
+}
 
 async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
   const {
@@ -68,92 +101,126 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
       claim.claimToken,
     ],
   );
-  const signal = AbortSignal.timeout(Math.max(1, claim.claimUntil.getTime() - Date.now() - 1000));
-  const executionGeneration = Number(game.execution_generation);
-  // Both settle before the review goes on, so no annotation pass outlives a failed job.
-  const [classification] = await Promise.allSettled([
-    classifyMonitorTarget({
-      game: source,
-      sessionId: claim.sessionId,
-      lease: "",
-      reviewId,
-      messages: [...current.messages],
-      target: { kind: "transcript" },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
-      executionGeneration,
-      jobClaim: claim,
-    }),
-    annotateToolCalls({
-      game: source,
-      sessionId: claim.sessionId,
-      reviewId,
-      messages: current.messages,
-      commands: snapshot.commands,
-      signal: AbortSignal.any([signal, AbortSignal.timeout(timing.annotationDeadlineMs)]),
-      executionGeneration,
-      jobClaim: claim,
-    }),
-  ]);
-  if (classification.status === "rejected") throw classification.reason;
-  const classifier = classification.value;
-  await updateMonitorClassifierSignals(reviewId, classifier.signals);
-  await db.query(
-    `INSERT INTO ctf.events(game_id,session_id,review_id,data)
-     VALUES($1,$2,$3,$4)`,
-    [
-      claim.gameId,
-      claim.sessionId,
-      reviewId,
-      JSON.stringify({
-        kind: "monitor",
-        text: "",
-        suspicion: classifier.suspicion,
-        turn: current.turns,
+  // What the investigation reported once it returned, for a failure that comes after it.
+  const returned: { calls: number | null; forced: boolean } = { calls: null, forced: false };
+  try {
+    const signal = AbortSignal.timeout(Math.max(1, claim.claimUntil.getTime() - Date.now() - 1000));
+    const executionGeneration = Number(game.execution_generation);
+    // Both settle before the review goes on, so no annotation pass outlives a failed job.
+    const [classification] = await Promise.allSettled([
+      classifyMonitorTarget({
+        game: source,
+        sessionId: claim.sessionId,
+        lease: "",
+        reviewId,
+        messages: [...current.messages],
+        target: { kind: "transcript" },
+        signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
+        executionGeneration,
+        jobClaim: claim,
       }),
-    ],
-  );
-  const investigation = await runFlagReadInvestigation(
-    {
-      game: source,
-      reviewId,
-      snapshot,
-      currentSessionId: claim.sessionId,
-      target: { kind: "transcript" },
-      riskSignals: classifier.signals,
-      signal,
-      jobClaim: claim,
-      includeReasoning: game.monitor_reasoning,
-      deadlineAt: Date.now() + timing.deadlineMs,
-    },
-    { searchStrategy: policy.searchStrategy },
-  );
-  const result = detectorToReviewDecision(investigation);
-  if (result.verdict === "block") {
-    await catchAsyncRun(claim, reviewId, result, classifier.suspicion);
-    await completeMonitorReview(reviewId, result);
-    await finishMonitorJob(claim, { kind: "block", reason: result.reason });
-    try {
-      await deleteSpriteIfEligible(game.sprite_name);
-    } catch (error) {
-      console.error(
+      annotateToolCalls({
+        game: source,
+        sessionId: claim.sessionId,
+        reviewId,
+        messages: current.messages,
+        commands: snapshot.commands,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(timing.annotationDeadlineMs)]),
+        executionGeneration,
+        jobClaim: claim,
+      }),
+    ]);
+    if (classification.status === "rejected") throw classification.reason;
+    const classifier = classification.value;
+    await updateMonitorClassifierSignals(reviewId, classifier.signals);
+    await db.query(
+      `INSERT INTO ctf.events(game_id,session_id,review_id,data)
+       VALUES($1,$2,$3,$4)`,
+      [
+        claim.gameId,
+        claim.sessionId,
+        reviewId,
         JSON.stringify({
-          event: "sprite.delete.pending",
-          gameId: game.id,
-          error: diagnosticText(error instanceof Error ? error.message : error),
+          kind: "monitor",
+          text: "",
+          suspicion: classifier.suspicion,
+          turn: current.turns,
         }),
-      );
+      ],
+    );
+    const investigation = await runFlagReadInvestigation(
+      {
+        game: source,
+        reviewId,
+        snapshot,
+        currentSessionId: claim.sessionId,
+        target: { kind: "transcript" },
+        riskSignals: classifier.signals,
+        signal,
+        jobClaim: claim,
+        includeReasoning: game.monitor_reasoning,
+        deadlineAt: Date.now() + timing.deadlineMs,
+      },
+      { searchStrategy: policy.searchStrategy },
+    );
+    returned.calls = investigation.calls;
+    returned.forced = investigation.forcedDecision;
+    const result = detectorToReviewDecision(investigation);
+    if (result.verdict === "block") {
+      await catchAsyncRun(claim, reviewId, result, classifier.suspicion);
+      await completeMonitorReview(reviewId, result);
+      await finishMonitorJob(claim, { kind: "block", reason: result.reason });
+      try {
+        await deleteSpriteIfEligible(game.sprite_name);
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: "sprite.delete.pending",
+            gameId: game.id,
+            error: diagnosticText(error instanceof Error ? error.message : error),
+          }),
+        );
+      }
+      return;
     }
-    return;
+    await completeMonitorReview(reviewId, result);
+    await finishMonitorJob(claim, {
+      kind: result.verdict === "allow" ? "allow" : "unknown",
+      reason: result.reason,
+    });
+  } catch (error) {
+    await recordFailedReview(reviewId, error, returned);
+    throw error;
   }
-  await completeMonitorReview(reviewId, result);
-  await finishMonitorJob(claim, {
-    kind: result.verdict === "allow" ? "allow" : "unknown",
-    reason: result.reason,
-  });
+}
+
+async function deleteSpriteAfterEnd(spriteName: string) {
+  try {
+    await deleteSpriteIfEligible(spriteName);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "sprite.delete.pending",
+        spriteName,
+        error: diagnosticText(error instanceof Error ? error.message : error),
+      }),
+    );
+  }
 }
 
 async function finalizeOneRun() {
   await markExpiredFinalizationClaims();
+  try {
+    await requeueUnresolvedMonitorJobs();
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "monitor.requeue.failed",
+        error: diagnosticText(error instanceof Error ? error.message : error),
+      }),
+    );
+  }
+  for (const spriteName of await resolveUnverifiedRuns()) await deleteSpriteAfterEnd(spriteName);
   const claim = await claimAsyncFinalization();
   if (!claim) return false;
   const {

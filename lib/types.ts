@@ -13,6 +13,8 @@ export type GameStatus =
   | "ended"
   | "blocked"
   | "caught";
+// The status of a submitted run that no review could settle. It is not a win and not a catch.
+export const UNVERIFIED_SUBMISSION_STATUS = "ended" as const satisfies GameStatus;
 export type GameEvent = {
   id: number;
   kind: "user" | "agent" | "tool" | "monitor" | "submit" | "error";
@@ -21,7 +23,7 @@ export type GameEvent = {
   command?: string;
   // An agent turn's sprite_exec commands, one per call, in order.
   commands?: string[];
-  decision?: "allow" | "block" | "error";
+  decision?: "allow" | "block" | "error" | "unverified";
   // Set on submit events: whether the submitted value contained the flag.
   correct?: boolean;
   // Monitor events: the combined suspicion (0-1) behind the decision.
@@ -43,7 +45,8 @@ export type GameEvent = {
   refused?: boolean;
   refusedTextIds?: string[];
   // Monitor block events: "jailbreak" for the screen. Absent on investigator catches.
-  cause?: "jailbreak";
+  // Monitor unverified events: "review" or "scoring", whichever could not be completed.
+  cause?: "jailbreak" | "review" | "scoring";
   questions?: string[];
   refusedKinds?: ("instruction" | "system_prompt")[];
 };
@@ -149,7 +152,11 @@ export type PublicGame = {
     lastReviewedAt: string | null;
     hasPendingReview?: boolean;
     reason?: string;
+    // True while a failed review has requeues left, so the result is not final yet.
+    willRetry?: boolean;
   };
+  // Set on a run that ended because its review or scoring could not be completed.
+  endReason?: "unverified-review" | "unverified-scoring";
   agentModel: string;
   agentEffort: AgentEffort;
   monitorDifficulty: MonitorDifficulty;
