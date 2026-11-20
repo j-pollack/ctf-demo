@@ -11,7 +11,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { beginAsyncSubmission } from "./async-finalization";
+import { beginAsyncSubmission, catchJailbreak } from "./async-finalization";
 import { db } from "./db";
 import {
   assertLease,
@@ -33,7 +33,18 @@ import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
 import { configuredFlagEndpoint } from "./flag-submission-protocol";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
 import { executeCommand, SPRITE_WORKDIR } from "./sprites";
-import { createScreenBreaker, screenTexts, type ScreenContext } from "./text-screen";
+import {
+  createScreenBreaker,
+  injectionVerdict,
+  screenTexts,
+  signalsAtOrAbove,
+  submissionVerdicts,
+  CATCH_THRESHOLD,
+  SECOND_LOOK_THRESHOLD,
+  wrapFlagged,
+  type ScreenAnswers,
+  type ScreenContext,
+} from "./text-screen";
 import { INTERRUPTED_RESULT_TEXT, repairMessages } from "./transcript-repair";
 import type { GameEvent } from "./types";
 
@@ -181,6 +192,59 @@ export async function runAsyncGame(
     await emitBilling();
   };
 
+  // Ends the response without the agent seeing the text when a verdict is certain. Returns whether
+  // the response is over. A stop that arrives before the verdicts are known ends it unrecorded.
+  const refuseJailbreak = async (answers: ScreenAnswers | undefined) => {
+    const { rows } = await db.query<{ system_prompt: string }>(
+      "SELECT system_prompt FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2",
+      [game.id, sessionId],
+    );
+    const verdicts = submissionVerdicts(answers, game.system_prompt, rows[0]?.system_prompt ?? "");
+    // A certain verdict wins over a stop: a stop that aborted the other screen does not undo it.
+    if (!verdicts.certain.length) {
+      if (!verdicts.known && (signal.aborted || stop.signal.aborted))
+        throw failure ?? new Error("Response stopped.");
+      for (const kind of verdicts.unclear)
+        console.error(
+          JSON.stringify({
+            event: "text_screen.unclear",
+            gameId: game.id,
+            sessionId,
+            kind,
+            questions: signalsAtOrAbove(answers?.[kind], SECOND_LOOK_THRESHOLD),
+          }),
+        );
+      return false;
+    }
+    const questions = verdicts.certain.flatMap((kind) =>
+      signalsAtOrAbove(answers?.[kind], CATCH_THRESHOLD),
+    );
+    const result = await catchJailbreak({
+      gameId: game.id,
+      sessionId,
+      lease,
+      generation,
+      refused: [
+        { kind: "instruction", text: prompt, flagged: verdicts.certain.includes("instruction") },
+        ...(verdicts.systemPromptChanged
+          ? [
+              {
+                kind: "system_prompt" as const,
+                text: game.system_prompt,
+                flagged: verdicts.certain.includes("system_prompt"),
+              },
+            ]
+          : []),
+      ],
+      questions: [...new Set(questions)],
+    });
+    if (result.status === "stale") throw new GameError("This response has stopped.", 409);
+    // A stop that arrives now has nothing left to resume.
+    game.status = "caught";
+    for (const event of result.events) send("event", event);
+    return true;
+  };
+
   try {
     const model = await getModel(game.agent_model);
     const submissionUrl = http ? configuredFlagEndpoint().url : undefined;
@@ -242,9 +306,12 @@ export async function runAsyncGame(
             ? { TARGET: `${submissionUrl}/${dispatch.submissionToken}` }
             : undefined,
         );
-        if (await stampReturned(dispatch.id))
-          await screenTexts(screenContext, [{ kind: "tool_output", ref: id, text: output }]);
-        return { content: [{ type: "text" as const, text: output }], details: {} };
+        const screened = (await stampReturned(dispatch.id))
+          ? await screenTexts(screenContext, [{ kind: "tool_output", ref: id, text: output }])
+          : undefined;
+        // A flagged result reaches the agent labelled as data. An unscreened one is not labelled.
+        const text = injectionVerdict(screened?.tool_output) ? wrapFlagged(output) : output;
+        return { content: [{ type: "text" as const, text }], details: {} };
       },
     });
     const submitTool = defineTool({
@@ -431,11 +498,11 @@ export async function runAsyncGame(
     });
     if (signal.aborted) throw new Error("Response stopped.");
     await assertLease(game);
-    // Nothing acts on the answers yet.
-    await screenTexts(screenContext, [
+    const answers = await screenTexts(screenContext, [
       { kind: "instruction", text: prompt },
       { kind: "system_prompt", text: game.system_prompt },
     ]);
+    if (game.jailbreak_catch && (await refuseJailbreak(answers))) return;
     const hook = options.beforePrompt;
     if (hook) await hook(signal);
     await session.agent.prompt(instructionMessage(prompt, game.system_prompt));

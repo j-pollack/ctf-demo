@@ -54,6 +54,7 @@ await test(
       "migrations/020-http-flag-submission.sql",
       "migrations/021-game-rules.sql",
       "migrations/024-command-returned.sql",
+      "migrations/025-jailbreak-catch.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
 

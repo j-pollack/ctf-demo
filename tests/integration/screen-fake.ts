@@ -6,7 +6,7 @@ export type ScreenRequest = { kind: ScreenKind; state: Record<string, string>; a
 // "answer" replies; a number replies with that HTTP status; "hang" waits for the request's abort.
 export type ScreenBehaviour = "answer" | "hang" | number;
 
-// The Jev boundary's branch for a text-screening request (player-v1, system-v1 or output-v1).
+// The Jev boundary's branch for a text-screening request (player-v2, system-v2 or output-v1).
 // Returns undefined for any other request. It validates as strictly as the classifier branch:
 // exact state keys, exact questions. Reports zero input tokens unless a scenario sets them.
 // The module loads lazily: it imports the database, whose pool a test installs after its imports.
@@ -20,6 +20,10 @@ export function createScreenFake() {
     delayMs: 0,
     // Holds a request, after it is logged, until the returned promise settles.
     hold: undefined as undefined | ((kind: ScreenKind, index: number) => Promise<void>),
+    // Sets the scores of some questions for a text; every other question answers 0.25.
+    scores: undefined as
+      | undefined
+      | ((kind: ScreenKind, text: string, index: number) => Record<string, number> | undefined),
     // Adds an answer to a question that was not asked.
     extraAnswer: false,
     // Replaces the usage block of an answer, for the no-usage case.
@@ -33,6 +37,7 @@ export function createScreenFake() {
     controls.delayMs = 0;
     controls.hold = undefined;
     controls.extraAnswer = false;
+    controls.scores = undefined;
   };
   const response = async (body: { questions: unknown; state: unknown }, signal?: AbortSignal) => {
     const sets = await import("../../lib/text-screen");
@@ -62,12 +67,13 @@ export function createScreenFake() {
     if (controls.delayMs) await new Promise((resolve) => setTimeout(resolve, controls.delayMs));
     if (typeof behaviour === "number")
       return new Response("fixture failure", { status: behaviour });
+    const scores = controls.scores?.(kind, Object.values(state)[0], index) ?? {};
     return Response.json({
       answers: Object.fromEntries(
         [
           ...Object.keys(body.questions as object),
           ...(controls.extraAnswer ? ["unasked_question"] : []),
-        ].map((name) => [name, { type: "noul", noul: 0.25 }]),
+        ].map((name) => [name, { type: "noul", noul: scores[name] ?? 0.25 }]),
       ),
       ...(controls.omitUsage ? {} : { usage: { input_tokens: controls.tokens[kind] } }),
     });

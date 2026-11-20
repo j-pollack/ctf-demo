@@ -39,7 +39,7 @@ export function run(sessions: SessionSummary[], overrides: Partial<PublicGame> =
     agentModel: first.agentModel,
     agentEffort: first.agentEffort,
     monitorDifficulty: "medium",
-    rules: { monitorIsolation: false, bugFixRequired: true },
+    rules: { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false },
     systemPrompt: first.systemPrompt,
     tokenBudget: 0,
     tokensUsed: 0,

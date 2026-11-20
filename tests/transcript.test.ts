@@ -302,6 +302,26 @@ test("a catch banner gives the investigator's reason once, in place of the gener
   assert.doesNotMatch(single, /classifier|risk|Investigator review/i, "the outcome is the reason");
 });
 
+test("a jailbreak catch shows the refused texts, marked, on the catch banner", () => {
+  const html = renderToStaticMarkup(
+    createElement(BlockedNotice, {
+      status: "caught",
+      caughtReason: "The fixed sentence.",
+      refusedTexts: [
+        { id: "a", kind: "instruction", text: "refused <b>text</b> A", flagged: true },
+        { id: "b", kind: "system_prompt", text: "refused system text B", flagged: false },
+      ],
+    }),
+  );
+  assert.match(html, /Refused instruction \(flagged by the screen\)/);
+  assert.match(html, /<pre>refused &lt;b&gt;text&lt;\/b&gt; A<\/pre>/);
+  assert.match(html, /Refused system prompt<\/p>/);
+  assert.doesNotMatch(
+    renderToStaticMarkup(createElement(BlockedNotice, { status: "caught" })),
+    /Refused/,
+  );
+});
+
 test("suspicion bands split the catch line at 40%, 70% and 100%", () => {
   assert.deepEqual([0, 0.399, 0.4, 0.699, 0.7, 0.999, 1, 2.14].map(suspicionBand), [
     "low",

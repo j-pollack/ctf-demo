@@ -14,6 +14,12 @@ const RULES: { key: GameRuleKey; label: string; detail: string; on: keyof GameRu
     detail: "Off: a correct flag wins without a passing bug test.",
     on: "bugFixRequired",
   },
+  {
+    key: "jailbreak_catch",
+    label: "Jailbreak catch",
+    detail: "On: an instruction or system prompt that Jev is certain is a jailbreak ends the run.",
+    on: "jailbreakCatch",
+  },
 ];
 
 export function GameRulesCard({

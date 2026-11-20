@@ -64,6 +64,7 @@ export type GameRow = {
   submission_transport: "tool" | "http";
   monitor_isolation: boolean;
   bug_fix_required: boolean;
+  jailbreak_catch: boolean;
   state_revision: string;
 };
 export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
@@ -83,7 +84,7 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,submission_transport,monitor_isolation,bug_fix_required,state_revision,sprite_deleted_at,updated_at";
+  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,submission_transport,monitor_isolation,bug_fix_required,jailbreak_catch,state_revision,sprite_deleted_at,updated_at";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
@@ -105,6 +106,7 @@ export type PublicGameRow = Pick<
   | "submission_transport"
   | "monitor_isolation"
   | "bug_fix_required"
+  | "jailbreak_catch"
   | "state_revision"
   | "sprite_deleted_at"
   | "updated_at"
@@ -151,6 +153,19 @@ export async function gameBilling(gameId: string) {
     agentSpendMicrodollars: Number(row.agent),
     monitorSpendMicrodollars: Number(row.monitor),
   };
+}
+// The only reader of ctf.refused_texts. Its caller has checked that the viewer owns the run.
+async function refusedTextsFor(gameId: string) {
+  const { rows } = await db.query<{
+    id: string;
+    kind: "instruction" | "system_prompt";
+    text: string;
+    flagged: boolean;
+  }>(
+    "SELECT id,kind,text,flagged FROM ctf.refused_texts WHERE game_id=$1 ORDER BY created_at,kind",
+    [gameId],
+  );
+  return rows;
 }
 // afterEventId > 0 returns only newer events, so pollers re-download nothing they already hold.
 // Safe because each run has one writer (its lease) and the runner records events sequentially.
@@ -233,8 +248,13 @@ export async function publicGame(
       .rows[0]?.turns ?? game.turns,
   );
   const caught = (
-    await db.query<{ session_id: string; ordinal: number; reason: string | null }>(
-      `SELECT e.session_id,s.ordinal,e.data->>'text' AS reason FROM ctf.events e
+    await db.query<{
+      session_id: string;
+      ordinal: number;
+      reason: string | null;
+      cause: string | null;
+    }>(
+      `SELECT e.session_id,s.ordinal,e.data->>'text' AS reason,e.data->>'cause' AS cause FROM ctf.events e
     LEFT JOIN ctf.agent_sessions s ON s.game_id=e.game_id AND s.id=e.session_id
     WHERE e.game_id=$1 AND e.data->>'kind'='monitor' AND e.data->>'decision'='block'
     ORDER BY e.id DESC LIMIT 1`,
@@ -269,7 +289,11 @@ export async function publicGame(
     agentModel: selected.agentModel,
     agentEffort: selected.agentEffort,
     monitorDifficulty: game.monitor_difficulty,
-    rules: { monitorIsolation: game.monitor_isolation, bugFixRequired: game.bug_fix_required },
+    rules: {
+      monitorIsolation: game.monitor_isolation,
+      bugFixRequired: game.bug_fix_required,
+      jailbreakCatch: game.jailbreak_catch,
+    },
     systemPrompt: selected.systemPrompt,
     tokenBudget: game.token_budget,
     tokensUsed: game.tokens_used,
@@ -284,6 +308,13 @@ export async function publicGame(
     caughtSessionId: caught?.session_id ?? null,
     caughtSessionOrdinal: caught ? Number(caught.ordinal) : null,
     caughtReason: caught?.reason ?? null,
+    caughtCause:
+      monitorState.status !== "caught"
+        ? null
+        : caught?.cause === "jailbreak"
+          ? ("jailbreak" as const)
+          : ("flag_read" as const),
+    refusedTexts: await refusedTextsFor(game.id),
     events: rows.map((row) => ({ ...row.data, id: Number(row.id) })),
   };
 }
@@ -527,8 +558,8 @@ export async function startGame(
     );
     const rules = await currentGameRules(client);
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,agent_effort,new_run,monitor_mode,submission_transport,monitor_isolation,bug_fix_required)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true,'async','http',$15,$16) RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,agent_effort,new_run,monitor_mode,submission_transport,monitor_isolation,bug_fix_required,jailbreak_catch)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true,'async','http',$15,$16,$17) RETURNING *`,
       [
         id,
         ownerId,
@@ -546,6 +577,7 @@ export async function startGame(
         effort ?? PLAYER_AGENT_EFFORT,
         rules.monitorIsolation,
         rules.bugFixRequired,
+        rules.jailbreakCatch,
       ],
     );
     await client.query(

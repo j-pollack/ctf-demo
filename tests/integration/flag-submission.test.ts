@@ -77,6 +77,12 @@ test(
       "utf8",
     );
     await pool.query(returned);
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/025-jailbreak-catch.sql", import.meta.url),
+        "utf8",
+      ),
+    );
     const legacy = (
       await pool.query(
         `SELECT submission_transport,messages,tokens_used,blocks,reserved_microdollars

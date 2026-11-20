@@ -95,7 +95,10 @@ export async function evaluate(
     // request contents, so keep only the status in the message.
     throw new Error(`Typesafe request failed with status ${response.status}.`);
   }
-  const data = (await response.json()) as {
+  // A JSON syntax error quotes the text it could not parse, so it is replaced by a fixed message.
+  const data = (await response.json().catch(() => {
+    throw new Error("Typesafe returned an unreadable response.");
+  })) as {
     answers?: Record<string, TypesafeAnswer>;
     usage?: { input_tokens?: number };
   };

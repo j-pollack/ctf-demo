@@ -1,8 +1,12 @@
+import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import { db } from "./db";
 import { randomUUID } from "node:crypto";
 import { transaction } from "./games";
 import { GameError, hasSecret } from "./policy";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
+import { persistTranscriptEvidence } from "./transcript-evidence";
+import { JAILBREAK_CATCH_TEXT, REFUSED_PLACEHOLDER_TEXT } from "./text-screen";
+import type { GameEvent } from "./types";
 
 export type ReviewDecision = {
   verdict: "allow" | "block" | "unknown";
@@ -55,6 +59,119 @@ export async function catchAsyncRun(
       ],
     );
     return true;
+  });
+}
+
+export type RefusedText = {
+  kind: "instruction" | "system_prompt";
+  text: string;
+  flagged: boolean;
+};
+
+// Ends the response's run for a jailbreak: stores the refused text outside the transcript, leaves
+// a placeholder in its place and records the block. Changes nothing unless the response still
+// holds the run, so a catch that lost a race is `stale`.
+export async function catchJailbreak(input: {
+  gameId: string;
+  sessionId: string;
+  lease: string;
+  generation: number;
+  refused: readonly RefusedText[];
+  questions: readonly string[];
+}): Promise<{ status: "stale" } | { status: "caught"; events: GameEvent[] }> {
+  return transaction(async (client) => {
+    const {
+      rows: [run],
+    } = await client.query<{ status: string; execution_generation: string; turns: number }>(
+      "SELECT status,execution_generation,turns FROM ctf.games WHERE id=$1 FOR UPDATE",
+      [input.gameId],
+    );
+    if (!run || run.status !== "active" || Number(run.execution_generation) !== input.generation)
+      return { status: "stale" as const };
+    const {
+      rows: [session],
+    } = await client.query<{
+      lease: string | null;
+      lease_until: Date | null;
+      messages: Message[];
+    }>(
+      "SELECT lease,lease_until,messages FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE",
+      [input.gameId, input.sessionId],
+    );
+    if (session?.lease !== input.lease || !session.lease_until || session.lease_until <= new Date())
+      return { status: "stale" as const };
+    const { rowCount: submitted } = await client.query(
+      "SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1",
+      [input.gameId],
+    );
+    if (submitted) return { status: "stale" as const };
+    const {
+      rows: [game],
+    } = await client.query<{ observation_revision: string }>(
+      `UPDATE ctf.games SET status='caught',blocks=blocks+1,
+       execution_generation=execution_generation+1,state_revision=state_revision+1,
+       observation_revision=observation_revision+1,updated_at=now()
+       WHERE id=$1 RETURNING observation_revision`,
+      [input.gameId],
+    );
+    const ids: string[] = [];
+    for (const { kind, text, flagged } of input.refused) {
+      const {
+        rows: [saved],
+      } = await client.query<{ id: string }>(
+        `INSERT INTO ctf.refused_texts(game_id,session_id,kind,text,flagged)
+         VALUES($1,$2,$3,$4,$5) RETURNING id`,
+        [input.gameId, input.sessionId, kind, text, flagged],
+      );
+      ids.push(saved.id);
+    }
+    const placeholder: UserMessage & { refused: true; refusedTextIds: string[] } = {
+      role: "user",
+      content: [{ type: "text", text: REFUSED_PLACEHOLDER_TEXT }],
+      timestamp: Date.now(),
+      refused: true,
+      refusedTextIds: ids,
+    };
+    const messages: Message[] = [...session.messages, placeholder];
+    await client.query(
+      "UPDATE ctf.agent_sessions SET messages=$3,updated_at=now() WHERE game_id=$1 AND id=$2",
+      [input.gameId, input.sessionId, JSON.stringify(messages)],
+    );
+    await persistTranscriptEvidence(client, {
+      gameId: input.gameId,
+      sessionId: input.sessionId,
+      runRevision: Number(game.observation_revision),
+      messages,
+    });
+    const record = async (data: Omit<GameEvent, "id">) => {
+      const {
+        rows: [event],
+      } = await client.query<{ id: string }>(
+        "INSERT INTO ctf.events(game_id,session_id,data) VALUES($1,$2,$3) RETURNING id",
+        [input.gameId, input.sessionId, JSON.stringify(data)],
+      );
+      return { ...data, id: Number(event.id) };
+    };
+    return {
+      status: "caught" as const,
+      events: [
+        await record({
+          kind: "user",
+          text: REFUSED_PLACEHOLDER_TEXT,
+          refused: true,
+          refusedTextIds: ids,
+        }),
+        await record({
+          kind: "monitor",
+          text: JAILBREAK_CATCH_TEXT,
+          decision: "block",
+          cause: "jailbreak",
+          questions: [...input.questions],
+          refusedKinds: input.refused.filter((entry) => entry.flagged).map((entry) => entry.kind),
+          turn: run.turns,
+        }),
+      ],
+    };
   });
 }
 

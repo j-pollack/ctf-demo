@@ -1,7 +1,7 @@
 import React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { GameEvent, GameStatus } from "@/lib/types";
+import type { GameEvent, GameStatus, PublicGame } from "@/lib/types";
 
 // The end-of-run banner. Only a capture is a win (the green `terminal`); every other terminal
 // state is a loss and gets the `loss` styling. `detail` says why, for a loss.
@@ -347,6 +347,7 @@ export function BlockedNotice({
   caughtSessionId = null,
   caughtSessionOrdinal = null,
   caughtReason = null,
+  refusedTexts = [],
   multiSession = false,
   onShowSession,
 }: {
@@ -357,6 +358,8 @@ export function BlockedNotice({
   caughtSessionId?: string | null;
   caughtSessionOrdinal?: number | null;
   caughtReason?: string | null;
+  // Texts the jailbreak screen refused. Shown to the owner on this notice and nowhere else.
+  refusedTexts?: NonNullable<PublicGame["refusedTexts"]>;
   // A run with one session does not need to be told which session was caught.
   multiSession?: boolean;
   // Shows and focuses the session that caused the catch. Given only while that session is hidden.
@@ -371,6 +374,16 @@ export function BlockedNotice({
     <div className="terminal loss">
       <h2>{heading}</h2>
       <p>{body}</p>
+      {caught &&
+        refusedTexts.map((refused) => (
+          <div key={refused.id} className="refused-text">
+            <p>
+              Refused {refused.kind === "instruction" ? "instruction" : "system prompt"}
+              {refused.flagged ? " (flagged by the screen)" : ""}
+            </p>
+            <pre>{refused.text}</pre>
+          </div>
+        ))}
       {caught && multiSession && (caughtSessionOrdinal || caughtSessionId) && (
         <p>
           Session {caughtSessionOrdinal ?? caughtSessionId!.slice(0, 8)} caused the catch.{" "}

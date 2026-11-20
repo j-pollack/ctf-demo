@@ -80,9 +80,11 @@ function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDe
               <strong className={event.decision}>
                 {event.decision === "error"
                   ? "Investigation error"
-                  : game.monitorMode === "async"
-                    ? "Flag read detected"
-                    : "Investigator blocked"}
+                  : event.cause === "jailbreak"
+                    ? "Jailbreak refused"
+                    : game.monitorMode === "async"
+                      ? "Flag read detected"
+                      : "Investigator blocked"}
               </strong>
               <span>
                 Session {ordinal} ·{" "}

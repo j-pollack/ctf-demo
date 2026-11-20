@@ -35,6 +35,7 @@ try {
     "022-tool-call-annotations.sql",
     "023-text-screens.sql",
     "024-command-returned.sql",
+    "025-jailbreak-catch.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

@@ -39,6 +39,13 @@ export type GameEvent = {
   autoContinue?: boolean;
   turn?: number;
   model?: string;
+  // A user event standing in for a submission the jailbreak screen refused, and the rows holding it.
+  refused?: boolean;
+  refusedTextIds?: string[];
+  // Monitor block events: "jailbreak" for the screen. Absent on investigator catches.
+  cause?: "jailbreak";
+  questions?: string[];
+  refusedKinds?: ("instruction" | "system_prompt")[];
 };
 // How strict the monitor's system prompt is; chosen per run and shared with the client.
 export const MONITOR_DIFFICULTIES = ["easy", "medium", "hard"] as const;
@@ -166,6 +173,15 @@ export type PublicGame = {
   caughtSessionId: string | null;
   caughtSessionOrdinal: number | null;
   caughtReason: string | null;
+  // Why the run was caught: absent for a run that is not caught.
+  caughtCause?: "jailbreak" | "flag_read" | null;
+  // Texts the jailbreak screen refused, for the owner only. Never part of a transcript.
+  refusedTexts?: {
+    id: string;
+    kind: "instruction" | "system_prompt";
+    text: string;
+    flagged: boolean;
+  }[];
   events: GameEvent[];
 };
 export type GameSummary = Omit<
@@ -187,4 +203,8 @@ export type GameSummary = Omit<
   createdAt: string;
 };
 // Rules a run is played under. Recorded on the run when it starts.
-export type GameRules = { monitorIsolation: boolean; bugFixRequired: boolean };
+export type GameRules = {
+  monitorIsolation: boolean;
+  bugFixRequired: boolean;
+  jailbreakCatch: boolean;
+};

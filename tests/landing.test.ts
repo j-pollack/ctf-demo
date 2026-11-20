@@ -6,7 +6,7 @@ import LandingContent from "../app/landing-content";
 import SiteHeader from "../app/site-header";
 import { RulesPanel, RunInstructions, WelcomeIntro } from "../app/game-ui";
 
-const defaultRules = { monitorIsolation: false, bugFixRequired: true };
+const defaultRules = { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false };
 
 test("public landing renders without database access and does not offer sign-in while auth loads", () => {
   const html = renderToStaticMarkup(

@@ -92,7 +92,11 @@ const RUNS = (["captured", "caught", "exhausted", "ended", "active"] as const).m
 const INFO_PAGES: Record<string, { nav: string; body: React.ReactNode }> = {
   rules: {
     nav: "rules",
-    body: <RulesPanel rules={{ monitorIsolation: false, bugFixRequired: true }} />,
+    body: (
+      <RulesPanel
+        rules={{ monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false }}
+      />
+    ),
   },
   rank: {
     nav: "rank",

@@ -177,3 +177,22 @@ test("a held stale session fetch cannot reopen a caught run or enable the compos
     "an authoritative active fetch can recover a failed finalization",
   );
 });
+
+test("a refused submission's placeholder settles the pending instruction", async () => {
+  const { instructionStatus } = await import("../app/game-ui");
+  const refused = {
+    ...current,
+    busy: true,
+    events: [
+      ...current.events,
+      { id: 11, kind: "user" as const, text: "[placeholder]", refused: true },
+    ],
+  };
+  assert.equal(instructionStatus(pending, refused), "accepted");
+  assert.equal(
+    refreshedGame(current, refused, pending)?.events.some((e) => e.id === -1),
+    false,
+  );
+  // A placeholder older than the instruction does not settle it.
+  assert.equal(instructionStatus({ ...pending, afterId: 11 }, refused), "pending");
+});

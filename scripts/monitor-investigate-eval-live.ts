@@ -26,6 +26,7 @@ const MIGRATIONS = [
   "022-tool-call-annotations.sql",
   "023-text-screens.sql",
   "024-command-returned.sql",
+  "025-jailbreak-catch.sql",
 ];
 
 export type SeededWorkspace = {

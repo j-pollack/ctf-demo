@@ -69,6 +69,8 @@ export function preserveTerminalRunState(current: PublicGame, next: PublicGame):
     caughtSessionId: current.caughtSessionId,
     caughtSessionOrdinal: current.caughtSessionOrdinal,
     caughtReason: current.caughtReason,
+    caughtCause: current.caughtCause,
+    refusedTexts: current.refusedTexts,
   };
 }
 

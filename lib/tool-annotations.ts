@@ -6,6 +6,7 @@ import { db } from "./db";
 import { diagnosticText, textOf } from "./inference";
 import { hasSecret, inputCeiling } from "./policy";
 import { INTERRUPTED_RESULT_TEXT, REPAIRED_RESULT_TEXT } from "./transcript-repair";
+import { injectionVerdict, OUTPUT_QUESTION_SET, unwrapFlagged } from "./text-screen";
 import { evaluate, TYPESAFE_MODEL, type TypesafeQuestion } from "./typesafe";
 import type { GameRow } from "./games";
 import type { MonitorJobClaim } from "./monitor-jobs";
@@ -130,10 +131,12 @@ type AnnotatableCall = {
 
 // A call is annotatable once the transcript holds its result and a Sprite operation shows it ran.
 // A reused id has one operation, so only the call whose command matches it ran, and the first
-// result after that call is its own.
+// result after that call is its own. A result the screen labelled is read without its wrapper, so
+// facts and hashes describe the command's own output; only a call in `labelled` is unwrapped.
 export function annotatableCalls(
   messages: readonly Message[],
   commands: MonitorSnapshot["commands"],
+  labelled: ReadonlySet<string> = new Set(),
 ): AnnotatableCall[] {
   const ran = new Map(commands.map((operation) => [operation.toolCallId, operation.command]));
   const seen = new Set<string>();
@@ -151,7 +154,8 @@ export function annotatableCalls(
         );
       if (!result) return [];
       seen.add(part.id);
-      return [{ toolCallId: part.id, command, output: textOf(result), isError: result.isError }];
+      const output = labelled.has(part.id) ? unwrapFlagged(textOf(result)) : textOf(result);
+      return [{ toolCallId: part.id, command, output, isError: result.isError }];
     });
   });
 }
@@ -226,6 +230,15 @@ async function dispatchAll(
   return outcomes;
 }
 
+// Tool calls of the session whose stored screen flagged the result.
+async function labelledCalls(sessionId: string) {
+  const { rows } = await db.query<{ ref: string; answers: Record<string, number> }>(
+    "SELECT ref,answers FROM ctf.text_screens WHERE session_id=$1 AND kind='tool_output' AND question_set=$2",
+    [sessionId, OUTPUT_QUESTION_SET],
+  );
+  return new Set(rows.filter(({ answers }) => injectionVerdict(answers)).map(({ ref }) => ref));
+}
+
 async function unannotated(sessionId: string, calls: AnnotatableCall[]) {
   const { rows } = await db.query<{
     tool_call_id: string;
@@ -286,7 +299,11 @@ async function storeRow(input: {
 
 async function annotate(input: AnnotationInput) {
   const { game, sessionId, reviewId, signal } = input;
-  const annotatable = annotatableCalls(input.messages, input.commands);
+  const annotatable = annotatableCalls(
+    input.messages,
+    input.commands,
+    await labelledCalls(sessionId),
+  );
   if (!annotatable.length) return;
   // Newest first, so a deadline drops the oldest calls.
   const planned = (await unannotated(sessionId, annotatable)).slice(-MAX_ANNOTATED_CALLS).reverse();
