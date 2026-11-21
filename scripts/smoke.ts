@@ -612,7 +612,8 @@ try {
         payload.max_tokens !== undefined && payload.max_tokens > 0 && payload.max_tokens <= 8_192,
       );
       assert.equal(payload.reasoning?.effort, "high");
-      const prompt = String(payload.messages.at(-1)?.content);
+      // After a reported read the last message is the confirmation, so the prompt is the first user message.
+      const prompt = String(payload.messages.find((item) => item.role === "user")?.content);
       const context = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2)) as {
         target: { kind: string };
         snapshot: { currentTranscript: { ref: string; role: string; text: string }[] };

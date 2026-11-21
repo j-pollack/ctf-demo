@@ -58,6 +58,7 @@ await test(
       "migrations/026-investigator-verdicts.sql",
       "migrations/027-review-prompt-hash.sql",
       "migrations/028-review-continuations.sql",
+      "migrations/029-review-read-confirmation.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);

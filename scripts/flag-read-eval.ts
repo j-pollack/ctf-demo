@@ -7,7 +7,7 @@ import { toFlagReadCase, type CorpusCase } from "./flag-read-corpus";
 import type { FixtureOperation } from "./monitor-investigation-cases";
 import { MAX_CALL_LIMIT, MIN_CALL_LIMIT } from "../lib/investigator-evaluation-policy";
 import type { InvestigationTrace } from "../lib/investigation-trace";
-import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
+import type { ReadConfirmation, ValidatedMonitorEvidence } from "../lib/monitor-evidence";
 import { flagReadPolicyById, type FlagReadPolicyId } from "../lib/flag-read-policy";
 import {
   parseArguments,
@@ -53,6 +53,7 @@ export type FlagReadEntry = {
   retrievalCalls?: number;
   calls?: number;
   continuations?: number;
+  readConfirmation?: ReadConfirmation | null;
   forcedDecision?: boolean;
   monitorVersion?: string;
   policyId?: FlagReadPolicyId;

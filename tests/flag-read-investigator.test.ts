@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createFinishInvestigationTool, type FlagReadDecision } from "../lib/monitor-evidence";
+import { createHash } from "node:crypto";
+import {
+  READ_CONFIRMATION_REQUEST,
+  createFinishInvestigationTool,
+  type FlagReadDecision,
+  type ReadConfirmation,
+} from "../lib/monitor-evidence";
 import {
   detectorToReviewDecision,
   type FlagReadInvestigationResult,
@@ -41,6 +47,7 @@ test("flag read finish derives completion and requires target-anchored canonical
     (decision) => decisions.push(decision),
     (error) => failures.push(error),
     (_error, id) => invalid.push(id),
+    () => ({ calls: 1, limit: 1 }),
   );
   const base = { reason: "A successful read is visible in the target tool result." };
   const cite = (row: MonitorEvidenceMessage) => ({ ref: row.ref });
@@ -137,6 +144,7 @@ test("flag read citations resolve complete multibyte chunks within both byte lim
     (decision) => decisions.push(decision),
     () => assert.fail("invalid citations must remain correctable"),
     () => {},
+    () => ({ calls: 1, limit: 1 }),
   );
   const execute = (args: unknown) => tool.execute("citation", args as never, undefined, undefined);
   await execute({
@@ -173,6 +181,7 @@ test("flag read citations resolve complete multibyte chunks within both byte lim
     () => assert.fail("oversized citations must not finish"),
     () => assert.fail("oversized citations must be correctable"),
     () => {},
+    () => ({ calls: 1, limit: 1 }),
   );
   await assert.rejects(
     outputTool.execute(
@@ -208,11 +217,97 @@ test("storage adapter maps every valid negative to coverage", () => {
     retrievedRefs: [],
     forcedDecision: false,
     continuations: 0,
+    readConfirmation: null,
   };
   assert.equal(detectorToReviewDecision(base).verdict, "allow");
   assert.equal(
     detectorToReviewDecision({ ...base, flagReadDetected: true, investigationComplete: true })
       .verdict,
     "block",
+  );
+});
+
+test("F11: a reported read is confirmed once, and only a later request decides", async () => {
+  const visible = new Map([[target.ref, target]]);
+  const decisions: FlagReadDecision[] = [];
+  const states: ReadConfirmation[] = [];
+  let request = { calls: 1, limit: 3 };
+  const tool = createFinishInvestigationTool(
+    visible,
+    target.sessionId,
+    (decision) => decisions.push(decision),
+    (error) => assert.fail(String(error)),
+    undefined,
+    () => request,
+    (state) => states.push(state),
+  );
+  const report = (flagReadDetected: boolean) =>
+    tool.execute(
+      "id",
+      { flagReadDetected, reason: "Reported.", evidence: [{ ref: target.ref }] } as never,
+      undefined,
+      undefined,
+    );
+  const text = (result: Awaited<ReturnType<typeof report>>) =>
+    result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+  assert.equal(text(await report(true)), READ_CONFIRMATION_REQUEST);
+  assert.equal(text(await report(true)), READ_CONFIRMATION_REQUEST);
+  // A no-read call in the response that received the confirmation decides nothing either.
+  assert.equal(text(await report(false)), READ_CONFIRMATION_REQUEST);
+  assert.deepEqual(decisions, []);
+  request = { calls: 2, limit: 3 };
+  assert.notEqual(text(await report(true)), READ_CONFIRMATION_REQUEST);
+  assert.equal(decisions.length, 1);
+  assert.equal(states.at(-1), "kept");
+});
+
+test("F11: a read reported on the last request is recorded unconfirmed", async () => {
+  const decisions: FlagReadDecision[] = [];
+  const states: ReadConfirmation[] = [];
+  const tool = createFinishInvestigationTool(
+    new Map([[target.ref, target]]),
+    target.sessionId,
+    (decision) => decisions.push(decision),
+    (error) => assert.fail(String(error)),
+    undefined,
+    () => ({ calls: 3, limit: 3 }),
+    (state) => states.push(state),
+  );
+  await tool.execute(
+    "id",
+    { flagReadDetected: true, reason: "Read.", evidence: [{ ref: target.ref }] } as never,
+    undefined,
+    undefined,
+  );
+  assert.equal(decisions.length, 1);
+  assert.deepEqual(states, ["unconfirmed"]);
+});
+
+test("F11: a no-read report that comes first is never questioned", async () => {
+  const decisions: FlagReadDecision[] = [];
+  const states: ReadConfirmation[] = [];
+  const tool = createFinishInvestigationTool(
+    new Map(),
+    target.sessionId,
+    (decision) => decisions.push(decision),
+    (error) => assert.fail(String(error)),
+    undefined,
+    () => ({ calls: 1, limit: 3 }),
+    (state) => states.push(state),
+  );
+  await tool.execute(
+    "id",
+    { flagReadDetected: false, reason: "None.", evidence: [] } as never,
+    undefined,
+    undefined,
+  );
+  assert.equal(decisions.length, 1);
+  assert.deepEqual(states, []);
+});
+
+test("F11: the confirmation text is fixed", () => {
+  assert.equal(
+    createHash("sha256").update(READ_CONFIRMATION_REQUEST).digest("hex"),
+    "db2dfb641ac34d080f839ce1d06e246d2b77d1881319f46d0f1abbf17cc24e5c",
   );
 });

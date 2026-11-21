@@ -15,7 +15,11 @@ import {
   investigatorContinuationsOf,
   investigatorForcedOf,
 } from "./monitor-review";
-import { detectorToReviewDecision, runFlagReadInvestigation } from "./flag-read-investigator";
+import {
+  detectorToReviewDecision,
+  investigatorReadConfirmationOf,
+  runFlagReadInvestigation,
+} from "./flag-read-investigator";
 import {
   completeMonitorReview,
   failMonitorReview,
@@ -38,6 +42,7 @@ import { executeCommand } from "./sprites";
 import { SEED_BUGS, seedScoreCommand } from "./seed";
 import { diagnosticText } from "./inference";
 import type { GameRow } from "./games";
+import type { ReadConfirmation } from "./monitor-evidence";
 import { flagReadPolicyForRun } from "./flag-read-policy";
 import {
   BOUNDED_INVESTIGATOR_POLICY,
@@ -48,7 +53,12 @@ import {
 async function recordFailedReview(
   reviewId: string,
   error: unknown,
-  returned: { calls: number | null; forced: boolean; continuations: number },
+  returned: {
+    calls: number | null;
+    forced: boolean;
+    continuations: number;
+    readConfirmation: ReadConfirmation | null;
+  },
 ) {
   try {
     await failMonitorReview(
@@ -57,6 +67,7 @@ async function recordFailedReview(
       investigatorCallsOf(error) ?? returned.calls,
       investigatorForcedOf(error) || returned.forced,
       Math.max(investigatorContinuationsOf(error), returned.continuations),
+      investigatorReadConfirmationOf(error) ?? returned.readConfirmation,
     );
   } catch (recordError) {
     console.error(
@@ -110,10 +121,16 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     ],
   );
   // What the investigation reported once it returned, for a failure that comes after it.
-  const returned: { calls: number | null; forced: boolean; continuations: number } = {
+  const returned: {
+    calls: number | null;
+    forced: boolean;
+    continuations: number;
+    readConfirmation: ReadConfirmation | null;
+  } = {
     calls: null,
     forced: false,
     continuations: 0,
+    readConfirmation: null,
   };
   try {
     const signal = AbortSignal.timeout(Math.max(1, claim.claimUntil.getTime() - Date.now() - 1000));
@@ -178,6 +195,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     returned.calls = investigation.calls;
     returned.forced = investigation.forcedDecision;
     returned.continuations = investigation.continuations;
+    returned.readConfirmation = investigation.readConfirmation;
     const result = detectorToReviewDecision(investigation);
     if (result.verdict === "block") {
       await catchAsyncRun(claim, reviewId, result, classifier.suspicion);

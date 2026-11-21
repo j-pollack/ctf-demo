@@ -169,6 +169,7 @@ export async function runInvestigatorDriver<T>(
       recordFailure: (error: unknown) => void;
       finish: (value: T) => void;
       onInvalid: (error: unknown, toolCallId: string) => void;
+      requests: () => { calls: number; limit: number };
     }) => Promise<InvestigatorSetup> | InvestigatorSetup;
   },
 ): Promise<{
@@ -263,6 +264,7 @@ export async function runInvestigatorDriver<T>(
       recordFailure,
       finish,
       onInvalid,
+      requests: () => ({ calls, limit }),
     });
     if (failure) throw failure;
     const dispatch = agentStream(input.game, model, recordFailure, undefined, undefined, {

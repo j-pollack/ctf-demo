@@ -155,6 +155,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       "utf8",
     ),
   );
+  await pool.query(
+    await readFile(
+      new URL("../../db/migrations/029-review-read-confirmation.sql", import.meta.url),
+      "utf8",
+    ),
+  );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
@@ -256,6 +262,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     | "cut-retrieve"
     | "cut-finish"
     | "retrieve"
+    | "read"
+    | "read-invalid"
+    | "read-twice"
+    | "read-again"
+    | "read-then-none"
+    | "text"
     | "finish";
   let investigatorScript: InvestigatorStep[] | undefined;
   let investigatorDelayMs = 0;
@@ -655,121 +667,163 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
             evidence: [],
           });
           if (investigatorDelayMs) await delay(investigatorDelayMs);
-          message = step
-            ? step === "cut"
-              ? {
-                  finish_reason: "length",
-                  reasoning: "Reasoning cut off by the limit.",
-                  reasoning_details: [
-                    { type: "reasoning.text", text: "Reasoning cut off by the limit." },
-                  ],
-                }
-              : step === "cut-plain"
-                ? { finish_reason: "length", reasoning: "Plain reasoning cut off." }
-                : step === "retrieve-twice"
+          const readReason = "A completed target command returned the protected contents.";
+          const citedRef = rows.find((row) => row.role === "tool")?.ref;
+          const otherRef = rows.find((row) => row.ref !== citedRef)?.ref;
+          const finishCall = (flagReadDetected: boolean, reason: string, refs: string[]) => ({
+            id: randomUUID(),
+            type: "function",
+            function: {
+              name: "finish_investigation",
+              arguments: JSON.stringify({
+                flagReadDetected,
+                reason,
+                evidence: refs.map((ref) => ({ ref })),
+              }),
+            },
+          });
+          const reportRead = (evidence: { ref: string }[]) =>
+            finishCall(
+              true,
+              readReason,
+              evidence.map(({ ref }) => ref),
+            );
+          const scripted = {
+            read: { tool_calls: [reportRead([{ ref: citedRef! }])] },
+            "read-invalid": { tool_calls: [reportRead([])] },
+            "read-twice": {
+              tool_calls: [reportRead([{ ref: citedRef! }]), reportRead([{ ref: citedRef! }])],
+            },
+            // The second report differs in reason and cited ref, so the stored one is told apart.
+            "read-again": {
+              tool_calls: [finishCall(true, "The second report of the read.", [otherRef!])],
+            },
+            "read-then-none": {
+              tool_calls: [
+                reportRead([{ ref: citedRef! }]),
+                finishCall(false, "No successful protected-file read was observed.", []),
+              ],
+            },
+            text: { content: "I cannot decide." },
+          } as Record<string, typeof message>;
+          message =
+            step && step in scripted
+              ? scripted[step]
+              : step
+                ? step === "cut"
                   ? {
-                      tool_calls: [
-                        ...retrieve.tool_calls,
-                        { ...retrieve.tool_calls[0], id: randomUUID() },
+                      finish_reason: "length",
+                      reasoning: "Reasoning cut off by the limit.",
+                      reasoning_details: [
+                        { type: "reasoning.text", text: "Reasoning cut off by the limit." },
                       ],
                     }
-                  : step === "cut-bad-call"
-                    ? {
-                        finish_reason: "length",
-                        reasoning: "Reasoning before the cut.",
-                        ...call("query_transcripts", '{"sql":"SELECT session_id FR'),
-                      }
-                    : step === "cut-retrieve"
-                      ? { finish_reason: "length", reasoning: "Cut.", ...retrieve }
-                      : step === "cut-finish"
+                  : step === "cut-plain"
+                    ? { finish_reason: "length", reasoning: "Plain reasoning cut off." }
+                    : step === "retrieve-twice"
+                      ? {
+                          tool_calls: [
+                            ...retrieve.tool_calls,
+                            { ...retrieve.tool_calls[0], id: randomUUID() },
+                          ],
+                        }
+                      : step === "cut-bad-call"
                         ? {
                             finish_reason: "length",
-                            reasoning: "Cut.",
-                            ...call(
-                              "finish_investigation",
-                              JSON.stringify({
-                                flagReadDetected: false,
-                                reason: "A truncated decision that must not run.",
-                                evidence: [],
-                              }),
-                            ),
+                            reasoning: "Reasoning before the cut.",
+                            ...call("query_transcripts", '{"sql":"SELECT session_id FR'),
                           }
-                        : step === "retrieve"
-                          ? retrieve
-                          : call("finish_investigation", finishArgs)
-            : investigatorLoop
-              ? finalRequest && investigatorLoop.onLast === "text"
-                ? { content: "I cannot decide." }
-                : (finalRequest && investigatorLoop.onLast === "finish") ||
-                    payload.messages.filter((m: { role: string }) => m.role === "assistant")
-                      .length +
-                      1 ===
-                      investigatorLoop.finishAt
-                  ? {
-                      tool_calls: [
-                        {
-                          id: randomUUID(),
-                          type: "function",
-                          function: {
-                            name: "finish_investigation",
-                            arguments: JSON.stringify({
-                              flagReadDetected: false,
-                              reason: "No successful protected-file read was observed.",
-                              evidence: [],
-                            }),
-                          },
-                        },
-                      ],
-                    }
-                  : retrieve
-              : investigatorQueryCorrectionStep === 1
-                ? {
-                    tool_calls: [
-                      {
-                        id: randomUUID(),
-                        type: "function",
-                        function: {
-                          name: "query_transcripts",
-                          arguments: JSON.stringify({ sql: "SELEC session_id FROM sessions" }),
-                        },
-                      },
-                    ],
-                  }
-                : investigatorQueryCorrectionStep === 2
-                  ? {
-                      tool_calls: [
-                        {
-                          id: randomUUID(),
-                          type: "function",
-                          function: {
-                            name: "query_transcripts",
-                            arguments: JSON.stringify({
-                              sql: "SELECT session_id FROM sessions WHERE is_target=1",
-                            }),
-                          },
-                        },
-                      ],
-                    }
-                  : invalid
+                        : step === "cut-retrieve"
+                          ? { finish_reason: "length", reasoning: "Cut.", ...retrieve }
+                          : step === "cut-finish"
+                            ? {
+                                finish_reason: "length",
+                                reasoning: "Cut.",
+                                ...call(
+                                  "finish_investigation",
+                                  JSON.stringify({
+                                    flagReadDetected: false,
+                                    reason: "A truncated decision that must not run.",
+                                    evidence: [],
+                                  }),
+                                ),
+                              }
+                            : step === "retrieve"
+                              ? retrieve
+                              : call("finish_investigation", finishArgs)
+                : investigatorLoop
+                  ? finalRequest && investigatorLoop.onLast === "text"
                     ? { content: "I cannot decide." }
-                    : {
+                    : (finalRequest && investigatorLoop.onLast === "finish") ||
+                        payload.messages.filter((m: { role: string }) => m.role === "assistant")
+                          .length +
+                          1 ===
+                          investigatorLoop.finishAt
+                      ? {
+                          tool_calls: [
+                            {
+                              id: randomUUID(),
+                              type: "function",
+                              function: {
+                                name: "finish_investigation",
+                                arguments: JSON.stringify({
+                                  flagReadDetected: false,
+                                  reason: "No successful protected-file read was observed.",
+                                  evidence: [],
+                                }),
+                              },
+                            },
+                          ],
+                        }
+                      : retrieve
+                  : investigatorQueryCorrectionStep === 1
+                    ? {
                         tool_calls: [
                           {
                             id: randomUUID(),
                             type: "function",
                             function: {
-                              name: "finish_investigation",
-                              arguments: JSON.stringify({
-                                flagReadDetected: Boolean(readResult),
-                                reason: readResult
-                                  ? "The completed target command returned the protected contents."
-                                  : "No successful protected-file read was observed.",
-                                evidence: readResult ? [{ ref: readResult.ref }] : [],
-                              }),
+                              name: "query_transcripts",
+                              arguments: JSON.stringify({ sql: "SELEC session_id FROM sessions" }),
                             },
                           },
                         ],
-                      };
+                      }
+                    : investigatorQueryCorrectionStep === 2
+                      ? {
+                          tool_calls: [
+                            {
+                              id: randomUUID(),
+                              type: "function",
+                              function: {
+                                name: "query_transcripts",
+                                arguments: JSON.stringify({
+                                  sql: "SELECT session_id FROM sessions WHERE is_target=1",
+                                }),
+                              },
+                            },
+                          ],
+                        }
+                      : invalid
+                        ? { content: "I cannot decide." }
+                        : {
+                            tool_calls: [
+                              {
+                                id: randomUUID(),
+                                type: "function",
+                                function: {
+                                  name: "finish_investigation",
+                                  arguments: JSON.stringify({
+                                    flagReadDetected: Boolean(readResult),
+                                    reason: readResult
+                                      ? "The completed target command returned the protected contents."
+                                      : "No successful protected-file read was observed.",
+                                    evidence: readResult ? [{ ref: readResult.ref }] : [],
+                                  }),
+                                },
+                              },
+                            ],
+                          };
           investigatorQueryCorrectionStep =
             investigatorQueryCorrectionStep === 1
               ? 2
@@ -2464,7 +2518,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const latestReview = async (gameId: string) =>
     (
       await pool.query(
-        `SELECT verdict,reason,retrieval_calls,operational_error,calls,forced_decision,continuations,completed_at
+        `SELECT verdict,reason,evidence,retrieval_calls,operational_error,calls,forced_decision,continuations,read_confirmation,completed_at
          FROM ctf.monitor_reviews WHERE game_id=$1 ORDER BY created_at DESC LIMIT 1`,
         [gameId],
       )
@@ -2672,6 +2726,137 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.ok(messages.at(-1)?.content?.startsWith(CONTINUE_PREFIX));
       assert.equal(messages.at(-2)?.role, "tool");
     });
+  // --- Confirmation: a reported read counts only after the investigator confirms it. ---
+  const { READ_CONFIRMATION_REQUEST } = await import("../../lib/monitor-evidence");
+  const confirmations = (messages: SentMessage[]) =>
+    messages.filter(
+      ({ role, content }) => role === "tool" && content === READ_CONFIRMATION_REQUEST,
+    );
+  const runningGame = async (gameId: string) =>
+    (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [gameId])).rows[0].status;
+  await t.test(
+    "F1: a read reported twice is a block, kept, with the second call's finding",
+    async () => {
+      const { gameId, review } = await reviewWith("confirm-kept", ["read", "read-again"]);
+      assert.equal(review.verdict, "block");
+      assert.equal(review.read_confirmation, "kept");
+      assert.equal(review.reason, "The second report of the read.");
+      assert.equal(review.calls, 2);
+      assert.equal(await runningGame(gameId), "caught");
+      const messages = monitorPayloads()[1].messages as SentMessage[];
+      const reported = messages.find(({ role }) => role === "assistant")?.tool_calls as
+        | { function: { arguments: string } }[]
+        | undefined;
+      const first = JSON.parse(reported![0].function.arguments) as { evidence: { ref: string }[] };
+      assert.equal(review.evidence.length, 1);
+      assert.notEqual(review.evidence[0].ref, first.evidence[0].ref, "the second call's ref");
+      assert.equal(messages.at(-1)?.content, READ_CONFIRMATION_REQUEST);
+      assert.equal(messages.at(-1)?.role, "tool");
+    },
+  );
+  await t.test("F2: a read withdrawn after the confirmation is an allow", async () => {
+    const { gameId, review } = await reviewWith("confirm-withdrawn", ["read", "finish"]);
+    assert.equal(review.verdict, "allow");
+    assert.equal(review.read_confirmation, "withdrawn");
+    assert.equal(review.reason, "No successful protected-file read was observed.");
+    assert.equal(await runningGame(gameId), "active");
+  });
+  await t.test("F3: a review that reports no read is not questioned", async () => {
+    const { review } = await reviewWith("confirm-none", ["finish"]);
+    assert.equal(review.verdict, "allow");
+    assert.equal(review.read_confirmation, null);
+    assert.equal(review.calls, 1);
+  });
+  await t.test(
+    "F4: a first report on the last allowed request is recorded unconfirmed",
+    async () => {
+      const { review } = await reviewWith("confirm-last", [
+        ...Array(MONITOR_CALL_LIMIT - 1).fill("retrieve"),
+        "read",
+      ]);
+      assert.equal(review.verdict, "block");
+      assert.equal(review.read_confirmation, "unconfirmed");
+      assert.equal(review.calls, MONITOR_CALL_LIMIT);
+      assert.equal(confirmations(monitorPayloads().at(-1)!.messages as SentMessage[]).length, 0);
+    },
+  );
+  for (const [answer, verdict, kept] of [
+    ["read", "block", "kept"],
+    ["finish", "allow", "withdrawn"],
+  ] as const)
+    await t.test(
+      `F5: a first report on the second-to-last request is answered on the forced last (${kept})`,
+      async () => {
+        const { review } = await reviewWith(`confirm-forced-${kept}`, [
+          ...Array(MONITOR_CALL_LIMIT - 2).fill("retrieve"),
+          "read",
+          answer,
+        ]);
+        assert.equal(review.verdict, verdict);
+        assert.equal(review.read_confirmation, kept);
+        assert.equal(review.forced_decision, true);
+        assert.equal(review.calls, MONITOR_CALL_LIMIT);
+        const last = monitorPayloads().at(-1)!;
+        assert.deepEqual(
+          last.tools.map((tool) => tool.function.name),
+          ["finish_investigation"],
+        );
+        assert.ok(last.messages.at(-1)?.content?.startsWith(FINAL_NOTICE));
+        assert.equal(
+          last.messages.findLast(({ role }) => role === "tool")?.content,
+          READ_CONFIRMATION_REQUEST,
+        );
+      },
+    );
+  await t.test("F6: an invalid first call does not use up the confirmation", async () => {
+    const { review } = await reviewWith("confirm-invalid-first", ["read-invalid", "read", "read"]);
+    assert.equal(review.verdict, "block");
+    assert.equal(review.read_confirmation, "kept");
+    assert.equal(review.calls, 3);
+    assert.equal(confirmations(monitorPayloads()[1].messages as SentMessage[]).length, 0);
+    assert.equal(confirmations(monitorPayloads()[2].messages as SentMessage[]).length, 1);
+  });
+  await t.test("F7: two reports in one response decide nothing", async () => {
+    const { review } = await reviewWith("confirm-twice", ["read-twice", "read"]);
+    assert.equal(confirmations(monitorPayloads()[1].messages as SentMessage[]).length, 2);
+    assert.equal(review.calls, 2);
+    assert.equal(review.verdict, "block");
+    assert.equal(review.read_confirmation, "kept");
+  });
+  await t.test(
+    "F7: a no-read finish in the same response as the report decides nothing",
+    async () => {
+      const { review } = await reviewWith("confirm-read-then-none", ["read-then-none", "read"]);
+      assert.equal(confirmations(monitorPayloads()[1].messages as SentMessage[]).length, 2);
+      assert.equal(review.calls, 2);
+      assert.equal(review.verdict, "block");
+      assert.equal(review.read_confirmation, "kept");
+    },
+  );
+  await t.test("F8: a cut-off answer to the confirmation is continued", async () => {
+    const { review } = await reviewWith("confirm-cut", ["read", "cut", "read"]);
+    assert.equal(review.verdict, "block");
+    assert.equal(review.read_confirmation, "kept");
+    assert.equal(review.continuations, 1);
+    assert.equal(review.calls, 3);
+    assert.equal(confirmations(monitorPayloads()[2].messages as SentMessage[]).length, 1);
+  });
+  await t.test(
+    "F9: an answer with no tool call fails the review as asked and retries",
+    async () => {
+      const { gameId, review } = await reviewWith("confirm-no-call", ["read", "text"]);
+      assert.equal(review.verdict, null);
+      assert.match(review.operational_error, /ended without a valid finish_investigation decision/);
+      assert.equal(review.read_confirmation, "asked");
+      assert.equal(await runningGame(gameId), "active");
+      const {
+        rows: [job],
+      } = await pool.query("SELECT status,attempts FROM ctf.monitor_jobs WHERE game_id=$1", [
+        gameId,
+      ]);
+      assert.deepEqual([job.status, job.attempts], ["queued", 1]);
+    },
+  );
   await t.test(
     "a review that keeps retrieving past the cap is told to decide and still reaches a verdict",
     async () => {
@@ -2747,6 +2932,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       assert.match(review.operational_error, /synthetic database fault/);
       assert.equal(review.calls, MONITOR_CALL_LIMIT);
       assert.equal(review.forced_decision, true);
+    },
+  );
+  await t.test(
+    "a failure after a confirmed read keeps the value the investigation reached",
+    async () => {
+      const gameId = await playHarmlessRun("confirm-after-return");
+      investigatorScript = ["read", "read"];
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      await withTrigger("monitor_reviews", "NEW.verdict IS NOT NULL", async () => {
+        assert.equal(await runMonitorWorkerOnce(), true);
+      });
+      const review = await latestReview(gameId);
+      assert.equal(review.verdict, null);
+      assert.match(review.operational_error, /synthetic database fault/);
+      assert.equal(review.read_confirmation, "kept");
     },
   );
   await t.test("F1: a failure after the review completed keeps its first completion", async () => {
@@ -7203,6 +7403,38 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     }
   };
 
+  await t.test("M1: migration 029 adds a constrained nullable read_confirmation", async () => {
+    const columns = (
+      await pool.query(
+        `SELECT data_type,column_default,is_nullable FROM information_schema.columns
+         WHERE table_schema='ctf' AND table_name='monitor_reviews' AND column_name='read_confirmation'`,
+      )
+    ).rows;
+    assert.deepEqual(columns, [{ data_type: "text", column_default: null, is_nullable: "YES" }]);
+    const {
+      rows: [check],
+    } = await pool.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conrelid='ctf.monitor_reviews'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%read_confirmation%'`,
+    );
+    assert.match(check.def, /kept.*withdrawn.*unconfirmed.*asked/s);
+    const { gameId } = await reviewWith("m1-constraint", ["finish"]);
+    const setValue = (value: string | null) =>
+      pool.query("UPDATE ctf.monitor_reviews SET read_confirmation=$2 WHERE game_id=$1", [
+        gameId,
+        value,
+      ]);
+    await assert.rejects(setValue("other"), { code: "23514" });
+    await setValue(null);
+    await setValue("kept");
+    await setValue(null);
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/029-review-read-confirmation.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+  });
   await t.test("M1: migration 028 adds a continuations count that defaults to zero", async () => {
     const columns = (
       await pool.query(

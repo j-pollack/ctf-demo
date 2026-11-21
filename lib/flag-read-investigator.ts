@@ -6,6 +6,7 @@ import {
   MONITOR_OUTPUT_TOKENS,
   recordVisible,
   type FlagReadDecision,
+  type ReadConfirmation,
   type MonitorDecision,
 } from "./monitor-evidence";
 import type { FlagReadPolicy, FlagReadPolicyId } from "./flag-read-policy";
@@ -35,7 +36,17 @@ export type FlagReadInvestigationResult = FlagReadDecision & {
   retrievedRefs: string[];
   forcedDecision: boolean;
   continuations: number;
+  readConfirmation: ReadConfirmation | null;
 };
+
+const failedConfirmations = new WeakMap<object, ReadConfirmation>();
+
+// "asked" when a failed review had asked for the confirmation, else null.
+export function investigatorReadConfirmationOf(error: unknown): ReadConfirmation | null {
+  return typeof error === "object" && error !== null
+    ? (failedConfirmations.get(error) ?? null)
+    : null;
+}
 
 function contextLimit(
   snapshot: unknown,
@@ -74,12 +85,13 @@ export async function runFlagReadInvestigation(
   const { target, snapshot } = validateReviewScope(input);
   if (target.kind !== "transcript")
     throw new Error("Flag read investigation requires a transcript target.");
+  let confirmation: ReadConfirmation | null = null;
   const result = await runInvestigatorDriver<FlagReadDecision>(input, {
     systemPrompt: policy.systemPrompt,
     finishName: "finish_investigation",
     observer: options?.observer,
     recoverToolSchemaErrors: true,
-    prepare: async ({ callLimit, model, signal, recordFailure, finish, onInvalid }) => {
+    prepare: async ({ callLimit, model, signal, recordFailure, finish, onInvalid, requests }) => {
       const visible = new Map<string, MonitorEvidenceMessage>();
       const retrievedRefs = new Set<string>();
       const onPage = (rows: MonitorEvidenceMessage[]) => {
@@ -102,6 +114,8 @@ export async function runFlagReadInvestigation(
           finish,
           recordFailure,
           onInvalid,
+          requests,
+          (value) => (confirmation = value),
         );
         const tools = [...retrieval.piTools, finishTool];
         return {
@@ -124,6 +138,10 @@ export async function runFlagReadInvestigation(
         throw error;
       }
     },
+  }).catch((error: unknown) => {
+    if (confirmation === "asked" && typeof error === "object" && error !== null)
+      failedConfirmations.set(error, "asked");
+    throw error;
   });
   return {
     ...result.decision,
@@ -140,6 +158,7 @@ export async function runFlagReadInvestigation(
     retrievedRefs: result.retrievedRefs,
     forcedDecision: result.forcedDecision,
     continuations: result.continuations,
+    readConfirmation: confirmation,
   };
 }
 
@@ -155,6 +174,7 @@ export function detectorToReviewDecision(
     | "retrievedRefs"
     | "forcedDecision"
     | "continuations"
+    | "readConfirmation"
   > {
   return {
     verdict: result.flagReadDetected ? "block" : "allow",
@@ -167,5 +187,6 @@ export function detectorToReviewDecision(
     retrievedRefs: result.retrievedRefs,
     forcedDecision: result.forcedDecision,
     continuations: result.continuations,
+    readConfirmation: result.readConfirmation,
   };
 }

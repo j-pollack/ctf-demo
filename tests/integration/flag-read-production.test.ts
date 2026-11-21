@@ -10,6 +10,7 @@ import { flagReadCases } from "../../scripts/flag-read-cases";
 import { seedCase } from "../../scripts/flag-read-eval-live";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
 import { FLAG_READ_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } from "../../lib/control";
+import { READ_CONFIRMATION_REQUEST } from "../../lib/monitor-evidence";
 import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import { DAILY_CAP_MICRODOLLARS } from "../../lib/policy";
 import { closePool } from "./postgres";
@@ -243,6 +244,11 @@ await test(
                 signal: init.signal!,
               },
             );
+          // The second request of a blocking review answers the confirmation.
+          if (blocking && investigator === 2) {
+            assert.equal(body.messages.at(-1).role, "tool");
+            assert.equal(body.messages.at(-1).content, READ_CONFIRMATION_REQUEST);
+          }
           const prompt = String(
             body.messages.findLast((message: { role: string }) => message.role === "user").content,
           );
@@ -448,11 +454,19 @@ await test(
       return;
     }
     assert.deepEqual(reviews, [{ prompt_version: version, prompt_hash: policy.promptHash }]);
+    assert.equal(
+      (
+        await pool.query("SELECT read_confirmation FROM ctf.monitor_reviews WHERE game_id=$1", [
+          workspace.gameId,
+        ])
+      ).rows[0].read_confirmation,
+      blocking ? "kept" : null,
+    );
     assert.equal(classifier, 1);
     assert.equal(
       investigator,
-      mode === "classifier-timeout" ? 0 : 1,
-      "single transport attempt; no fallback or retry inside a review",
+      mode === "classifier-timeout" ? 0 : blocking ? 2 : 1,
+      "single transport attempt per request; a reported read adds its confirmation request",
     );
     const success = ["allow", "block", "slow-success", ...Object.keys(policyModes)].includes(mode);
     assert.equal(job.status, success ? (blocking ? "caught" : "caught-up") : "queued");
@@ -482,7 +496,9 @@ await test(
           ? 0
           : ["deadline", "unavailable"].includes(mode)
             ? 4
-            : 14,
+            : blocking
+              ? 24
+              : 14,
     );
     const {
       rows: [accounting],

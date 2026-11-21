@@ -6,7 +6,7 @@ import {
   createInvestigationTraceRecorder,
   type InvestigationObserver,
 } from "../lib/investigation-trace";
-import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
+import type { ReadConfirmation, ValidatedMonitorEvidence } from "../lib/monitor-evidence";
 import type { FlagReadPolicy, FlagReadPolicyId } from "../lib/flag-read-policy";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
 import {
@@ -190,6 +190,7 @@ async function reviewCase(
   let calls: number | undefined;
   let forcedDecision: boolean | undefined;
   let continuations = 0;
+  let readConfirmation: ReadConfirmation | null = null;
   let monitorVersion = selectedPolicy.monitorVersion;
   let promptHash = selectedPolicy.promptHash;
   let policyId: FlagReadPolicyId = selectedPolicy.id;
@@ -268,6 +269,7 @@ async function reviewCase(
     calls = result.calls;
     forcedDecision = result.forcedDecision;
     continuations = result.continuations;
+    readConfirmation = result.readConfirmation;
     monitorVersion = result.monitorVersion;
     promptHash = result.promptHash;
     policyId = result.policyId;
@@ -286,11 +288,14 @@ async function reviewCase(
       "Flag-read investigation failed.";
     calls = modules.review.investigatorCallsOf(error) ?? undefined;
     continuations = modules.review.investigatorContinuationsOf(error);
+    readConfirmation =
+      modules.investigator.investigatorReadConfirmationOf(error) ?? readConfirmation;
     await modules.sessions.completeMonitorReview(reviewId, {
       operationalError,
       latencyMs: Date.now() - started,
       calls,
       continuations,
+      readConfirmation,
     });
     await modules.jobs.finishMonitorJob(claim, { kind: "error", reason: operationalError });
     // This one-pass evaluator records the retryable error and keeps later cases independent.
@@ -352,6 +357,7 @@ async function reviewCase(
     retrievalCalls,
     calls,
     continuations,
+    readConfirmation,
     ...(forcedDecision === undefined ? {} : { forcedDecision }),
     monitorVersion,
     promptHash,

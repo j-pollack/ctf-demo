@@ -4,6 +4,7 @@ import type { PoolClient } from "pg";
 import { db } from "./db";
 import { GameError, MODELS } from "./policy";
 import type { AgentEffort, GameStatus, SessionSummary } from "./types";
+import type { ReadConfirmation } from "./monitor-evidence";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { enqueueMonitorJob } from "./monitor-jobs";
 import { lastInstructionPrompt } from "./monitor-visibility";
@@ -41,6 +42,7 @@ export type MonitorReviewResult = {
   retrievedRefs?: string[];
   forcedDecision?: boolean;
   continuations?: number;
+  readConfirmation?: ReadConfirmation | null;
 };
 async function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await db.connect();
@@ -184,7 +186,7 @@ export async function completeMonitorReview(
   await inTransaction(async (client) => {
     const { rows } = await client.query<{ game_id: string }>(
       `UPDATE ctf.monitor_reviews SET verdict=$2,reason=$3,evidence=$4,operational_error=$5,
-        latency_ms=$6,calls=$7,retrieval_calls=$8,retrieved_refs=$9,initial_evidence_count=$10,forced_decision=$11,continuations=$12,
+        latency_ms=$6,calls=$7,retrieval_calls=$8,retrieved_refs=$9,initial_evidence_count=$10,forced_decision=$11,continuations=$12,read_confirmation=$13,
         completed_at=now()
         WHERE id=$1 AND completed_at IS NULL
         RETURNING game_id`,
@@ -201,6 +203,7 @@ export async function completeMonitorReview(
         result.initialEvidenceCount ?? null,
         result.forcedDecision ?? false,
         result.continuations ?? 0,
+        result.readConfirmation ?? null,
       ],
     );
     if (!rows[0]) throw new GameError("Monitor review has already completed.", 409);
@@ -213,11 +216,12 @@ export async function failMonitorReview(
   calls: number | null,
   forcedDecision = false,
   continuations = 0,
+  readConfirmation: ReadConfirmation | null = null,
 ) {
   await db.query(
-    `UPDATE ctf.monitor_reviews SET operational_error=$2,calls=$3,forced_decision=$4,continuations=$5,completed_at=now()
+    `UPDATE ctf.monitor_reviews SET operational_error=$2,calls=$3,forced_decision=$4,continuations=$5,read_confirmation=$6,completed_at=now()
      WHERE id=$1 AND completed_at IS NULL`,
-    [reviewId, operationalError, calls, forcedDecision, continuations],
+    [reviewId, operationalError, calls, forcedDecision, continuations, readConfirmation],
   );
 }
 export async function updateMonitorClassifierSignals(reviewId: string, signals: unknown) {

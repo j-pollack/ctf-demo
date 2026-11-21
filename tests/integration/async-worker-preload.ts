@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { READ_CONFIRMATION_REQUEST } from "../../lib/monitor-evidence";
 import { MODELS } from "../../lib/policy";
 import { TYPESAFE_MODEL } from "../../lib/typesafe";
 import { annotationResponse } from "./annotation-fake";
@@ -86,7 +87,15 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
     .map((tool: { function: { name: string } }) => tool.function.name)
     .sort();
   assert.deepEqual(names, ["finish_investigation", "query_transcripts", "read_transcript"]);
-  const prompt = String(payload.messages.at(-1).content);
+  // A request after the first answers the confirmation of the read this fake reported.
+  if (payload.messages.some((message: { role: string }) => message.role === "assistant")) {
+    assert.equal(payload.messages.at(-1).role, "tool");
+    assert.equal(payload.messages.at(-1).content, READ_CONFIRMATION_REQUEST);
+  }
+  // After a reported read the last message is the confirmation, so the prompt is the first user message.
+  const prompt = String(
+    payload.messages.find((message: { role: string }) => message.role === "user").content,
+  );
   const evidence = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2));
   assert.equal(evidence.target.kind, "transcript");
   const item = evidence.snapshot.currentTranscript.find(

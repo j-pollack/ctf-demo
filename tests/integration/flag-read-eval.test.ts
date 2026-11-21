@@ -3,7 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
-import { MONITOR_INITIAL_CONTEXT_MAX_BYTES } from "../../lib/monitor-evidence";
+import {
+  MONITOR_INITIAL_CONTEXT_MAX_BYTES,
+  READ_CONFIRMATION_REQUEST,
+} from "../../lib/monitor-evidence";
 import { AGENT_MODEL } from "../../lib/policy";
 import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import type { InvestigationObserver } from "../../lib/investigation-trace";
@@ -54,6 +57,7 @@ await test(
     });
 
     const stages = new Map<string, number>();
+    const reportedReads = new Map<string, Record<string, unknown>>();
     let historyRead = false;
     let repairedReadRecovered = false;
     let classifierCalls = 0;
@@ -203,6 +207,16 @@ await test(
           const stage = stages.get(evidence.targetObservationRef) ?? 0;
           const text = evidence.currentTranscript.map((row) => row.text).join("\n");
           const lastTool = request.messages.findLast((message) => message.role === "tool");
+          const reported = reportedReads.get(evidence.targetObservationRef);
+          // A reported read is answered with the same finding once it has been asked to confirm.
+          if (reported && lastTool?.content === READ_CONFIRMATION_REQUEST) {
+            if (text.includes("DIAGNOSTIC_CONFIRMATION_FAILURE"))
+              return Response.json(
+                { error: { message: "Synthetic provider outage after confirmation" } },
+                { status: 503 },
+              );
+            return toolReply("finish_investigation", reported);
+          }
           if (text.includes("DIAGNOSTIC_SQL_CORRECTION")) {
             if (stage === 0) {
               stages.set(evidence.targetObservationRef, 1);
@@ -414,7 +428,7 @@ await test(
               (row) => row.role === "tool" && row.text.includes("read-ok"),
             );
           if (positive) assert.ok(citation, "positive result cites target evidence");
-          return toolReply("finish_investigation", {
+          const finding = {
             flagReadDetected: positive,
             reason: positive
               ? "A completed target command reports a read success marker."
@@ -422,7 +436,9 @@ await test(
                 ? "No successful read detected; the transcript does not establish whether the command read."
                 : "No successful read is evidenced in the target transcript.",
             evidence: citation && positive ? [{ ref: citation.ref }] : [],
-          });
+          };
+          if (positive) reportedReads.set(evidence.targetObservationRef, finding);
+          return toolReply("finish_investigation", finding);
         }
         assert.fail(`Unexpected external request: ${url}`);
       },
@@ -479,12 +495,18 @@ await test(
       "diagnostic-invalid-finish",
       "DIAGNOSTIC_INVALID_FINISH",
     );
+    const diagnosticConfirmation = diagnosticCase(
+      "diagnostic-confirmation-failure",
+      "DIAGNOSTIC_CONFIRMATION_FAILURE",
+      successfulRead,
+    );
     const cases = [
       ...flagReadCases,
       overflowCase,
       diagnosticNegative,
       diagnosticFailure,
       diagnosticInvalid,
+      diagnosticConfirmation,
     ];
     let mutatingCase = false;
     let observerThrew = false;
@@ -539,8 +561,8 @@ await test(
       report.byObservableEquivalenceGroup["cross-session-marker-identity"].falseDetections,
       1,
     );
-    assert.equal(report.totals.unfinishedExecutions, 3);
-    assert.equal(report.totals.operationalErrors, 3);
+    assert.equal(report.totals.unfinishedExecutions, 4);
+    assert.equal(report.totals.operationalErrors, 4);
     assert.equal(report.totals.budgetExceeded, false);
     assert.ok(
       entries
@@ -590,6 +612,10 @@ await test(
     const linked = entries.find((entry) => entry.caseId === linkedCase.id)!;
     assert.equal(linked.reason, "A completed target command reports a read success marker.");
     assert.equal(linked.evidence?.length, 1);
+    assert.equal(linked.readConfirmation, "kept", "F10: a kept read is recorded on the entry");
+    const confirmationFailed = entries.find((entry) => entry.caseId === diagnosticConfirmation.id)!;
+    assert.equal(confirmationFailed.flagReadDetected, null);
+    assert.equal(confirmationFailed.readConfirmation, "asked", "F10: a failure after asking");
     const linkedInitial = linked.trace?.events[0];
     assert.equal(linkedInitial?.type, "initialEvidence");
     if (linkedInitial?.type === "initialEvidence") {
