@@ -8,6 +8,7 @@ import { enqueueMonitorJob } from "./monitor-jobs";
 import { GameError } from "./policy";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { destroyEnvironment } from "./sprites";
+import { FLAG_OUTPUT_CATCH_TEXT, type GameEvent } from "./types";
 import { hashSubmissionToken, promoteHttpSubmission } from "./flag-submissions";
 
 export type CommandDispatch = { id: string; generation: number; submissionToken?: string };
@@ -155,90 +156,150 @@ export async function markCommandReturned(operationId: string) {
   );
 }
 
-export async function completeAsyncCommand(input: {
+type CommandResultInput = {
   dispatchId: string;
   gameId: string;
   sessionId: string;
   messages: Message[];
   outcome: "completed" | "interrupted" | "unknown";
   output: string;
-}) {
+};
+
+// Stores a command's result on its operation, session and events, in the caller's transaction. The
+// caller holds the run row.
+async function storeCommandResult(client: PoolClient, input: CommandResultInput) {
+  const {
+    rows: [operation],
+  } = await client.query<{ status: string; output: string | null; tool_call_id: string }>(
+    `SELECT status,output,tool_call_id FROM ctf.sprite_operations WHERE id=$1 AND game_id=$2
+     AND session_id=$3 AND kind='command' FOR UPDATE`,
+    [input.dispatchId, input.gameId, input.sessionId],
+  );
+  const resolvingUnknown = operation?.status === "unknown" && input.outcome === "completed";
+  if (
+    !operation ||
+    (operation.output !== null && !resolvingUnknown) ||
+    (!["running", "interrupted"].includes(operation.status) && !resolvingUnknown)
+  )
+    throw new GameError("Command dispatch was not found.", 409);
+  const {
+    rows: [session],
+  } = await client.query<{ messages: Message[] }>(
+    "SELECT messages FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE",
+    [input.gameId, input.sessionId],
+  );
+  if (!session) throw new GameError("Session not found.", 404);
+  const messages = mergeCommandResult(
+    session.messages,
+    input.messages,
+    operation.tool_call_id,
+    input.output,
+  );
+  const {
+    rows: [revision],
+  } = await client.query<{ observation_revision: string }>(
+    `UPDATE ctf.games SET observation_revision=observation_revision+1,updated_at=now()
+     WHERE id=$1 RETURNING observation_revision`,
+    [input.gameId],
+  );
+  await client.query(
+    "UPDATE ctf.agent_sessions SET messages=$3,updated_at=now() WHERE game_id=$1 AND id=$2",
+    [input.gameId, input.sessionId, JSON.stringify(messages)],
+  );
+  await client.query(
+    `UPDATE ctf.sprite_operations SET status=$2,output=$3,completed_at=now()
+     WHERE id=$1`,
+    [input.dispatchId, input.outcome, input.output],
+  );
+  const {
+    rows: [event],
+  } = await client.query<{ id: string; data: { kind: "tool"; text: string; turn: number } }>(
+    `INSERT INTO ctf.events(game_id,session_id,data)
+     VALUES($1,$2,jsonb_build_object('kind','tool','text',$3::text,'turn',
+       (SELECT turns FROM ctf.games WHERE id=$1))) RETURNING id,data`,
+    [input.gameId, input.sessionId, input.output],
+  );
+  const evidence = await persistTranscriptEvidence(client, {
+    gameId: input.gameId,
+    sessionId: input.sessionId,
+    runRevision: Number(revision.observation_revision),
+    messages,
+  });
+  return { ...evidence, event: { ...event.data, id: Number(event.id) } };
+}
+
+export async function completeAsyncCommand(input: CommandResultInput) {
+  return transaction(async (client) => {
+    const {
+      rows: [run],
+    } = await client.query<{ observation_revision: string; monitor_mode: string }>(
+      "SELECT observation_revision,monitor_mode FROM ctf.games WHERE id=$1 FOR UPDATE",
+      [input.gameId],
+    );
+    if (!run || run.monitor_mode !== "async") throw new GameError("Run not found.", 404);
+    const stored = await storeCommandResult(client, input);
+    if (stored.changed)
+      await enqueueMonitorJob(client, {
+        gameId: input.gameId,
+        sessionId: input.sessionId,
+        epoch: stored.epoch,
+        version: stored.version,
+      });
+    await promoteHttpSubmission(client, input.gameId);
+    return stored;
+  });
+}
+
+// Ends the run for a command whose output held the flag, in the transaction that stores the result.
+// Queues no review and promotes no submission. Changes nothing unless the response still holds the
+// run, so a catch that lost a race is `stale`. A lost lease does not matter: the generation change stops
+// any later holder, as for every catch. A submission receipt does not make it stale.
+export async function catchFlagOutput(
+  input: Omit<CommandResultInput, "outcome"> & {
+    toolCallId: string;
+    generation: number;
+  },
+): Promise<{ status: "stale" } | { status: "caught"; events: GameEvent[] }> {
   return transaction(async (client) => {
     const {
       rows: [run],
     } = await client.query<{
-      observation_revision: string;
       monitor_mode: string;
-    }>("SELECT observation_revision,monitor_mode FROM ctf.games WHERE id=$1 FOR UPDATE", [
-      input.gameId,
-    ]);
-    if (!run || run.monitor_mode !== "async") throw new GameError("Run not found.", 404);
-    const {
-      rows: [operation],
-    } = await client.query<{ status: string; output: string | null; tool_call_id: string }>(
-      `SELECT status,output,tool_call_id FROM ctf.sprite_operations WHERE id=$1 AND game_id=$2
-       AND session_id=$3 AND kind='command' FOR UPDATE`,
-      [input.dispatchId, input.gameId, input.sessionId],
-    );
-    const resolvingUnknown = operation?.status === "unknown" && input.outcome === "completed";
-    if (
-      !operation ||
-      (operation.output !== null && !resolvingUnknown) ||
-      (!["running", "interrupted"].includes(operation.status) && !resolvingUnknown)
-    )
-      throw new GameError("Command dispatch was not found.", 409);
-    const {
-      rows: [session],
-    } = await client.query<{ messages: Message[] }>(
-      "SELECT messages FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE",
-      [input.gameId, input.sessionId],
-    );
-    if (!session) throw new GameError("Session not found.", 404);
-    const messages = mergeCommandResult(
-      session.messages,
-      input.messages,
-      operation.tool_call_id,
-      input.output,
-    );
-    const {
-      rows: [revision],
-    } = await client.query<{ observation_revision: string }>(
-      `UPDATE ctf.games SET observation_revision=observation_revision+1,updated_at=now()
-       WHERE id=$1 RETURNING observation_revision`,
+      status: string;
+      execution_generation: string;
+      turns: number;
+    }>(
+      "SELECT monitor_mode,status,execution_generation,turns FROM ctf.games WHERE id=$1 FOR UPDATE",
       [input.gameId],
     );
+    if (!run || run.monitor_mode !== "async") throw new GameError("Run not found.", 404);
+    if (run.status !== "active" || Number(run.execution_generation) !== input.generation)
+      return { status: "stale" as const };
     await client.query(
-      "UPDATE ctf.agent_sessions SET messages=$3,updated_at=now() WHERE game_id=$1 AND id=$2",
-      [input.gameId, input.sessionId, JSON.stringify(messages)],
-    );
-    await client.query(
-      `UPDATE ctf.sprite_operations SET status=$2,output=$3,completed_at=now()
+      `UPDATE ctf.games SET status='caught',blocks=blocks+1,
+       execution_generation=execution_generation+1,state_revision=state_revision+1,updated_at=now()
        WHERE id=$1`,
-      [input.dispatchId, input.outcome, input.output],
+      [input.gameId],
     );
+    const stored = await storeCommandResult(client, { ...input, outcome: "completed" });
+    const data: Omit<GameEvent, "id"> = {
+      kind: "monitor",
+      text: FLAG_OUTPUT_CATCH_TEXT,
+      decision: "block",
+      cause: "flag_output",
+      toolCallId: input.toolCallId,
+      turn: run.turns,
+    };
     const {
-      rows: [event],
-    } = await client.query<{ id: string; data: { kind: "tool"; text: string; turn: number } }>(
-      `INSERT INTO ctf.events(game_id,session_id,data)
-       VALUES($1,$2,jsonb_build_object('kind','tool','text',$3::text,'turn',
-         (SELECT turns FROM ctf.games WHERE id=$1))) RETURNING id,data`,
-      [input.gameId, input.sessionId, input.output],
+      rows: [monitor],
+    } = await client.query<{ id: string }>(
+      "INSERT INTO ctf.events(game_id,session_id,data) VALUES($1,$2,$3) RETURNING id",
+      [input.gameId, input.sessionId, JSON.stringify(data)],
     );
-    const evidence = await persistTranscriptEvidence(client, {
-      gameId: input.gameId,
-      sessionId: input.sessionId,
-      runRevision: Number(revision.observation_revision),
-      messages,
-    });
-    if (evidence.changed)
-      await enqueueMonitorJob(client, {
-        gameId: input.gameId,
-        sessionId: input.sessionId,
-        epoch: evidence.epoch,
-        version: evidence.version,
-      });
-    await promoteHttpSubmission(client, input.gameId);
-    return { ...evidence, event: { ...event.data, id: Number(event.id) } };
+    return {
+      status: "caught" as const,
+      events: [stored.event, { ...data, id: Number(monitor.id) }],
+    };
   });
 }
 

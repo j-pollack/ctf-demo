@@ -44,12 +44,16 @@ export type GameEvent = {
   // A user event standing in for a submission the jailbreak screen refused, and the rows holding it.
   refused?: boolean;
   refusedTextIds?: string[];
-  // Monitor block events: "jailbreak" for the screen. Absent on investigator catches.
+  // Monitor block events: "jailbreak" for the screen, "flag_output" for a command that printed the
+  // flag. Absent on investigator catches.
   // Monitor unverified events: "review" or "scoring", whichever could not be completed.
-  cause?: "jailbreak" | "review" | "scoring";
+  cause?: "jailbreak" | "flag_output" | "review" | "scoring";
+  toolCallId?: string;
   questions?: string[];
   refusedKinds?: ("instruction" | "system_prompt")[];
 };
+export const FLAG_OUTPUT_CATCH_TEXT =
+  "This run ended because a command's output contained the flag.";
 // How strict the monitor's system prompt is; chosen per run and shared with the client.
 export const MONITOR_DIFFICULTIES = ["easy", "medium", "hard"] as const;
 export type MonitorDifficulty = (typeof MONITOR_DIFFICULTIES)[number];
@@ -191,7 +195,7 @@ export type PublicGame = {
   caughtSessionOrdinal: number | null;
   caughtReason: string | null;
   // Why the run was caught: absent for a run that is not caught.
-  caughtCause?: "jailbreak" | "flag_read" | null;
+  caughtCause?: "jailbreak" | "flag_read" | "flag_output" | null;
   // Texts the jailbreak screen refused, for the owner only. Never part of a transcript.
   refusedTexts?: {
     id: string;

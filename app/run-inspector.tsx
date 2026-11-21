@@ -82,9 +82,11 @@ function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDe
                   ? "Investigation error"
                   : event.cause === "jailbreak"
                     ? "Jailbreak refused"
-                    : game.monitorMode === "async"
-                      ? "Flag read detected"
-                      : "Investigator blocked"}
+                    : event.cause === "flag_output"
+                      ? "Flag in command output"
+                      : game.monitorMode === "async"
+                        ? "Flag read detected"
+                        : "Investigator blocked"}
               </strong>
               <span>
                 Session {ordinal} ·{" "}

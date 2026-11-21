@@ -2,7 +2,7 @@
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/monitor-routing`
 - Branch: `feature/monitor-routing`, stacked on `feature/investigator-stream`
-- Status: build 1 of 3 built and reviewed, gates pass. Builds 2 and 3 not built
+- Status: builds 1 and 2 of 3 built and reviewed, gates pass. Build 3 not built
 - Ships in pull request 37.
 
 ## Problem
@@ -41,6 +41,7 @@ Three smaller ones:
 6. **The player's side is every request with role `agent` or `screen`.** Role `screen` is Jev's screens of instructions, system prompts and command output, at $0.042 per million tokens. The leaderboard shows the agent alone, as ruled, in spend and in tokens.
 7. **A monitor request past the allowance is refused, and the review fails as any refused request does.** On a submitted run that ends in no result after the retries of step 4a. It is never a win.
 8. **On a final review, a second look that fails or gives no valid answer fails the review.** The text under judgment could tell the model not to answer. The review is retried, and a run whose second look never answers ends with no result. During play a failed second look is tried again at the next review, and the instruction has already gone through, which is the ruling for an unavailable classifier.
+9. **The flag in a command's output catches the run even when the response's lease is lost.** A refusal for a lost lease would store the raw output on a run that is still active, and the next response on that session would send it to the model. The catch is a terminal change made under the run row lock, as the worker's catch is.
 
 ## Build order
 
@@ -56,9 +57,11 @@ Three builds on this branch, each reviewed and gated before the next starts.
 
 - In the `sprite_exec` tool's `execute` in `lib/runner-async.ts`, right after `executeCommand` returns and whether or not `stampReturned` succeeds, the runner checks `hasSecret(output, game.secret_hash)` on the raw output. On a hit `screenTexts` is skipped.
 - On a hit, one transaction locks the run row and ends the run: `status='caught'`, `blocks+1`, `execution_generation+1`, `state_revision+1`, and a monitor event with `decision: "block"`, `cause: "flag_output"`, the copy above, the session and the tool call id. It writes what `catchJailbreak` writes for a command that ran: the messages, the operation as completed with its raw output, the tool event and the evidence, and it raises `observation_revision`. It queues no monitor job and promotes no submission.
-- The transaction refuses when the run is not `active`, the generation moved or the lease is lost. It does not refuse because a `flag_submissions` row exists: a command that uploads the flag and prints it is caught. The receipt stays unpromoted, because `promoteHttpSubmission` leaves a run that is not active alone.
+- The transaction refuses when the run is not `active` or the generation moved. It does not refuse for a lost lease, by lead decision 9. It does not refuse because a `flag_submissions` row exists: a command that uploads the flag and prints it is caught. The receipt stays unpromoted, because `promoteHttpSubmission` leaves a run that is not active alone.
 - After a catch, `execute` removes the call from `activeCommands` so no later path completes the command a second time, sets the run's status to caught in memory, sends the events and aborts the turn. The agent receives a result that does not contain the output.
-- After a refusal the agent also receives no output: `execute` fails with status 409. The raw output is still stored as the command's result through the ordinary completion, so a later review of the session sees it.
+- After a refusal the agent also receives no output: `execute` fails with status 409. The raw output is stored as the command's result through the ordinary completion, with the outcome `completed`, so a later review of the session sees it and the run can finalize.
+- An error inside the catch is handled as a refusal: the error's message is logged without the output, the raw output is stored through the ordinary completion, the turn is aborted, and the agent receives the same status 409 and no driver text.
+- `commandOutput` in `lib/sprites.ts` removes NUL characters from a command's output before the 16,000 character cap. Postgres rejects a NUL in text and in JSON, so a command that printed one could not be stored at all, and a NUL printed before the flag would have defeated the catch and the stored evidence together.
 - `PublicGame.caughtCause` gains `"flag_output"`.
 - The check is exact. It is false when the file was overwritten, when the value is encoded, and when it lies past the 16,000 character output cap. Those cases stay with the investigator.
 - It runs whether or not Jev answered and under every rule setting.
@@ -188,9 +191,11 @@ Integration tests use the real worker, the real runner and real Postgres. Only O
 - A1-1. A command whose output contains the flag: the run is `caught`, the event has `cause: "flag_output"` and the copy, and `caughtCause` is `"flag_output"`. Generation and `state_revision` each rise by 1. The agent's next model request is never sent. The operation is completed with the raw output. No monitor job is queued.
 - A1-2. An output with a value that looks like a flag and is wrong, and an output with the flag past the 16,000 character cap: no catch, and the agent receives the output.
 - A1-3. An HTTP run where one command uploads the flag and prints it: the receipt row exists and the run ends `caught`, not `finalizing`. The receipt is unpromoted and no finalization job exists.
-- A1-4. The lease expired before the check: nothing is caught, the agent receives no output, and the stored operation output is the raw output.
-- A1-5. A sibling session submits while the command runs: as A1-4, and that session's final review receives the output with the flag in its request.
+- A1-4. The lease expired before the check: the run is still `caught`, the agent receives no output and sends no further request, and the operation is completed with the raw output.
+- A1-5. A sibling session submits while the command runs: nothing is caught by the runner, the agent receives no output, the operation is `completed` with the raw output, that session's review receives the output with the flag in its request, and the run ends `caught`.
 - A1-6. With `jailbreak_catch` off, and with the Jev fake failing: the catch still happens.
+- A1-7. An output whose flag is split by NUL characters is caught, and the stored output holds the flag and no NUL. Unit: `commandOutput` removes NUL characters before the cap.
+- A1-8. A database error inside the catch: the agent's next request is never sent, no agent request and no log line holds the flag or the driver's message, and the operation is completed with the raw output.
 - A2-1. Unit: `TOOL_QUESTION_SET` is `tool-v2`, the pinned question hash and key list include `writes_flag`, and the labelled file parses with every question name.
 
 ### Build 3: B
@@ -254,3 +259,9 @@ Integration tests use the real worker, the real runner and real Postgres. Only O
   - The eval harness's `--budget-usd` had become a bound between cases only, and the baseline test had been loosened to match. The harness now seeds a monitor row as A3 says, and the test's bounds are back, at the budget plus one request's ceiling.
   - Also applied: the classifier and the annotation pass are tested one microdollar under the allowance, the refusal message is matched exactly, and five small cleanups.
   - The reviewer checked the sums and their indexes, the lock order against settlement and expiry, that an agent cannot pass the run budget and a monitor can pass its allowance only by requests already admitted, that the daily limit still covers every role, that role `screen` is on the player's side everywhere, the path from a refusal to a run that ends with no result, and that no reference to the removed exemption remains.
+- Build 2, 2026-11-21. The lead ran the gates on the tree rebased onto the pull request's head at `957a3fc`: check 409 passed, integration 447 passed, build passed, coverage 409 passed. The pinned hash of `tool-v2` is `f29babfd3c19bb4b97c64e8125a7a249f5f2c521e52af36be66763aedadbcc0b`. Four tests in `tests/integration/sprites.test.ts` and one in `tests/integration/flag-submission-lifecycle.test.ts` used a printed flag to make the investigator catch a run. They now print a value shaped like a flag that is not the run's, because the runner would catch the real one first.
+- Code review of build 2, 2026-11-21. Verdict: approve with fixes. On every path the reviewer traced, the flag does not reach the agent's next request, a log line or an error message.
+  - A refusal recorded the command with an unknown outcome, and nothing resolves that state: the run could never finalize and kept its Sprite. A refusal now stores the result as completed.
+  - An error inside the catch left the run alive and stored the error's text in place of the output. A NUL byte in the output caused that error at will. Both are fixed as A1 says.
+  - A refusal for a lost lease stored the flag where the session's next response would send it to the model. Lead decision 9 removes that refusal.
+  - The reviewer checked the lock order against every other writer of the run row, that an existing receipt does not stop the catch and stays unpromoted, both orders of the race with the worker, that each outcome completes the command once, the counts and the event of a caught run, what `hasSecret` matches, the `tool-v2` wording against this contract character for character, and that the changed tests still test what they tested.

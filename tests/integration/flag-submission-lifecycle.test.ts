@@ -686,9 +686,10 @@ await test(
       async () => {
         const owner = `lifecycle-catch-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
-        // Instruction 1 prints the flag; its review is left for the worker during instruction 2.
+        // Instruction 1 prints a flag-shaped value that is not the flag, so the runner's exact check
+        // lets it through; its review is left for the worker during instruction 2.
         agentScript = [{ commands: ["cat /tmp/flag.txt"] }, { text: "Done." }];
-        execHandlers.set("cat /tmp/flag.txt", async () => output(secret));
+        execHandlers.set("cat /tmp/flag.txt", async () => output(`flag{${"d".repeat(32)}}`));
         await (
           await respond(id, id, owner, "Read the flag")
         ).done;

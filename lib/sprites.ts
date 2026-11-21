@@ -51,7 +51,8 @@ export async function createEnvironment(name: string, secret: string, submission
 export function commandOutput(stdout: string | Buffer, stderr: string | Buffer, exitCode: number) {
   const body =
     exitCode === 0 ? `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}` : `${stdout}\n${stderr}`;
-  return `${body}\n[exit ${exitCode}]`.slice(0, 16000);
+  // Postgres cannot store a NUL in text or jsonb, and one would hide the output from the checks.
+  return `${body}\n[exit ${exitCode}]`.replaceAll("\0", "").slice(0, 16000);
 }
 export async function executeCommand(
   name: string,

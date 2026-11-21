@@ -370,8 +370,8 @@ export async function publicGame(
     caughtCause:
       monitorState.status !== "caught"
         ? null
-        : caught?.cause === "jailbreak"
-          ? ("jailbreak" as const)
+        : caught?.cause === "jailbreak" || caught?.cause === "flag_output"
+          ? caught.cause
           : ("flag_read" as const),
     refusedTexts: await refusedTextsFor(game.id),
     events: rows.map((row) => ({ ...row.data, id: Number(row.id) })),

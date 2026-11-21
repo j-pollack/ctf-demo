@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 
-// The Jev boundary's branch for a `tool-v1` annotation request. Returns undefined for any other
+// The Jev boundary's branch for a `tool-v2` annotation request. Returns undefined for any other
 // request. It validates as strictly as the classifier branch: exact state keys, exact questions,
 // and no transcript text.
 // The module loads lazily: it imports the database, whose pool a test installs after its imports.

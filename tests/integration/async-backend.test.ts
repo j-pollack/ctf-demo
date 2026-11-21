@@ -2013,7 +2013,7 @@ await test(
         for (const [index, row] of stored.entries()) {
           const call = three[index];
           assert.equal(row.tool_call_id, call.id);
-          assert.equal(row.question_set, "tool-v1");
+          assert.equal(row.question_set, "tool-v2");
           assert.equal(row.review_id, reviewId);
           assert.equal(row.model, TYPESAFE_MODEL);
           assert.equal(row.input_tokens, 24);

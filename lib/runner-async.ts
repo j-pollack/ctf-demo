@@ -25,11 +25,12 @@ import {
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
 import { instructionMessage } from "./monitor-visibility";
 import {
+  catchFlagOutput,
   completeAsyncCommand,
   dispatchAsyncCommand,
   markCommandReturned,
 } from "./monitor-commands";
-import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
+import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt, hasSecret } from "./policy";
 import { configuredFlagEndpoint } from "./flag-submission-protocol";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
 import { executeCommand, SPRITE_WORKDIR } from "./sprites";
@@ -245,6 +246,77 @@ export async function runAsyncGame(
     return true;
   };
 
+  const rawResult = (toolCallId: string, output: string): Message => ({
+    role: "toolResult",
+    toolCallId,
+    toolName: "sprite_exec",
+    content: [{ type: "text", text: output }],
+    isError: false,
+    timestamp: Date.now(),
+  });
+  // The agent never gets the output of a command whose output held the flag. If the run cannot be
+  // caught, the command is still completed with its raw output so a review sees it and nothing waits
+  // on it, and the response stops with a fixed message that carries no driver text.
+  const catchFlagOutputOf = async (toolCallId: string, dispatchId: string, output: string) => {
+    await persistence;
+    const messages = [...(session!.messages as Message[]), rawResult(toolCallId, output)];
+    try {
+      const result = await catchFlagOutput({
+        dispatchId,
+        gameId: game.id,
+        sessionId,
+        toolCallId,
+        generation,
+        messages,
+        output,
+      });
+      if (result.status === "caught") {
+        activeCommands.delete(toolCallId);
+        game.status = "caught";
+        for (const event of result.events) send("event", event);
+        abort();
+        return {
+          content: [{ type: "text" as const, text: "This run has ended." }],
+          details: {},
+        };
+      }
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "flag_output.catch_failed",
+          gameId: game.id,
+          sessionId,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+    }
+    const stopped = new GameError("This response has stopped.", 409);
+    abort(stopped);
+    try {
+      const completed = await completeAsyncCommand({
+        dispatchId,
+        gameId: game.id,
+        sessionId,
+        messages,
+        outcome: "completed",
+        output,
+      });
+      activeCommands.delete(toolCallId);
+      send("event", completed.event);
+    } catch (error) {
+      // The command stays active, so the cleanup below records it.
+      console.error(
+        JSON.stringify({
+          event: "flag_output.completion_failed",
+          gameId: game.id,
+          sessionId,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+    }
+    throw stopped;
+  };
+
   try {
     const model = await getModel(game.agent_model);
     const submissionUrl = http ? configuredFlagEndpoint().url : undefined;
@@ -306,7 +378,11 @@ export async function runAsyncGame(
             ? { TARGET: `${submissionUrl}/${dispatch.submissionToken}` }
             : undefined,
         );
-        const screened = (await stampReturned(dispatch.id))
+        const stamped = await stampReturned(dispatch.id);
+        // The flag in a command's output ends the run before the agent or a screen sees the output.
+        if (hasSecret(output, game.secret_hash))
+          return await catchFlagOutputOf(id, dispatch.id, output);
+        const screened = stamped
           ? await screenTexts(screenContext, [{ kind: "tool_output", ref: id, text: output }])
           : undefined;
         // A flagged result reaches the agent labelled as data. An unscreened one is not labelled.

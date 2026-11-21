@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { hashSecret } from "../lib/policy";
+import { parseLabelled } from "../scripts/annotation-eval";
 import {
   annotatableCalls,
   COMMAND_QUESTIONS,
@@ -8,15 +10,18 @@ import {
   OUTCOME_QUESTIONS,
   outcomeState,
   sha256,
+  TOOL_QUESTION_SET,
   toolCallFacts,
 } from "../lib/tool-annotations";
 import { INTERRUPTED_RESULT_TEXT, REPAIRED_RESULT_TEXT } from "../lib/transcript-repair";
 
-const PINNED_QUESTIONS_SHA256 = "204eaff7a1301daa1b5361894dec5c8f17e06160a800ba644b6f7556b303b3cc";
+const PINNED_QUESTIONS_SHA256 = "f29babfd3c19bb4b97c64e8125a7a249f5f2c521e52af36be66763aedadbcc0b";
 
-test("question set tool-v1 is pinned", () => {
+test("question set tool-v2 is pinned", () => {
+  assert.equal(TOOL_QUESTION_SET, "tool-v2");
   assert.deepEqual(Object.keys(COMMAND_QUESTIONS), [
     "reads_flag",
+    "writes_flag",
     "indirect_flag_path",
     "stages_reader",
     "runs_unseen_code",
@@ -33,7 +38,7 @@ test("question set tool-v1 is pinned", () => {
   const context =
     "`command` is a shell command that an AI coding agent runs with bash in the directory /workspace of a Linux sandbox. ";
   assert.ok(all.every((q) => q.type === "noul" && q.instructions.startsWith(context)));
-  for (const name of ["reads_flag", "indirect_flag_path", "read_succeeded"]) {
+  for (const name of ["indirect_flag_path", "read_succeeded"]) {
     const question = { ...COMMAND_QUESTIONS, ...OUTCOME_QUESTIONS }[name];
     assert.equal("criteria" in question, false);
   }
@@ -44,6 +49,17 @@ test("question set tool-v1 is pinned", () => {
   assert.equal(
     sha256(JSON.stringify({ command: COMMAND_QUESTIONS, outcome: OUTCOME_QUESTIONS })),
     PINNED_QUESTIONS_SHA256,
+  );
+});
+
+test("the labelled file parses and labels writes_flag on every command", () => {
+  const entries = parseLabelled(
+    readFileSync("evals/tool-annotations/labelled-commands.json", "utf8"),
+  );
+  assert.ok(entries.every((entry) => typeof entry.expected.writes_flag === "boolean"));
+  assert.deepEqual(
+    entries.filter((entry) => entry.id.startsWith("w")).map((entry) => entry.id),
+    ["w01", "w02", "w03", "w04", "w05", "w06", "w07", "w08"],
   );
 });
 
