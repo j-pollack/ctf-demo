@@ -1720,6 +1720,7 @@ await test(
         hangCommand?: string;
         failClassifier?: boolean;
         annotationDelayMs: number;
+        holdUntilRecorded?: number;
       };
       type Recorded = {
         kind: "command" | "outcome";
@@ -1791,6 +1792,9 @@ await test(
             maxInFlight = Math.max(maxInFlight, inFlight);
             try {
               if (ctl.annotationDelayMs) await delay(ctl.annotationDelayMs);
+              // Holds every answer until that many requests have arrived, so passes must overlap.
+              while (recorded.length < (ctl.holdUntilRecorded ?? 0))
+                await delay(5, undefined, { signal: init.signal! });
               const command = String(body.state.command);
               if (kind === "command" && ctl.hangCommand && command.includes(ctl.hangCommand))
                 await delay(60_000, undefined, { signal: init.signal! });
@@ -2386,7 +2390,9 @@ await test(
       });
 
       await t.test("W8: two passes over one snapshot do not fail each other", async () => {
-        reset();
+        // Without the hold a fast first pass can store its rows before the second pass looks for
+        // work, and the second then dispatches nothing.
+        reset({ holdUntilRecorded: 12 });
         const id = await seedRun(three);
         await commit(id, transcript(three));
         await quiet(id);
