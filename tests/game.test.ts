@@ -105,3 +105,21 @@ test("a custom system prompt becomes the agent preamble", () => {
   const custom = repairMessages([], "custom prompt")[0];
   assert.equal(custom.role === "system" && custom.sections?.preamble, "custom prompt");
 });
+
+test("monitorRunBudgetExempt: finalizing runs have the higher ceiling, others the lower", async () => {
+  const { monitorRunBudgetExempt } = await import("../lib/games");
+  const { MONITOR_OVERAGE_MICRODOLLARS } = await import("../lib/policy");
+  const claim = { runBudgetExempt: true } as never;
+  const past = 1_000 + MONITOR_OVERAGE_MICRODOLLARS;
+  const { FINAL_REVIEW_OVERAGE_MICRODOLLARS } = await import("../lib/policy");
+  const final = 1_000 + FINAL_REVIEW_OVERAGE_MICRODOLLARS;
+  assert.equal(monitorRunBudgetExempt("monitor", claim, past + 5, 1_000, "finalizing"), true);
+  assert.equal(monitorRunBudgetExempt("monitor", claim, final - 1, 1_000, "finalizing"), true);
+  assert.equal(monitorRunBudgetExempt("monitor", claim, final, 1_000, "finalizing"), false);
+  assert.equal(monitorRunBudgetExempt("monitor", claim, past, 1_000, "active"), false);
+  assert.equal(monitorRunBudgetExempt("monitor", claim, past - 1, 1_000, "active"), true);
+  assert.equal(monitorRunBudgetExempt("agent", claim, 0, 1_000, "finalizing"), false);
+  assert.equal(monitorRunBudgetExempt("screen", claim, 0, 1_000, "finalizing"), false);
+  assert.equal(monitorRunBudgetExempt("monitor", {} as never, 0, 1_000, "finalizing"), false);
+  assert.equal(monitorRunBudgetExempt("monitor", undefined, 0, 1_000, "finalizing"), false);
+});

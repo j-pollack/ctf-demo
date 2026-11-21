@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { MONITOR_INITIAL_CONTEXT_MAX_BYTES } from "../../lib/monitor-evidence";
 import { AGENT_MODEL } from "../../lib/policy";
-import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
+import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import type { InvestigationObserver } from "../../lib/investigation-trace";
 import { buildFlagReadReport } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
@@ -58,6 +58,7 @@ await test(
     let repairedReadRecovered = false;
     let classifierCalls = 0;
     let investigatorCalls = 0;
+    let forgedClaimAttempts = 0;
     let unrelatedHistorySeen = false;
     let otherOwnerExcluded = false;
     let linkedReasoningChecked = false;
@@ -153,7 +154,12 @@ await test(
             tools: { function: { name: string } }[];
           };
           assert.equal(request.model, "z-ai/glm-5.3");
-          assert.deepEqual(request.provider, { require_parameters: true });
+          assert.deepEqual(request.provider, {
+            require_parameters: true,
+            only: ["digitalocean"],
+            allow_fallbacks: false,
+            max_price: { prompt: 0.91, completion: 2.86, request: 0 },
+          });
           assert.equal(request.max_tokens, 8_192);
           assert.equal(request.reasoning?.effort, "high");
           const dispatchedPrompt = request.messages.find(
@@ -161,12 +167,12 @@ await test(
           )?.content;
           assert.equal(
             dispatchedPrompt,
-            resolveFlagReadPolicy("current").systemPrompt,
+            flagReadPolicyById("v15-unknown").systemPrompt,
             "default investigator policy leads the provider request",
           );
           assert.equal(
             createHash("sha256").update(dispatchedPrompt!).digest("hex"),
-            resolveFlagReadPolicy("current").promptHash,
+            flagReadPolicyById("v15-unknown").promptHash,
           );
           modelVisiblePayloads.push(JSON.stringify(request.messages));
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
@@ -277,11 +283,13 @@ await test(
               ),
             );
           }
-          if (text.includes("flag{synthetic-claim}"))
+          if (text.includes("flag{synthetic-claim}")) {
+            forgedClaimAttempts++;
             return Response.json(
               { error: { message: "Synthetic provider outage" } },
               { status: 503 },
             );
+          }
           let historicalCitation:
             | { ref: string; sessionId: string; role: string; text: string }
             | undefined;
@@ -542,7 +550,9 @@ await test(
     assert.ok(
       entries
         .filter((entry) => entry.investigationComplete)
-        .every((entry) => entry.monitorVersion === resolveFlagReadPolicy("current").monitorVersion),
+        .every(
+          (entry) => entry.monitorVersion === flagReadPolicyById("v15-unknown").monitorVersion,
+        ),
     );
     assert.ok(
       entries
@@ -570,6 +580,7 @@ await test(
     assert.match(failedProvider?.operationalError ?? "", /503/);
     assert.equal(failedProvider?.coveredVersion, 0);
     assert.equal(failedProvider?.jobStatus, "queued");
+    assert.equal(forgedClaimAttempts, 1, "single transport attempt; no retry inside a review");
     const overflow = entries.find((entry) => entry.caseId === overflowCase.id);
     assert.match(overflow?.operationalError ?? "", /context limit reached: \d+ bytes > \d+/);
     assert.equal(overflow?.coveredVersion, 0);
@@ -676,7 +687,7 @@ await test(
         [entries.map((entry) => entry.reviewId)],
       );
       assert.deepEqual(reviewModels.rows, [
-        { model: "z-ai/glm-5.3", prompt_version: resolveFlagReadPolicy("current").monitorVersion },
+        { model: "z-ai/glm-5.3", prompt_version: flagReadPolicyById("v15-unknown").monitorVersion },
       ]);
       const rawIds = await persisted.query<{ id: string }>(
         "SELECT id FROM ctf.games UNION SELECT id FROM ctf.agent_sessions",

@@ -187,6 +187,20 @@ test("a terminal HTTP result uses run-level correctness after an older event sna
   assert.doesNotMatch(html, /SUBMITTED · WRONG|submitted this value/);
 });
 
+test("U5: the outcome strip says No result for a run that ended unverified, even with a correct flag", () => {
+  const html = render(
+    run(sessions(1), {
+      status: "ended",
+      submissionTransport: "http",
+      submissionCorrect: true,
+      endReason: "unverified-review",
+    }),
+  );
+  assert.match(html, /<h2>No result<\/h2>/);
+  assert.match(html, /ended with no result/);
+  assert.doesNotMatch(html, /Right flag, but no bug fixed/);
+});
+
 test("an open inspector is a column or covers an inert deck", () => {
   const column = render(run(sessions(2)), { inspector: "column" });
   assert.match(column, /<div class="workbench" data-inspector="column">/);
@@ -322,7 +336,7 @@ test("while the first instruction is in flight, empty sibling panes no longer sh
 });
 
 test("a run awaiting its result says the investigator is reviewing it, with a progress mark", () => {
-  const strip = (monitorStatus: "reviewing" | "unresolved") => {
+  const strip = (monitorStatus: "reviewing" | "unresolved", willRetry = false) => {
     const html = render(
       run(sessions(2), {
         status: "finalizing",
@@ -332,6 +346,7 @@ test("a run awaiting its result says the investigator is reviewing it, with a pr
           reviewedUpdates: 0,
           totalUpdates: 1,
           lastReviewedAt: null,
+          willRetry,
         },
       }),
     );
@@ -346,4 +361,10 @@ test("a run awaiting its result says the investigator is reviewing it, with a pr
     /The review could not be completed, so the result is unconfirmed\./,
   );
   assert.doesNotMatch(strip("unresolved"), /<i aria-hidden/);
+  const retrying = strip("unresolved", true);
+  assert.match(
+    retrying,
+    /The review failed and will be retried\. The result is not confirmed yet\./,
+  );
+  assert.doesNotMatch(retrying, /the result is unconfirmed\./);
 });

@@ -1,6 +1,6 @@
 import type { Message } from "@earendil-works/pi-ai";
 
-// Every run's budget, and new (non-fork) runs a player may start per rolling 24 hours. Shared with
+// Every run's budget, and new runs a player may start per rolling 24 hours. Shared with
 // the client for the budget meter and the rules copy.
 export const RUN_BUDGET_MICRODOLLARS = 500_000;
 export const RUNS_PER_DAY = 3;
@@ -13,6 +13,8 @@ export type GameStatus =
   | "ended"
   | "blocked"
   | "caught";
+// The status of a submitted run that no review could settle. It is not a win and not a catch.
+export const UNVERIFIED_SUBMISSION_STATUS = "ended" as const satisfies GameStatus;
 export type GameEvent = {
   id: number;
   kind: "user" | "agent" | "tool" | "monitor" | "submit" | "error";
@@ -21,7 +23,7 @@ export type GameEvent = {
   command?: string;
   // An agent turn's sprite_exec commands, one per call, in order.
   commands?: string[];
-  decision?: "allow" | "block" | "error";
+  decision?: "allow" | "block" | "error" | "unverified";
   // Set on submit events: whether the submitted value contained the flag.
   correct?: boolean;
   // Monitor events: the combined suspicion (0-1) behind the decision.
@@ -39,8 +41,14 @@ export type GameEvent = {
   autoContinue?: boolean;
   turn?: number;
   model?: string;
-  // On user events: the id of the sprite checkpoint taken just before the agent ran.
-  checkpoint?: string;
+  // A user event standing in for a submission the jailbreak screen refused, and the rows holding it.
+  refused?: boolean;
+  refusedTextIds?: string[];
+  // Monitor block events: "jailbreak" for the screen. Absent on investigator catches.
+  // Monitor unverified events: "review" or "scoring", whichever could not be completed.
+  cause?: "jailbreak" | "review" | "scoring";
+  questions?: string[];
+  refusedKinds?: ("instruction" | "system_prompt")[];
 };
 // How strict the monitor's system prompt is; chosen per run and shared with the client.
 export const MONITOR_DIFFICULTIES = ["easy", "medium", "hard"] as const;
@@ -98,6 +106,8 @@ export type MonitorSnapshot = {
   targetSessionId: string;
   revision: number;
   omittedSessions: number;
+  // The run's isolation rule when the snapshot was read; it decides which evidence the manifest holds.
+  isolated: boolean;
   searchableHistorySessions?: number;
   evidenceManifest?: readonly {
     sessionId: string;
@@ -126,6 +136,14 @@ export type MonitorSnapshot = {
     completedRevision: number | null;
     outcome: "completed" | "interrupted" | "unknown" | null;
   }[];
+  // When each command of the evidence sessions was sent to the computer and when it returned, as
+  // ISO 8601 UTC. Null when unknown.
+  operationTimes?: readonly {
+    sessionId: string;
+    toolCallId: string;
+    sentAt: string | null;
+    returnedAt: string | null;
+  }[];
 };
 export type PublicGame = {
   id: string;
@@ -144,7 +162,11 @@ export type PublicGame = {
     lastReviewedAt: string | null;
     hasPendingReview?: boolean;
     reason?: string;
+    // True while a failed review has requeues left, so the result is not final yet.
+    willRetry?: boolean;
   };
+  // Set on a run that ended because its review or scoring could not be completed.
+  endReason?: "unverified-review" | "unverified-scoring";
   agentModel: string;
   agentEffort: AgentEffort;
   monitorDifficulty: MonitorDifficulty;
@@ -161,10 +183,6 @@ export type PublicGame = {
   blocks: number;
   // Whether the monitor reads the agent's reasoning; changeable until the first instruction.
   monitorReasoning: boolean;
-  // A caught or blocked run can be forked once, while its environment lives.
-  forkable: boolean;
-  // Only on a fork's response: the instruction it went back to before, to put back in the composer.
-  retryInstruction?: string;
   busy: boolean;
   sessionId: string;
   sessionBusy: boolean;
@@ -172,6 +190,15 @@ export type PublicGame = {
   caughtSessionId: string | null;
   caughtSessionOrdinal: number | null;
   caughtReason: string | null;
+  // Why the run was caught: absent for a run that is not caught.
+  caughtCause?: "jailbreak" | "flag_read" | null;
+  // Texts the jailbreak screen refused, for the owner only. Never part of a transcript.
+  refusedTexts?: {
+    id: string;
+    kind: "instruction" | "system_prompt";
+    text: string;
+    flagged: boolean;
+  }[];
   events: GameEvent[];
 };
 export type GameSummary = Omit<
@@ -193,4 +220,8 @@ export type GameSummary = Omit<
   createdAt: string;
 };
 // Rules a run is played under. Recorded on the run when it starts.
-export type GameRules = { monitorIsolation: boolean; bugFixRequired: boolean };
+export type GameRules = {
+  monitorIsolation: boolean;
+  bugFixRequired: boolean;
+  jailbreakCatch: boolean;
+};

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
+import { flagReadPolicyById } from "../lib/flag-read-policy";
 import {
   buildSchedule,
-  parseBaselineStrategy,
+  parseBaselinePolicy,
   selectBaseline,
   summarizeBaseline,
 } from "../scripts/flag-read-baseline";
@@ -16,7 +16,7 @@ const cases = JSON.parse(text);
 test("explicit held-out selection freezes 40 cases and scores only that split", () => {
   const corpus = syntheticHeldoutCorpus(text);
   const items = JSON.parse(corpus);
-  const schedule = buildSchedule(corpus, {}, "closed-world-presumption-v1", "test");
+  const schedule = buildSchedule(corpus, {}, "v15-unknown", "test");
   assert.equal(schedule.split, "test");
   assert.equal(schedule.cases.length, 40);
   assert.equal(new Set(schedule.cases.map((item) => item.pair)).size, 20);
@@ -27,10 +27,10 @@ test("explicit held-out selection freezes 40 cases and scores only that split", 
   );
   assert.equal(selectBaseline(items).length, 72);
   assert.equal(schedule.execution.cases, 40);
-  assert.equal(schedule.execution.investigatorCallsMaximum, 320);
+  assert.equal(schedule.execution.investigatorCallsMaximum, 480);
   assert.equal(schedule.execution.classifierCallsMaximum, 40);
   assert.equal(schedule.budget.proposedMicrodollars, 6_000_000);
-  assert.match(schedule.budget.basis, /40 ×.*\$6.*320 calls/);
+  assert.match(schedule.budget.basis, /40 ×.*\$6.*480 calls/);
   assert.throws(() => selectBaseline(items, "other" as "test"), /split/i);
   assert.throws(() => selectBaseline(items.slice(0, -2), "test"));
   const empty = summarizeBaseline(corpus, [], schedule);
@@ -45,7 +45,6 @@ test("explicit held-out selection freezes 40 cases and scores only that split", 
     latencyMs: 1,
     settledMicrodollars: 1,
     heldMicrodollars: 0,
-    searchStrategy: "closed-world-presumption-v1" as const,
     ...schedule.policy,
   }));
   const summary = summarizeBaseline(corpus, entries, schedule);
@@ -73,56 +72,48 @@ test("explicit held-out selection freezes 40 cases and scores only that split", 
 });
 
 test("bounded schedules freeze DigitalOcean pricing and the 90-second investigation", () => {
-  for (const strategy of ["current", "closed-world-presumption-v1"] as const) {
-    const schedule = buildSchedule(text, {}, strategy);
-    assert.equal(schedule.execution.investigatorDeadlineMs, 90_000);
-    assert.equal(schedule.execution.classifierDeadlineMs, 15_000);
-    assert.equal(schedule.execution.reviewClaimMs, 120_000);
-    assert.deepEqual(schedule.execution.provider, {
-      only: ["digitalocean"],
-      allow_fallbacks: false,
-      require_parameters: true,
-      max_price: { prompt: 0.91, completion: 2.86, request: 0 },
-    });
-    assert.equal(schedule.budget.pricing.investigator.inputUsdPerMillion, 0.91);
-    assert.equal(schedule.budget.pricing.investigator.outputUsdPerMillion, 2.86);
-  }
+  const schedule = buildSchedule(text, {});
+  assert.equal(schedule.execution.investigatorDeadlineMs, 90_000);
+  assert.equal(schedule.execution.classifierDeadlineMs, 15_000);
+  assert.equal(schedule.execution.reviewClaimMs, 120_000);
+  assert.deepEqual(schedule.execution.provider, {
+    only: ["digitalocean"],
+    allow_fallbacks: false,
+    require_parameters: true,
+    max_price: { prompt: 0.91, completion: 2.86, request: 0 },
+  });
+  assert.equal(schedule.budget.pricing.investigator.inputUsdPerMillion, 0.91);
+  assert.equal(schedule.budget.pricing.investigator.outputUsdPerMillion, 2.86);
 });
 
-test("candidate schedule changes policy only and summaries enforce the saved arm", () => {
-  const current = buildSchedule(text, { source: "same" });
-  const candidate = buildSchedule(text, { source: "same" }, "closed-world-presumption-v1");
-  assert.equal(candidate.policy.strategy, "closed-world-presumption-v1");
-  assert.notEqual(candidate.policy.promptHash, current.policy.promptHash);
-  assert.deepEqual({ ...candidate, policy: current.policy }, current);
+test("the v15-unknown policy is the default, records its policy and its summaries enforce the saved prompt hash", () => {
+  assert.equal(parseBaselinePolicy("v15-unknown"), "v15-unknown");
+  assert.throws(() => parseBaselinePolicy("v15-shared"), /policy/);
+  assert.throws(() => parseBaselinePolicy("closed-world-presumption"), /policy/);
+  assert.throws(() => parseBaselinePolicy("focused"), /policy/);
+  assert.throws(() => buildSchedule(text, {}, "focused" as "v15-unknown"), /policy/);
+  const production = flagReadPolicyById("v15-unknown");
+  const schedule = buildSchedule(text, { source: "same" }, "v15-unknown");
+  assert.deepEqual(schedule, buildSchedule(text, { source: "same" }));
+  assert.equal(schedule.policy.policyId, "v15-unknown");
+  assert.equal(schedule.policy.monitorVersion, production.monitorVersion);
+  assert.equal(schedule.policy.promptHash, production.promptHash);
   const entry = {
-    caseId: candidate.cases[0].id,
-    readOccurred: candidate.cases[0].readOccurred,
+    caseId: schedule.cases[0].id,
+    readOccurred: schedule.cases[0].readOccurred,
     observableSufficiency: "sufficient" as const,
     flagReadDetected: false,
     investigationComplete: true,
     latencyMs: 10,
     settledMicrodollars: 12,
     heldMicrodollars: 0,
-    searchStrategy: "closed-world-presumption-v1" as const,
-    ...candidate.policy,
+    ...schedule.policy,
   };
-  assert.equal(summarizeBaseline(text, [entry], candidate).settledMicrodollars, 12);
-  assert.throws(() => summarizeBaseline(text, [entry], current), /policy\/model/);
-  assert.throws(() => buildSchedule(text, {}, "focused" as "current"), /strategy/);
-});
-
-test("the production strategy is accepted and records the production policy", () => {
-  assert.equal(parseBaselineStrategy("closed-world-presumption"), "closed-world-presumption");
-  assert.throws(() => parseBaselineStrategy("focused"), /strategy/);
-  const production = resolveFlagReadPolicy("closed-world-presumption");
-  const v1 = resolveFlagReadPolicy("closed-world-presumption-v1");
-  const schedule = buildSchedule(text, { source: "same" }, "closed-world-presumption");
-  assert.equal(schedule.policy.strategy, "closed-world-presumption");
-  assert.equal(schedule.policy.monitorVersion, production.monitorVersion);
-  assert.equal(schedule.policy.promptHash, production.promptHash);
-  assert.notEqual(schedule.policy.monitorVersion, v1.monitorVersion);
-  assert.notEqual(schedule.policy.promptHash, v1.promptHash);
+  assert.equal(summarizeBaseline(text, [entry], schedule).settledMicrodollars, 12);
+  assert.throws(
+    () => summarizeBaseline(text, [{ ...entry, promptHash: "changed" }], schedule),
+    /policy\/model/,
+  );
 });
 
 test("baseline freezes all 36 dev pairs once and excludes locked tests", () => {
@@ -134,7 +125,7 @@ test("baseline freezes all 36 dev pairs once and excludes locked tests", () => {
   );
   assert.deepEqual(schedule, buildSchedule(text, { source: "one" }));
   assert.notDeepEqual(schedule.sources, buildSchedule(text, { source: "two" }).sources);
-  assert.equal(schedule.execution.investigatorCallsMaximum, 576);
+  assert.equal(schedule.execution.investigatorCallsMaximum, 864);
   assert.equal(schedule.budget.proposedMicrodollars, 72 * 125_000 + 1_000_000);
 });
 
@@ -162,7 +153,7 @@ test("missing results remain incomplete and unknown policy is rejected", () => {
     latencyMs: 20,
     settledMicrodollars: 100,
     heldMicrodollars: 50,
-    searchStrategy: "current" as const,
+    policyId: schedule.policy.policyId,
     monitorVersion: schedule.policy.monitorVersion,
     promptHash: schedule.policy.promptHash,
     investigatorModel: schedule.policy.investigatorModel,

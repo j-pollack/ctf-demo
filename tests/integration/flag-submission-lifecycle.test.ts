@@ -4,15 +4,11 @@ import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { Client, Pool } from "pg";
-import {
-  CheckpointStream,
-  Sprite,
-  SpritesClient,
-  type ExecOptions,
-  type HTTPExecOptions,
-} from "@fly/sprites";
+import { Sprite, SpritesClient, type ExecOptions, type HTTPExecOptions } from "@fly/sprites";
 import type { Message } from "@earendil-works/pi-ai";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
+import { annotationResponse } from "./annotation-fake";
+import { createScreenFake } from "./screen-fake";
 import { closePool } from "./postgres";
 
 // The HTTP flag-submission lifecycle (docs/plans/flag-http-submission.md, "Lifecycle" 3-7) driven
@@ -75,6 +71,7 @@ await test(
     let agentScript: AgentReply[] = [];
     let agentRequests = 0;
     const generations = new Set<string>();
+    const screenFake = createScreenFake();
     const strict =
       <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
       async (...args: A) => {
@@ -169,18 +166,6 @@ await test(
         })();
       },
     );
-    t.mock.method(Sprite.prototype, "createCheckpoint", async function (this: Sprite) {
-      return strict(async () => {
-        assert.ok(environments.has(this.name), "Checkpoint of an unknown Sprite");
-        const lines = [
-          { type: "info", data: "Creating checkpoint..." },
-          { type: "complete", data: "Checkpoint v1 created successfully" },
-        ];
-        return new CheckpointStream(
-          new Response(lines.map((line) => `${JSON.stringify(line)}\n`).join("")),
-        );
-      })();
-    });
     t.mock.method(
       SpritesClient.prototype,
       "deleteSprite",
@@ -236,6 +221,10 @@ await test(
             "Bearer integration-router-key",
           );
           assert.equal(body.model, TYPESAFE_MODEL);
+          const screened = await screenFake.response(body, options.signal ?? undefined);
+          if (screened) return screened;
+          const annotation = await annotationResponse(body);
+          if (annotation) return annotation;
           assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
           assert.ok(Array.isArray(body.state.transcript));
           return Response.json({
@@ -351,6 +340,7 @@ await test(
       execHandlers = new Map();
       agentScript = [];
       agentRequests = 0;
+      screenFake.reset();
     });
     t.afterEach(() =>
       assert.deepEqual(violations, [], "Fake boundaries must not see unexpected operations"),
@@ -660,6 +650,15 @@ await test(
         lease = response.lease;
         await response.done;
         assert.deepEqual(refusals, ["session", "claim", "inference", "dispatch"]);
+        // The instruction was screened; the uploader's own result was refused a screen by its receipt.
+        assert.deepEqual(
+          (
+            await pool.query("SELECT kind FROM ctf.text_screens WHERE game_id=$1 ORDER BY kind", [
+              id,
+            ])
+          ).rows.map(({ kind }) => kind),
+          ["instruction"],
+        );
         // The admitted uploader still completes and promotes the receipt exactly once.
         const [uploader] = await operation(id, command);
         assert.equal(uploader.status, "completed");
@@ -682,7 +681,7 @@ await test(
     );
 
     await t.test(
-      "a catch between the receipt and the uploader's completion wins and blocks a fork",
+      "a catch between the receipt and the uploader's completion wins and releases its Sprite",
       async () => {
         const owner = `lifecycle-catch-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
@@ -739,19 +738,74 @@ await test(
           ).rows[0].n,
           0,
         );
-        assert.deepEqual(deleted, [], "a single-session catch keeps its Sprite for a fork");
-        // A caught run is otherwise forkable; its receipt alone refuses the fork.
-        const games = (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n;
-        await assert.rejects(startGame(owner, undefined, { sourceId: id }), {
-          status: 409,
-          message: "A submitted run cannot be forked.",
+        const {
+          rows: [{ sprite_name: spriteName }],
+        } = await pool.query("SELECT sprite_name FROM ctf.games WHERE id=$1", [id]);
+        assert.deepEqual(deleted, [spriteName], "a single-session catch releases its Sprite");
+      },
+    );
+
+    // The tool-result screen sits between the command's return and its record. An upload that
+    // arrives there is refused as one for a completed command, so a screen cannot change an outcome.
+    await t.test(
+      "an upload that arrives while its command's tool-result screen is in flight is stale",
+      async () => {
+        const owner = `lifecycle-screen-window-${randomUUID()}`;
+        const { id, secret } = await startRun(owner);
+        const command = uploadCommand;
+        agentScript = [{ commands: [command] }, { text: "Done." }];
+        let target: Record<string, string> | undefined;
+        execHandlers.set(command, async ({ env }) => {
+          target = env;
+          return output("uploaded");
         });
+        let release = () => {};
+        const held = new Promise<void>((resolve) => (release = resolve));
+        screenFake.controls.hold = async (kind) => {
+          if (kind === "tool_output") await held;
+        };
+        const response = await respond(id, id, owner, "Upload the flag");
+        for (
+          const until = Date.now() + 10_000;
+          !screenFake.requests.some(({ kind }) => kind === "tool_output");
+          await delay(10)
+        )
+          assert.ok(Date.now() < until, "the tool-result screen was never sent");
+        const late = await receive(target, secret).finally(release);
+        await response.done;
+        assert.equal(late, "stale");
         assert.equal(
-          (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n,
-          games,
+          (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id])).rowCount,
+          0,
         );
-        assert.deepEqual(await run(id), caught);
-        assert.equal(environments.size, 1, "the refused fork created no Sprite");
+        assert.deepEqual(await run(id), {
+          status: "active",
+          submitted_flag_correct: null,
+          generation: 0,
+          promoted_at: null,
+          correct: null,
+          jobs: 0,
+          submits: 0,
+        });
+        const [uploader] = await operation(id, command);
+        assert.equal(uploader.status, "completed");
+        const screens = (
+          await pool.query(
+            "SELECT settled_at IS NOT NULL AS settled FROM ctf.inference WHERE game_id=$1 AND role='screen' ORDER BY created_at",
+            [id],
+          )
+        ).rows;
+        assert.deepEqual(
+          screens.map(({ settled }) => settled),
+          [true, true],
+          "the instruction screen and the tool-result screen are both settled",
+        );
+        assert.equal(
+          (await pool.query("SELECT reserved_microdollars FROM ctf.games WHERE id=$1", [id]))
+            .rows[0].reserved_microdollars,
+          "0",
+        );
+        assert.equal(agentRequests, 2);
       },
     );
 
@@ -785,6 +839,50 @@ await test(
           return;
       throw new Error(`Nothing queued on ${statement}`);
     };
+    // The race scenarios below hold the run row lock between the command's return and its completion,
+    // so no billing may happen there. They run in the production state where tool results are not
+    // screened: the instruction screen outlasts its deadline, which stops screening for the response.
+    const screenStopped = () => {
+      screenFake.controls.behave = (kind) => (kind === "instruction" ? "hang" : "answer");
+      const events: string[] = [];
+      const original = console.error;
+      console.error = (...args: unknown[]) => {
+        try {
+          const parsed = JSON.parse(String(args[0]));
+          if (String(parsed?.event).startsWith("text_screen.")) events.push(parsed.event);
+        } catch {
+          // Not a structured event.
+        }
+        original(...args);
+      };
+      return {
+        // Checks the precondition: screening stopped, and no tool result was screened.
+        assertStopped: async (gameId: string) => {
+          console.error = original;
+          assert.ok(events.includes("text_screen.screening_stopped"), events.join(","));
+          assert.deepEqual(
+            (
+              await pool.query("SELECT kind FROM ctf.text_screens WHERE game_id=$1", [gameId])
+            ).rows.filter(({ kind }) => kind === "tool_output"),
+            [],
+          );
+          // The instruction's reservation is the only screen reservation of the response.
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int AS n FROM ctf.inference WHERE game_id=$1 AND role='screen'",
+                [gameId],
+              )
+            ).rows[0].n,
+            1,
+            "no tool result reserved a screen",
+          );
+        },
+        restore: () => {
+          console.error = original;
+        },
+      };
+    };
     const completion = "SELECT observation_revision,monitor_mode FROM ctf.games";
     const receipt = "SELECT status,monitor_mode,submission_transport";
 
@@ -793,50 +891,57 @@ await test(
       async () => {
         const owner = `lifecycle-race-stale-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
-        const command = uploadCommand;
-        agentScript = [{ commands: [command] }, { text: "Done." }];
-        let race: Promise<string> | undefined;
-        execHandlers.set(command, async ({ env }) => {
-          const lock = await lockRun(id);
-          // The Sprite has returned; the receipt arrives once the completion is waiting to commit.
-          race = (async () => {
-            try {
-              await queued(completion);
-              const result = receive(env, secret);
-              await queued(receipt);
-              await lock.release();
-              return await result;
-            } catch (error) {
-              await lock.release().catch(() => {});
-              throw error;
-            }
-          })();
-          return output("uploaded");
-        });
-        const sent = await (await respond(id, id, owner, "Upload the flag")).done;
-        assert.equal(await race, "stale");
-        const [uploader] = await operation(id, command);
-        assert.equal(uploader.status, "completed");
-        assert.equal(
-          (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id])).rowCount,
-          0,
-        );
-        assert.deepEqual(await run(id), {
-          status: "active",
-          submitted_flag_correct: null,
-          generation: 0,
-          promoted_at: null,
-          correct: null,
-          jobs: 0,
-          submits: 0,
-        });
-        // With no receipt, play continues: the agent's next turn was admitted.
-        assert.equal(agentRequests, 2);
-        assert.ok(
-          sent.some(
-            ({ type, data }) => type === "event" && (data as { text: string }).text === "Done.",
-          ),
-        );
+        const stopped = screenStopped();
+        try {
+          const command = uploadCommand;
+          agentScript = [{ commands: [command] }, { text: "Done." }];
+          let race: Promise<string> | undefined;
+          execHandlers.set(command, async ({ env }) => {
+            const lock = await lockRun(id);
+            // The Sprite has returned; the receipt arrives once the completion is waiting to commit.
+            race = (async () => {
+              try {
+                await queued(completion);
+                const result = receive(env, secret);
+                await queued(receipt);
+                await lock.release();
+                return await result;
+              } catch (error) {
+                await lock.release().catch(() => {});
+                throw error;
+              }
+            })();
+            return output("uploaded");
+          });
+          const sent = await (await respond(id, id, owner, "Upload the flag")).done;
+          await stopped.assertStopped(id);
+          assert.equal(await race, "stale");
+          const [uploader] = await operation(id, command);
+          assert.equal(uploader.status, "completed");
+          assert.equal(
+            (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id]))
+              .rowCount,
+            0,
+          );
+          assert.deepEqual(await run(id), {
+            status: "active",
+            submitted_flag_correct: null,
+            generation: 0,
+            promoted_at: null,
+            correct: null,
+            jobs: 0,
+            submits: 0,
+          });
+          // With no receipt, play continues: the agent's next turn was admitted.
+          assert.equal(agentRequests, 2);
+          assert.ok(
+            sent.some(
+              ({ type, data }) => type === "event" && (data as { text: string }).text === "Done.",
+            ),
+          );
+        } finally {
+          stopped.restore();
+        }
       },
     );
 
@@ -845,47 +950,53 @@ await test(
       async () => {
         const owner = `lifecycle-race-accepted-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
-        const command = uploadCommand;
-        agentScript = [{ commands: [command] }];
-        let race: Promise<string> | undefined;
-        execHandlers.set(command, async ({ env }) => {
-          const lock = await lockRun(id);
-          const result = receive(env, secret);
-          await queued(receipt);
-          // The Sprite returns; the receipt commits after that and before the completion.
-          race = (async () => {
-            try {
-              await queued(completion);
-              await lock.release();
-              return await result;
-            } catch (error) {
-              await lock.release().catch(() => {});
-              throw error;
-            }
-          })();
-          return output("uploaded");
-        });
-        await (
-          await respond(id, id, owner, "Upload the flag")
-        ).done;
-        assert.equal(await race, "accepted");
-        const [uploader] = await operation(id, command);
-        assert.equal(uploader.status, "completed");
-        const promoted = await run(id);
-        assert.ok(promoted.promoted_at);
-        assert.deepEqual(
-          { ...promoted, promoted_at: undefined },
-          {
-            status: "finalizing",
-            submitted_flag_correct: true,
-            generation: 1,
-            promoted_at: undefined,
-            correct: true,
-            jobs: 1,
-            submits: 1,
-          },
-        );
-        assert.equal(agentRequests, 1);
+        const stopped = screenStopped();
+        try {
+          const command = uploadCommand;
+          agentScript = [{ commands: [command] }];
+          let race: Promise<string> | undefined;
+          execHandlers.set(command, async ({ env }) => {
+            const lock = await lockRun(id);
+            const result = receive(env, secret);
+            await queued(receipt);
+            // The Sprite returns; the receipt commits after that and before the completion.
+            race = (async () => {
+              try {
+                await queued(completion);
+                await lock.release();
+                return await result;
+              } catch (error) {
+                await lock.release().catch(() => {});
+                throw error;
+              }
+            })();
+            return output("uploaded");
+          });
+          await (
+            await respond(id, id, owner, "Upload the flag")
+          ).done;
+          await stopped.assertStopped(id);
+          assert.equal(await race, "accepted");
+          const [uploader] = await operation(id, command);
+          assert.equal(uploader.status, "completed");
+          const promoted = await run(id);
+          assert.ok(promoted.promoted_at);
+          assert.deepEqual(
+            { ...promoted, promoted_at: undefined },
+            {
+              status: "finalizing",
+              submitted_flag_correct: true,
+              generation: 1,
+              promoted_at: undefined,
+              correct: true,
+              jobs: 1,
+              submits: 1,
+            },
+          );
+          assert.equal(agentRequests, 1);
+        } finally {
+          stopped.restore();
+        }
       },
     );
   },

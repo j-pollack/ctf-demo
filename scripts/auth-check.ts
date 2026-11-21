@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { db } from "../lib/db";
 import { auth } from "../lib/auth";
-import { MONITOR_VERSION } from "../lib/control";
+import { ASYNC_MONITOR_VERSION } from "../lib/control";
 import { makeSecret, AGENT_MODEL, MODELS } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { player } from "../lib/http";
@@ -54,8 +54,8 @@ try {
     /Sign in to play/,
   );
   await db.query(
-    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
-    VALUES($1,$2,$3,$4,$5,$6,$7,100000,'active',now())`,
+    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,monitor_mode)
+    VALUES($1,$2,$3,$4,$5,$6,$7,100000,'active',now(),'async')`,
     [
       id,
       guest.user.id,
@@ -63,7 +63,7 @@ try {
       makeSecret().hash,
       AGENT_MODEL,
       TYPESAFE_MODEL,
-      MONITOR_VERSION,
+      ASYNC_MONITOR_VERSION,
     ],
   );
   const sent = await auth.handler(
@@ -98,13 +98,13 @@ try {
     archived = randomUUID();
   gameIds.push(cheaper, pending, archived);
   for (const [gameId, version, turns, spend, reserved] of [
-    [cheaper, MONITOR_VERSION, 8, 1000, 0],
-    [pending, MONITOR_VERSION, 1, 0, 100],
+    [cheaper, ASYNC_MONITOR_VERSION, 8, 1000, 0],
+    [pending, ASYNC_MONITOR_VERSION, 1, 0, 100],
     [archived, oldVersion, 99, 500, 0],
   ] as const) {
     await db.query(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,turns,spent_microdollars,reserved_microdollars)
-      VALUES($1,$2,$3,$4,$5,$6,$7,500000,'captured',now(),$8,$9,$10)`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,turns,spent_microdollars,reserved_microdollars,monitor_mode)
+      VALUES($1,$2,$3,$4,$5,$6,$7,500000,'captured',now(),$8,$9,$10,'async')`,
       [
         gameId,
         member.id,

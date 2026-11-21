@@ -9,7 +9,7 @@ import { flagReadCases } from "../../scripts/flag-read-cases";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
 import { fastMonitorTiming, fastMonitorDelays } from "./monitor-timing";
 import { AGENT_MODEL, INVESTIGATOR_MODEL } from "../../lib/policy";
-import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
+import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,17 +43,12 @@ await test(
       "callback-failure",
       "wrapper",
       "wrapper-failure",
-      "candidate-wrapper",
-      "production-wrapper",
-      "candidate-heldout",
-      "candidate-rate-limit",
-      "candidate-missing-usage",
-      "candidate-overrun",
-      "candidate-price-cap",
-      "candidate-unavailable-provider",
-      "candidate-slow-success",
-      "candidate-deadline",
-      "candidate-classifier-timeout",
+      "heldout",
+      "price-cap",
+      "unavailable-provider",
+      "slow-success",
+      "deadline",
+      "classifier-timeout",
     ] as const;
     if (!process.env.CTF_BASELINE_TEST_MODE) {
       for (const mode of modes)
@@ -79,15 +74,9 @@ await test(
     assert.ok(modes.some((mode) => mode === process.env.CTF_BASELINE_TEST_MODE));
     for (const name of modes.filter((mode) => mode === process.env.CTF_BASELINE_TEST_MODE))
       await t.test(name, async (t) => {
-        const candidate = name.startsWith("candidate-");
-        const production = name === "production-wrapper";
-        const mode = production ? "wrapper" : name.replace(/^candidate-/, "");
-        const strategy = production
-          ? "closed-world-presumption"
-          : candidate
-            ? "closed-world-presumption-v1"
-            : "current";
-        const policy = resolveFlagReadPolicy(strategy);
+        const mode = name;
+        const policyId = "v15-unknown";
+        const policy = flagReadPolicyById(policyId);
         const fractionalPricing = mode === "price-cap" || mode === "unavailable-provider";
         const longScenario = ["slow-success", "deadline", "classifier-timeout"].includes(mode);
         const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
@@ -152,7 +141,7 @@ await test(
                     "SELECT extract(epoch FROM (claim_until-updated_at))*1000 AS duration FROM ctf.monitor_jobs WHERE status='reviewing'",
                   );
                   assert.equal(claims.length, 1);
-                  assert.equal(Number(claims[0].duration), 120_000);
+                  assert.equal(Number(claims[0].duration), 660_000);
                 }
                 if (mode === "classifier-timeout") {
                   assert.ok(init?.signal);
@@ -293,13 +282,13 @@ await test(
         if (mode === "heldout") {
           const corpus = syntheticHeldoutCorpus(readFileSync("evals/flag-read/cases.json", "utf8"));
           const sources = baselineSources();
-          const schedule = buildSchedule(corpus, sources, strategy, "test");
-          const prepared = prepareBaseline(corpus, schedule, sources, 1_000_000, strategy, "test");
+          const schedule = buildSchedule(corpus, sources, policyId, "test");
+          const prepared = prepareBaseline(corpus, schedule, sources, 1_000_000, policyId, "test");
           const entries = await runFlagReadLiveEvaluation(
             { databaseUrl: url.toString(), budgetMicrodollars: 1_000_000 },
             prepared.cases,
             undefined,
-            { boundedBaseline: true, searchStrategy: strategy },
+            { policyId },
           );
           assert.deepEqual(failures, []);
           assert.equal(entries.length, 40);
@@ -342,7 +331,7 @@ await test(
           const parent = mkdtempSync(join(tmpdir(), "ctf-baseline-"));
           t.after(() => rmSync(parent, { recursive: true, force: true }));
           const output = join(parent, "run");
-          // The recorded baseline is immutable. Current-source tests use a fresh schedule.
+          // The committed schedules are immutable. Current-source tests use a fresh schedule.
           const schedulePath = join(parent, "current-schedule.json");
           writeFileSync(
             schedulePath,
@@ -350,7 +339,7 @@ await test(
               buildSchedule(
                 readFileSync("evals/flag-read/cases.json", "utf8"),
                 baselineSources(),
-                strategy,
+                policyId,
               ),
             ),
             { flag: "wx" },
@@ -361,8 +350,8 @@ await test(
             "1",
             "--output-dir",
             output,
-            "--strategy",
-            strategy,
+            "--policy",
+            policyId,
             "--schedule",
             schedulePath,
           ];
@@ -388,14 +377,14 @@ await test(
           });
           assert.ok(summary);
           assert.deepEqual(failures, []);
-          const { INVESTIGATOR_EFFORT, MONITOR_CALL_LIMIT } =
-            await import("../../lib/investigator-driver");
+          const { INVESTIGATOR_EFFORT } = await import("../../lib/investigator-driver");
           const schedule = JSON.parse(readFileSync(join(output, "schedule.json"), "utf8"));
-          assert.equal(schedule.execution.investigatorCallsPerCase, MONITOR_CALL_LIMIT);
+          // The frozen schedule keeps the limit it was measured under.
+          assert.equal(schedule.execution.investigatorCallsPerCase, 12);
           assert.equal(schedule.execution.investigatorOutputTokensPerCall, MONITOR_OUTPUT_TOKENS);
           assert.equal(schedule.execution.investigatorDeadlineMs, 90_000);
           assert.equal(schedule.policy.effort, INVESTIGATOR_EFFORT);
-          assert.equal(schedule.policy.strategy, strategy);
+          assert.equal(schedule.policy.policyId, policyId);
           assert.equal(schedule.policy.promptHash, policy.promptHash);
           const persisted = JSON.parse(readFileSync(join(output, "summary.json"), "utf8"));
           const journal = readFileSync(join(output, "entries.jsonl"), "utf8")
@@ -416,15 +405,17 @@ await test(
                 entry.investigationComplete &&
                 entry.trace &&
                 entry.inference.length === 2 &&
-                entry.searchStrategy === strategy &&
+                entry.policyId === policyId &&
                 entry.promptHash === policy.promptHash &&
                 entry.monitorVersion === policy.monitorVersion,
             ),
           );
           const { rows: reviews } = await inspection.query(
-            "SELECT DISTINCT prompt_version FROM ctf.monitor_reviews",
+            "SELECT DISTINCT prompt_version,prompt_hash FROM ctf.monitor_reviews",
           );
-          assert.deepEqual(reviews, [{ prompt_version: policy.monitorVersion }]);
+          assert.deepEqual(reviews, [
+            { prompt_version: policy.monitorVersion, prompt_hash: policy.promptHash },
+          ]);
           assert.equal(persisted.scores.strict.incomplete, 0);
           assert.equal(persisted.scores.presumption.incomplete, 0);
           assert.equal(persisted.status, "completed");
@@ -446,7 +437,6 @@ await test(
               cases,
               undefined,
               {
-                boundedBaseline: true,
                 onEntry: () => {
                   throw new Error("synthetic disk full");
                 },
@@ -464,8 +454,7 @@ await test(
           cases,
           undefined,
           {
-            boundedBaseline: true,
-            searchStrategy: strategy,
+            policyId,
             timing: longScenario ? fastMonitorTiming : undefined,
           },
         );
@@ -594,7 +583,7 @@ await test(
           if (mode === "missing-usage" || mode === "timeout") {
             assert.ok(totals.held > 0);
             // Endpoint rates leave enough for classification but not another investigator.
-            // Prove retained holds and actual admission denial for both policy prompts.
+            // Prove retained holds and actual admission denial under the production prompt.
             assert.equal(investigator, 1);
             assert.ok(entries[0].heldMicrodollars > 0);
             assert.equal(totals.held, entries[0].heldMicrodollars);

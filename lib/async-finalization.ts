@@ -1,9 +1,26 @@
+import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import { db } from "./db";
 import { randomUUID } from "node:crypto";
 import { transaction } from "./games";
 import { GameError, hasSecret } from "./policy";
-import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
-import type { ReviewDecision } from "./run-lifecycle";
+import { diagnosticText } from "./inference";
+import { assertMonitorJobClaim, MAX_REQUEUES, type MonitorJobClaim } from "./monitor-jobs";
+import { persistTranscriptEvidence } from "./transcript-evidence";
+import { wakeWorker } from "./worker-wake";
+import { JAILBREAK_CATCH_TEXT, REFUSED_PLACEHOLDER_TEXT } from "./text-screen";
+import { UNVERIFIED_SUBMISSION_STATUS, type GameEvent } from "./types";
+
+export type ReviewDecision = {
+  verdict: "allow" | "block" | "unknown";
+  reason?: string;
+  evidence?: unknown;
+  operationalError?: string;
+  latencyMs?: number;
+  calls?: number;
+  retrievalCalls?: number;
+  initialEvidenceCount?: number;
+  retrievedRefs?: string[];
+};
 
 export async function catchAsyncRun(
   claim: MonitorJobClaim,
@@ -44,6 +61,119 @@ export async function catchAsyncRun(
       ],
     );
     return true;
+  });
+}
+
+export type RefusedText = {
+  kind: "instruction" | "system_prompt";
+  text: string;
+  flagged: boolean;
+};
+
+// Ends the response's run for a jailbreak: stores the refused text outside the transcript, leaves
+// a placeholder in its place and records the block. Changes nothing unless the response still
+// holds the run, so a catch that lost a race is `stale`.
+export async function catchJailbreak(input: {
+  gameId: string;
+  sessionId: string;
+  lease: string;
+  generation: number;
+  refused: readonly RefusedText[];
+  questions: readonly string[];
+}): Promise<{ status: "stale" } | { status: "caught"; events: GameEvent[] }> {
+  return transaction(async (client) => {
+    const {
+      rows: [run],
+    } = await client.query<{ status: string; execution_generation: string; turns: number }>(
+      "SELECT status,execution_generation,turns FROM ctf.games WHERE id=$1 FOR UPDATE",
+      [input.gameId],
+    );
+    if (!run || run.status !== "active" || Number(run.execution_generation) !== input.generation)
+      return { status: "stale" as const };
+    const {
+      rows: [session],
+    } = await client.query<{
+      lease: string | null;
+      lease_until: Date | null;
+      messages: Message[];
+    }>(
+      "SELECT lease,lease_until,messages FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE",
+      [input.gameId, input.sessionId],
+    );
+    if (session?.lease !== input.lease || !session.lease_until || session.lease_until <= new Date())
+      return { status: "stale" as const };
+    const { rowCount: submitted } = await client.query(
+      "SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1",
+      [input.gameId],
+    );
+    if (submitted) return { status: "stale" as const };
+    const {
+      rows: [game],
+    } = await client.query<{ observation_revision: string }>(
+      `UPDATE ctf.games SET status='caught',blocks=blocks+1,
+       execution_generation=execution_generation+1,state_revision=state_revision+1,
+       observation_revision=observation_revision+1,updated_at=now()
+       WHERE id=$1 RETURNING observation_revision`,
+      [input.gameId],
+    );
+    const ids: string[] = [];
+    for (const { kind, text, flagged } of input.refused) {
+      const {
+        rows: [saved],
+      } = await client.query<{ id: string }>(
+        `INSERT INTO ctf.refused_texts(game_id,session_id,kind,text,flagged)
+         VALUES($1,$2,$3,$4,$5) RETURNING id`,
+        [input.gameId, input.sessionId, kind, text, flagged],
+      );
+      ids.push(saved.id);
+    }
+    const placeholder: UserMessage & { refused: true; refusedTextIds: string[] } = {
+      role: "user",
+      content: [{ type: "text", text: REFUSED_PLACEHOLDER_TEXT }],
+      timestamp: Date.now(),
+      refused: true,
+      refusedTextIds: ids,
+    };
+    const messages: Message[] = [...session.messages, placeholder];
+    await client.query(
+      "UPDATE ctf.agent_sessions SET messages=$3,updated_at=now() WHERE game_id=$1 AND id=$2",
+      [input.gameId, input.sessionId, JSON.stringify(messages)],
+    );
+    await persistTranscriptEvidence(client, {
+      gameId: input.gameId,
+      sessionId: input.sessionId,
+      runRevision: Number(game.observation_revision),
+      messages,
+    });
+    const record = async (data: Omit<GameEvent, "id">) => {
+      const {
+        rows: [event],
+      } = await client.query<{ id: string }>(
+        "INSERT INTO ctf.events(game_id,session_id,data) VALUES($1,$2,$3) RETURNING id",
+        [input.gameId, input.sessionId, JSON.stringify(data)],
+      );
+      return { ...data, id: Number(event.id) };
+    };
+    return {
+      status: "caught" as const,
+      events: [
+        await record({
+          kind: "user",
+          text: REFUSED_PLACEHOLDER_TEXT,
+          refused: true,
+          refusedTextIds: ids,
+        }),
+        await record({
+          kind: "monitor",
+          text: JAILBREAK_CATCH_TEXT,
+          decision: "block",
+          cause: "jailbreak",
+          questions: [...input.questions],
+          refusedKinds: input.refused.filter((entry) => entry.flagged).map((entry) => entry.kind),
+          turn: run.turns,
+        }),
+      ],
+    };
   });
 }
 
@@ -94,6 +224,7 @@ export async function beginAsyncSubmission(input: {
       [input.gameId, input.sessionId, input.value, correct],
     );
     await client.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [input.gameId]);
+    void wakeWorker();
     return { correct };
   });
 }
@@ -266,4 +397,102 @@ export async function finalizeAsyncRun(
     );
     return true;
   });
+}
+
+const SCORING_GIVE_UP_HOURS = 24;
+const UNVERIFIED_TEXT = {
+  review:
+    "The review could not be completed after repeated attempts. This run ended with no result.",
+  scoring: "Scoring could not be completed. This run ended with no result.",
+} as const;
+
+// Ends a submitted run that cannot get a verdict. Returns its Sprite name when it did.
+export async function resolveUnverifiedRun(gameId: string): Promise<string | null> {
+  return transaction(async (client) => {
+    const {
+      rows: [run],
+    } = await client.query<{ sprite_name: string; turns: number }>(
+      `SELECT sprite_name,turns FROM ctf.games
+       WHERE id=$1 AND status='finalizing' AND monitor_mode='async' FOR UPDATE`,
+      [gameId],
+    );
+    if (!run) return null;
+    const {
+      rows: [unresolved],
+    } = await client.query<{ session_id: string }>(
+      `SELECT j.session_id FROM ctf.monitor_jobs j
+       JOIN ctf.agent_sessions s ON s.game_id=j.game_id AND s.id=j.session_id
+       WHERE j.game_id=$1 AND j.status='unresolved' AND j.requeues>=$2
+         AND NOT EXISTS (SELECT 1 FROM ctf.monitor_jobs o WHERE o.game_id=$1
+           AND (o.status NOT IN ('caught-up','unresolved')
+             OR (o.status='unresolved' AND o.requeues<$2)))
+       ORDER BY s.ordinal LIMIT 1`,
+      [gameId, MAX_REQUEUES],
+    );
+    let cause: "review" | "scoring" = "review";
+    let sessionId = unresolved?.session_id;
+    if (!sessionId) {
+      const {
+        rows: [first],
+      } = await client.query<{ id: string }>(
+        `SELECT s.id FROM ctf.finalization_jobs f JOIN ctf.agent_sessions s ON s.game_id=f.game_id
+         WHERE f.game_id=$1 AND f.status='unresolved'
+           AND f.updated_at<now()-($2::int * interval '1 hour')
+         ORDER BY s.ordinal LIMIT 1`,
+        [gameId, SCORING_GIVE_UP_HOURS],
+      );
+      if (!first) return null;
+      cause = "scoring";
+      sessionId = first.id;
+    }
+    await client.query(
+      "UPDATE ctf.games SET status=$2,state_revision=state_revision+1,updated_at=now() WHERE id=$1",
+      [gameId, UNVERIFIED_SUBMISSION_STATUS],
+    );
+    await client.query("INSERT INTO ctf.events(game_id,session_id,data) VALUES($1,$2,$3)", [
+      gameId,
+      sessionId,
+      JSON.stringify({
+        kind: "monitor",
+        text: UNVERIFIED_TEXT[cause],
+        decision: "unverified",
+        cause,
+        turn: run.turns,
+      } satisfies Omit<GameEvent, "id">),
+    ]);
+    await client.query(
+      `UPDATE ctf.finalization_jobs SET status='done',claim_token=NULL,claim_until=NULL,
+       updated_at=now() WHERE game_id=$1`,
+      [gameId],
+    );
+    return run.sprite_name;
+  });
+}
+
+export async function resolveUnverifiedRuns(): Promise<string[]> {
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT g.id FROM ctf.games g WHERE g.status='finalizing' AND g.monitor_mode='async' AND (
+       EXISTS (SELECT 1 FROM ctf.monitor_jobs j WHERE j.game_id=g.id AND j.status='unresolved'
+         AND j.requeues>=$1)
+       OR EXISTS (SELECT 1 FROM ctf.finalization_jobs f WHERE f.game_id=g.id
+         AND f.status='unresolved' AND f.updated_at<now()-($2::int * interval '1 hour')))`,
+    [MAX_REQUEUES, SCORING_GIVE_UP_HOURS],
+  );
+  const sprites: string[] = [];
+  for (const { id } of rows) {
+    try {
+      const sprite = await resolveUnverifiedRun(id);
+      if (sprite) sprites.push(sprite);
+    } catch (error) {
+      // One run's failure must not stop the others; the next iteration tries it again.
+      console.error(
+        JSON.stringify({
+          event: "monitor.unverified.failed",
+          gameId: id,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+    }
+  }
+  return sprites;
 }

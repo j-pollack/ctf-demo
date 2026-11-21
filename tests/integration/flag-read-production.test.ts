@@ -9,7 +9,8 @@ import { SpritesClient } from "@fly/sprites";
 import { flagReadCases } from "../../scripts/flag-read-cases";
 import { seedCase } from "../../scripts/flag-read-eval-live";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
-import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
+import { FLAG_READ_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } from "../../lib/control";
+import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import { DAILY_CAP_MICRODOLLARS } from "../../lib/policy";
 import { closePool } from "./postgres";
 import { fastMonitorTiming, fastMonitorDelays } from "./monitor-timing";
@@ -18,12 +19,16 @@ const base = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing
 assert.equal(process.env.NODE_ENV, "test");
 assert.equal(base.hostname, "127.0.0.1");
 assert.match(base.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
-const productionVersion = "investigator-v14-glm53-jev114-presumption-digitalocean";
+// Each of these reviews like "allow" but under another stamp or isolation rule (P3, P4).
+const policyModes = {
+  "policy-v15-shared": { version: FLAG_READ_MONITOR_VERSION, isolated: true, id: "v15-shared" },
+  "policy-v14": { version: PREVIOUS_FLAG_READ_MONITOR_VERSION, isolated: false, id: "v14" },
+  "block-v14": { version: PREVIOUS_FLAG_READ_MONITOR_VERSION, isolated: false, id: "v14" },
+  "policy-v14-isolated": { version: PREVIOUS_FLAG_READ_MONITOR_VERSION, isolated: true, id: "v14" },
+} as const;
 const modes = [
   "allow",
   "block",
-  "legacy",
-  "legacy-context",
   "unknown-version",
   "unavailable",
   "overrun",
@@ -36,6 +41,7 @@ const modes = [
   "sibling-hold",
   "daily-cap",
   "over-ceiling",
+  ...(Object.keys(policyModes) as (keyof typeof policyModes)[]),
 ] as const;
 // Budget-exemption modes: the run budget must not refuse a review (B1, B2) except above the overage ceiling (B8)
 // or when the shared daily cap is reached (B4).
@@ -75,6 +81,8 @@ await test(
       return;
     }
     assert.ok(modes.some((value) => value === mode));
+    // block-v14 catches a run stamped v14 (P4); the other modes keep their own names.
+    const blocking = mode === "block" || mode === "block-v14";
     const timed = ["slow-success", "deadline", "classifier-timeout"].includes(mode);
     const timing = timed && !realTiming ? fastMonitorTiming : undefined;
     const database = `ctf_integration_${randomUUID().replaceAll("-", "")}`;
@@ -97,17 +105,12 @@ await test(
       delete (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool;
     });
     await migrateFreshDatabase(pool);
-    const legacy = mode === "legacy" || mode === "legacy-context";
-    const policy = resolveFlagReadPolicy(legacy ? "current" : undefined);
-    const version =
-      mode === "unknown-version"
-        ? "unsupported-policy-version"
-        : mode === "legacy-context"
-          ? "investigator-v8-glm53-jev114-context32k"
-          : legacy
-            ? policy.monitorVersion
-            : productionVersion;
-    const item = flagReadCases[0];
+    const run = Object.hasOwn(policyModes, mode)
+      ? policyModes[mode as keyof typeof policyModes]
+      : { version: FLAG_READ_MONITOR_VERSION, isolated: false, id: "v15-unknown" as const };
+    const policy = flagReadPolicyById(run.id);
+    const version = mode === "unknown-version" ? "unsupported-policy-version" : run.version;
+    const item = { ...flagReadCases[0], isolated: run.isolated };
     const remaining =
       mode === "budget-between" || mode === "budget-two-call"
         ? TIGHT_REMAINING
@@ -148,7 +151,7 @@ await test(
       investigator = 0,
       deleted = 0;
     t.mock.method(SpritesClient.prototype, "deleteSprite", async (name: string) => {
-      assert.equal(mode, "block");
+      assert.ok(blocking);
       const {
         rows: [game],
       } = await pool.query("SELECT sprite_name,status FROM ctf.games WHERE id=$1", [
@@ -186,12 +189,12 @@ await test(
               "SELECT extract(epoch FROM (claim_until-updated_at))*1000 AS duration FROM ctf.monitor_jobs WHERE game_id=$1 AND status='reviewing'",
               [workspace.gameId],
             );
-            assert.equal(Number(claim.duration), 120_000);
+            assert.equal(Number(claim.duration), 660_000);
             const { rows: holds } = await pool.query(
               "SELECT cost_ceiling FROM ctf.inference WHERE model='typesafe/jev-1.14' AND settled_at IS NULL",
             );
-            assert.equal(holds.length, legacy ? 0 : 1);
-            if (!legacy) assert.ok(Number(holds[0].cost_ceiling) > 0);
+            assert.equal(holds.length, 1);
+            assert.ok(Number(holds[0].cost_ceiling) > 0);
             if (mode === "classifier-timeout")
               await delay(fastMonitorDelays.classifierMs, undefined, { signal: init.signal! });
             return Response.json({
@@ -207,17 +210,12 @@ await test(
           if (exemptModes.includes(mode)) assert.equal(body.max_tokens, 8192);
           assert.equal(body.messages[0].content, policy.systemPrompt);
           assert.equal(body.reasoning.effort, "high");
-          assert.deepEqual(
-            body.provider,
-            legacy
-              ? { require_parameters: true }
-              : {
-                  require_parameters: true,
-                  only: ["digitalocean"],
-                  allow_fallbacks: false,
-                  max_price: { prompt: 0.91, completion: 2.86, request: 0 },
-                },
-          );
+          assert.deepEqual(body.provider, {
+            require_parameters: true,
+            only: ["digitalocean"],
+            allow_fallbacks: false,
+            max_price: { prompt: 0.91, completion: 2.86, request: 0 },
+          });
           const {
             rows: [reservation],
           } = await pool.query(
@@ -225,8 +223,8 @@ await test(
           );
           assert.equal(
             reservation.cost,
-            Math.ceil((reservation.token_ceiling - body.max_tokens) * (legacy ? 1 : 0.91) * 2) +
-              Math.ceil(body.max_tokens * (legacy ? 2 : 2.86)),
+            Math.ceil((reservation.token_ceiling - body.max_tokens) * 0.91 * 2) +
+              Math.ceil(body.max_tokens * 2.86),
           );
           if (mode === "unavailable")
             return Response.json(
@@ -252,7 +250,7 @@ await test(
           const ref = evidence.snapshot.currentTranscript.find(
             (row: { role: string }) => row.role === "tool",
           )?.ref;
-          if (mode === "block") assert.ok(ref);
+          if (blocking) assert.ok(ref);
           const next =
             mode === "overrun" || (mode === "budget-two-call" && investigator === 1)
               ? {
@@ -262,9 +260,9 @@ await test(
               : {
                   name: "finish_investigation",
                   arguments: JSON.stringify({
-                    flagReadDetected: mode === "block",
-                    reason: mode === "block" ? "Observed target read." : "No evidenced read.",
-                    evidence: mode === "block" ? [{ ref }] : [],
+                    flagReadDetected: blocking,
+                    reason: blocking ? "Observed target read." : "No evidenced read.",
+                    evidence: blocking ? [{ ref }] : [],
                   }),
                 };
           return Response.json({
@@ -385,7 +383,7 @@ await test(
       [workspace.gameId],
     );
     const { rows: reviews } = await pool.query(
-      "SELECT prompt_version FROM ctf.monitor_reviews WHERE game_id=$1",
+      "SELECT prompt_version,prompt_hash FROM ctf.monitor_reviews WHERE game_id=$1",
       [workspace.gameId],
     );
     if (mode === "unknown-version") {
@@ -396,7 +394,7 @@ await test(
       return;
     }
     if (exemptModes.includes(mode)) {
-      assert.deepEqual(reviews, [{ prompt_version: version }]);
+      assert.deepEqual(reviews, [{ prompt_version: version, prompt_hash: policy.promptHash }]);
       assert.equal(classifier, 1);
       assert.equal(investigator, mode === "budget-two-call" ? 2 : 1);
       assert.equal(job.status, "caught-up");
@@ -449,19 +447,16 @@ await test(
       );
       return;
     }
-    assert.deepEqual(reviews, [{ prompt_version: version }]);
+    assert.deepEqual(reviews, [{ prompt_version: version, prompt_hash: policy.promptHash }]);
     assert.equal(classifier, 1);
     assert.equal(
       investigator,
       mode === "classifier-timeout" ? 0 : 1,
       "single transport attempt; no fallback or retry inside a review",
     );
-    const success = ["allow", "block", "legacy", "legacy-context", "slow-success"].includes(mode);
-    assert.equal(job.status, success ? (mode === "block" ? "caught" : "caught-up") : "queued");
-    assert.equal(
-      Number(job.covered_version),
-      success && mode !== "block" ? Number(head.version) : 0,
-    );
+    const success = ["allow", "block", "slow-success", ...Object.keys(policyModes)].includes(mode);
+    assert.equal(job.status, success ? (blocking ? "caught" : "caught-up") : "queued");
+    assert.equal(Number(job.covered_version), success && !blocking ? Number(head.version) : 0);
     const {
       rows: [game],
     } = await pool.query(
@@ -469,8 +464,16 @@ await test(
       [workspace.gameId],
     );
     assert.equal(game.monitor_version, version);
-    assert.equal(game.status, mode === "block" ? "caught" : "active");
-    assert.equal(deleted, 0, "a single-session caught run remains forkable");
+    assert.equal(game.status, blocking ? "caught" : "active");
+    assert.equal(
+      deleted,
+      blocking ? 1 : 0,
+      "a caught single-session run's Sprite is deleted in the same worker pass",
+    );
+    const {
+      rows: [spriteRow],
+    } = await pool.query("SELECT sprite_deleted_at FROM ctf.games WHERE id=$1", [workspace.gameId]);
+    assert.equal(spriteRow.sprite_deleted_at !== null, blocking);
     assert.equal(
       game.spent,
       mode === "overrun"
@@ -486,20 +489,39 @@ await test(
     } = await pool.query(
       "SELECT coalesce(sum(cost) FILTER(WHERE settled_at IS NOT NULL),0)::int AS spent,coalesce(sum(cost_ceiling) FILTER(WHERE settled_at IS NULL),0)::int AS held FROM ctf.inference",
     );
-    if (!legacy) assert.deepEqual(accounting, { spent: game.spent, held: game.held });
+    assert.deepEqual(accounting, { spent: game.spent, held: game.held });
     if (["deadline", "classifier-timeout"].includes(mode)) assert.ok(game.held > 0);
     else assert.equal(game.held, 0);
     if (mode === "overrun") assert.match(job.reason, /reserved|allowance/i);
+    if (mode === "deadline" && realTiming) assert.match(job.reason, /timeout/i);
     const expectedMs =
       mode === "slow-success"
         ? fastMonitorDelays.successMs
         : mode === "deadline"
           ? realTiming
-            ? 90_000
+            ? // A provider that hangs: the 90 second per-request timeout in infer fires before
+              // the 600 second review deadline, which this suite cannot reach.
+              90_000
             : fastMonitorTiming.deadlineMs
           : mode === "classifier-timeout"
             ? fastMonitorTiming.classifierDeadlineMs
             : undefined;
+    if (mode === "policy-v14") {
+      // P4: a v14 run that submitted while active is finalized by the same worker as before.
+      await pool.query(
+        `UPDATE ctf.games SET status='finalizing',submitted_flag_correct=false,submitted_session_id=$2
+         WHERE id=$1`,
+        [workspace.gameId, sessionId],
+      );
+      await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [workspace.gameId]);
+      assert.equal(await runMonitorWorkerOnce(timing), true);
+      const {
+        rows: [finalized],
+      } = await pool.query("SELECT status,monitor_version FROM ctf.games WHERE id=$1", [
+        workspace.gameId,
+      ]);
+      assert.deepEqual(finalized, { status: "ended", monitor_version: version });
+    }
     if (expectedMs)
       assert.ok(
         elapsed >= expectedMs - (realTiming ? 500 : 50) &&

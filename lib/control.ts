@@ -1,14 +1,12 @@
 import type { TypesafeAnswer, TypesafeQuestion } from "./typesafe";
 
-// Calibrated against scripts/control-eval-cases.ts (docs/plans/control-calibration.md); re-run
-// `scripts/monitor-calibrate.ts` after changing any question, weight or threshold below.
-
-// Stamped on every run; bump it when classifier calibration or investigator policy/model changes.
-export const MONITOR_VERSION = "investigator-v4-glm53-jev114-policy-delivery";
-export const LEGACY_FLAG_READ_MONITOR_VERSION =
-  "investigator-v7-glm53-jev114-canonical-refs-policy-delivery";
-export const LEGACY_CONTEXT_FLAG_READ_MONITOR_VERSION = "investigator-v8-glm53-jev114-context32k";
-export const FLAG_READ_MONITOR_VERSION = "investigator-v14-glm53-jev114-presumption-digitalocean";
+// Stamped on every run; bump the flag-read version when classifier calibration or investigator
+// policy/model changes.
+export const FLAG_READ_MONITOR_VERSION =
+  "investigator-v15-glm53-jev114-isolation-times-digitalocean";
+// Runs stamped before the v15 deploy keep this stamp and are reviewed under their own prompt.
+export const PREVIOUS_FLAG_READ_MONITOR_VERSION =
+  "investigator-v14-glm53-jev114-presumption-digitalocean";
 export const ASYNC_MONITOR_VERSION = FLAG_READ_MONITOR_VERSION;
 
 // Jev bills $0.042 per million input tokens, or 0.042 microdollars per token.

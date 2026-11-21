@@ -92,7 +92,6 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       [ids],
     );
     const actualModel = MODELS[1];
-    const otherModel = MODELS.find((model) => model !== actualModel)!;
     await pool.query("UPDATE ctf.agent_sessions SET agent_model=$2 WHERE game_id=$1", [
       ids[1],
       actualModel,
@@ -338,10 +337,41 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
       new Request(`http://localhost/api/leaderboard?agent=${encodeURIComponent(actualModel)}`),
     );
     assert.equal((await board.json()).entries.length, 1);
+    // Screen rows carry the Jev model and are not an attack model: they change neither view.
+    await pool.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at,session_id)
+       VALUES($1,$2,$3,'screen','typesafe/jev-1.14',100,500,40,210,now(),$2)`,
+      [randomUUID(), ids[1], legacyDay],
+    );
+    const screened = await (
+      await GET(
+        new Request("http://localhost/api/games/history?limit=50", {
+          headers: { cookie: memberCookie },
+        }),
+      )
+    ).json();
+    assert.equal(
+      screened.runs.find((run: { id: string }) => run.id === ids[1]).agentModel,
+      actualModel,
+      "history still shows the attack model with screen rows present",
+    );
+    assert.equal(
+      (
+        await (
+          await leaderboard(
+            new Request(
+              `http://localhost/api/leaderboard?agent=${encodeURIComponent(actualModel)}`,
+            ),
+          )
+        ).json()
+      ).entries.length,
+      1,
+      "the run still ranks under its attack model",
+    );
 
     const mixedOwner = randomUUID(),
-      mixedParent = randomUUID(),
-      mixedChild = randomUUID();
+      mixedGame = randomUUID(),
+      otherModel = MODELS.find((model) => model !== actualModel)!;
     await pool.query(
       `INSERT INTO ctf."user"(id,name,email,"emailVerified","isAnonymous","createdAt","updatedAt")
        VALUES($1,$1,$2,true,false,now(),now())`,
@@ -349,44 +379,38 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
     );
     await pool.query(
       `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
-        token_budget,status,monitor_difficulty,forked_from)
-       VALUES($1::uuid,$2::uuid,($1::uuid)::text,'hash',$4,'monitor',$6,100,'ended',$5,NULL),
-             ($3::uuid,$2::uuid,($3::uuid)::text,'hash',$4,'monitor',$6,100,'captured',$5,$1::uuid)`,
-      [
-        mixedParent,
-        mixedOwner,
-        mixedChild,
-        actualModel,
-        difficultyOf(ids[1]),
-        ASYNC_MONITOR_VERSION,
-      ],
+        token_budget,status,monitor_difficulty)
+       VALUES($1::uuid,$2::uuid,($1::uuid)::text,'hash',$3,'monitor',$4,100,'captured','hard')`,
+      [mixedGame, mixedOwner, actualModel, ASYNC_MONITOR_VERSION],
     );
     await pool.query(
       `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
-       VALUES($1,$1,1,$3,'medium',''),($2,$2,1,$4,'medium','')`,
-      [mixedParent, mixedChild, actualModel, otherModel],
+       VALUES($1,$1,1,$2,'medium','')`,
+      [mixedGame, actualModel],
     );
     await pool.query(
       `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,session_id)
-       VALUES($1,$2,$3,'agent',$4,100,0,$2),($5,$6,$3,'agent',$7,100,0,$6)`,
-      [randomUUID(), mixedParent, legacyDay, actualModel, randomUUID(), mixedChild, otherModel],
+       VALUES($1,$2,$3,'agent',$4,100,0,$2),($5,$2,$3,'agent',$6,100,0,$2)`,
+      [randomUUID(), mixedGame, legacyDay, actualModel, randomUUID(), otherModel],
     );
-    const mixedBoard = await leaderboard(
-      new Request(`http://localhost/api/leaderboard?agent=${encodeURIComponent(actualModel)}`),
-    );
-    const mixedEntries = (await mixedBoard.json()).entries;
-    assert.equal(
-      mixedEntries.length,
-      1,
-      "a fork that used multiple models is not attributed to either",
-    );
+    const mixedName = `Player ${createHash("sha256").update(mixedOwner).digest("hex").slice(0, 6)}`;
+    const namesOn = async (query: string) =>
+      (
+        (await (
+          await leaderboard(new Request(`http://localhost/api/leaderboard${query}`))
+        ).json()) as {
+          entries: { name: string }[];
+        }
+      ).entries.map((entry) => entry.name);
     assert.ok(
-      mixedEntries.every(
-        (entry: { name: string }) =>
-          entry.name !==
-          `Player ${createHash("sha256").update(mixedOwner).digest("hex").slice(0, 6)}`,
-      ),
+      (await namesOn("")).includes(mixedName),
+      "the mixed-model capture is otherwise ranked",
     );
-    assert.equal((await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count, "25");
+    for (const model of [actualModel, otherModel])
+      assert.ok(
+        !(await namesOn(`?agent=${encodeURIComponent(model)}`)).includes(mixedName),
+        `a run that used another attack model is not attributed to ${model}`,
+      );
+    assert.equal((await pool.query("SELECT count(*) FROM ctf.games")).rows[0].count, "24");
   });
 }

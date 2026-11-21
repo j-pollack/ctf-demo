@@ -53,6 +53,11 @@ await test(
       "migrations/019-session-stop.sql",
       "migrations/020-http-flag-submission.sql",
       "migrations/021-game-rules.sql",
+      "migrations/024-command-returned.sql",
+      "migrations/025-jailbreak-catch.sql",
+      "migrations/026-investigator-verdicts.sql",
+      "migrations/027-review-prompt-hash.sql",
+      "migrations/028-review-continuations.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
 

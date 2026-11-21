@@ -21,7 +21,7 @@ test("HTTP smoke uploads the file to TARGET with no other headers or variables",
 });
 
 test("smoke review diagnostics expose only a fixed error category", () => {
-  assert.equal(smokeReviewErrorCategory("Invalid finish_review reason."), "decision-reason");
+  assert.equal(smokeReviewErrorCategory("Invalid decision reason."), "decision-reason");
   assert.equal(smokeReviewErrorCategory("Duplicate evidence reference."), "duplicate-citation");
   assert.equal(smokeReviewErrorCategory("Evidence excerpt does not match."), "citation");
   assert.equal(smokeReviewErrorCategory("Provider request timed out."), "deadline-or-abort");

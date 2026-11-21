@@ -13,7 +13,7 @@ const text = (html: string) =>
     .replace(/&#x27;/g, "'")
     .replace(/\s+/g, " ");
 
-const defaultRules = { monitorIsolation: false, bugFixRequired: true };
+const defaultRules = { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false };
 const landing = text(
   renderToStaticMarkup(createElement(LandingContent, { submissionUrl: null, rules: defaultRules })),
 );

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { GameError } from "./policy";
+import { wakeWorker } from "./worker-wake";
 
 export type MonitorJobClaim = {
   jobId: string;
@@ -17,6 +18,9 @@ export type MonitorJobClaim = {
 
 const CLAIM_MS = 90_000;
 const RETRY_DELAYS_MS = [1_000, 5_000, 20_000] as const;
+// How long an unresolved job of a submitted run waits before each requeue.
+const REQUEUE_DELAYS_MINUTES = [1, 5, 15, 40] as const;
+export const MAX_REQUEUES = REQUEUE_DELAYS_MINUTES.length;
 // A session is reviewed when its agent turn ends: a live lease means the turn is in progress.
 // A subquery, not a join, so FOR UPDATE SKIP LOCKED never locks or skips a runner's session row.
 // A finished response is claimable mid-turn too: releasing the lease and the next instruction's
@@ -56,6 +60,45 @@ export async function enqueueMonitorJob(
   await client.query("UPDATE ctf.games SET state_revision=state_revision+1 WHERE id=$1", [
     input.gameId,
   ]);
+  void wakeWorker();
+}
+
+// Whether a worker has anything it must act on without a new enqueue. A queued finalization job
+// of a run that is not finalizing, or that failed scoring, is not pending: nothing will move it.
+export async function hasPendingWork() {
+  const {
+    rows: [row],
+  } = await db.query<{ pending: boolean }>(
+    `SELECT EXISTS(SELECT 1 FROM ctf.monitor_jobs WHERE status IN ('queued','reviewing'))
+      OR EXISTS(SELECT 1 FROM ctf.finalization_jobs f JOIN ctf.games g ON g.id=f.game_id
+        WHERE f.status='scoring'
+          OR (f.status='queued' AND g.status='finalizing' AND g.finalization_error IS NULL))
+      AS pending`,
+  );
+  return row.pending;
+}
+
+// One statement: the run row is locked before its job rows, as finishMonitorJob does, so two
+// workers requeue a job once. A skipped (locked) run is picked up by the next iteration.
+export async function requeueUnresolvedMonitorJobs() {
+  await db.query(
+    `WITH due AS (
+       SELECT g.id FROM ctf.games g
+       WHERE g.status='finalizing' AND g.monitor_mode='async' AND EXISTS (
+         SELECT 1 FROM ctf.monitor_jobs j WHERE j.game_id=g.id AND j.status='unresolved'
+           AND j.requeues<$2 AND j.updated_at<now()-($1::int[])[j.requeues+1]*interval '1 minute')
+       FOR UPDATE OF g SKIP LOCKED
+     ), requeued AS (
+       UPDATE ctf.monitor_jobs j SET status='queued',attempts=0,requeues=j.requeues+1,
+         next_attempt_at=now(),updated_at=now()
+       FROM due WHERE j.game_id=due.id AND j.status='unresolved' AND j.requeues<$2
+         AND j.updated_at<now()-($1::int[])[j.requeues+1]*interval '1 minute'
+       RETURNING j.game_id
+     )
+     UPDATE ctf.games SET state_revision=state_revision+1
+     WHERE id IN (SELECT game_id FROM requeued)`,
+    [REQUEUE_DELAYS_MINUTES, MAX_REQUEUES],
+  );
 }
 
 export async function assertMonitorJobClaim(client: PoolClient, claim: MonitorJobClaim) {

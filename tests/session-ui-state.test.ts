@@ -268,7 +268,6 @@ test("a late sibling done frame updates run status while retaining the selected 
     caughtSessionId: "alpha",
     caughtSessionOrdinal: 1,
     caughtReason: "Prepared flag read",
-    forkable: false,
   };
   const stale = {
     ...next,
@@ -277,13 +276,11 @@ test("a late sibling done frame updates run status while retaining the selected 
     caughtSessionId: null,
     caughtSessionOrdinal: null,
     caughtReason: null,
-    forkable: true,
   };
   const preserved = keepSelectedSessionProjection(caughtWithSource, stale);
   assert.equal(preserved.caughtSessionId, "alpha");
   assert.equal(preserved.caughtSessionOrdinal, 1);
   assert.equal(preserved.caughtReason, "Prepared flag read");
-  assert.equal(preserved.forkable, false);
   assert.equal(preserved.busy, false);
 });
 

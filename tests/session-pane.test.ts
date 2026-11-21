@@ -32,7 +32,7 @@ const render = (session: SessionSummary, view: SessionUIState | undefined, extra
       focused: false,
       runStarted: false,
       submissionTransport: "tool",
-      rules: { monitorIsolation: false, bugFixRequired: true },
+      rules: { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false },
       disabled: false,
       streaming: false,
       onFocus: noop,

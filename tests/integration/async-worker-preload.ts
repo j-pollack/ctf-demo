@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { MODELS } from "../../lib/policy";
 import { TYPESAFE_MODEL } from "../../lib/typesafe";
+import { annotationResponse } from "./annotation-fake";
 
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(connection.hostname, "127.0.0.1");
@@ -30,6 +31,8 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
     );
     const body = JSON.parse(String(options.body));
     assert.equal(body.model, TYPESAFE_MODEL);
+    const annotation = await annotationResponse(body);
+    if (annotation) return annotation;
     assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
     assert.ok(Array.isArray(body.state.transcript));
     return Response.json({

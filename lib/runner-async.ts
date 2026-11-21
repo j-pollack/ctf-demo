@@ -11,7 +11,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { beginAsyncSubmission } from "./async-finalization";
+import { beginAsyncSubmission, catchJailbreak } from "./async-finalization";
 import { db } from "./db";
 import {
   assertLease,
@@ -24,12 +24,28 @@ import {
 } from "./games";
 import { agentStream, diagnosticText, getModel, reasoningOf, textOf } from "./inference";
 import { instructionMessage } from "./monitor-visibility";
-import { completeAsyncCommand, dispatchAsyncCommand } from "./monitor-commands";
+import {
+  completeAsyncCommand,
+  dispatchAsyncCommand,
+  markCommandReturned,
+} from "./monitor-commands";
 import { GameError, SUBMIT_TOOL_DESCRIPTION, agentPrompt } from "./policy";
 import { configuredFlagEndpoint } from "./flag-submission-protocol";
 import { releaseSessionLease, persistReviewedSessionMessages } from "./sessions";
-import { checkpointEnvironment, executeCommand, SPRITE_WORKDIR } from "./sprites";
-import { repairMessages } from "./transcript-repair";
+import { executeCommand, SPRITE_WORKDIR } from "./sprites";
+import {
+  createScreenBreaker,
+  injectionVerdict,
+  screenTexts,
+  signalsAtOrAbove,
+  submissionVerdicts,
+  CATCH_THRESHOLD,
+  SECOND_LOOK_THRESHOLD,
+  wrapFlagged,
+  type ScreenAnswers,
+  type ScreenContext,
+} from "./text-screen";
+import { INTERRUPTED_RESULT_TEXT, repairMessages } from "./transcript-repair";
 import type { GameEvent } from "./types";
 
 const HEARTBEAT_MS = 1000;
@@ -40,7 +56,10 @@ export async function runAsyncGame(
   prompt: string,
   requestSignal: AbortSignal,
   send: (type: string, data: unknown) => void,
-  options: { deadlineSignal?: AbortSignal } = {},
+  options: {
+    deadlineSignal?: AbortSignal;
+    beforePrompt?: (signal: AbortSignal) => Promise<void>;
+  } = {},
 ) {
   const game = { ...inputGame };
   const http = game.submission_transport === "http";
@@ -53,11 +72,19 @@ export async function runAsyncGame(
   const stopRequest = new AbortController();
   const signal = AbortSignal.any([requestSignal, stopRequest.signal]);
   const activeCommands = new Map<string, string>();
+  // Screens only record what Jev says about a text. They never touch the response's state.
+  const screenContext: ScreenContext = {
+    game,
+    sessionId,
+    lease,
+    generation,
+    stop: stop.signal,
+    breaker: createScreenBreaker(),
+  };
   let persistence: Promise<void> = Promise.resolve();
   let directory: string | undefined;
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   let failure: unknown;
-  let checkpoint: string | undefined;
   let phase = "";
   let heartbeatBusy = false;
   let receiptReceived = false;
@@ -127,6 +154,25 @@ export async function runAsyncGame(
   };
   const heartbeat = setInterval(() => void checkHeartbeat(), HEARTBEAT_MS);
 
+  // A command's upload authority ends when it returns, before its result is screened. If that cannot
+  // be recorded the result is not screened, so a screen never lengthens the window.
+  const stampReturned = async (operationId: string) => {
+    try {
+      await markCommandReturned(operationId);
+      return true;
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "text_screen.stamp_failed",
+          sessionId,
+          kind: "tool_output",
+          durationMs: 0,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+      return false;
+    }
+  };
   const emitBilling = async () => {
     try {
       send("billing", await gameBilling(game.id));
@@ -144,6 +190,59 @@ export async function runAsyncGame(
     const saved = await record(game.id, event, lease, sessionId, generation);
     send("event", saved);
     await emitBilling();
+  };
+
+  // Ends the response without the agent seeing the text when a verdict is certain. Returns whether
+  // the response is over. A stop that arrives before the verdicts are known ends it unrecorded.
+  const refuseJailbreak = async (answers: ScreenAnswers | undefined) => {
+    const { rows } = await db.query<{ system_prompt: string }>(
+      "SELECT system_prompt FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2",
+      [game.id, sessionId],
+    );
+    const verdicts = submissionVerdicts(answers, game.system_prompt, rows[0]?.system_prompt ?? "");
+    // A certain verdict wins over a stop: a stop that aborted the other screen does not undo it.
+    if (!verdicts.certain.length) {
+      if (!verdicts.known && (signal.aborted || stop.signal.aborted))
+        throw failure ?? new Error("Response stopped.");
+      for (const kind of verdicts.unclear)
+        console.error(
+          JSON.stringify({
+            event: "text_screen.unclear",
+            gameId: game.id,
+            sessionId,
+            kind,
+            questions: signalsAtOrAbove(answers?.[kind], SECOND_LOOK_THRESHOLD),
+          }),
+        );
+      return false;
+    }
+    const questions = verdicts.certain.flatMap((kind) =>
+      signalsAtOrAbove(answers?.[kind], CATCH_THRESHOLD),
+    );
+    const result = await catchJailbreak({
+      gameId: game.id,
+      sessionId,
+      lease,
+      generation,
+      refused: [
+        { kind: "instruction", text: prompt, flagged: verdicts.certain.includes("instruction") },
+        ...(verdicts.systemPromptChanged
+          ? [
+              {
+                kind: "system_prompt" as const,
+                text: game.system_prompt,
+                flagged: verdicts.certain.includes("system_prompt"),
+              },
+            ]
+          : []),
+      ],
+      questions: [...new Set(questions)],
+    });
+    if (result.status === "stale") throw new GameError("This response has stopped.", 409);
+    // A stop that arrives now has nothing left to resume.
+    game.status = "caught";
+    for (const event of result.events) send("event", event);
+    return true;
   };
 
   try {
@@ -207,7 +306,12 @@ export async function runAsyncGame(
             ? { TARGET: `${submissionUrl}/${dispatch.submissionToken}` }
             : undefined,
         );
-        return { content: [{ type: "text" as const, text: output }], details: {} };
+        const screened = (await stampReturned(dispatch.id))
+          ? await screenTexts(screenContext, [{ kind: "tool_output", ref: id, text: output }])
+          : undefined;
+        // A flagged result reaches the agent labelled as data. An unscreened one is not labelled.
+        const text = injectionVerdict(screened?.tool_output) ? wrapFlagged(output) : output;
+        return { content: [{ type: "text" as const, text }], details: {} };
       },
     });
     const submitTool = defineTool({
@@ -367,8 +471,7 @@ export async function runAsyncGame(
               generation,
             );
             if (turnsDelta) game.turns++;
-            if (message.role === "user")
-              await emit({ kind: "user", text: textOf(message), checkpoint });
+            if (message.role === "user") await emit({ kind: "user", text: textOf(message) });
             if (message.role === "assistant" && turnsDelta) {
               const commands = message.content.flatMap((part) =>
                 part.type === "toolCall" && part.name === "sprite_exec"
@@ -395,11 +498,13 @@ export async function runAsyncGame(
     });
     if (signal.aborted) throw new Error("Response stopped.");
     await assertLease(game);
-    const { rows: count } = await db.query<{ total: number }>(
-      "SELECT count(*)::int AS total FROM ctf.agent_sessions WHERE game_id=$1",
-      [game.id],
-    );
-    if ((count[0]?.total ?? 0) === 1) checkpoint = await checkpointEnvironment(game.sprite_name);
+    const answers = await screenTexts(screenContext, [
+      { kind: "instruction", text: prompt },
+      { kind: "system_prompt", text: game.system_prompt },
+    ]);
+    if (game.jailbreak_catch && (await refuseJailbreak(answers))) return;
+    const hook = options.beforePrompt;
+    if (hook) await hook(signal);
     await session.agent.prompt(instructionMessage(prompt, game.system_prompt));
     await persistence;
     if (failure && game.status === "active") throw failure;
@@ -463,7 +568,7 @@ export async function runAsyncGame(
         role: "toolResult",
         toolCallId,
         toolName: "sprite_exec",
-        content: [{ type: "text", text: "Execution status is unknown after interruption." }],
+        content: [{ type: "text", text: INTERRUPTED_RESULT_TEXT }],
         isError: true,
         timestamp: Date.now(),
       };

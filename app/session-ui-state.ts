@@ -57,7 +57,6 @@ export function preserveTerminalRunState(current: PublicGame, next: PublicGame):
     busy: current.busy,
     sessionBusy: current.sessionBusy,
     sessions: current.sessions,
-    forkable: current.forkable,
     tokenBudget: current.tokenBudget,
     tokensUsed: current.tokensUsed,
     budgetMicrodollars: current.budgetMicrodollars,
@@ -70,6 +69,8 @@ export function preserveTerminalRunState(current: PublicGame, next: PublicGame):
     caughtSessionId: current.caughtSessionId,
     caughtSessionOrdinal: current.caughtSessionOrdinal,
     caughtReason: current.caughtReason,
+    caughtCause: current.caughtCause,
+    refusedTexts: current.refusedTexts,
   };
 }
 

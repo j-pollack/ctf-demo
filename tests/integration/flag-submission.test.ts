@@ -72,6 +72,35 @@ test(
     );
     await pool.query(rules);
     await pool.query(rules);
+    const returned = await readFile(
+      new URL("../../db/migrations/024-command-returned.sql", import.meta.url),
+      "utf8",
+    );
+    await pool.query(returned);
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/025-jailbreak-catch.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/026-investigator-verdicts.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/027-review-prompt-hash.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/028-review-continuations.sql", import.meta.url),
+        "utf8",
+      ),
+    );
     const legacy = (
       await pool.query(
         `SELECT submission_transport,messages,tokens_used,blocks,reserved_microdollars

@@ -12,7 +12,6 @@ import { assertLease, reserveInference, settleInference, transaction, type GameR
 import { db } from "./db";
 import { GameError, inputCeiling, MODELS, PLAYER_AGENT_EFFORT } from "./policy";
 import type { AgentEffort } from "./types";
-import { assertMonitorAuthorization } from "./run-lifecycle";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 
 export type TrustedInferenceOptions = {
@@ -21,8 +20,6 @@ export type TrustedInferenceOptions = {
   reviewId?: string;
   effort?: AgentEffort;
   maxOutputTokens?: number;
-  finalizationToken?: string;
-  pendingReviewId?: string;
   jobClaim?: MonitorJobClaim;
   stage?: string;
   singleAttempt?: boolean;
@@ -182,6 +179,8 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
     if (message.role === "user") return { role: "user", content: textOf(message) };
     const calls = message.content.filter((part) => part.type === "toolCall");
     const thinking = message.content.find((part) => part.type === "thinking");
+    // A cut-off turn whose only tool call was dropped has nothing to send; the provider rejects null.
+    const emptyCutOff = message.stopReason === "length" && !calls.length && !thinking;
     const switched = targetModel !== undefined && message.model !== targetModel;
     const details = thinking?.thinkingSignature ? JSON.parse(thinking.thinkingSignature) : [];
     return {
@@ -191,7 +190,7 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
           ? [`Previous model reasoning:\n${thinking.thinking}`, textOf(message)]
               .filter(Boolean)
               .join("\n\n")
-          : textOf(message) || null,
+          : textOf(message) || (emptyCutOff ? "" : null),
       ...(calls.length
         ? {
             tool_calls: calls.map((call) => ({
@@ -399,8 +398,6 @@ export async function infer(
     {
       sessionId,
       reviewId: trusted.reviewId,
-      finalizationToken: trusted.finalizationToken,
-      pendingReviewId: trusted.pendingReviewId,
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: trusted.jobClaim,
     },
@@ -434,26 +431,15 @@ export async function infer(
       requestSignal.throwIfAborted();
       return;
     }
-    if (!trusted.jobClaim && (!game.lease || !trusted.reviewId))
-      throw new GameError("Monitor review authorization is required.", 409);
+    const { jobClaim } = trusted;
+    if (!jobClaim) throw new GameError("Monitor review authorization is required.", 409);
     await transaction(async (client) => {
       const { rows } = await client.query<{ execution_generation: string }>(
         "SELECT execution_generation FROM ctf.games WHERE id=$1 FOR UPDATE",
         [game.id],
       );
-      if (
-        !rows[0] ||
-        (!trusted.jobClaim &&
-          Number(rows[0].execution_generation) !== Number(game.execution_generation ?? 0))
-      )
-        throw new GameError("This response has stopped.", 409);
-      if (trusted.jobClaim) await assertMonitorJobClaim(client, trusted.jobClaim);
-      else
-        await assertMonitorAuthorization(client, game.id, sessionId, game.lease!, {
-          reviewId: trusted.reviewId,
-          finalizationToken: trusted.finalizationToken,
-          pendingReviewId: trusted.pendingReviewId,
-        });
+      if (!rows[0]) throw new GameError("This response has stopped.", 409);
+      await assertMonitorJobClaim(client, jobClaim);
     });
     requestSignal.throwIfAborted();
   };
@@ -561,6 +547,8 @@ export async function infer(
       try {
         args = JSON.parse(call.function.arguments);
       } catch {
+        // A monitor response cut off inside a tool call is continued, so the call is dropped.
+        if (role === "monitor" && choice.finish_reason === "length") continue;
         throw new Error("The agent proposed an invalid tool call.");
       }
       content.push({

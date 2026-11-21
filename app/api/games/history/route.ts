@@ -54,19 +54,14 @@ export async function GET(request: Request) {
     const result = await db.query(
       `
       SELECT g.id,g.status,
-        (WITH RECURSIVE lineage(id,parent) AS (
-          SELECT g.id,g.forked_from
-          UNION ALL
-          SELECT p.id,p.forked_from FROM ctf.games p JOIN lineage l ON p.id=l.parent
-        )
-        SELECT CASE
+        (SELECT CASE
           WHEN count(DISTINCT i.model)=0 THEN (
             SELECT s.agent_model FROM ctf.agent_sessions s WHERE s.game_id=g.id AND s.ordinal=1
           )
           WHEN count(DISTINCT i.model)=1 THEN min(i.model)
           ELSE NULL
         END
-        FROM lineage l JOIN ctf.inference i ON i.game_id=l.id AND i.role='agent') AS agent_model,
+        FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent') AS agent_model,
         g.turns,g.blocks,g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
         g.monitor_difficulty,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
       FROM ctf.games g

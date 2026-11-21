@@ -4,6 +4,7 @@ import {
   collectStream,
   diagnosticText,
   getModel,
+  providerTranscript,
   providerErrorDetails,
   reasoningParam,
   type AgentDelta,
@@ -304,4 +305,23 @@ test("a stream that goes silent is stopped, but keep-alives count as progress", 
     40,
   );
   assert.equal(kept.choices[0].message.content, "done");
+});
+
+test("a cut-off turn with nothing left to send goes back as empty content, not null", () => {
+  const turn = (stopReason: string, content: object[]) =>
+    ({ role: "assistant", content, stopReason, model: "m" }) as never;
+  const sent = (message: never) =>
+    (providerTranscript([message], "m").messages[0] as { content: unknown }).content;
+  assert.equal(sent(turn("length", [])), "");
+  // Every other shape keeps its content.
+  assert.equal(sent(turn("stop", [])), null);
+  assert.equal(
+    sent(turn("length", [{ type: "thinking", thinking: "Cut.", thinkingSignature: "[]" }])),
+    null,
+  );
+  assert.equal(sent(turn("length", [{ type: "text", text: "Partial." }])), "Partial.");
+  assert.equal(
+    sent(turn("length", [{ type: "toolCall", id: "c", name: "t", arguments: {} }])),
+    null,
+  );
 });

@@ -50,7 +50,11 @@ jobs:
     name: deploy worker
     needs: migrate
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The drain waits for a review in flight, at most about 12 minutes.
+    timeout-minutes: 40
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      HUSKY: 0
     steps:
       - name: Checkout the commit that passed ci
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,8 +63,22 @@ jobs:
           persist-credentials: false
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
-      - name: Deploy the monitor worker to Fly
-        run: flyctl deploy --remote-only --ha=false --image-label "$HEAD_SHA"
+      # Building first keeps the time with no worker to the drain plus the machine's restart.
+      - name: Build and push the worker image
+        run: flyctl deploy --build-only --push --remote-only --image-label "$HEAD_SHA"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PROD }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Drain the running worker
+        run: node --import tsx scripts/drain-worker.ts https://ctf-monitor-worker.fly.dev
+        env:
+          DATABASE_URL_UNPOOLED: ${{ secrets.DATABASE_URL_UNPOOLED }}
+      - name: Release the built image
+        run: flyctl deploy --ha=false --image "registry.fly.io/ctf-monitor-worker:$HEAD_SHA"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PROD }}

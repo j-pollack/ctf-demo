@@ -11,7 +11,7 @@ import {
   transaction,
 } from "../lib/games";
 import { createSession, releaseSessionLease } from "../lib/sessions";
-import { MONITOR_VERSION } from "../lib/control";
+import { ASYNC_MONITOR_VERSION } from "../lib/control";
 import { AGENT_MODEL, makeSecret, MODELS } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 
@@ -20,9 +20,9 @@ const id = randomUUID(),
 const originalFetch = globalThis.fetch;
 try {
   await db.query(
-    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
-    VALUES($1,$2,$2,$3,$4,$5,$6,100000,'active',now())`,
-    [id, owner, makeSecret().hash, AGENT_MODEL, TYPESAFE_MODEL, MONITOR_VERSION],
+    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,monitor_mode)
+    VALUES($1,$2,$2,$3,$4,$5,$6,100000,'active',now(),'async')`,
+    [id, owner, makeSecret().hash, AGENT_MODEL, TYPESAFE_MODEL, ASYNC_MONITOR_VERSION],
   );
   await db.query(
     "INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt) SELECT id,id,1,agent_model,agent_effort,system_prompt FROM ctf.games WHERE id=$1",
