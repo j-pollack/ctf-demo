@@ -16,6 +16,8 @@ import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 import { STREAM_IDLE_MS } from "./investigator-evaluation-policy";
 
 const AGENT_STALL_MESSAGE = "The agent stopped responding. Please try again.";
+// One wait between attempts of a monitor request, whatever the provider's `retry-after` says.
+const MONITOR_RETRY_CAP_MS = 30_000;
 const INVESTIGATOR_STALL_MESSAGE = "The investigator's model stopped responding.";
 
 export type TrustedInferenceOptions = {
@@ -26,7 +28,6 @@ export type TrustedInferenceOptions = {
   maxOutputTokens?: number;
   jobClaim?: MonitorJobClaim;
   stage?: string;
-  singleAttempt?: boolean;
   // Shortens the idle bound of a monitor request; tests only.
   streamIdleMs?: number;
   providerEndpoint?: string;
@@ -356,6 +357,46 @@ export function reasoningParam(
   return model.reasoning ? { effort, exclude: false } : undefined;
 }
 
+// The shape of a monitor response that has no tool call, or a tool call whose arguments do not
+// parse. A response cut off at the output limit is continued and logs nothing. It holds lengths and names, never content.
+export function lostToolCallShape(
+  finishReason: string | null,
+  message: {
+    content?: string;
+    reasoning?: string;
+    reasoning_details?: Fragment[];
+    tool_calls?: StreamedToolCall[];
+  },
+) {
+  // A gap left by a sparse tool call index is a call that was lost.
+  const calls = Array.from(message.tool_calls ?? []);
+  const parses = (text: string) => {
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const broken = calls.some((call) => !call || !parses(call.function.arguments));
+  if (finishReason === "length" || (calls.length && !broken)) return undefined;
+  return {
+    finishReason,
+    textLength: (message.content ?? "").length,
+    reasoningLength: reasoningText(message).length,
+    toolCalls: calls.map((call, index) =>
+      call
+        ? {
+            index,
+            hasId: Boolean(call.id),
+            name: diagnosticText(call.function.name)?.slice(0, 64),
+            argumentsLength: call.function.arguments.length,
+          }
+        : { index, missing: true },
+    ),
+  };
+}
+
 // Every call streams, so a response that is still arriving is never cut off by a fixed bound and
 // its generation id is known early. The assembled response is the one authoritative record for
 // accounting and the transcript. Only the agent's request is bounded by its lease; a monitor
@@ -464,7 +505,7 @@ export async function infer(
     requestSignal.throwIfAborted();
   };
   try {
-    const attempts = trusted.singleAttempt ? 1 : 5;
+    const attempts = 5;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       await assertDispatchPermit();
       response = undefined;
@@ -503,10 +544,22 @@ export async function infer(
           `Inference service returned ${response.status}. The command was not executed.`,
           503,
         );
-      const delay = Math.max(
+      const wanted = Math.max(
         1000 * 2 ** (attempt - 1),
         retryAfter(providerError.headers["retry-after"]),
       );
+      const delay = role === "monitor" ? Math.min(wanted, MONITOR_RETRY_CAP_MS) : wanted;
+      if (role === "monitor")
+        console.warn(
+          JSON.stringify({
+            event: "inference.retry",
+            timestamp: new Date().toISOString(),
+            ...context,
+            reviewId: trusted.reviewId,
+            attempt,
+            waitMs: delay,
+          }),
+        );
       const caller = role === "monitor" ? "Investigator" : "Agent";
       onRetry?.(
         `${caller} rate limited; retrying attempt ${attempt + 1}/5 in ${Math.ceil(delay / 1000)}s`,
@@ -561,6 +614,17 @@ export async function infer(
     const details = source.reasoning_details ?? [];
     const reasoning = reasoningText(source);
     const content: AssistantMessage["content"] = [];
+    const shape = role === "monitor" ? lostToolCallShape(choice.finish_reason, source) : undefined;
+    if (shape)
+      console.warn(
+        JSON.stringify({
+          event: "inference.shape",
+          timestamp: new Date().toISOString(),
+          ...context,
+          reviewId: trusted.reviewId,
+          ...shape,
+        }),
+      );
     if (reasoning || details.length)
       content.push({
         type: "thinking",

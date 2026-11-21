@@ -5,6 +5,7 @@ import {
   collectStream,
   diagnosticText,
   getModel,
+  lostToolCallShape,
   providerTranscript,
   providerErrorDetails,
   reasoningParam,
@@ -400,4 +401,59 @@ test("a chunk that cannot be handled cancels the stream and rethrows", async () 
     /id write failed/,
   );
   assert.equal(cancelled, true);
+});
+
+test("a monitor response that lost its tool call is described by lengths, never content", () => {
+  const call = (id: string, args: string) => ({
+    id,
+    type: "function",
+    function: { name: "query_transcripts", arguments: args },
+  });
+  assert.deepEqual(
+    lostToolCallShape("tool_calls", {
+      content: "secret words",
+      reasoning: "private thoughts",
+      tool_calls: [call("", '{"sql": "SELECT'), call("c2", "{}")],
+    }),
+    {
+      finishReason: "tool_calls",
+      textLength: 12,
+      reasoningLength: 16,
+      toolCalls: [
+        { index: 0, hasId: false, name: "query_transcripts", argumentsLength: 15 },
+        { index: 1, hasId: true, name: "query_transcripts", argumentsLength: 2 },
+      ],
+    },
+  );
+  const none = lostToolCallShape("stop", { content: "done" });
+  assert.deepEqual(none, {
+    finishReason: "stop",
+    textLength: 4,
+    reasoningLength: 0,
+    toolCalls: [],
+  });
+  assert.doesNotMatch(JSON.stringify([none]), /done/);
+  // A response cut off at the output limit is continued, whatever it holds.
+  assert.equal(lostToolCallShape("length", { tool_calls: [call("c", '{"sql": "SEL')] }), undefined);
+  assert.equal(lostToolCallShape("length", { reasoning: "thinking only" }), undefined);
+  assert.equal(lostToolCallShape("tool_calls", { tool_calls: [call("c", "{}")] }), undefined);
+});
+
+test("the shape log cuts and redacts a tool name and shows a lost call", () => {
+  const named = (name: string) => ({
+    id: "c",
+    type: "function",
+    function: { name, arguments: "{" },
+  });
+  const long = lostToolCallShape("tool_calls", { tool_calls: [named("x".repeat(200))] });
+  assert.equal(long?.toolCalls[0].name?.length, 64);
+  const flagged = lostToolCallShape("tool_calls", { tool_calls: [named("flag{secret}")] });
+  assert.equal(flagged?.toolCalls[0].name, "[redacted flag]");
+  // A gap in the call indexes is a lost call and is reported as missing.
+  const sparse: ReturnType<typeof named>[] = [];
+  sparse[1] = { ...named("finish_investigation"), function: { name: "f", arguments: "{}" } };
+  assert.deepEqual(lostToolCallShape("tool_calls", { tool_calls: sparse })?.toolCalls, [
+    { index: 0, missing: true },
+    { index: 1, hasId: true, name: "f", argumentsLength: 2 },
+  ]);
 });

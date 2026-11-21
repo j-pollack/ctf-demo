@@ -115,7 +115,7 @@ export function buildSchedule(
         },
       },
       scoring: ["strict", "presumption"],
-      note: "One investigation per case; both standards score the same outcome. Live execution requires explicit budget authorization, frozen source preflight and a fresh local database. No retries, including HTTP 429 retries.",
+      note: "One investigation per case; both standards score the same outcome. Live execution requires explicit budget authorization, frozen source preflight and a fresh local database. No case retries; a 429 is retried inside the request, up to five attempts.",
     },
     budget: {
       proposedMicrodollars,

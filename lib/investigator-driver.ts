@@ -275,7 +275,6 @@ export async function runInvestigatorDriver<T>(
       maxOutputTokens: MONITOR_OUTPUT_TOKENS,
       stage: "investigator",
       jobClaim: input.jobClaim,
-      singleAttempt: true,
       streamIdleMs: input.streamIdleMs,
       stopOnReservationOverrun: true,
       providerEndpoint: BOUNDED_INVESTIGATOR_POLICY.providerEndpoint,

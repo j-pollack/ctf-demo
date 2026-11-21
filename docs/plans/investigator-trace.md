@@ -2,7 +2,7 @@
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/investigator-trace`
 - Branch: `feature/investigator-trace`, stacked on `feature/investigator-stream` at `addf496`
-- Status: contract verified with changes folded in, not built
+- Status: build 1 of 2 built and reviewed, gates pass. Build 2, the trace, not built
 - Ships in pull request 37.
 
 ## Problem
@@ -105,7 +105,8 @@ The trace is a JSON object that code builds from the calls of A0. For the same s
 
 ## Part C: a response that loses its tool call leaves its shape
 
-- When a response with role `monitor` has a tool call whose arguments do not parse and was not cut off at the output limit, or has no tool call at all, `infer` logs one line, `inference.shape`, before the failure or the return: the review's id, the finish reason, the lengths of the text and the reasoning, and for each tool call its index, whether it has an id, its name and the length of its arguments. It logs no content.
+- When a response with role `monitor` was not cut off at the output limit and has no tool call, or has a tool call whose arguments do not parse or whose place in the list is empty, `infer` logs one line, `inference.shape`, before the failure or the return: the review's id, the finish reason, the lengths of the text and the reasoning, and for each tool call its index, whether it has an id, its name and the length of its arguments. The name is passed through the log's redaction and cut at 64 characters. It logs no other content.
+- A response cut off at the output limit logs nothing. It is the ordinary continuation.
 - Nothing else changes. The review fails or continues as it does today.
 
 ## Measurement
@@ -134,13 +135,12 @@ Integration tests use the real worker, real Postgres and provider fakes only. Un
 
 - R1. A review whose request is answered 429 twice and then 200 completes. It counts one request and has one inference row, settled at the successful attempt's cost. The fake saw three attempts with identical payloads.
 - R2. A review whose request is answered 429 five times fails with the existing message, its hold is released, and the job is retried.
-- R3. A 429 with `retry-after: 60` and a review deadline of 3 seconds fails at the deadline, not after the wait.
-- R4. A 429 with `retry-after: 600` and no deadline pressure waits at most 30 seconds. The test asserts the logged wait, not the clock.
+- R3 and R4, one test. A 429 with `retry-after: 600` and a review deadline of 3 seconds logs a wait of 30,000 milliseconds and fails at the deadline, not after the wait.
 - R5. Losing the job claim during a retry wait sends no further attempt and releases the hold.
 - R6. A header stall on the second attempt fails with the investigator's stall message.
 - R7. Each retry logs one `inference.retry` line with the review's id.
-- C1. Unit: a monitor response with a tool call whose arguments do not parse, and one with no tool call, each log one `inference.shape` line with lengths and no content. A response cut off at the output limit inside a call's arguments logs none.
-- G1. `npm run check`, `npm run test:integration`, `npm run build` and `npm run test:coverage` pass. The tests that expect a single attempt change with the behaviour: the 429 case of S6 in `tests/integration/sprites.test.ts`, and the `rate-limit` mode of `tests/integration/flag-read-baseline.test.ts`.
+- C1. Unit: a monitor response with a tool call whose arguments do not parse, one with no tool call, and one with a gap in its list of calls each give one `inference.shape` line with lengths and no content. A long name is cut and a flag-shaped name is redacted. A response cut off at the output limit gives none, with or without a call. An integration test of a continued review logs no such line.
+- G1. `npm run check`, `npm run test:integration`, `npm run build` and `npm run test:coverage` pass. The tests that expect a single attempt change with the behaviour: the 429 case of S6 in `tests/integration/sprites.test.ts` becomes R1 to R7, and the `rate-limit` mode of `tests/integration/flag-read-baseline.test.ts` answers 429 once for each case and then succeeds, with one inference row for each case.
 
 ### Build 2: A
 
@@ -174,7 +174,7 @@ Integration tests use the real worker, real Postgres and provider fakes only. Un
 - With isolation off the review holds every session of the owner, across runs. The trace lists their commands too and cannot say which run a session belongs to. The fixed text leaves that to the filesystem rule of the system prompt.
 - A status of `no dispatch record` on every command of a run older than the operation records would make the fixed text call a real read not executed. Such runs are ended and are not reviewed again.
 - A provider that keeps answering 429 holds a request for up to 15 seconds, or 30 seconds per wait when it sends `retry-after`, before the review fails.
-- Build 1 adds about 20 seconds of real waiting to the integration suite.
+- Build 1 adds about 26 seconds of real waiting to `tests/integration/sprites.test.ts` and 4 to the baseline test.
 
 ## Evidence
 
@@ -190,3 +190,11 @@ Integration tests use the real worker, real Postgres and provider fakes only. Un
   - Also folded in: the base64 definitions, the cap on a provider's `retry-after`, a log line per retry, the test that counted database queries, the tests and fixtures that change, and sixteen acceptance cases.
   - The verifier walked both chains by hand. For the corpus case the trace lists both writes with the second marked last, and decoding is what shows the skipped read. For the user's run the cited commands have no file tokens, and the trace shows them as decode commands with no pipe to a shell. A1 does not help that chain. The trace does.
   - The verifier checked that the projection is loaded when the review starts for every session and observation, that both times come from the database clock, that an invalid call does not use up the confirmation, that the context limit is checked before every request, that a retried request keeps one inference row and one count, and that only the driver sets `singleAttempt`.
+- Build 1, 2026-11-21. The lead ran the gates on the final tree: check 407 passed, integration 429 passed, build passed, coverage 407 passed. The frozen schedule files under `evals/flag-read/` still carry the old note about retries and were not regenerated.
+- Code review of build 1, 2026-11-21. Verdict: approve with fixes. The retry loop was correct on every path and the agent's path unchanged.
+  - `inference.shape` logged on every reasoning-only response cut off at the output limit, which is the ordinary continuation and would have outnumbered the event it is for by about ten to one. A cut-off now logs nothing.
+  - The test of a lost claim during a retry wait passed even with no retry. It now asserts the logged retry and the claim failure.
+  - The baseline's `rate-limit` mode waited 30 seconds to repeat R2. It now answers 429 once and asserts one inference row for each case.
+  - Also applied: R3 and R4 merged, the tool call's name redacted and cut, a gap in the list of calls reported, and stale wording about single attempts.
+  - Not changed: reading the body of a 429 has no time limit of its own. It ends with the review's deadline, as before.
+  - The reviewer checked each ending of the loop for the hold, the header timer, the claim check and the single inference row, every form of `retry-after`, that the 30 second limit applies to the monitor only, and that nothing else relied on a single attempt.

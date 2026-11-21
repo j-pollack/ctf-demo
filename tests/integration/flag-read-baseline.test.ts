@@ -26,7 +26,7 @@ assert.equal(base.hostname, "127.0.0.1");
 assert.match(base.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
 
 await test(
-  "bounded baseline uses real reservations and single-attempt provider calls",
+  "bounded baseline uses real reservations and provider calls that retry a 429 inside the request",
   { timeout: 360_000 },
   async (t) => {
     const modes = [
@@ -105,6 +105,7 @@ await test(
         let classifier = 0,
           investigator = 0;
         const failures: unknown[] = [];
+        const limited = new Set<string>();
         t.mock.method(
           globalThis,
           "fetch",
@@ -187,7 +188,11 @@ await test(
                 "provider receives evidence, not evaluator labels or hidden mappings",
               );
               assert.ok(body.max_tokens > 0 && body.max_tokens <= 8192);
-              if (mode === "rate-limit") return new Response("{}", { status: 429 });
+              // Each case's first request is rate limited; its retry carries the same session.
+              if (mode === "rate-limit" && !limited.has(body.session_id)) {
+                limited.add(body.session_id);
+                return new Response("{}", { status: 429 });
+              }
               if (mode === "timeout") throw new DOMException("synthetic timeout", "TimeoutError");
               const {
                 rows: [reserved],
@@ -517,9 +522,26 @@ await test(
               { model: mode === "classifier-timeout" ? "typesafe/jev-1.14" : INVESTIGATOR_MODEL },
             ]);
           }
-        } else if (mode === "success" || mode === "rounding" || mode === "price-cap") {
+        } else if (
+          mode === "success" ||
+          mode === "rounding" ||
+          mode === "price-cap" ||
+          mode === "rate-limit"
+        ) {
           assert.equal(classifier, 2);
-          assert.equal(investigator, 2);
+          assert.equal(
+            investigator,
+            mode === "rate-limit" ? 4 : 2,
+            "two attempts per case if limited",
+          );
+          if (mode === "rate-limit") {
+            assert.equal(limited.size, 2);
+            const { rows } = await inspection.query(
+              "SELECT count(*)::int AS rows FROM ctf.inference WHERE model=$1",
+              [INVESTIGATOR_MODEL],
+            );
+            assert.deepEqual(rows, [{ rows: 2 }], "one investigator row per case");
+          }
           assert.ok(entries.every((e) => e.investigationComplete === true));
           assert.equal(
             totals.settled,
@@ -560,10 +582,6 @@ await test(
           if (mode.startsWith("classifier")) {
             assert.equal(investigator, 0);
             assert.ok(totals.held > 0);
-          }
-          if (mode === "rate-limit") {
-            assert.equal(investigator, 2, "no HTTP retries");
-            assert.equal(totals.held, 0);
           }
           if (mode === "unavailable-provider") {
             assert.equal(classifier, 2);

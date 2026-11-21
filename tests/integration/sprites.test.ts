@@ -362,7 +362,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     >
   > = {};
   let fetchGate: ((signal: AbortSignal) => Promise<Response>) | undefined;
-  let abortOn429: (() => void) | undefined;
+  let abortOn429: (() => void | Promise<void>) | undefined;
   // "cut" ends an agent stream after its first chunk, with no usage; "endless" sends its first
   // chunk and then only keep-alives until the request is aborted.
   let agentStreamMode: "full" | "cut" | "endless" = "full";
@@ -696,8 +696,15 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       if (fetchGate && requests.filter((request) => request.role === "agent").length === 2)
         return fetchGate(options!.signal!);
       if (planned?.status === -1) throw new Error("fixture network failure");
+      // -2: the headers never arrive; the request ends only when it is aborted.
+      if (planned?.status === -2)
+        return new Promise<Response>((_, reject) => {
+          const signal = options!.signal!;
+          signal.throwIfAborted();
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
       if (planned && ![200, 299].includes(planned.status)) {
-        if (planned.status === 429) abortOn429?.();
+        if (planned.status === 429) await abortOn429?.();
         return Response.json(
           {
             error: {
@@ -2774,6 +2781,31 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     reasoning_details?: unknown[];
     tool_calls?: unknown[];
   };
+  // The monitor's own log lines, with the review they belong to.
+  const withWarnings = async (run: () => Promise<unknown>) => {
+    const lines: Record<string, any>[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      try {
+        lines.push(JSON.parse(String(args[0])));
+      } catch {
+        original(...args);
+      }
+    };
+    try {
+      await run();
+    } finally {
+      console.warn = original;
+    }
+    return lines;
+  };
+  const latestReviewId = async (gameId: string) =>
+    (
+      await pool.query(
+        "SELECT id FROM ctf.monitor_reviews WHERE game_id=$1 ORDER BY created_at DESC LIMIT 1",
+        [gameId],
+      )
+    ).rows[0].id as string;
   const reviewWith = async (owner: string, script: InvestigatorStep[]) => {
     const gameId = await playHarmlessRun(owner);
     investigatorScript = script;
@@ -2784,8 +2816,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   await t.test(
     "C1: a cut-off response is continued with its reasoning and the review finishes",
     async () => {
-      const { review } = await reviewWith("cut-once", ["cut", "finish"]);
-      assert.equal(review.verdict, "allow");
+      let review: Awaited<ReturnType<typeof latestReview>>;
+      const lines = await withWarnings(async () => {
+        ({ review } = await reviewWith("cut-once", ["cut", "finish"]));
+      });
+      assert.equal(
+        lines.filter((line) => line.event === "inference.shape").length,
+        0,
+        "a cut-off response is continued and logs no shape",
+      );
+      assert.equal(review!.verdict, "allow");
       assert.equal(review.operational_error, null);
       assert.equal(review.continuations, 1);
       assert.equal(review.calls, 2);
@@ -3045,24 +3085,152 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     assert.equal(await heldMicrodollars(gameId), hold.cost_ceiling);
     await settleByRecord(gameId, hold.id);
   });
+  const retryLines = (lines: Record<string, any>[]) =>
+    lines.filter((line) => line.event === "inference.retry");
+  const rateLimited = (count: number, retryAfter?: string) =>
+    Array.from({ length: count }, () => ({ status: 429, retryAfter }));
   await t.test(
-    "S6: a 429 before the stream fails the request, releases its hold and is retried",
+    "B-R1, B-R7: a request answered 429 twice is retried inside the request and settles once",
     async () => {
-      const gameId = await playHarmlessRun("s6-429");
+      const gameId = await playHarmlessRun("b-r1");
       const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
-      responses.monitor = [{ status: 429 }];
-      assert.equal(await runMonitorWorkerOnce(), true);
-      assert.equal(monitorPayloads().length, 1, "no retry inside the request");
+      responses.monitor = rateLimited(2);
+      const lines = await withWarnings(async () =>
+        assert.equal(await runMonitorWorkerOnce(), true),
+      );
+      const review = await latestReview(gameId);
+      assert.equal(review.verdict, "allow");
+      assert.equal(review.operational_error, null);
+      assert.equal(review.calls, 1);
+      const payloads = monitorPayloads();
+      assert.equal(payloads.length, 3);
+      assert.deepEqual(payloads[1], payloads[0]);
+      assert.deepEqual(payloads[2], payloads[0]);
+      const holds = await monitorHolds(gameId);
+      assert.equal(holds.length, 1);
+      assert.ok(holds[0].settled_at);
+      assert.deepEqual([holds[0].tokens, holds[0].cost, holds[0].estimated], [2, 0, false]);
+      assert.equal(await heldMicrodollars(gameId), 0);
+      assert.deepEqual(
+        retryLines(lines).map(({ reviewId, attempt, waitMs }) => ({ reviewId, attempt, waitMs })),
+        [
+          { reviewId: await latestReviewId(gameId), attempt: 1, waitMs: 1000 },
+          { reviewId: await latestReviewId(gameId), attempt: 2, waitMs: 2000 },
+        ],
+      );
+    },
+  );
+  await t.test(
+    "B-R2: a request answered 429 five times fails, releases its hold and is retried",
+    async () => {
+      const gameId = await playHarmlessRun("b-r2");
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      responses.monitor = rateLimited(5);
+      const lines = await withWarnings(async () =>
+        assert.equal(await runMonitorWorkerOnce(), true),
+      );
+      assert.equal(monitorPayloads().length, 5);
+      assert.deepEqual(
+        retryLines(lines).map((line) => line.waitMs),
+        [1000, 2000, 4000, 8000],
+      );
       const review = await latestReview(gameId);
       assert.match(review.operational_error, /Inference service returned 429/);
-      const [hold] = await monitorHolds(gameId);
-      assert.ok(hold.settled_at);
-      assert.equal(hold.cost, 0);
+      const holds = await monitorHolds(gameId);
+      assert.equal(holds.length, 1);
+      assert.ok(holds[0].settled_at);
+      assert.equal(holds[0].cost, 0);
       assert.equal(await heldMicrodollars(gameId), 0);
       assert.deepEqual(await streamJob(gameId), { status: "queued", attempts: 1 });
       await retryNow(gameId);
       assert.equal(await runMonitorWorkerOnce(), true);
       assert.equal((await latestReview(gameId)).verdict, "allow");
+    },
+  );
+  await t.test(
+    "B-R3, B-R4: retry-after 600 waits at most 30 seconds and the review fails at its deadline",
+    async () => {
+      const gameId = await playHarmlessRun("b-r3");
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      responses.monitor = rateLimited(1, "600");
+      const started = Date.now();
+      const lines = await withWarnings(async () =>
+        assert.equal(await runMonitorWorkerOnce(streamTiming(undefined, 3000)), true),
+      );
+      assert.ok(Date.now() - started < 20_000, "the wait ended at the deadline, not after it");
+      // The cap shows only in the logged wait; the deadline ends the wait itself.
+      assert.deepEqual(
+        retryLines(lines).map(({ attempt, waitMs }) => ({ attempt, waitMs })),
+        [{ attempt: 1, waitMs: 30_000 }],
+      );
+      assert.equal(monitorPayloads().length, 1, "no attempt is sent after the deadline");
+      assert.match((await latestReview(gameId)).operational_error, /operation was aborted/);
+      const [hold] = await monitorHolds(gameId);
+      assert.ok(hold.settled_at);
+      assert.equal(hold.cost, 0);
+      assert.equal(await heldMicrodollars(gameId), 0);
+    },
+  );
+  await t.test(
+    "B-C1: a response with no tool call logs its shape and fails as before",
+    async () => {
+      let gameId = "";
+      const lines = await withWarnings(async () => {
+        ({ gameId } = await reviewWith("b-c1", ["text"]));
+      });
+      assert.match((await latestReview(gameId)).operational_error, /without a valid finish/);
+      const shapes = lines.filter((line) => line.event === "inference.shape");
+      assert.equal(shapes.length, 1);
+      assert.equal(shapes[0].reviewId, await latestReviewId(gameId));
+      assert.deepEqual(shapes[0].toolCalls, []);
+      assert.equal(typeof shapes[0].textLength, "number");
+    },
+  );
+  await t.test(
+    "B-R5: losing the job claim during a retry wait sends no further attempt",
+    async () => {
+      const gameId = await playHarmlessRun("b-r5");
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      responses.monitor = rateLimited(1);
+      abortOn429 = async () => {
+        await pool.query(
+          "UPDATE ctf.monitor_jobs SET claim_until=now()-interval '1 second' WHERE game_id=$1",
+          [gameId],
+        );
+      };
+      const lines = await withWarnings(async () =>
+        assert.equal(await runMonitorWorkerOnce(), true),
+      );
+      assert.equal(retryLines(lines).length, 1, "a wait started");
+      assert.equal(monitorPayloads().length, 1, "the second attempt is never sent");
+      const [hold] = await monitorHolds(gameId);
+      assert.ok(hold.settled_at);
+      assert.equal(hold.cost, 0);
+      assert.equal(await heldMicrodollars(gameId), 0);
+      const review = await latestReview(gameId);
+      assert.equal(review.verdict, null);
+      assert.match(review.operational_error, /no longer owns its claim/);
+    },
+  );
+  await t.test(
+    "B-R6: a header stall on the second attempt fails with the stall message",
+    async () => {
+      const gameId = await playHarmlessRun("b-r6");
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      responses.monitor = [{ status: 429 }, { status: -2 }];
+      assert.equal(await runMonitorWorkerOnce(streamTiming(1000)), true);
+      assert.equal(monitorPayloads().length, 2);
+      assert.match((await latestReview(gameId)).operational_error, STALL);
+      const [hold] = await monitorHolds(gameId);
+      assert.equal(hold.settled_at, null);
+      // Only the day-old expiry can release a hold without a generation id.
+      await pool.query(
+        "UPDATE ctf.inference SET created_at=now()-interval '25 hours' WHERE id=$1",
+        [hold.id],
+      );
+      const { expireUnverifiableHolds } = await import("../../lib/games");
+      await expireUnverifiableHolds();
+      assert.equal(await heldMicrodollars(gameId), 0);
     },
   );
   await t.test("S8: a review deadline that passes mid-stream fails the review", async () => {
