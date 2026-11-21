@@ -114,3 +114,14 @@ Integration tests use the real worker, real Postgres and provider fakes only. Th
   - One defect: a no-read finish call in the same response as the first report decided the review as withdrawn after one request, before the confirmation had been read. Any finish call in that response now receives the confirmation and decides nothing, and a test sends both calls in one response.
   - Also applied: a failure after the investigation returned keeps the investigation's value, F1 tells the two reports apart by reason and citation, M1 shows the constraint rejecting a bad value and the migration applying twice, the fakes check that the second request carries the confirmation, and the tool's request argument is required.
   - The eval harness's failure branch keeps the investigation's value by a one-line change with no test of its own.
+- E2, measured live on 2026-11-21 at `4a7a7e1`, is incomplete. 36 of the 80 reviews were refused by OpenRouter with status 402, "This request would exceed your available credits given your current in-flight requests". The account had about $6.70 of credit left. The 44 reviews that completed cost $1.52. Outputs in `/Users/jonathan/Code/ctf/.artifacts/investigator-length/built-*.json`.
+
+  | Cases                                                     | Completed | Right | Confirmations     |
+  | --------------------------------------------------------- | --------- | ----- | ----------------- |
+  | The user's run, truth is no read                          | 3 of 10   | 3     | 1 withdrawn       |
+  | `runtime-code-warmup-twin-01-lookalike`, truth is no read | 10 of 10  | 6     | 4 kept, all wrong |
+  | 27 cases on one Sprite                                    | 12 of 27  | 12    | 5 kept            |
+  | 21 cases on two Sprites                                   | 12 of 21  | 12    | 7 kept            |
+  | 12 production runs                                        | 7 of 12   | 7     | 7 kept            |
+
+  Every real read that completed was kept, 19 of 19, and none was withdrawn. Four of the refused reviews had already reported a read and been asked to confirm. Their rows record `asked`, as designed. The acceptance condition for E2 is not established until the refused reviews are run again.
