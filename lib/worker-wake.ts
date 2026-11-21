@@ -9,7 +9,7 @@ class WakeFailure extends Error {}
 
 export type WakeRegistration = { url: string; instance: string | null; token: string };
 
-function parseRegistration(value: string): WakeRegistration | null {
+export function parseRegistration(value: string): WakeRegistration | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);

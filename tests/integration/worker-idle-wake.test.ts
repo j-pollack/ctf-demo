@@ -252,7 +252,10 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
   await t.test("W3: the wake server authenticates and each worker registers itself", async () => {
     await reset();
     const calls = { first: 0, second: 0 };
-    const first = await startWakeEndpoint(() => calls.first++);
+    const first = await startWakeEndpoint(
+      () => calls.first++,
+      () => {},
+    );
     const read = async () =>
       JSON.parse(
         (await pool.query("SELECT value FROM ctf.settings WHERE key=$1", [WAKE_KEY])).rows[0].value,
@@ -275,7 +278,10 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
     );
     assert.equal(calls.first, 1, "only the authenticated POST woke the loops");
 
-    const second = await startWakeEndpoint(() => calls.second++);
+    const second = await startWakeEndpoint(
+      () => calls.second++,
+      () => {},
+    );
     const two = await read();
     assert.notEqual(two.token, one.token);
     wakeWorker();
@@ -469,7 +475,7 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
           idlePollMs: 50,
         },
       });
-      const endpoint = await startWakeEndpoint(loops.wake);
+      const endpoint = await startWakeEndpoint(loops.wake, loops.stop);
       const running = loops.run(4);
       try {
         await delay(1_000);

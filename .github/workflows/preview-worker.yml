@@ -60,14 +60,15 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.branch != '' && needs.resolve.outputs.action == 'deploy'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The drain waits for a review in flight, at most about 12 minutes.
+    timeout-minutes: 40
     concurrency:
       group: preview-worker-${{ needs.resolve.outputs.branch }}
       cancel-in-progress: false
     env:
       BRANCH: ${{ needs.resolve.outputs.branch }}
       SHA: ${{ github.event.deployment.sha }}
-      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PREVIEW }}
+      HUSKY: 0
     steps:
       - name: Checkout the deployed commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,8 +98,22 @@ jobs:
           echo "database-url=$uri" >> "$GITHUB_OUTPUT"
       - name: Build and push the worker image
         run: flyctl deploy --build-only --push --remote-only --app "$FLY_APP" --image-label "$SHA"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PREVIEW }}
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Install locked dependencies
+        run: npm ci
+      # The branch's database can still hold production's row; the script drains only this app's.
+      - name: Drain the branch's running worker
+        run: node --import tsx scripts/drain-worker.ts https://ctf-monitor-worker-preview.fly.dev
+        env:
+          DATABASE_URL_UNPOOLED: ${{ steps.neon.outputs.database-url }}
       - name: Replace the branch's worker machine
         env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PREVIEW }}
           DATABASE_URL_UNPOOLED: ${{ steps.neon.outputs.database-url }}
         run: |
           set -euo pipefail
