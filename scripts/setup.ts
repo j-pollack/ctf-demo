@@ -40,6 +40,7 @@ try {
     "027-review-prompt-hash.sql",
     "028-review-continuations.sql",
     "029-review-read-confirmation.sql",
+    "030-inference-game-unsettled.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

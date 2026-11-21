@@ -221,6 +221,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     turns = 4,
     blocks = 1,
     pick: { monitor?: string; difficulty?: string; version?: string } = {},
+    agentRow = true,
   ) =>
     pool
       .query(
@@ -239,16 +240,31 @@ await test("admin stats aggregate real persisted rows", async (t) => {
           pick.difficulty ?? "hard",
         ],
       )
-      .then((r) => r.rows[0].id as string);
-  const captured = await game("m1", "captured", 1_000_000);
-  await game("m1", "exhausted", 3_000_000, 0, 10, 5);
-  await game("g1", "active", 200_000, 50_000, 2, 0);
+      .then(async (r) => {
+        const id = r.rows[0].id as string;
+        // The leaderboard ranks by the agent's settled rows, so each run's spend is an agent row.
+        if (agentRow && spent > 0) {
+          await pool.query(
+            "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+          );
+          await pool.query(
+            `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+             VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,'agent','agent/a',1,$2,1,$2,now())`,
+            [id, spent],
+          );
+        }
+        return id;
+      });
+  const captured = await game("m1", "captured", 1_000_000, 0, 4, 1, {}, false);
+  await game("m1", "exhausted", 3_000_000, 0, 10, 5, {}, false);
+  await game("g1", "active", 200_000, 50_000, 2, 0, {}, false);
   await pool.query(
-    `INSERT INTO ctf.daily_spend(day,charged,reserved) VALUES((now() AT TIME ZONE 'UTC')::date,4200000,50000)`,
+    `INSERT INTO ctf.daily_spend(day,charged,reserved) VALUES((now() AT TIME ZONE 'UTC')::date,4200000,50000)
+     ON CONFLICT (day) DO UPDATE SET charged=4200000,reserved=50000`,
   );
   await pool.query(
     `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at,estimated)
-    VALUES($1,$3,(now() AT TIME ZONE 'UTC')::date,'agent','agent/a',100,900000,80,700000,now(),false),
+    VALUES($1,$3,(now() AT TIME ZONE 'UTC')::date,'agent','agent/a',100,900000,80,1000000,now(),false),
           ($2,$3,(now() AT TIME ZONE 'UTC')::date,'monitor','mon/a',50,300000,NULL,NULL,NULL,false)`,
     [randomUUID(), randomUUID(), captured],
   );
@@ -301,7 +317,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   assert.deepEqual(
     s.models.map((m) => [m.role, m.calls, m.tokens, m.spend, m.pending]),
     [
-      ["agent", 1, 80, 700_000, 0],
+      ["agent", 1, 80, 1_000_000, 0],
       ["monitor", 1, 0, 0, 1],
     ],
   );
@@ -378,7 +394,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   });
 
   await t.test(
-    "settled screen spend counts in the monitor figure and keeps the ranking",
+    "settled screen spend counts on the player's side and keeps the ranking",
     async () => {
       const { gameBilling } = await import("../../lib/games");
       const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
@@ -396,9 +412,56 @@ await test("admin stats aggregate real persisted rows", async (t) => {
         [randomUUID(), captured, TYPESAFE_MODEL, randomUUID()],
       );
       const billing = await gameBilling(captured);
-      assert.equal(billing.agentSpendMicrodollars, 700_000);
-      assert.equal(billing.monitorSpendMicrodollars, 210, "unsettled holds are not spend");
+      assert.equal(billing.agentSpendMicrodollars, 1_000_000);
+      assert.equal(billing.spentMicrodollars, 1_000_210, "the player's spend is agent plus screen");
+      assert.equal(billing.reservedMicrodollars, 500, "the player's hold is its unsettled screen");
+      assert.equal(billing.monitorSpendMicrodollars, 0, "a monitor hold is not spend");
       assert.deepEqual(await spends(""), [300_000, 700_000, 1_000_000], "the run still ranks");
+    },
+  );
+
+  await t.test(
+    "A3-1: the leaderboard ranks by the agent's spend, not the run's total",
+    async () => {
+      const { GET } = await import("../../app/api/leaderboard/route");
+      await user("a3-1", "a31@example.invalid", false, "2026-09-04T00:00:00Z");
+      await user("a3-2", "a32@example.invalid", false, "2026-09-04T00:00:00Z");
+      // A cheap agent run beside 2,000,000 of monitor rows, and a dearer agent run with none.
+      const cheap = await game("a3-1", "captured", 0, 0, 3, 0, {}, false);
+      const dear = await game("a3-2", "captured", 0, 0, 3, 0, {}, false);
+      const seeded = [
+        [cheap, "agent", 250_000, 7],
+        [cheap, "monitor", 2_000_000, 999],
+        [dear, "agent", 450_000, 11],
+      ] as const;
+      await pool.query(
+        "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+      );
+      for (const [id, role, cost, tokens] of seeded)
+        await pool.query(
+          `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+         VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,$2,'agent/a',$4,$3,$4,$3,now())`,
+          [id, role, cost, tokens],
+        );
+      await pool.query("UPDATE ctf.games SET spent_microdollars=2250000 WHERE id=$1", [cheap]);
+      await pool.query("UPDATE ctf.games SET spent_microdollars=450000 WHERE id=$1", [dear]);
+      try {
+        const { entries } = (await (
+          await GET(new Request("http://localhost/api/leaderboard"))
+        ).json()) as { entries: { spend: number; tokens: number }[] };
+        assert.deepEqual(
+          entries.map((entry) => entry.spend),
+          [250_000, 300_000, 450_000, 700_000, 1_000_000],
+        );
+        assert.equal(entries[0].tokens, 7, "the agent's tokens, not the monitor's");
+        assert.equal(entries[2].tokens, 11);
+      } finally {
+        await pool.query("DELETE FROM ctf.inference WHERE game_id=ANY($1::uuid[])", [
+          [cheap, dear],
+        ]);
+        await pool.query("DELETE FROM ctf.games WHERE id=ANY($1::uuid[])", [[cheap, dear]]);
+        await pool.query(`DELETE FROM ctf."user" WHERE id IN ('a3-1','a3-2')`);
+      }
     },
   );
 

@@ -59,6 +59,7 @@ await test(
       "migrations/027-review-prompt-hash.sql",
       "migrations/028-review-continuations.sql",
       "migrations/029-review-read-confirmation.sql",
+      "migrations/030-inference-game-unsettled.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
 

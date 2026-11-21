@@ -2,7 +2,7 @@
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/monitor-routing`
 - Branch: `feature/monitor-routing`, stacked on `feature/investigator-stream`
-- Status: contract verified with changes folded in, not built
+- Status: build 1 of 3 built and reviewed, gates pass. Builds 2 and 3 not built
 - Ships in pull request 37.
 
 ## Problem
@@ -80,10 +80,10 @@ Three builds on this branch, each reviewed and gated before the next starts.
 
 - The player's side of a run is its `ctf.inference` rows with role `agent` or `screen`. The monitor's side is its rows with role `monitor`: investigator requests, Jev's classifier and annotation charges, and the second look of B3.
 - Each side's settled spend is the sum of `cost` over its settled rows. Each side's hold is the sum of `cost_ceiling` over its unsettled rows. The two sums are written as separate predicates on `settled_at`, so each uses a partial index. They are read inside the transaction that already locks the run row. `ctf.games.spent_microdollars` and `reserved_microdollars` stay the totals and keep their writers. No column is added.
-- Migration 030 adds `CREATE INDEX IF NOT EXISTS inference_game_unsettled ON ctf.inference(game_id) WHERE settled_at IS NULL`. `reserveInference` holds the day's spend row locked while it sums, and that lock serializes every reservation in the game.
+- Migration 030 adds `CREATE INDEX IF NOT EXISTS inference_game_unsettled ON ctf.inference(game_id) WHERE settled_at IS NULL`. `reserveInference` holds the day's spend row locked while it sums, and that lock serializes every reservation across all runs.
 - A request with role `agent` or `screen` is admitted against the run budget less the player's settled spend and the player's hold. The refusal messages and status codes do not change, and they read the player's amounts.
 - A request with role `monitor` never draws on the run budget. It is admitted in full while the monitor's settled spend is below `MONITOR_RUN_ALLOWANCE_MICRODOLLARS` (1,500,000), or below that plus `FINAL_REVIEW_ALLOWANCE_MICRODOLLARS` (1,000,000) for a run in `finalizing`. At or past it the request is refused with "The monitor's budget for this run is used up." and status 402. The same rule replaces the classifier's own check in `lib/monitor-classifier.ts`. `MONITOR_OVERAGE_MICRODOLLARS`, `FINAL_REVIEW_OVERAGE_MICRODOLLARS`, `monitorRunBudgetExempt` and the claim's `runBudgetExempt` go away.
-- The comparison is with settled spend, as today, so a review in flight can pass the allowance by the requests already admitted.
+- The comparison is with settled spend, as today, so a review in flight can pass the allowance by the requests already admitted. A hold that has not settled does not count toward the allowance.
 - The daily limit of $10.00 applies to every request, as today.
 - `gameBilling` in `lib/games.ts` is the one place the public amounts are computed. `spentMicrodollars` becomes the player's settled spend and `reservedMicrodollars` the player's hold. `agentSpendMicrodollars` stays role `agent`. `monitorSpendMicrodollars` becomes role `monitor` only. Today it includes role `screen`. The play page's remaining figure, the run summary, the run inspector and the runner's billing frames follow from that with no change of their own. The inspector's "Spent" is then the player's spend, and its "Monitor" figure is no longer part of it.
 - `app/api/games/history/route.ts` reads the run's columns directly. It changes to the same sums.
@@ -91,7 +91,7 @@ Three builds on this branch, each reviewed and gated before the next starts.
 - `app/api/leaderboard/route.ts` orders by the sum of settled `ctf.inference.cost` with `role='agent'` for the run, then turns, then time. The amount shown is that sum, and the tokens shown are the sum of `tokens` over the same rows. Its condition that the run has no hold stays on the total.
 - Finalization keeps waiting on the total hold.
 - `scripts/flag-read-eval-live.ts` compares the monitor's held amount with `billing.reservedMicrodollars`. It reads the monitor's hold instead.
-- The eval harness's reviews come under the monitor's allowance for each seeded run. Its own `--budget-usd` limit stays.
+- The eval harness keeps its `--budget-usd` bound without a change to the game: it seeds each case's run with one settled monitor row, so that what is left of the allowance equals what is left of the budget, and it leaves that row out of the spend it reports. A request already in flight and a hold that never settles can pass the bound.
 
 ## Part B: routing
 
@@ -248,3 +248,9 @@ Integration tests use the real worker, the real runner and real Postgres. Only O
   - The second look's timing, order, text source and catch writer were undefined.
   - Also folded in: the finalization queries, the newest-epoch rule, the player's monitor status, the leaderboard's tokens, the lists of migrations, the tests that seed run columns, and 37 acceptance cases.
   - The verifier checked that every charge and hold is a `ctf.inference` row with its role, that released holds settle at 0 and are never deleted, that Jev's classifier and annotation charges use role `monitor` and screens use role `screen`, that a run whose allowance is used up ends with no result and cannot stick or win, that both submission paths lock the run row and wake the worker, and that A1's race with the worker is safe in both orders. It preferred the sums to two stored columns: one source of truth, no backfill while runs are live.
+- Build 1, 2026-11-21. The lead ran the gates on the final tree: check 405 passed, integration 432 passed, build passed, coverage 405 passed. `scripts/auth-check.ts` and `scripts/smoke.ts` were changed by reading and not run, because they need live credentials. A3-1 uses 250,000 and 450,000 microdollars, not 300,000 and 500,000, to stay clear of that file's other runs.
+- Code review of build 1, 2026-11-21. Verdict: approve with fixes, no defect in the game's admission or billing code.
+  - `scripts/auth-check.ts` set the leaderboard's inputs through run columns and would have failed under the new board. It now seeds agent rows.
+  - The eval harness's `--budget-usd` had become a bound between cases only, and the baseline test had been loosened to match. The harness now seeds a monitor row as A3 says, and the test's bounds are back, at the budget plus one request's ceiling.
+  - Also applied: the classifier and the annotation pass are tested one microdollar under the allowance, the refusal message is matched exactly, and five small cleanups.
+  - The reviewer checked the sums and their indexes, the lock order against settlement and expiry, that an agent cannot pass the run budget and a monitor can pass its allowance only by requests already admitted, that the daily limit still covers every role, that role `screen` is on the player's side everywhere, the path from a refusal to a run that ends with no result, and that no reference to the removed exemption remains.

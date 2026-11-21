@@ -106,20 +106,13 @@ test("a custom system prompt becomes the agent preamble", () => {
   assert.equal(custom.role === "system" && custom.sections?.preamble, "custom prompt");
 });
 
-test("monitorRunBudgetExempt: finalizing runs have the higher ceiling, others the lower", async () => {
-  const { monitorRunBudgetExempt } = await import("../lib/games");
-  const { MONITOR_OVERAGE_MICRODOLLARS } = await import("../lib/policy");
-  const claim = { runBudgetExempt: true } as never;
-  const past = 1_000 + MONITOR_OVERAGE_MICRODOLLARS;
-  const { FINAL_REVIEW_OVERAGE_MICRODOLLARS } = await import("../lib/policy");
-  const final = 1_000 + FINAL_REVIEW_OVERAGE_MICRODOLLARS;
-  assert.equal(monitorRunBudgetExempt("monitor", claim, past + 5, 1_000, "finalizing"), true);
-  assert.equal(monitorRunBudgetExempt("monitor", claim, final - 1, 1_000, "finalizing"), true);
-  assert.equal(monitorRunBudgetExempt("monitor", claim, final, 1_000, "finalizing"), false);
-  assert.equal(monitorRunBudgetExempt("monitor", claim, past, 1_000, "active"), false);
-  assert.equal(monitorRunBudgetExempt("monitor", claim, past - 1, 1_000, "active"), true);
-  assert.equal(monitorRunBudgetExempt("agent", claim, 0, 1_000, "finalizing"), false);
-  assert.equal(monitorRunBudgetExempt("screen", claim, 0, 1_000, "finalizing"), false);
-  assert.equal(monitorRunBudgetExempt("monitor", {} as never, 0, 1_000, "finalizing"), false);
-  assert.equal(monitorRunBudgetExempt("monitor", undefined, 0, 1_000, "finalizing"), false);
+test("assertMonitorAllowance: refuses at the allowance, with the final-review top-up in finalizing", async () => {
+  const { assertMonitorAllowance } = await import("../lib/games");
+  const { MONITOR_RUN_ALLOWANCE_MICRODOLLARS: play, FINAL_REVIEW_ALLOWANCE_MICRODOLLARS: final } =
+    await import("../lib/policy");
+  const refused = { status: 402, message: "The monitor’s budget for this run is used up." };
+  assert.doesNotThrow(() => assertMonitorAllowance(play - 1, "active"));
+  assert.throws(() => assertMonitorAllowance(play, "active"), refused);
+  assert.doesNotThrow(() => assertMonitorAllowance(play + final - 1, "finalizing"));
+  assert.throws(() => assertMonitorAllowance(play + final, "finalizing"), refused);
 });

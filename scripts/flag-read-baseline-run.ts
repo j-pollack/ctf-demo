@@ -75,7 +75,7 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   if (options.mode === "help") {
     if (selections.size) throw new Error("--help cannot be combined with other options.");
     console.log(
-      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--policy v15-unknown] --schedule FILE [--split dev|test]. A schedule file is required.",
+      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--policy v15-unknown] --schedule FILE [--split dev|test]. A schedule file is required. The budget bounds admission: a request already in flight, and a hold whose usage never settles, can pass it.",
     );
     return;
   }

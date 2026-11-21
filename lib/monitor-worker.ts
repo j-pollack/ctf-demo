@@ -327,9 +327,8 @@ async function finalizeOneRun() {
 export async function runMonitorWorkerOnce(timingOverride?: InvestigatorTiming): Promise<boolean> {
   const timing = resolveInvestigatorTiming(timingOverride);
   const finalized = await finalizeOneRun();
-  const claimed = await claimMonitorJob(BOUNDED_INVESTIGATOR_POLICY.claimMs);
-  if (!claimed) return finalized;
-  const claim: MonitorJobClaim = { ...claimed, runBudgetExempt: true };
+  const claim = await claimMonitorJob(BOUNDED_INVESTIGATOR_POLICY.claimMs);
+  if (!claim) return finalized;
   try {
     await reviewClaim(claim, timing);
   } catch (error) {

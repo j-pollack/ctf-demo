@@ -13,14 +13,16 @@ export async function GET(request: Request) {
     if (agent && !MODELS.includes(agent)) return Response.json({ entries: [] });
     const rules = await currentGameRules();
     const result = await db.query(
-      `WITH best AS (SELECT DISTINCT ON (g.owner_id) g.owner_id,g.turns,g.tokens_used AS tokens,g.spent_microdollars AS spend,g.blocks,g.monitor_reasoning,g.updated_at AS captured_at
+      `WITH best AS (SELECT DISTINCT ON (g.owner_id) g.owner_id,g.turns,a.tokens,a.spend,g.blocks,g.monitor_reasoning,g.updated_at AS captured_at
       FROM ctf.games g JOIN ctf."user" u ON u.id=g.owner_id
+      CROSS JOIN LATERAL (SELECT coalesce(sum(cost),0) AS spend,coalesce(sum(tokens),0) AS tokens
+        FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent' AND i.settled_at IS NOT NULL) a
       WHERE g.status='captured' AND g.monitor_difficulty='hard' AND g.monitor_version=$2 AND g.monitor_isolation=$3 AND g.bug_fix_required=$4 AND g.jailbreak_catch=$5 AND g.reserved_microdollars=0 AND u."isAnonymous" IS NOT TRUE
         AND ($1::text IS NULL OR (
           EXISTS(SELECT 1 FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent' AND i.model=$1)
           AND NOT EXISTS(SELECT 1 FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent' AND i.model<>$1)
         ))
-      ORDER BY g.owner_id,g.spent_microdollars,g.turns,g.updated_at) SELECT * FROM best ORDER BY spend,turns,captured_at LIMIT 50`,
+      ORDER BY g.owner_id,a.spend,g.turns,g.updated_at) SELECT * FROM best ORDER BY spend,turns,captured_at LIMIT 50`,
       [
         agent,
         ASYNC_MONITOR_VERSION,
@@ -35,6 +37,7 @@ export async function GET(request: Request) {
         entries: result.rows.map(({ owner_id, ...entry }) => ({
           ...entry,
           spend: Number(entry.spend),
+          tokens: Number(entry.tokens),
           name: `Player ${createHash("sha256").update(owner_id).digest("hex").slice(0, 6)}`,
         })),
       },

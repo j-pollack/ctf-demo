@@ -46,15 +46,15 @@ const modes = [
   "over-ceiling",
   ...(Object.keys(policyModes) as (keyof typeof policyModes)[]),
 ] as const;
-// Budget-exemption modes: the run budget must not refuse a review (B1, B2) except above the overage ceiling (B8)
-// or when the shared daily cap is reached (B4).
-const exemptModes = ["budget-between", "budget-equal", "budget-two-call", "sibling-hold"];
+// Budget modes: the player's run budget must not refuse a review (B1, B2). Only the monitor's own
+// allowance (B8) or the shared daily cap (B4) does.
+const runBudgetModes = ["budget-between", "budget-equal", "budget-two-call", "sibling-hold"];
 const refusedModes = ["daily-cap", "over-ceiling"];
 // Remaining run budget, in microdollars, for the modes that seed a tight run.
 const TIGHT_REMAINING = 1_000;
 const SIBLING_REMAINING = 60_000;
-// Mirrors MONITOR_OVERAGE_MICRODOLLARS in lib/policy.ts, which is stated by the contract, not imported.
-const OVERAGE_CEILING = 250_000;
+// Mirrors MONITOR_RUN_ALLOWANCE_MICRODOLLARS in lib/policy.ts, which is stated by the contract, not imported.
+const MONITOR_ALLOWANCE = 1_500_000;
 
 await test(
   "production worker preserves policy attribution and bounded accounting",
@@ -211,7 +211,7 @@ await test(
           assert.equal(endpoint, "https://openrouter.ai/api/v1/chat/completions");
           investigator++;
           assert.equal(body.stream, true, "investigator requests stream");
-          if (exemptModes.includes(mode)) assert.equal(body.max_tokens, 8192);
+          if (runBudgetModes.includes(mode)) assert.equal(body.max_tokens, 8192);
           assert.equal(body.messages[0].content, policy.systemPrompt);
           assert.equal(body.reasoning.effort, "high");
           assert.deepEqual(body.provider, {
@@ -331,15 +331,22 @@ await test(
       [workspace.gameId],
     );
     let sibling: { id: string; cost: number } | undefined;
-    if (mode === "budget-equal")
-      await pool.query("UPDATE ctf.games SET spent_microdollars=budget_microdollars WHERE id=$1", [
-        workspace.gameId,
-      ]);
-    if (mode === "over-ceiling")
+    const seedSpend = async (role: string, microdollars: number) => {
       await pool.query(
-        "UPDATE ctf.games SET spent_microdollars=budget_microdollars+$2 WHERE id=$1",
-        [workspace.gameId, OVERAGE_CEILING],
+        "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
       );
+      await pool.query(
+        `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+         VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,$2,'seeded',1,$3,1,$3,now())`,
+        [workspace.gameId, role, microdollars],
+      );
+      await pool.query(
+        "UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2,tokens_used=tokens_used+1 WHERE id=$1",
+        [workspace.gameId, microdollars],
+      );
+    };
+    if (mode === "budget-equal") await seedSpend("agent", before.budget - before.spent);
+    if (mode === "over-ceiling") await seedSpend("monitor", MONITOR_ALLOWANCE);
     if (mode === "daily-cap")
       await pool.query(
         `INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,$1)
@@ -374,7 +381,9 @@ await test(
       const {
         rows: [state],
       } = await pool.query(
-        "SELECT (budget_microdollars-spent_microdollars-reserved_microdollars)::int AS available FROM ctf.games WHERE id=$1",
+        `SELECT (budget_microdollars-(SELECT coalesce(sum(CASE WHEN settled_at IS NULL THEN cost_ceiling ELSE cost END),0)
+           FROM ctf.inference WHERE game_id=games.id AND role IN ('agent','screen')))::int AS available
+         FROM ctf.games WHERE id=$1`,
         [workspace.gameId],
       );
       assert.ok(state.available >= 0 && state.available < 64 * 2, "the sibling holds the budget");
@@ -405,7 +414,7 @@ await test(
       assert.match(job.reason, /version/i);
       return;
     }
-    if (exemptModes.includes(mode)) {
+    if (runBudgetModes.includes(mode)) {
       assert.deepEqual(reviews, [{ prompt_version: version, prompt_hash: policy.promptHash }]);
       assert.equal(classifier, 1);
       assert.equal(investigator, mode === "budget-two-call" ? 2 : 1);
@@ -444,7 +453,9 @@ await test(
       assert.equal(job.status, "queued");
       assert.match(
         job.reason,
-        mode === "daily-cap" ? /shared inference budget/i : /budget|allowance/i,
+        mode === "daily-cap"
+          ? /shared inference budget/i
+          : /The monitor’s budget for this run is used up\./,
       );
       const {
         rows: [after],
@@ -455,7 +466,7 @@ await test(
       assert.equal(after.held, 0);
       assert.equal(
         after.spent,
-        mode === "over-ceiling" ? before.budget + OVERAGE_CEILING : before.spent,
+        mode === "over-ceiling" ? before.spent + MONITOR_ALLOWANCE : before.spent,
       );
       return;
     }

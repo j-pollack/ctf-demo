@@ -31,6 +31,7 @@ const MIGRATIONS = [
   "027-review-prompt-hash.sql",
   "028-review-continuations.sql",
   "029-review-read-confirmation.sql",
+  "030-inference-game-unsettled.sql",
 ];
 
 export type SeededWorkspace = {

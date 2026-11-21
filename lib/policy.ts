@@ -1,10 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 
 export const DAILY_CAP_MICRODOLLARS = 10_000_000;
-// Settled spend past a run's budget up to which the worker's monitor reviews are still admitted.
-export const MONITOR_OVERAGE_MICRODOLLARS = 250_000;
-// How far past its budget a run in `finalizing` may spend on its final reviews.
-export const FINAL_REVIEW_OVERAGE_MICRODOLLARS = 1_000_000;
+// The monitor's own settled spend per run, apart from the player's run budget.
+export const MONITOR_RUN_ALLOWANCE_MICRODOLLARS = 1_500_000;
+// What a run in `finalizing` may spend on its final reviews beyond that.
+export const FINAL_REVIEW_ALLOWANCE_MICRODOLLARS = 1_000_000;
 const AGENT_MODELS = [
   "meta/muse-spark-open",
   "qwen/qwen3.8-2.4t-a95b",

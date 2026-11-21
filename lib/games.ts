@@ -10,8 +10,8 @@ import {
   PLAYER_AGENT_EFFORT,
   MODELS,
   DAILY_CAP_MICRODOLLARS,
-  FINAL_REVIEW_OVERAGE_MICRODOLLARS,
-  MONITOR_OVERAGE_MICRODOLLARS,
+  FINAL_REVIEW_ALLOWANCE_MICRODOLLARS,
+  MONITOR_RUN_ALLOWANCE_MICRODOLLARS,
   GameError,
   makeSecret,
 } from "./policy";
@@ -137,23 +137,60 @@ export async function getPublicGameRow(id: string, ownerId: string) {
   if (!rows[0]) throw new GameError("Run not found.", 404);
   return rows[0];
 }
-// One read of a run's money, shared by publicGame and the runner's live `billing` frames.
-export async function gameBilling(gameId: string) {
-  const { rows } = await db.query(
-    `SELECT g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
-      coalesce(sum(i.cost) FILTER (WHERE i.role='agent'),0) AS agent,
-      coalesce(sum(i.cost) FILTER (WHERE i.role IN ('monitor','screen')),0) AS monitor
-    FROM ctf.games g LEFT JOIN ctf.inference i ON i.game_id=g.id AND i.settled_at IS NOT NULL
-    WHERE g.id=$1 GROUP BY g.id`,
+// The player's side of a run is its agent and screen rows, the monitor's side its monitor rows.
+// Settled rows count at `cost`, unsettled rows at `cost_ceiling`. Two predicates on settled_at,
+// so each sum uses its own partial index.
+export type RunSpend = {
+  playerSpent: number;
+  playerHeld: number;
+  monitorSpent: number;
+  monitorHeld: number;
+  agentSpent: number;
+};
+export async function runSpend(
+  q: { query: (text: string, values: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
+  gameId: string,
+): Promise<RunSpend> {
+  const { rows } = await q.query(
+    `SELECT s.player_spent,s.monitor_spent,s.agent_spent,h.player_held,h.monitor_held FROM
+      (SELECT coalesce(sum(cost) FILTER (WHERE role IN ('agent','screen')),0) AS player_spent,
+        coalesce(sum(cost) FILTER (WHERE role='monitor'),0) AS monitor_spent,
+        coalesce(sum(cost) FILTER (WHERE role='agent'),0) AS agent_spent
+       FROM ctf.inference WHERE game_id=$1 AND settled_at IS NOT NULL) s,
+      (SELECT coalesce(sum(cost_ceiling) FILTER (WHERE role IN ('agent','screen')),0) AS player_held,
+        coalesce(sum(cost_ceiling) FILTER (WHERE role='monitor'),0) AS monitor_held
+       FROM ctf.inference WHERE game_id=$1 AND settled_at IS NULL) h`,
     [gameId],
   );
   const row = rows[0];
   return {
-    budgetMicrodollars: Number(row.budget_microdollars),
-    spentMicrodollars: Number(row.spent_microdollars),
-    reservedMicrodollars: Number(row.reserved_microdollars),
-    agentSpendMicrodollars: Number(row.agent),
-    monitorSpendMicrodollars: Number(row.monitor),
+    playerSpent: Number(row.player_spent),
+    playerHeld: Number(row.player_held),
+    monitorSpent: Number(row.monitor_spent),
+    monitorHeld: Number(row.monitor_held),
+    agentSpent: Number(row.agent_spent),
+  };
+}
+// A monitor request is admitted in full while the monitor's settled spend is below its allowance.
+export function assertMonitorAllowance(monitorSpent: number, status: GameStatus) {
+  const allowance =
+    MONITOR_RUN_ALLOWANCE_MICRODOLLARS +
+    (status === "finalizing" ? FINAL_REVIEW_ALLOWANCE_MICRODOLLARS : 0);
+  if (monitorSpent >= allowance)
+    throw new GameError("The monitor’s budget for this run is used up.", 402);
+}
+// One read of a run's money, shared by publicGame and the runner's live `billing` frames.
+export async function gameBilling(gameId: string) {
+  const { rows } = await db.query("SELECT budget_microdollars FROM ctf.games WHERE id=$1", [
+    gameId,
+  ]);
+  const spend = await runSpend(db, gameId);
+  return {
+    budgetMicrodollars: Number(rows[0].budget_microdollars),
+    spentMicrodollars: spend.playerSpent,
+    reservedMicrodollars: spend.playerHeld,
+    agentSpendMicrodollars: spend.agentSpent,
+    monitorSpendMicrodollars: spend.monitorSpent,
   };
 }
 // The only reader of ctf.refused_texts. Its caller has checked that the viewer owns the run.
@@ -709,24 +746,6 @@ export function requestAllowance(
     cost: inputCost + Math.ceil(Math.max(0, maxTokens) * outputRate * 1_000_000),
   };
 }
-// A worker-claimed monitor review is admitted without the run budget until settled spend passes a
-// ceiling: budget plus FINAL_REVIEW_OVERAGE_MICRODOLLARS for a run in `finalizing`, budget plus
-// MONITOR_OVERAGE_MICRODOLLARS for any other status.
-export function monitorRunBudgetExempt(
-  role: InferenceRole,
-  claim: MonitorJobClaim | undefined,
-  spent: number,
-  budget: number,
-  status: GameStatus,
-) {
-  return (
-    role === "monitor" &&
-    claim?.runBudgetExempt === true &&
-    spent <
-      budget +
-        (status === "finalizing" ? FINAL_REVIEW_OVERAGE_MICRODOLLARS : MONITOR_OVERAGE_MICRODOLLARS)
-  );
-}
 export type InferenceRole = "agent" | "monitor" | "screen";
 export async function reserveInference(
   gameId: string,
@@ -786,25 +805,18 @@ export async function reserveInference(
       if (!context.jobClaim) throw new GameError("Monitor review authorization is required.", 409);
       await assertMonitorJobClaim(client, context.jobClaim);
     }
-    const available =
-      Number(game.budget_microdollars) -
-      Number(game.spent_microdollars) -
-      Number(game.reserved_microdollars);
-    const exempt = monitorRunBudgetExempt(
-      role,
-      context.jobClaim,
-      Number(game.spent_microdollars),
-      Number(game.budget_microdollars),
-      game.status,
-    );
-    const allowance = exempt
-      ? { maxTokens: wantedOutput }
-      : requestAllowance(input, wantedOutput, inputRate, outputRate, available);
+    const run = await runSpend(client, gameId);
+    const available = Number(game.budget_microdollars) - run.playerSpent - run.playerHeld;
+    if (role === "monitor") assertMonitorAllowance(run.monitorSpent, game.status);
+    const allowance =
+      role === "monitor"
+        ? { maxTokens: wantedOutput }
+        : requestAllowance(input, wantedOutput, inputRate, outputRate, available);
     if (allowance.maxTokens < 64) {
       // An agent past its budget is exhausted unless a sibling's paid agent call is still unsettled.
       const spentOut =
         role === "agent" &&
-        Number(game.spent_microdollars) >= Number(game.budget_microdollars) &&
+        run.playerSpent >= Number(game.budget_microdollars) &&
         !(
           await client.query(
             "SELECT 1 FROM ctf.inference WHERE game_id=$1 AND role='agent' AND settled_at IS NULL LIMIT 1",
@@ -814,12 +826,12 @@ export async function reserveInference(
       throw new GameError(
         spentOut
           ? "Your inference budget is exhausted."
-          : Number(game.reserved_microdollars) > 0
+          : run.playerHeld > 0
             ? "There isn’t enough available budget for this request. Some billing is still pending."
             : available <= 0
               ? "Your inference budget is exhausted."
               : "There isn’t enough budget for this request. Start a new run.",
-        spentOut || (available <= 0 && Number(game.reserved_microdollars) === 0) ? 402 : 400,
+        spentOut || (available <= 0 && run.playerHeld === 0) ? 402 : 400,
       );
     }
     const globalAllowance = requestAllowance(

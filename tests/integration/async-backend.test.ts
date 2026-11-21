@@ -28,6 +28,21 @@ await test(
     url.pathname = `/${databaseName}`;
     const pool = new Pool({ connectionString: url.toString(), max: 4 });
     (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = pool;
+    // Seeds a settled monitor row and keeps the run's total columns consistent with it.
+    const seedMonitorSpend = async (gameId: string, microdollars: number) => {
+      await pool.query(
+        "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+      );
+      await pool.query(
+        `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+         VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,'monitor','seeded',1,$2,1,$2,now())`,
+        [gameId, microdollars],
+      );
+      await pool.query(
+        "UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2 WHERE id=$1",
+        [gameId, microdollars],
+      );
+    };
     t.after(async () => {
       await closePool(pool);
       await admin.query(`DROP DATABASE "${databaseName}"`);
@@ -60,6 +75,7 @@ await test(
       "migrations/027-review-prompt-hash.sql",
       "migrations/028-review-continuations.sql",
       "migrations/029-review-read-confirmation.sql",
+      "migrations/030-inference-game-unsettled.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
@@ -289,11 +305,7 @@ await test(
                     controller.abort(new Error("synthetic classifier abort"));
                   if (scenario === "unrelated-error")
                     return new Response("provider unavailable", { status: 503 });
-                  if (scenario === "budget-denied")
-                    await pool.query(
-                      "UPDATE ctf.games SET budget_microdollars=spent_microdollars+reserved_microdollars WHERE id=$1",
-                      [id],
-                    );
+                  if (scenario === "budget-denied") await seedMonitorSpend(id, 1_500_000);
                   return new Response("max_tokens_exceeded", { status: 400 });
                 },
               );
@@ -376,7 +388,8 @@ await test(
                   (await pool.query("SELECT spent_microdollars FROM ctf.games WHERE id=$1", [id]))
                     .rows[0].spent_microdollars,
                 ),
-                expectedCost,
+                expectedCost + (scenario === "budget-denied" ? 1_500_000 : 0),
+                "the seeded monitor spend is the only addition",
               );
               assert.equal(
                 Number(
@@ -2343,14 +2356,11 @@ await test(
         assert.equal(done.job.status, baseline.job.status);
       });
 
-      await t.test("W7: a run over its monitor overage sends no annotation request", async () => {
+      await t.test("W7: a run over its monitor allowance sends no annotation request", async () => {
         reset();
         const id = await seedRun(three);
         await commit(id, transcript(three));
-        await pool.query(
-          "UPDATE ctf.games SET spent_microdollars=budget_microdollars+250000 WHERE id=$1",
-          [id],
-        );
+        await seedMonitorSpend(id, 1_500_000);
         await work(id);
         assert.equal(recorded.length, 0);
         assert.equal((await rows(id)).length, 0);
@@ -2361,17 +2371,33 @@ await test(
         assert.equal((await annotationInference(id)).length, 0);
         assert.equal(
           Number(
-            (
-              await pool.query(
-                "SELECT spent_microdollars-budget_microdollars AS over FROM ctf.games WHERE id=$1",
-                [id],
-              )
-            ).rows[0].over,
+            (await pool.query("SELECT spent_microdollars FROM ctf.games WHERE id=$1", [id])).rows[0]
+              .spent_microdollars,
           ),
-          250000,
+          1_500_000,
           "nothing was charged",
         );
       });
+
+      await t.test(
+        "W7: the annotation pass and the classifier are admitted one microdollar under the allowance",
+        async () => {
+          reset();
+          const id = await seedRun(three);
+          await commit(id, transcript(three));
+          await seedMonitorSpend(id, 1_499_999);
+          await work(id);
+          assert.equal((await rows(id)).length, 3, "the annotation pass was admitted");
+          assert.equal(
+            logged.filter((entry) => entry.event === "monitor.annotation.refused").length,
+            0,
+          );
+          const charges = (await annotationInference(id)).filter((row) => row.settled_at !== null);
+          assert.equal(charges.length, 2, "the annotation pass and the classifier were billed");
+          assert.ok(charges.every((row) => row.review_id !== null));
+          assert.equal((await outcome(id)).reviews.length, 1, "the review went on to finish");
+        },
+      );
 
       await t.test("W7: a failing classifier waits for the annotation pass to settle", async () => {
         reset({ failClassifier: true });
@@ -2428,7 +2454,7 @@ await test(
           commands: snapshot.commands,
           signal: AbortSignal.timeout(10_000),
           executionGeneration: Number(game.execution_generation),
-          jobClaim: { ...claim!, runBudgetExempt: true },
+          jobClaim: claim!,
         };
         await Promise.all([annotateToolCalls(input), annotateToolCalls(input)]);
         assert.equal(recorded.length, 12, "both passes dispatched");

@@ -999,9 +999,11 @@ try {
   }
 
   const exhaustedGame = await claimGameSession(two.id, two.id, other);
-  await db.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
-    two.id,
-  ]);
+  await db.query(
+    `UPDATE ctf.games SET budget_microdollars=(SELECT coalesce(sum(cost),0) FROM ctf.inference
+       WHERE game_id=games.id AND settled_at IS NOT NULL AND role IN ('agent','screen')) WHERE id=$1`,
+    [two.id],
+  );
   await runGame(
     exhaustedGame,
     "This request must be refused before inference.",

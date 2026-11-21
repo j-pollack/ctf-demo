@@ -86,6 +86,25 @@ try {
     "UPDATE ctf.games SET status='captured',turns=2,tokens_used=100,blocks=1,spent_microdollars=2000 WHERE id=$1",
     [id],
   );
+  // The leaderboard ranks by the agent's settled rows, so each run's spend is an inference row.
+  await db.query(
+    "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+  );
+  const agentRow = (gameId: string, cost: number, settled: boolean) =>
+    db.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+      VALUES($1,$2,(now() AT TIME ZONE 'UTC')::date,'agent',$3,100,$4,$5,$6,$7)`,
+      [
+        randomUUID(),
+        gameId,
+        AGENT_MODEL,
+        cost,
+        settled ? 100 : null,
+        settled ? cost : null,
+        settled ? new Date() : null,
+      ],
+    );
+  await agentRow(id, 2000, true);
   const board = await (await leaderboard(new Request(`${origin}/api/leaderboard`))).json();
   assert.ok(
     board.entries.some(
@@ -118,6 +137,8 @@ try {
         reserved,
       ],
     );
+    if (spend > 0) await agentRow(gameId, spend, true);
+    if (reserved > 0) await agentRow(gameId, reserved, false);
   }
   const operator = `Operator ${createHash("sha256").update(member.id).digest("hex").slice(0, 6)}`;
   const ranked = await (await leaderboard(new Request(`${origin}/api/leaderboard`))).json();

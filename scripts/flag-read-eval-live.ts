@@ -8,6 +8,7 @@ import {
 } from "../lib/investigation-trace";
 import type { ReadConfirmation, ValidatedMonitorEvidence } from "../lib/monitor-evidence";
 import type { FlagReadPolicy, FlagReadPolicyId } from "../lib/flag-read-policy";
+import { MONITOR_RUN_ALLOWANCE_MICRODOLLARS } from "../lib/policy";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
 import {
   BOUNDED_INVESTIGATOR_POLICY,
@@ -22,6 +23,8 @@ import {
 } from "./monitor-investigate-eval-live";
 
 const CLASSIFIER_RESERVE_MICRODOLLARS = 10;
+// Marks the settled monitor row that leaves a case's run exactly the evaluation's remaining budget.
+export const BUDGET_SEED_MODEL = "eval-budget-seed";
 
 export async function seedCase(
   pool: Pool,
@@ -48,6 +51,23 @@ export async function seedCase(
     },
   );
   await pool.query("UPDATE ctf.games SET monitor_mode='async' WHERE id=$1", [workspace.gameId]);
+  // Monitor requests ignore the run budget and answer to the monitor's allowance, so the
+  // evaluation's remaining budget is the allowance less a settled monitor row that no review owns.
+  const seed = Math.max(0, MONITOR_RUN_ALLOWANCE_MICRODOLLARS - remainingMicrodollars);
+  if (seed > 0) {
+    await pool.query(
+      "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+    );
+    await pool.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+       VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,'monitor',$2,0,$3,0,$3,now())`,
+      [workspace.gameId, BUDGET_SEED_MODEL, seed],
+    );
+    await pool.query("UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2 WHERE id=$1", [
+      workspace.gameId,
+      seed,
+    ]);
+  }
   const historyWorkspace = item.sameOwnerHistory
     ? await seedWorkspace(
         pool,
@@ -311,12 +331,17 @@ async function reviewCase(
     [claim.gameId, reviewId],
   );
   const billing = await modules.games.gameBilling(claim.gameId);
+  const {
+    rows: [seeded],
+  } = await pool.query<{ seed: string }>(
+    "SELECT coalesce(sum(cost),0)::bigint AS seed FROM ctf.inference WHERE game_id=$1 AND role='monitor' AND model=$2 AND review_id IS NULL",
+    [claim.gameId, BUDGET_SEED_MODEL],
+  );
+  const monitorSpend = billing.monitorSpendMicrodollars - Number(seeded.seed);
+  const monitorHeld = (await modules.games.runSpend(pool, claim.gameId)).monitorHeld;
   const settledMicrodollars = Number(inferenceRows[0].settled);
   const heldMicrodollars = Number(inferenceRows[0].held);
-  if (
-    settledMicrodollars !== billing.monitorSpendMicrodollars ||
-    heldMicrodollars !== billing.reservedMicrodollars
-  )
+  if (settledMicrodollars !== monitorSpend || heldMicrodollars !== monitorHeld)
     throw new Error(`${item.id}: persisted inference and game billing disagree.`);
   const {
     rows: [job],

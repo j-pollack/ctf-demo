@@ -10,7 +10,8 @@ import {
 } from "./control";
 import { evaluateClassifierContext } from "./classifier-context";
 import {
-  monitorRunBudgetExempt,
+  assertMonitorAllowance,
+  runSpend,
   reserveInference,
   settleInference,
   transaction,
@@ -50,38 +51,14 @@ async function assertDispatchAuthorization(input: {
     const { rows } = await client.query<{
       execution_generation: string;
       status: GameStatus;
-      spent_microdollars: number;
-      reserved_microdollars: number;
-      budget_microdollars: number;
-    }>(
-      "SELECT execution_generation,status,spent_microdollars,reserved_microdollars,budget_microdollars FROM ctf.games WHERE id=$1 FOR UPDATE",
-      [input.game.id],
-    );
+    }>("SELECT execution_generation,status FROM ctf.games WHERE id=$1 FOR UPDATE", [input.game.id]);
     if (!rows[0]) throw new GameError("This response has stopped.", 409);
     if (Number(spendRows[0].charged) + Number(spendRows[0].reserved) >= DAILY_CAP_MICRODOLLARS)
       throw new GameError(
         "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
         429,
       );
-    if (
-      !monitorRunBudgetExempt(
-        "monitor",
-        input.jobClaim,
-        Number(rows[0].spent_microdollars),
-        Number(rows[0].budget_microdollars),
-        rows[0].status,
-      ) &&
-      Number(rows[0].spent_microdollars) + Number(rows[0].reserved_microdollars) >=
-        Number(rows[0].budget_microdollars)
-    ) {
-      const pending = Number(rows[0].reserved_microdollars) > 0;
-      throw new GameError(
-        pending
-          ? "There isn’t enough available budget for this request. Some billing is still pending."
-          : "Your inference budget is exhausted.",
-        pending ? 400 : 402,
-      );
-    }
+    assertMonitorAllowance((await runSpend(client, input.game.id)).monitorSpent, rows[0].status);
     await assertMonitorJobClaim(client, input.jobClaim);
   });
 }

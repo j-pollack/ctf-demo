@@ -33,6 +33,50 @@ const pool = new Pool({
 // Use the existing pool seam with a real pg Pool, not mocked SQL or relaxed production TLS.
 (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = pool;
 
+// A run's player-side sums, for tests that set a budget relative to what the player has spent.
+const PLAYER_SPENT = `(SELECT coalesce(sum(cost),0) FROM ctf.inference
+  WHERE game_id=games.id AND settled_at IS NOT NULL AND role IN ('agent','screen'))`;
+const PLAYER_HELD = `(SELECT coalesce(sum(cost_ceiling),0) FROM ctf.inference
+  WHERE game_id=games.id AND settled_at IS NULL AND role IN ('agent','screen'))`;
+// Seeds one settled inference row and keeps the run's total columns consistent with it.
+const seedSettledSpend = async (gameId: string, role: string, microdollars: number) => {
+  await pool.query(
+    "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+  );
+  await pool.query(
+    `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+     VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,$2,'seeded',1,$3,1,$3,now())`,
+    [gameId, role, microdollars],
+  );
+  await pool.query(
+    "UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2,tokens_used=tokens_used+1 WHERE id=$1",
+    [gameId, microdollars],
+  );
+};
+
+// Seeds one unsettled hold and keeps the run's and the day's reserved columns consistent with it.
+const seedUnsettledHold = async (gameId: string, role: string, microdollars: number) => {
+  await pool.query(
+    "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+  );
+  const {
+    rows: [{ id }],
+  } = await pool.query(
+    `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling)
+     VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,$2,'seeded',1,$3) RETURNING id`,
+    [gameId, role, microdollars],
+  );
+  await pool.query(
+    "UPDATE ctf.daily_spend SET reserved=reserved+$1 WHERE day=(now() AT TIME ZONE 'UTC')::date",
+    [microdollars],
+  );
+  await pool.query(
+    "UPDATE ctf.games SET tokens_reserved=tokens_reserved+1,reserved_microdollars=reserved_microdollars+$2 WHERE id=$1",
+    [gameId, microdollars],
+  );
+  return id as string;
+};
+
 // ~45 s on a loaded host; 60 s left no headroom.
 // The file runs for about 100 seconds on a developer machine and longer on a CI runner.
 await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 }, async (t) => {
@@ -160,6 +204,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   await pool.query(
     await readFile(
       new URL("../../db/migrations/029-review-read-confirmation.sql", import.meta.url),
+      "utf8",
+    ),
+  );
+  await pool.query(
+    await readFile(
+      new URL("../../db/migrations/030-inference-game-unsettled.sql", import.meta.url),
       "utf8",
     ),
   );
@@ -2102,7 +2152,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       "printf harmless",
     ]);
     await reviewOnly([gameId]);
-    await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+    await pool.query(`UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT} WHERE id=$1`, [
       gameId,
     ]);
     const before = await spentBefore([gameId]);
@@ -2127,7 +2177,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       await runGame(await claimGame(game.id, owner), "Submit", AbortSignal.timeout(5000), () => {});
       assert.equal((await row(game.id)).status, "finalizing");
       await reviewOnly([game.id]);
-      await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+      await pool.query(`UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT} WHERE id=$1`, [
         game.id,
       ]);
       const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
@@ -2188,7 +2238,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       0.000001,
       { sessionId: game.id, reviewId, jobClaim: claim! },
     );
-    return { game, held };
+    return { game, held, claim: claim!, reviewId };
   };
   const finishMonitorHold = async (gameId: string, held: { id: string; cost: number }) => {
     await settleInference(held.id, { tokens: 164, cost: held.cost / 1_000_000 });
@@ -2223,7 +2273,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     async () => {
       const owner = "async-agent-over-budget";
       const { game, held } = await runWithMonitorHold(owner);
-      await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+      await pool.query(`UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT} WHERE id=$1`, [
         game.id,
       ]);
       const finished = await sendInstruction(game.id, owner);
@@ -2235,18 +2285,19 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   );
 
   await t.test(
-    "an agent request under budget keeps status 400 while a monitor reservation is held",
+    "a monitor reservation does not make an agent request under budget wait for billing",
     async () => {
       const owner = "async-agent-short-budget-held";
       const { game, held } = await runWithMonitorHold(owner);
-      await pool.query(
-        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+100 WHERE id=$1",
-        [game.id],
-      );
+      await pool.query(`UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT}+100 WHERE id=$1`, [
+        game.id,
+      ]);
       const finished = await sendInstruction(game.id, owner);
       assert.equal(finished.status, "active");
       assert.equal(Number(finished.reserved_microdollars), held.cost, "the hold is untouched");
-      assert.match(await lastError(game.id), /billing is still pending/);
+      const message = await lastError(game.id);
+      assert.match(message, /enough budget/);
+      assert.doesNotMatch(message, /billing is still pending/);
       await finishMonitorHold(game.id, held);
     },
   );
@@ -2270,8 +2321,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         0.000001,
         { sessionId: sibling.id },
       );
-      // Exempt reviews pushed settled spend to the budget while the sibling's call was in flight.
-      await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+      // The player's settled spend reached the budget while the sibling's call was in flight.
+      await pool.query(`UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT} WHERE id=$1`, [
         game.id,
       ]);
       const holdRow = async () =>
@@ -2298,10 +2349,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     async () => {
       const owner = "async-agent-short-budget";
       const game = await productionStartGame(owner);
-      await pool.query(
-        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+100 WHERE id=$1",
-        [game.id],
-      );
+      await pool.query(`UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT}+100 WHERE id=$1`, [
+        game.id,
+      ]);
       agentCalls = 0;
       await runGame(
         await claimGame(game.id, owner),
@@ -3512,17 +3562,17 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     );
   });
   await t.test(
-    "R4: a requeued review that allows lets the run finalize once holds settle",
+    "R4: a requeued review that allows lets the run finalize once the monitor's hold settles",
     async () => {
       const gameId = await unresolvedRun("verdict-allow");
       const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
       await age(gameId, 16);
-      await pool.query("UPDATE ctf.games SET reserved_microdollars=5 WHERE id=$1", [gameId]);
+      const monitorHold = await seedUnsettledHold(gameId, "monitor", 5);
       await runMonitorWorkerOnce();
       assert.equal((await jobOf(gameId)).status, "caught-up");
       for (let i = 0; i < 3; i++) await runMonitorWorkerOnce();
       assert.equal((await row(gameId)).status, "finalizing");
-      await pool.query("UPDATE ctf.games SET reserved_microdollars=0 WHERE id=$1", [gameId]);
+      await settleInference(monitorHold, { tokens: 0, costMicrodollars: 0 });
       for (let i = 0; i < 6 && (await row(gameId)).status === "finalizing"; i++)
         await runMonitorWorkerOnce();
       assert.equal((await row(gameId)).status, "captured");
@@ -3690,7 +3740,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     await pool.query("UPDATE ctf.monitor_jobs SET requeues=4 WHERE game_id=$1", [gameId]);
     assert.equal((await monitor())?.willRetry, false);
   });
-  // The final review is admitted whatever the run has spent: the ceiling applies to active runs only.
+  // The final review is admitted past the monitor's play allowance, up to its final-review allowance.
   const submittedRun = async (owner: string) => {
     const game = await startPersistedToolGame(owner);
     const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
@@ -3701,11 +3751,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     return game.id;
   };
   const pastTheCeiling = async (gameId: string) => {
-    const { MONITOR_OVERAGE_MICRODOLLARS } = await import("../../lib/policy");
-    await pool.query("UPDATE ctf.games SET spent_microdollars=budget_microdollars+$2 WHERE id=$1", [
-      gameId,
-      MONITOR_OVERAGE_MICRODOLLARS + 1,
-    ]);
+    const { MONITOR_RUN_ALLOWANCE_MICRODOLLARS } = await import("../../lib/policy");
+    await seedSettledSpend(gameId, "monitor", MONITOR_RUN_ALLOWANCE_MICRODOLLARS + 1);
   };
   const reviewSpend = async (gameId: string) =>
     Number(
@@ -3719,7 +3766,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     );
   for (const requeued of [false, true])
     await t.test(
-      `B1: ${requeued ? "a requeued" : "the first"} review of a finalizing run past the overage is admitted`,
+      `B1: ${requeued ? "a requeued" : "the first"} review of a finalizing run past the play allowance is admitted`,
       async () => {
         const owner = `verdict-admitted-${requeued}`;
         const gameId = requeued ? await unresolvedRun(owner) : await submittedRun(owner);
@@ -3744,21 +3791,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         assert.equal((await row(gameId)).status, "captured");
       },
     );
-  // B2: an active run past the same ceiling is still refused. Already proved by
+  // B2: an active run past the play allowance is still refused. Already proved by
   // tests/integration/flag-read-production.test.ts mode "over-ceiling" (review-budget B8) on a
-  // seeded active run, and by the annotation test "W7: a run over its monitor overage sends no
+  // seeded active run, and by the annotation test "W7: a run over its monitor allowance sends no
   // annotation request" in tests/integration/async-backend.test.ts.
   await t.test(
-    "B4: a finalizing review at budget plus $1.00 is refused and the run ends",
+    "B4: a finalizing review at the final-review allowance is refused and the run ends",
     async () => {
-      const { FINAL_REVIEW_OVERAGE_MICRODOLLARS } = await import("../../lib/policy");
+      const { MONITOR_RUN_ALLOWANCE_MICRODOLLARS, FINAL_REVIEW_ALLOWANCE_MICRODOLLARS } =
+        await import("../../lib/policy");
+      const finalAllowance =
+        MONITOR_RUN_ALLOWANCE_MICRODOLLARS + FINAL_REVIEW_ALLOWANCE_MICRODOLLARS;
       const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
       // One microdollar below the ceiling is admitted.
       const below = await submittedRun("verdict-ceiling-below");
-      await pool.query(
-        "UPDATE ctf.games SET spent_microdollars=budget_microdollars+$2 WHERE id=$1",
-        [below, FINAL_REVIEW_OVERAGE_MICRODOLLARS - 1],
-      );
+      await seedSettledSpend(below, "monitor", finalAllowance - 1);
       const classifierAtBelow = typesafe.length;
       await runMonitorWorkerOnce();
       // The classifier's own settled cost then takes the run to the ceiling, so only its
@@ -3766,10 +3813,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.ok(typesafe.length > classifierAtBelow, "admitted one microdollar below the ceiling");
       // At the ceiling it is refused before any request, and the schedule still ends.
       const gameId = await submittedRun("verdict-ceiling-at");
-      await pool.query(
-        "UPDATE ctf.games SET spent_microdollars=budget_microdollars+$2 WHERE id=$1",
-        [gameId, FINAL_REVIEW_OVERAGE_MICRODOLLARS],
-      );
+      await seedSettledSpend(gameId, "monitor", finalAllowance);
       const requestsBefore = monitorPayloads().length;
       const classifierBefore = typesafe.length;
       await runMonitorWorkerOnce();
@@ -3790,6 +3834,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.equal(monitorPayloads().length, requestsBefore, "no investigator request was sent");
       assert.equal(typesafe.length, classifierBefore, "no classifier request was sent");
       assert.equal((await unverifiedEvents(gameId)).length, 1);
+      assert.equal(
+        (await projectGame(await getPublicGameRow(gameId, "verdict-ceiling-at"))).endReason,
+        "unverified-review",
+      );
     },
   );
   await t.test(
@@ -4283,6 +4331,217 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       ]);
     },
   );
+  // The row sums of a run's two sides equal its total columns.
+  const assertSumsMatchColumns = async (gameId: string, step: string) => {
+    const { runSpend } = await import("../../lib/games");
+    const sums = await runSpend(pool, gameId);
+    const totals = (await row(gameId)) as {
+      spent_microdollars: string;
+      reserved_microdollars: string;
+    };
+    assert.equal(sums.playerSpent + sums.monitorSpent, Number(totals.spent_microdollars), step);
+    assert.equal(sums.playerHeld + sums.monitorHeld, Number(totals.reserved_microdollars), step);
+  };
+  const agentRequest = (
+    gameId: string,
+    lease: string,
+    sessionId: string,
+    model: string,
+    output = 64,
+  ) =>
+    reserveInference(gameId, lease, "agent", model, 0, output, 0.000001, 0.000001, { sessionId });
+
+  await t.test("A3-2: monitor spend above the run budget does not refuse the agent", async () => {
+    const owner = "budget-agent-free";
+    const game = await productionStartGame(owner);
+    await seedSettledSpend(game.id, "monitor", 2_000_000);
+    const claimed = await claimSession(game.id, game.id, owner);
+    const held = await agentRequest(game.id, claimed.lease, game.id, claimed.session.agent_model);
+    await settleInference(held.id, { tokens: 0, costMicrodollars: 0 });
+    await assertSumsMatchColumns(game.id, "after the agent request");
+    await releaseSessionLease(game.id, game.id, claimed.lease);
+  });
+
+  await t.test("A3-3: the player's own spend and hold are what refuse the agent", async () => {
+    const owner = "budget-agent-player";
+    const game = await productionStartGame(owner);
+    await pool.query("UPDATE ctf.games SET budget_microdollars=1000 WHERE id=$1", [game.id]);
+    const sibling = await createSession(game.id, owner);
+    const first = await claimSession(game.id, game.id, owner);
+    const second = await claimSession(game.id, sibling.id, owner);
+    const model = first.session.agent_model;
+    const held = await agentRequest(game.id, first.lease, game.id, model, 1000);
+    await assert.rejects(agentRequest(game.id, second.lease, sibling.id, model), {
+      status: 400,
+      message: /billing is still pending/,
+    });
+    await settleInference(held.id, { tokens: 1000, costMicrodollars: 1000 });
+    await assert.rejects(agentRequest(game.id, second.lease, sibling.id, model), {
+      status: 402,
+      message: "Your inference budget is exhausted.",
+    });
+    await assertSumsMatchColumns(game.id, "after the refusals");
+    await Promise.all([
+      releaseSessionLease(game.id, game.id, first.lease),
+      releaseSessionLease(game.id, sibling.id, second.lease),
+    ]);
+  });
+
+  await t.test("A3-4 and A3-5: the monitor's allowance and the daily limit", async () => {
+    const { MONITOR_RUN_ALLOWANCE_MICRODOLLARS: play, FINAL_REVIEW_ALLOWANCE_MICRODOLLARS: final } =
+      await import("../../lib/policy");
+    const { DAILY_CAP_MICRODOLLARS } = await import("../../lib/policy");
+    const { game, held, claim, reviewId } = await runWithMonitorHold("budget-monitor-allowance");
+    await settleInference(held.id, { tokens: 0, costMicrodollars: 0 });
+    try {
+      const monitorRequest = () =>
+        reserveInference(game.id, null, "monitor", "held-model", 100, 64, 0.000001, 0.000001, {
+          sessionId: game.id,
+          reviewId,
+          jobClaim: claim,
+        });
+      const admitted = async () => {
+        const request = await monitorRequest();
+        assert.equal(request.maxTokens, 64, "admitted in full");
+        await settleInference(request.id, { tokens: 0, costMicrodollars: 0 });
+      };
+      const refused = { status: 402, message: "The monitor’s budget for this run is used up." };
+      const { runSpend } = await import("../../lib/games");
+      const seedTo = async (target: number) =>
+        seedSettledSpend(game.id, "monitor", target - (await runSpend(pool, game.id)).monitorSpent);
+      await seedTo(play - 1);
+      await admitted();
+      // The daily limit refuses what the allowance admits, and leaves no hold behind.
+      const day = (
+        await pool.query(
+          "SELECT charged FROM ctf.daily_spend WHERE day=(now() AT TIME ZONE 'UTC')::date",
+        )
+      ).rows[0].charged;
+      await pool.query(
+        "UPDATE ctf.daily_spend SET charged=$1 WHERE day=(now() AT TIME ZONE 'UTC')::date",
+        [DAILY_CAP_MICRODOLLARS],
+      );
+      try {
+        await assert.rejects(monitorRequest(), { status: 429 });
+      } finally {
+        await pool.query(
+          "UPDATE ctf.daily_spend SET charged=$1 WHERE day=(now() AT TIME ZONE 'UTC')::date",
+          [day],
+        );
+      }
+      await seedTo(play);
+      await assert.rejects(monitorRequest(), refused);
+      await pool.query("UPDATE ctf.games SET status='finalizing' WHERE id=$1", [game.id]);
+      await seedTo(play + final - 1);
+      await admitted();
+      await seedTo(play + final);
+      await assert.rejects(monitorRequest(), refused);
+      await pool.query("UPDATE ctf.games SET status='active' WHERE id=$1", [game.id]);
+      await assertSumsMatchColumns(game.id, "after the monitor requests");
+    } finally {
+      await pool.query("UPDATE ctf.games SET status='active' WHERE id=$1", [game.id]);
+      await pool.query(
+        "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version WHERE game_id=$1",
+        [game.id],
+      );
+    }
+  });
+
+  await t.test("A3-6: billing reports the player's side and the monitor's apart", async () => {
+    const owner = "budget-billing";
+    const game = await productionStartGame(owner);
+    await seedSettledSpend(game.id, "agent", 100);
+    await seedSettledSpend(game.id, "screen", 20);
+    await seedSettledSpend(game.id, "monitor", 70);
+    const playerHold = await seedUnsettledHold(game.id, "agent", 5);
+    const monitorHold = await seedUnsettledHold(game.id, "monitor", 9);
+    const { gameBilling } = await import("../../lib/games");
+    const billing = await gameBilling(game.id);
+    assert.equal(billing.spentMicrodollars, 120);
+    assert.equal(billing.reservedMicrodollars, 5);
+    assert.equal(billing.agentSpendMicrodollars, 100);
+    assert.equal(billing.monitorSpendMicrodollars, 70);
+    const projected = await projectGame(await getPublicGameRow(game.id, owner));
+    assert.equal(projected.spentMicrodollars, 120);
+    assert.equal(projected.reservedMicrodollars, 5);
+    assert.equal(projected.monitorSpendMicrodollars, 70);
+    // The admin totals stay the run's columns, which cover both sides.
+    const totals = (await row(game.id)) as {
+      spent_microdollars: string;
+      reserved_microdollars: string;
+    };
+    assert.equal(Number(totals.spent_microdollars), 190);
+    assert.equal(Number(totals.reserved_microdollars), 14);
+    await settleInference(playerHold, { tokens: 0, costMicrodollars: 0 });
+    await settleInference(monitorHold, { tokens: 0, costMicrodollars: 0 });
+  });
+
+  await t.test(
+    "A3-7: holds settle at zero, stay held without usage, or expire at their ceiling",
+    async () => {
+      const { game, held, claim, reviewId } = await runWithMonitorHold("budget-holds");
+      const { expireUnverifiableHolds } = await import("../../lib/games");
+      try {
+        const request = () =>
+          reserveInference(game.id, null, "monitor", "held-model", 100, 64, 0.000001, 0.000001, {
+            sessionId: game.id,
+            reviewId,
+            jobClaim: claim,
+          });
+        const settledOf = async (id: string) =>
+          (await pool.query("SELECT cost,settled_at FROM ctf.inference WHERE id=$1", [id])).rows[0];
+        const released = await request();
+        await settleInference(released.id, { tokens: 0, costMicrodollars: 0 });
+        assert.equal(Number((await settledOf(released.id)).cost), 0);
+        await assertSumsMatchColumns(game.id, "after a release");
+        const dispatched = await request();
+        await assertSumsMatchColumns(game.id, "while held");
+        assert.equal(
+          (await settledOf(dispatched.id)).settled_at,
+          null,
+          "a reservation with no usage stays held",
+        );
+        await pool.query(
+          "UPDATE ctf.inference SET created_at=now()-interval '25 hours' WHERE id=ANY($1::uuid[])",
+          [[dispatched.id, held.id]],
+        );
+        await expireUnverifiableHolds();
+        assert.equal(Number((await settledOf(dispatched.id)).cost), dispatched.cost);
+        await assertSumsMatchColumns(game.id, "after expiry");
+      } finally {
+        await pool.query(
+          "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version WHERE game_id=$1",
+          [game.id],
+        );
+      }
+    },
+  );
+
+  await t.test("A3-10: migration 030 applies twice and every list names it", async () => {
+    const file = new URL("../../db/migrations/030-inference-game-unsettled.sql", import.meta.url);
+    await pool.query(await readFile(file, "utf8"));
+    await pool.query(await readFile(file, "utf8"));
+    const { rows } = await pool.query(
+      "SELECT indexdef FROM pg_indexes WHERE schemaname='ctf' AND indexname='inference_game_unsettled'",
+    );
+    assert.match(rows[0].indexdef, /\(game_id\) WHERE \(settled_at IS NULL\)/);
+    for (const list of [
+      "../../scripts/setup.ts",
+      "../../scripts/monitor-investigate-eval-live.ts",
+      "./async-backend.test.ts",
+      "./flag-submission-route.test.ts",
+      "./flag-submission-runner.test.ts",
+      "./flag-submission.test.ts",
+      "./sprites.test.ts",
+      "../../README.md",
+    ])
+      assert.match(
+        await readFile(new URL(list, import.meta.url), "utf8"),
+        /030-inference-game-unsettled/,
+        list,
+      );
+  });
+
   const play = async (id: string, owner: string, signal = AbortSignal.timeout(5000)) => {
     const leased = await claimGame(id, owner);
     await runGame(leased, "Controlled integration fixture", signal, () => {});
@@ -6243,7 +6502,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       // A run with too little budget left gets a smaller allowance, never an overspend.
       agentFinish = "stop";
       await pool.query(
-        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+reserved_microdollars+20000 WHERE id=$1",
+        `UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT}+${PLAYER_HELD}+20000 WHERE id=$1`,
         [game.id],
       );
       requests.length = 0;
@@ -6776,17 +7035,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     assert.deepEqual(stored, { role: "screen", model: TYPESAFE_MODEL, session_id: game.id });
     await settleInference(held.id, { tokens: 10, costMicrodollars: 3 });
     // No budget exemption: a screen that does not fit the budget is refused, never run.
-    await pool.query(
-      "UPDATE ctf.games SET budget_microdollars=spent_microdollars+100 WHERE id=$1",
-      [game.id],
-    );
+    await pool.query(`UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT}+100 WHERE id=$1`, [
+      game.id,
+    ]);
     await assert.rejects(
       reserve(game.id, lease, { executionGeneration: generation }),
       (error) => error instanceof GameError && error.status === 400,
     );
     assert.equal((await row(game.id)).status, "active");
     await pool.query(
-      "UPDATE ctf.games SET budget_microdollars=spent_microdollars+1000000,status='ended' WHERE id=$1",
+      `UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT}+1000000,status='ended' WHERE id=$1`,
       [game.id],
     );
     await refused(reserve(game.id, lease, { executionGeneration: generation }));
@@ -7054,7 +7312,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     assert.equal(Number(finished.reserved_microdollars), 0);
     const done = sent.find(({ type }) => type === "done")!.data as Record<string, number>;
     assert.equal(done.agentSpendMicrodollars, 80);
-    assert.equal(done.monitorSpendMicrodollars, 84 + 63);
+    assert.equal(done.spentMicrodollars, 80 + 84 + 63, "the player's spend is agent plus screens");
+    assert.equal(done.reservedMicrodollars, 0);
+    assert.equal(done.monitorSpendMicrodollars, 0, "screens are not the monitor's spend");
     const day = (await pool.query("SELECT charged,reserved FROM ctf.daily_spend")).rows[0];
     assert.deepEqual([Number(day.charged), Number(day.reserved)], [80 + 84 + 63, 0]);
   });
@@ -7244,7 +7504,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   await t.test("R5: a run that cannot afford a screen is exhausted as before", async () => {
     const owner = "screen-r5";
     const game = await startPersistedToolGame(owner);
-    await pool.query("UPDATE ctf.games SET budget_microdollars=spent_microdollars WHERE id=$1", [
+    await pool.query(`UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT} WHERE id=$1`, [
       game.id,
     ]);
     const events = await withLogs(async () =>
@@ -7539,7 +7799,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       if (billing === "settled")
         await settleInference(held.id, { tokens: 164, cost: held.cost / 1_000_000 });
       await pool.query(
-        "UPDATE ctf.games SET budget_microdollars=spent_microdollars+reserved_microdollars WHERE id=$1",
+        `UPDATE ctf.games SET budget_microdollars=${PLAYER_SPENT}+${PLAYER_HELD} WHERE id=$1`,
         [game.id],
       );
       await releaseSessionLease(game.id, game.id, leased.lease!);

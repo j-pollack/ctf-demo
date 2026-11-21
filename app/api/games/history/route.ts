@@ -62,9 +62,14 @@ export async function GET(request: Request) {
           ELSE NULL
         END
         FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent') AS agent_model,
-        g.turns,g.blocks,g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
+        g.turns,g.blocks,g.budget_microdollars,p.spent AS spent_microdollars,p.held AS reserved_microdollars,
         g.monitor_difficulty,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
       FROM ctf.games g
+      CROSS JOIN LATERAL (
+        SELECT (SELECT coalesce(sum(cost),0) FROM ctf.inference
+                WHERE game_id=g.id AND settled_at IS NOT NULL AND role IN ('agent','screen')) AS spent,
+               (SELECT coalesce(sum(cost_ceiling),0) FROM ctf.inference
+                WHERE game_id=g.id AND settled_at IS NULL AND role IN ('agent','screen')) AS held) p
       WHERE g.owner_id=$1 AND ($2::timestamptz IS NULL OR (g.created_at,g.id)<($2,$3::uuid))
       ORDER BY g.created_at DESC,g.id DESC LIMIT $4`,
       [user.id, cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1],

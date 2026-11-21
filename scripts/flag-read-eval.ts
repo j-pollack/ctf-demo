@@ -313,7 +313,7 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   const options = parseEvalArguments(args);
   if (options.mode === "help") {
     process.stdout.write(
-      "Usage: node --import tsx scripts/flag-read-eval.ts [--cases FILE] [--call-limit N] [--isolated] [--policy v14|v15-shared|v15-unknown] [--dry-run | --live --budget-usd AMOUNT]\n",
+      "Usage: node --import tsx scripts/flag-read-eval.ts [--cases FILE] [--call-limit N] [--isolated] [--policy v14|v15-shared|v15-unknown] [--dry-run | --live --budget-usd AMOUNT]. The budget bounds admission: a request already in flight, and a hold whose usage never settles, can pass it.\n",
     );
     return;
   }

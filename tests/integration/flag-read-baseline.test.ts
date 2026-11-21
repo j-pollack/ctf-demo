@@ -272,6 +272,8 @@ await test(
             }
           },
         );
+        // The investigator's ceiling at these rates is about 45,000 microdollars.
+        const ONE_REQUEST_CEILING = 50_000;
         const budget = longScenario
           ? 250_000
           : mode === "insufficient"
@@ -314,7 +316,7 @@ await test(
           const {
             rows: [accounting],
           } = await inspection.query(
-            "SELECT count(*)::int AS requests,sum(cost)::int AS settled,count(*) FILTER(WHERE settled_at IS NULL)::int AS unresolved FROM ctf.inference",
+            "SELECT count(*)::int AS requests,sum(cost)::int AS settled,count(*) FILTER(WHERE settled_at IS NULL)::int AS unresolved FROM ctf.inference WHERE model <> 'eval-budget-seed'",
           );
           assert.deepEqual(accounting, {
             requests: 80,
@@ -475,7 +477,7 @@ await test(
         const {
           rows: [totals],
         } = await inspection.query(
-          "SELECT coalesce(sum(cost) FILTER(WHERE settled_at IS NOT NULL),0)::int AS settled, coalesce(sum(cost_ceiling) FILTER(WHERE settled_at IS NULL),0)::int AS held FROM ctf.inference",
+          "SELECT coalesce(sum(cost) FILTER(WHERE settled_at IS NOT NULL),0)::int AS settled, coalesce(sum(cost_ceiling) FILTER(WHERE settled_at IS NULL),0)::int AS held FROM ctf.inference WHERE model <> 'eval-budget-seed'",
         );
         assert.equal(
           entries.reduce((s, e) => s + e.settledMicrodollars, 0),
@@ -526,9 +528,14 @@ await test(
           );
           assert.equal(totals.held, 0);
         } else if (mode === "insufficient") {
-          assert.equal(classifier, 0);
-          assert.equal(investigator, 0);
-          assert.equal(totals.settled + totals.held, 0);
+          // The case is admitted, because the budget leaves more than the classifier's reserve, and
+          // its investigator request is admitted in full: the budget bounds admission, not a
+          // request. The budget is then spent, so the second case is skipped before admission.
+          assert.equal(classifier, 1);
+          assert.equal(investigator, 1);
+          assert.equal(totals.settled, 14);
+          assert.equal(totals.held, 0);
+          assert.ok(entries.slice(1).every((entry) => entry.skipped));
         } else if (mode.includes("overrun")) {
           assert.equal(investigator, 1);
           assert.equal(classifier, 1);
@@ -544,7 +551,10 @@ await test(
           assert.equal(classifier, 1);
           assert.equal(investigator, 1);
           assert.equal(entries[1].skipped, true);
-          assert.ok(totals.settled <= budget && totals.settled >= budget - 10);
+          // The investigator request is admitted in full, so the first case passes the budget by
+          // that request. The second is then skipped before any admission.
+          assert.ok(totals.settled >= budget - 10);
+          assert.ok(totals.settled <= budget + ONE_REQUEST_CEILING);
         } else {
           assert.ok(entries.every((e) => e.investigationComplete !== true));
           if (mode.startsWith("classifier")) {
@@ -584,17 +594,30 @@ await test(
           }
           if (mode === "missing-usage" || mode === "timeout") {
             assert.ok(totals.held > 0);
-            // Endpoint rates leave enough for classification but not another investigator.
-            // Prove retained holds and actual admission denial under the production prompt.
-            assert.equal(investigator, 1);
-            assert.ok(entries[0].heldMicrodollars > 0);
-            assert.equal(totals.held, entries[0].heldMicrodollars);
-            for (const entry of entries.slice(1)) {
-              assert.match(entry.operationalError ?? "", /budget/i);
-              assert.ok(entry.inference?.every((row) => row.model === "typesafe/jev-1.14"));
-            }
+            // The monitor has its own allowance, so the next case is admitted although this one's
+            // hold is retained, and it ends with a retained hold of its own. The evaluation's
+            // budget is then spent, so the third case is skipped before any admission.
+            assert.equal(investigator, 2);
+            assert.deepEqual(
+              entries.slice(0, 2).map((entry) => entry.heldMicrodollars),
+              [44_528, 44_919],
+              "each case leaves exactly its investigator request's ceiling held",
+            );
+            const admitted = entries.filter((entry) => !entry.skipped);
+            assert.equal(admitted.length, 2);
+            assert.ok(admitted.every((entry) => entry.heldMicrodollars > 0));
+            assert.ok(
+              entries
+                .slice(2)
+                .every((entry) => entry.skipped && /budget/i.test(entry.operationalError ?? "")),
+            );
+            assert.equal(
+              totals.held,
+              entries.reduce((sum, entry) => sum + entry.heldMicrodollars, 0),
+            );
           }
-          assert.ok(totals.settled + totals.held <= budget);
+          // The budget bounds admission, so the last admitted case may pass it by one request.
+          assert.ok(totals.settled + totals.held <= budget + ONE_REQUEST_CEILING);
         }
       });
   },
