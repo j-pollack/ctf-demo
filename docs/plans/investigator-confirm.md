@@ -47,6 +47,7 @@ A read is recorded only after the investigator has checked its own citation once
   - `withdrawn`: a read was reported and the confirmed decision was no read.
   - `unconfirmed`: a read was recorded without a confirmation because no request remained.
   - `asked`: the confirmation was asked and the review then failed. It appears only on a failed row.
+  - A review that reached its decision and then failed in a later step, such as the catch transaction, keeps the value the investigation reached on its failed row.
   - null: no read was reported.
 - The value is computed in `runFlagReadInvestigation`, where the finish tool is made, and carried through the investigation result, `detectorToReviewDecision`, the review result and `completeMonitorReview`. On a failure it rides on the thrown error with `calls` and `forced`, and is written by `failMonitorReview` and by the eval harness's failure branch.
 - The eval report carries it per entry.
@@ -108,3 +109,8 @@ Integration tests use the real worker, real Postgres and provider fakes only. Th
   - A read that was reported and then lost to a failure looked the same as a review that failed before any report. The failed row now records `asked`, and the contract states the consequence.
   - Also folded in: the report on the second-to-last request, what "a request remains" means, an answer with no tool call, where the value is computed, the non-error requirement, the named fakes and the smoke script, and five acceptance cases.
   - The verifier checked that a failed-validation call cannot use up the confirmation, that a cut-off response's calls are not executed, that `unconfirmed` is reachable, that nothing reaches the player's events or `retrieved_refs`, and that E1's counts match the output files.
+- Build, 2026-11-21. The lead ran the gates on the final tree: check 401 passed, integration 412 passed, build passed, coverage 401 passed. `tests/flag-read-policy.test.ts` passes unchanged. The live smoke script was changed and not run.
+- Code review, 2026-11-21. Verdict: approve with fixes. The reviewer walked twelve sequences through the code and the agent loop and confirmed the text equals the block quote above character for character.
+  - One defect: a no-read finish call in the same response as the first report decided the review as withdrawn after one request, before the confirmation had been read. Any finish call in that response now receives the confirmation and decides nothing, and a test sends both calls in one response.
+  - Also applied: a failure after the investigation returned keeps the investigation's value, F1 tells the two reports apart by reason and citation, M1 shows the constraint rejecting a bad value and the migration applying twice, the fakes check that the second request carries the confirmation, and the tool's request argument is required.
+  - The eval harness's failure branch keeps the investigation's value by a one-line change with no test of its own.
