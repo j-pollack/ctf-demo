@@ -2,7 +2,7 @@
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/worker-idle-wake`
 - Branch: `feature/worker-idle-wake`, from `main` at `9657348`
-- Status: contract, not built
+- Status: contract verified with changes folded in, not built
 
 ## Problem
 
@@ -17,8 +17,9 @@ The monitor worker keeps its Neon database awake all day.
 ## Decisions by the user
 
 - 2026-11-21: the worker must stop keeping the databases awake.
+- 2026-11-21: the design and its cost are accepted, and the lead may proceed. Fly addresses are free when the IPv4 one is shared.
 
-Open, with the lead's default: this ships as its own pull request from `main`, ahead of pull request 37.
+The lead's default, open to the user: this ships as its own pull request from `main`, ahead of pull request 37.
 
 ## Goal
 
@@ -30,7 +31,7 @@ A worker with nothing to do runs no query. The app tells it when work exists. A 
 
 - The worker process serves HTTP. `POST /wake` with `Authorization: Bearer <token>` answers 204 and wakes the loops. A wrong or missing token answers 401. Every other path or method answers 404. The request body is not read.
 - The token is 32 random bytes, made at process start, compared in constant time.
-- The port is `PORT` when set and an ephemeral port otherwise. The `Dockerfile` sets `PORT=8080`. The server listens on all interfaces when `FLY_APP_NAME` is set and on loopback otherwise.
+- The server listens on port 8080 on all interfaces when `FLY_APP_NAME` is set, and on an ephemeral loopback port otherwise. It does not read `PORT`: `scripts/dev.ts` passes the Next server's `PORT` to the worker too.
 - `--once` starts no server and registers nothing.
 
 ### Registration
@@ -38,79 +39,95 @@ A worker with nothing to do runs no query. The app tells it when work exists. A 
 - At start, after the server is listening, the worker upserts one row in `ctf.settings` with key `worker_wake`. Its value is JSON: `{ "url": string, "instance": string | null, "token": string }`.
   - On Fly: `url` is `https://<FLY_APP_NAME>.fly.dev/wake` and `instance` is `FLY_MACHINE_ID`.
   - Elsewhere: `url` is `http://127.0.0.1:<port>/wake` and `instance` is null.
+- On a clean exit the worker deletes the row if its value is still its own.
 - The database is the one place the app and its worker already share, in production, in each preview and in local development. No new secret or environment variable is needed, and each preview finds its own worker.
-- The row must never leave the server. No API response, admin page or log line includes the token. The developer checks every reader of `ctf.settings`.
+- The row must never leave the server. No API response, admin page or log line includes the token. Every reader of `ctf.settings` filters by key today.
 
 ### The app's wake call
 
-- `wakeWorker(client)` in a new `lib/worker-wake.ts` reads the row with the caller's client and sends the `POST` with a 2 second timeout. When `instance` is set it adds the header `fly-force-instance-id: <instance>`.
-- It is called from `enqueueMonitorJob` and from each place that inserts a `ctf.finalization_jobs` row.
-- It never fails or delays the caller. A missing row sends nothing. A malformed row, a refused connection, a timeout or a non-204 answer is logged as `worker.wake.failed` with no token in the line. The request is not awaited inside the transaction.
-- Inside a request the call is handed to Next's `after()` so it survives the response ending. Read `node_modules/next/dist/docs/01-app/03-api-reference/04-functions/after.md` first. Outside a request it is an unawaited call whose rejection is handled.
+- `wakeWorker()` in a new `lib/worker-wake.ts` reads the row through the pool, not through the caller's transaction, and sends the `POST` with a 2 second timeout. When `instance` is set it adds the header `fly-force-instance-id: <instance>`.
+- The caller does not await it. It never throws into the caller and never touches the caller's transaction. A missing row or a missing `ctf.settings` table sends nothing. A malformed row, a refused connection, a timeout or a non-204 answer is logged as `worker.wake.failed` with no token in the line.
+- It is called from `enqueueMonitorJob`, from `beginAsyncSubmission` where it inserts the finalization job, from `promoteHttpSubmission` only when it promotes, and at the end of the cleanup route `app/api/cleanup/route.ts`.
+- It is a plain unawaited `fetch`. Next's `after()` is not used: it throws outside a request, its callback form runs only when a response closes, and every call site is inside a request that outlives the 2 second call.
 - `url` must be `https:`, or `http:` to `127.0.0.1`. Anything else is treated as malformed.
-- The call is made before the caller's transaction commits. The worker's 30 second linger below covers that gap.
+- The call can leave before the caller's transaction commits. The worker's 30 second linger below covers that gap. A rolled-back transaction costs one empty poll.
+- `lib/worker-wake.ts` imports nothing from `next`.
 
 ### The loop
 
-The loop moves from `scripts/monitor-worker.ts` into a new `lib/monitor-worker-loop.ts` whose dependencies are passed in: the pass function, the pending check, the clock and the wake gate. The script wires the real ones.
+The loop moves from `scripts/monitor-worker.ts` into a new `lib/monitor-worker-loop.ts` whose dependencies are passed in: the pass function, the pending check, the clock, the durations and the wake gate. The script wires the real ones.
 
-- **Pending.** One query, `hasPendingWork()`: a `ctf.monitor_jobs` row with status `queued` or `reviewing`, or a `ctf.finalization_jobs` row with status `queued` or `scoring`.
+- **Pending.** One query, `hasPendingWork()`:
+  - a `ctf.monitor_jobs` row with status `queued` or `reviewing`, or
+  - a `ctf.finalization_jobs` row with status `scoring`, or
+  - a `ctf.finalization_jobs` row with status `queued` whose run is `finalizing` with no `finalization_error`.
+
+  A run caught after it submitted keeps a `queued` finalization job forever. Production has 12 such rows. They are not pending.
+
 - **Awake.** A loop polls as today, one pass and then 1 second of sleep when the pass did nothing, while any of these holds:
-  - a wake arrived, or the process started, less than 30 seconds ago;
+  - the process started less than 10 minutes ago;
+  - a wake arrived less than 30 seconds ago;
   - work is pending and the last progress was less than 45 minutes ago. Progress is a pass that did work, a wake, or the process start.
 - **Dormant.** Otherwise the loops wait and run no query. They resume on a wake, and once every 6 hours as a safety net for a wake that was lost.
 - A wake that arrives while the pending check is in flight is not lost: the loop checks for it after the query returns and before it waits.
 - The 4 loops share one gate. `SIGTERM` and `SIGINT` end a dormant loop at once.
-- The four durations are named constants in the loop module.
+- When the loops have settled, for a signal or a failure, the script closes the server and clears its timers before it ends the pool, so the process exits with the code it has today. A worker whose loops have died must not keep answering 204.
+- The five durations are named constants in the loop module.
 
-Why 45 minutes: pending rows normally clear by themselves through a claim expiring after 90 seconds, a session lease expiring after 270 seconds, or a retry. On `main` a run can sit in `finalizing` forever behind an unresolved review, and its finalization job stays `queued`. Without a limit that one run would keep the worker polling. Pull request 37 retries such a review after at most 40 minutes, so 45 covers its longest gap.
+Why 10 minutes after start: production's alias switches to the new app only after the new worker has deployed, so for a few minutes the old app, which sends no wake, is still queueing work. A turn on it lasts at most 300 seconds.
+
+Why 45 minutes: pending rows normally clear by themselves through a review claim expiring after 120 seconds, a session lease expiring after 270 seconds, or a retry. On `main` a run can sit in `finalizing` forever behind an unresolved review. Without a limit that one run would keep the worker polling. Pull request 37 retries such a review after at most 40 minutes, so 45 covers its longest gap.
 
 ### Fly
 
 - `fly.toml` gains an `[http_service]` with `internal_port = 8080`, `force_https = true`, `auto_stop_machines = "off"`, `auto_start_machines = false`, `min_machines_running = 1`.
 - `.github/workflows/preview-worker.yml` adds `--port 443:8080/tcp:http:tls` to `flyctl machine run`.
-- Neither Fly app has a public address today (`flyctl ips list`, 2026-11-21). The user allocates them once per app before merge: `fly ips allocate-v4 --shared -a <app>` and `fly ips allocate-v6 -a <app>` for `ctf-monitor-worker` and `ctf-monitor-worker-preview`. `README.md` or `deploy/` records the step.
+- Neither Fly app has a public address today (`flyctl ips list`, 2026-11-21). Before merge each app gets `fly ips allocate-v4 --shared -a <app>` and `fly ips allocate-v6 -a <app>`, for `ctf-monitor-worker` and `ctf-monitor-worker-preview`. A dedicated IPv4 address is billed and is not needed. `README.md` records the step.
 - The machine keeps running. Stopping it when idle is out of scope.
 
 ## Deploy order
 
-- New app with an old worker: the app finds no row and sends nothing. The old worker polls as before. Safe.
-- Old app with a new worker: nothing wakes the worker, and reviews wait for the 6 hour check. On a normal merge Vercel deploys the app minutes before the workflow deploys the worker. Rolling the app back past this change requires rolling the worker back too. `README.md` says so.
-- A deploy starts a new machine, which registers itself and drains the queue at start.
+- The new worker goes live before the new app, because the production alias waits for the `deploy worker` check. The 10 minute window after start covers work queued by the old app.
+- New app with an old worker: the app finds no row and sends nothing. The old worker polls as before.
+- Rolling the app back past this change requires rolling the worker back too. Otherwise nothing wakes the worker and reviews wait for the 6 hour pass. `README.md` says so.
 
 ## Out of scope
 
 - Stopping or suspending the Fly machine when idle.
 - The play page's own 3 second poll, which runs only while a tab is visible.
-- The daily cleanup cron.
 - Changing how reviews are claimed, retried or finalized.
+- Excluding a run stuck in `finalizing` from pending. Pull request 37 resolves such runs.
 
 ## Acceptance
 
-Integration tests use real Postgres and the real worker code. The investigator and classifier keep their existing provider fakes.
+Integration tests use real Postgres and the real worker code. The investigator and classifier keep their existing provider fakes. Tests pass short durations to the loop and do not wait in real time.
 
-- W1. Unit, on the loop module with an injected clock: it polls while work is pending; it goes dormant 30 seconds after start when nothing is pending; a wake during the pending check causes another pass; with work pending and no progress it goes dormant at 45 minutes; a dormant loop runs a pass at 6 hours; a stop signal ends a dormant loop.
-- W2. Integration: `hasPendingWork()` is true for a `queued` and a `reviewing` monitor job and for a `queued` and a `scoring` finalization job. It is false for an empty database and for one holding only `caught-up`, `unresolved`, `caught` and `done` rows.
-- W3. Integration: the wake server answers 204 to the right token, 401 to a wrong or missing one and 404 to another path or method. Starting the worker writes the `worker_wake` row. Starting it again replaces the row, and the old token is then refused.
-- W4. Integration, through the real application paths: a saved agent message, a completed command and a submission each send one authenticated `POST` to a registered local server. With no row nothing is sent and the write commits. With a row that points at a closed port, and with one that is malformed, the write still commits and one `worker.wake.failed` line is logged without the token.
-- W5. Integration, end to end with the real loop in process: after its linger the loop is dormant and the pool hands out no connection for 3 seconds, counted on the real pool's `acquire` event. A message saved through the application path is then reviewed without the test calling `runMonitorWorkerOnce`. The loop goes dormant again afterwards.
+- W1. Unit, on the loop module with an injected clock: it polls while work is pending; with nothing pending it stays awake for the start window and then goes dormant; a wake keeps it awake for the linger; a wake during the pending check causes another pass; with work pending and no progress it goes dormant at the limit; a dormant loop runs a pass at the safety interval; a stop signal ends a dormant loop.
+- W2. Integration: `hasPendingWork()` is true for a `queued` and a `reviewing` monitor job, for a `scoring` finalization job, and for a `queued` finalization job on a `finalizing` run. It is false for an empty database, for one holding only `caught-up`, `unresolved`, `caught` and `done` rows, for a `queued` finalization job on a `caught` run, and for one on a `finalizing` run with a `finalization_error`.
+- W3. Integration: the wake server answers 204 to the right token, 401 to a wrong or missing one and 404 to another path or method. Starting the worker writes the `worker_wake` row. After a second worker starts, `wakeWorker()` reaches the second server with the second token. A clean exit removes the worker's own row and leaves another worker's row alone.
+- W4. Integration, through the real application paths: a saved agent message, a completed command and an HTTP submission each send at least one authenticated `POST` to a registered local server. A completed command that promotes nothing sends none for the promotion. With no row, and with no `ctf.settings` table, nothing is sent and the write commits. With a row that points at a closed port, and with one that is malformed, the write still commits and a `worker.wake.failed` line is logged without the token.
+- W5. Integration, end to end with the real loop in process: once dormant, the pool hands out no connection for 3 seconds, counted on the real pool's `acquire` event. A message saved through the application path is then reviewed without the test calling `runMonitorWorkerOnce`. The loop goes dormant again afterwards.
 - W6. No admin or API response contains the `worker_wake` value. A test reads the admin rules and model endpoints with the row present.
-- W7. `fly.toml`, the preview workflow and the `Dockerfile` name the same port.
+- W7. The worker script, started as a child process, exits with code 0 within a few seconds of `SIGTERM` while dormant, and exits non-zero when a pass throws.
 - G1. `npm run check`, `npm run test:integration`, `npm run build` and `npm run test:coverage` pass.
 
 ## Live check by the lead, after the preview deploys
 
-- E1. With nobody playing, the preview's Neon compute reports `idle` within 10 minutes of the worker starting.
+The preview's database is a copy of production and holds the stuck run `33b097dd`, so pending is true there until the 45 minute limit.
+
+- E1. With nobody playing, the preview's Neon compute reports `idle` within an hour of the worker starting.
 - E2. One played message on the preview is reviewed, and the time from the message being saved to the review starting is recorded.
-- E3. The compute reports `idle` again within 10 minutes of the last request.
+- E3. The compute reports `idle` again within an hour of the last request.
 
 ## Risks
 
-- A lost wake delays a review by up to 6 hours. A wake is lost when the POST fails and no later one follows. The start-up drain covers deploys and crashes.
+- A lost wake delays a review by up to 6 hours. A wake is lost when the POST fails and no later one follows. The start-up window covers deploys and crashes.
 - The worker gets a public address. Only `POST /wake` with the token does anything, and all it does is start a poll.
-- A run stuck in `finalizing` on `main` keeps the worker polling for 45 minutes after every wake. Production has one such run, `33b097dd`. Pull request 37 resolves such runs.
+- A run stuck in `finalizing` on `main` keeps the worker polling for 45 minutes after every wake. Production has one such run, `33b097dd`, and every preview copies it. Pull request 37 resolves such runs.
+- A hold on a run's money that the cleanup job or a page load settles more than 45 minutes after the run submitted can unblock scoring while the worker is dormant. The cleanup route's wake covers the daily job. The page load case waits for the next wake or the 6 hour pass.
 - A compute that was suspended takes a moment to resume, so the first review after a quiet period starts later than today.
-- During a deploy the registered row can point at a machine that is stopping. The new machine replaces the row at start.
+- A preview's database starts as a copy of production's, so until the preview's worker registers, play on the preview wakes production's worker. That costs production one empty poll.
+- Several worktrees can share one development database. The last worker to start owns the row.
 
 ## Follow-up in pull request 37
 
@@ -121,5 +138,11 @@ Merge `main` into `feature/screen-actions` after this lands. Its retry timers ne
 - Loop and enqueue sites read by the lead at `9657348`: `scripts/monitor-worker.ts`, `lib/monitor-worker.ts`, `enqueueMonitorJob` callers in `lib/monitor-commands.ts`, `lib/sessions.ts` and `lib/games.ts`, finalization inserts in `lib/flag-submissions.ts` and `lib/async-finalization.ts`.
 - Neon, 2026-11-21: `list_branch_computes` on the production branch shows `started_at` 2026-11-14T01:04:11Z, `current_state` active, minimum 0.25 CU, suspend timeout at the plan default.
 - Neon documentation, "WebSockets and SSE on Neon Functions": "an idle connection doesn't count as active traffic. Scale to zero suspends the compute on its normal timer and drops that connection".
-- Fly documentation: the `fly-force-instance-id` request header forces routing to one Machine with no fallback. A Machine made with `fly machine run` declares a service with `--port 443:<internal>/tcp:http:tls`, and the app needs addresses from `fly ips allocate-v6` and `fly ips allocate-v4 --shared`. Every Machine has `FLY_MACHINE_ID` and `FLY_APP_NAME`.
+- Fly documentation: the `fly-force-instance-id` request header forces routing to one Machine with no fallback. A Machine made with `fly machine run` declares a service with `--port 443:<internal>/tcp:http:tls`, and the app needs addresses from `fly ips allocate-v6` and `fly ips allocate-v4 --shared`. Every Machine has `FLY_MACHINE_ID` and `FLY_APP_NAME`. Fly's pricing page lists shared IPv4 and IPv6 addresses at no charge and inbound data as free.
 - Fly, 2026-11-21: `flyctl ips list` shows no address on either app.
+- Plan verification, 2026-11-21. Verdict: not ready, four blocking findings, all folded in.
+  - A run caught after submitting keeps a `queued` finalization job, so pending stayed true forever. The lead confirmed 12 such rows on production. Pending now requires the run to be `finalizing` with no error.
+  - `scripts/dev.ts` passes Next's `PORT` to the worker. The worker now ignores `PORT`.
+  - A listening server kept a dead worker's process alive. The script now closes it when the loops settle, and W7 checks the exit.
+  - `after()` throws outside a request and its callback form waits for the response to close. It is dropped for a plain unawaited `fetch`.
+  - Also folded in: the row is read through the pool so a failure cannot abort the caller's transaction; the worker deploys before the app, so it stays awake 10 minutes after start; the cleanup route sends a wake; a worker removes its own row on exit; the review claim lasts 120 seconds; W3, W4 and W5 were sharpened.
