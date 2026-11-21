@@ -36,7 +36,7 @@ The other three never started. One try shows a single request open for 594 secon
 
 - Limits stay, set far beyond what a review needs. They guard against a provider that hangs and a model that loops. The values are below.
 - The money ceilings do not change: the run budget plus $0.25 during play and plus $1.00 after submission.
-- A deploy must not cost a review. That is a separate contract, `worker-handover`: the new worker tells the old one to drain, and the old one finishes its reviews and exits. This contract does not change shutdown, except that `kill_timeout` goes to Fly's maximum of 300 seconds as a backstop.
+- A deploy must not cost a review. That is a separate contract, `worker-handover`: the deploy drains the worker and waits for it to finish its reviews before replacing it. This contract does not change shutdown, except that `kill_timeout` goes to Fly's maximum of 300 seconds as a backstop.
 
 ## Goal
 
@@ -60,15 +60,16 @@ The mechanism uses the agent library's public hooks.
 
 ### Limits
 
-| Limit                                                                             | Today         | New           |
-| --------------------------------------------------------------------------------- | ------------- | ------------- |
-| Output per response, `MONITOR_OUTPUT_TOKENS`                                      | 8,192         | 8,192         |
-| Time per request, in `infer`                                                      | 90 seconds    | 90 seconds    |
-| Time per review, `deadlineMs`                                                     | 90 seconds    | 600 seconds   |
-| Claim, `claimMs`                                                                  | 120 seconds   | 660 seconds   |
-| Requests per review, `MONITOR_CALL_LIMIT`                                         | 12            | 32            |
-| Context sent per request, the 256,000 byte cap in `lib/flag-read-investigator.ts` | 256,000 bytes | 512,000 bytes |
-| `kill_timeout` in `fly.toml`                                                      | 100 seconds   | 300 seconds   |
+| Limit                                                                             | Today                              | New                                                                     |
+| --------------------------------------------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------- |
+| Output per response, `MONITOR_OUTPUT_TOKENS`                                      | 8,192                              | 8,192                                                                   |
+| Time per request, in `infer`                                                      | 90 seconds                         | 90 seconds                                                              |
+| Time per review, `deadlineMs`                                                     | 90 seconds                         | 600 seconds                                                             |
+| Claim, `claimMs`                                                                  | 120 seconds                        | 660 seconds                                                             |
+| Requests per review, `MONITOR_CALL_LIMIT`                                         | 12                                 | 32                                                                      |
+| Context sent per request, the 256,000 byte cap in `lib/flag-read-investigator.ts` | 256,000 bytes                      | 512,000 bytes                                                           |
+| Retrievals per review, `MAX_CALLS` in `lib/transcript-query.ts`                   | 16, and the 17th failed the review | 32, and a further one tells the investigator to decide with what it has |
+| `kill_timeout` in `fly.toml`                                                      | 100 seconds                        | 300 seconds                                                             |
 
 - The output limit stays. With continuation it only decides how often the conversation is re-sent. A response of 8,192 tokens took 32 to 62 seconds in E1, inside the 90 second request timeout. A larger limit would not be.
 - The request timeout stays. It is the guard against a provider that hangs.
@@ -141,3 +142,8 @@ Integration tests use the real worker, real Postgres and provider fakes only. A 
   - Finishing a job as an error on `SIGTERM` could not requeue it at once and would have counted an attempt. Shutdown is out of this contract and goes to `worker-handover`.
   - Nothing proved the reasoning reaches the model. The probe above does, and E2 records it per continuation.
   - Also folded in: the context cap, the cost figures, continuations on both failure paths, the migration lists, `MAX_CALL_LIMIT` unchanged.
+- Build, 2026-11-21, at `3eb5567`. The lead ran the gates on the final tree: check 397 passed, integration 391 passed, build passed, coverage 397 passed. `tests/flag-read-policy.test.ts` passes unchanged, so the three prompt hashes are the ones measured in step 4b. The real-timing suite was not run.
+- Code review, 2026-11-21. Verdict: approve with fixes. The reviewer walked ten sequences through the driver and the agent library, among them a cut-off inside a tool call, a cut-off on the last request and a response that ends with no tool call, and found the continuation correct with no possible loop and no miscounted request.
+  - The retrieval cap of 16 was not in this contract. With 32 requests it became the limit a review meets first, and the build had changed a test fake in a way that hid it. The cap is now 32 and reaching it is a recoverable tool error. The fake is restored.
+  - The real-timing deadline test expected 600 seconds, but the 90 second request timeout fires first. It now checks the request timeout, and `docs/verification.md` says so. No offline test shows a review running past 90 seconds. L2 shows only that a review of several requests finishes inside the deadline it is given, and the 600 second value is asserted as a constant.
+  - Also applied: C6 proves a truncated finish call is not executed, a handled cut-off call id is forgotten, C1 covers `reasoning_details` and C2 the plain `reasoning` fallback, a cut-off turn left with nothing is sent with empty content, and the README lists migration 028.
