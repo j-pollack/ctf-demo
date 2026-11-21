@@ -1,14 +1,14 @@
 # Monitor worker: no queries while idle
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/worker-idle-wake`
-- Branch: `feature/worker-idle-wake`, from `main` at `9657348`
+- Branch: `feature/worker-idle-wake`, stacked on `feature/investigator-context` at `9efc118`, the head of pull request 37
 - Status: contract verified with changes folded in, not built
 
 ## Problem
 
 The monitor worker keeps its Neon database awake all day.
 
-- `scripts/monitor-worker.ts` runs 4 loops. Each calls `runMonitorWorkerOnce()` and sleeps 1 second when there was no work. An idle pass runs `markExpiredFinalizationClaims`, `claimAsyncFinalization` and `claimMonitorJob`.
+- `scripts/monitor-worker.ts` runs 4 loops. Each calls `runMonitorWorkerOnce()` and sleeps 1 second when there was no work. An idle pass runs `markExpiredFinalizationClaims`, `requeueUnresolvedMonitorJobs`, `resolveUnverifiedRuns`, `claimAsyncFinalization` and `claimMonitorJob`.
 - Neon suspends a compute after 5 minutes without a query. The worker never leaves 5 minutes.
 - Production's compute `ep-super-queen-arhsf7a9` has been active since 2026-11-14 01:04 UTC. Its minimum size is 0.25 CU, which is 6 CU-hours a day. Each pull request preview has its own Neon branch and its own worker, so one open preview doubles that. The plan allows 100 CU-hours a month.
 - A slower poll does not fix it. Each query keeps the compute up for 5 more minutes, so a poll every 30 minutes still costs a sixth of always-on and delays every review by up to 30 minutes.
@@ -19,7 +19,7 @@ The monitor worker keeps its Neon database awake all day.
 - 2026-11-21: the worker must stop keeping the databases awake.
 - 2026-11-21: the design and its cost are accepted, and the lead may proceed. Fly addresses are free when the IPv4 one is shared.
 
-The lead's default, open to the user: this ships as its own pull request from `main`, ahead of pull request 37.
+- 2026-11-21: this ships in pull request 37, not as its own pull request. Production gets it when that pull request merges.
 
 ## Goal
 
@@ -76,7 +76,7 @@ The loop moves from `scripts/monitor-worker.ts` into a new `lib/monitor-worker-l
 
 Why 10 minutes after start: production's alias switches to the new app only after the new worker has deployed, so for a few minutes the old app, which sends no wake, is still queueing work. A turn on it lasts at most 300 seconds.
 
-Why 45 minutes: pending rows normally clear by themselves through a review claim expiring after 120 seconds, a session lease expiring after 270 seconds, or a retry. On `main` a run can sit in `finalizing` forever behind an unresolved review. Without a limit that one run would keep the worker polling. Pull request 37 retries such a review after at most 40 minutes, so 45 covers its longest gap.
+Why 45 minutes: pending rows normally clear by themselves through a review claim expiring after 120 seconds, a session lease expiring after 270 seconds, or a retry. A failed review of a submitted run is retried after at most 40 minutes, so 45 covers the longest gap between attempts. The limit also bounds a run held in `finalizing` by a hold on its money or by an open Sprite operation.
 
 ### Fly
 
@@ -96,7 +96,6 @@ Why 45 minutes: pending rows normally clear by themselves through a review claim
 - Stopping or suspending the Fly machine when idle.
 - The play page's own 3 second poll, which runs only while a tab is visible.
 - Changing how reviews are claimed, retried or finalized.
-- Excluding a run stuck in `finalizing` from pending. Pull request 37 resolves such runs.
 
 ## Acceptance
 
@@ -113,25 +112,25 @@ Integration tests use real Postgres and the real worker code. The investigator a
 
 ## Live check by the lead, after the preview deploys
 
-The preview's database is a copy of production and holds the stuck run `33b097dd`, so pending is true there until the 45 minute limit.
+The preview's database is a copy of production and holds the stuck run `33b097dd`. This branch's worker requeues and resolves it at start.
 
-- E1. With nobody playing, the preview's Neon compute reports `idle` within an hour of the worker starting.
+- E1. With nobody playing, the preview's Neon compute reports `idle` within 20 minutes of the worker starting. Run `33b097dd` has left `finalizing` on the preview.
 - E2. One played message on the preview is reviewed, and the time from the message being saved to the review starting is recorded.
-- E3. The compute reports `idle` again within an hour of the last request.
+- E3. The compute reports `idle` again within 10 minutes of the last request.
 
 ## Risks
 
 - A lost wake delays a review by up to 6 hours. A wake is lost when the POST fails and no later one follows. The start-up window covers deploys and crashes.
 - The worker gets a public address. Only `POST /wake` with the token does anything, and all it does is start a poll.
-- A run stuck in `finalizing` on `main` keeps the worker polling for 45 minutes after every wake. Production has one such run, `33b097dd`, and every preview copies it. Pull request 37 resolves such runs.
+- A run whose scoring failed is ended after 24 hours by `resolveUnverifiedRuns`. Its finalization job is `unresolved`, which is not pending, so that now happens on the first wake or 6 hour pass after the 24 hours.
 - A hold on a run's money that the cleanup job or a page load settles more than 45 minutes after the run submitted can unblock scoring while the worker is dormant. The cleanup route's wake covers the daily job. The page load case waits for the next wake or the 6 hour pass.
 - A compute that was suspended takes a moment to resume, so the first review after a quiet period starts later than today.
 - A preview's database starts as a copy of production's, so until the preview's worker registers, play on the preview wakes production's worker. That costs production one empty poll.
 - Several worktrees can share one development database. The last worker to start owns the row.
 
-## Follow-up in pull request 37
+## Step 3
 
-Merge `main` into `feature/screen-actions` after this lands. Its retry timers need no change: a run in `finalizing` has a `queued` finalization job, which counts as pending, and its longest gap between attempts is 40 minutes.
+The routing step must keep `hasPendingWork()` true for any job state it adds that the worker has to act on without a new enqueue.
 
 ## Evidence
 
@@ -146,3 +145,4 @@ Merge `main` into `feature/screen-actions` after this lands. Its retry timers ne
   - A listening server kept a dead worker's process alive. The script now closes it when the loops settle, and W7 checks the exit.
   - `after()` throws outside a request and its callback form waits for the response to close. It is dropped for a plain unawaited `fetch`.
   - Also folded in: the row is read through the pool so a failure cannot abort the caller's transaction; the worker deploys before the app, so it stays awake 10 minutes after start; the cleanup route sends a wake; a worker removes its own row on exit; the review claim lasts 120 seconds; W3, W4 and W5 were sharpened.
+- 2026-11-21: the user moved this into pull request 37. The branch was rebased from `main` onto `9efc118` before any code was written. On that base the idle pass also requeues unresolved reviews and resolves unverified runs, both of which a `queued` finalization job on a `finalizing` run keeps pending.
