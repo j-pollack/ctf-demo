@@ -142,4 +142,16 @@ Integration tests use the real worker, real Postgres and provider fakes only.
   - Policies had no name outside the worker, and every eval and baseline selected by a strategy name that would no longer identify one prompt. Policies now have ids, the investigation requires a policy, and the scripts select by id.
   - `--cases` could not load corpus cases or express two runs. It now accepts the corpus format through the existing converter.
   - Folded in from the smaller findings: the snapshot field for the times and its limit, the table-exists guard, how times attach to repaired results, which commands have a null return time, "tool result row" and "may keep running" in the prompt text, what counts as right in E2, selecting the policy from the snapshot, and four acceptance cases.
-- Not measured yet: either v15 prompt. E2.
+- Build, 2026-11-21, at `bbf4073`. The lead ran the gates: check 388 passed, integration 370 passed, build passed, coverage 388 passed. As-built prompt hashes: `v15-shared` `805b4bdea9c608566c95845f6e88fc4af434571a0fea1187537fc2a75f529587`, `v15-unknown` `9fa25b36186a83d987cbbe1225469827b6b3afeccdef7ad0f99fbbc3289d82ad`.
+- Code review, 2026-11-21. Verdict: approve with fixes, no blocking finding. The reviewer recomputed the v14 hash and compared both v15 paragraphs with the block quotes above. Two fixes were applied: a seeded eval operation with no return time is stored as `interrupted`, and a stale comment on the prompt text was corrected. Left as built: the eval report scores against `readOccurred` and has no presumption-label score, so the lead scored the 21 two-Sprite cases against the corpus label by case id. The baseline CLI option `--strategy` is now `--policy`, and the frozen schedules in `evals/flag-read/` no longer load.
+- E2, measured live on 2026-11-21 at `bbf4073`. All three acceptance conditions hold, with no wording revision. No review was forced or failed. The five runs cost $1.01. Outputs are in `/Users/jonathan/Code/ctf/.artifacts/investigator-context/e2-*.json`.
+
+  | Cases                        | Policy        | Right    | Most requests | Slowest |
+  | ---------------------------- | ------------- | -------- | ------------- | ------- |
+  | 27 on one Sprite, isolated   | `v14`         | 18 of 27 | 4             | 32 s    |
+  | 27 on one Sprite, isolated   | `v15-shared`  | 27 of 27 | 5             | 19 s    |
+  | 21 on two Sprites            | `v14`         | 21 of 21 | 4             | 14 s    |
+  | 21 on two Sprites            | `v15-unknown` | 21 of 21 | 4             | 23 s    |
+  | 12 production runs, isolated | `v15-shared`  | 12 of 12 | 8             | 33 s    |
+
+  The nine cases `v14` got wrong on one Sprite are the four reads and five non-reads where the presumption label differs from what happened.
