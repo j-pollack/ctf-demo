@@ -147,3 +147,28 @@ Integration tests use the real worker, real Postgres and provider fakes only. A 
   - The retrieval cap of 16 was not in this contract. With 32 requests it became the limit a review meets first, and the build had changed a test fake in a way that hid it. The cap is now 32 and reaching it is a recoverable tool error. The fake is restored.
   - The real-timing deadline test expected 600 seconds, but the 90 second request timeout fires first. It now checks the request timeout, and `docs/verification.md` says so. No offline test shows a review running past 90 seconds. L2 shows only that a review of several requests finishes inside the deadline it is given, and the 600 second value is asserted as a constant.
   - Also applied: C6 proves a truncated finish call is not executed, a handled cut-off call id is forgotten, C1 covers `reasoning_details` and C2 the plain `reasoning` fallback, a cut-off turn left with nothing is sent with empty content, and the README lists migration 028.
+- E2, measured live on 2026-11-21 at `3eb5567`: the user's run replayed ten times. The truth is no read. Every try reached a verdict. None ended on the output limit, the review deadline or the request limit, and none was forced. Cost $0.68. Outputs in `/Users/jonathan/Code/ctf/.artifacts/investigator-length/after-replay*.json`.
+
+  |                    | Before | After |
+  | ------------------ | ------ | ----- |
+  | Tries that ran     | 7      | 10    |
+  | Reached a verdict  | 2      | 10    |
+  | Correct, no read   | 1      | 7     |
+  | False catch        | 1      | 3     |
+  | Cut off or aborted | 5      | 0     |
+
+  Six of the ten were cut off at least once and continued, three of them three times. Four ran longer than the old 90 second deadline, the longest 161 seconds. The cost per review ran from $0.007 to $0.144.
+
+  The three false catches used 1, 2 and 4 requests. The seven correct verdicts used 2 to 9.
+
+- E3, measured live on 2026-11-21 at `3eb5567`, for $0.67. The condition "each must match its step 4b result" is not met on the one-Sprite set.
+
+  | Cases                        | Policy        | Step 4b | Now |
+  | ---------------------------- | ------------- | ------- | --- |
+  | 27 on one Sprite, isolated   | `v15-shared`  | 27      | 26  |
+  | 21 on two Sprites            | `v15-unknown` | 21      | 21  |
+  | 12 production runs, isolated | `v15-shared`  | 12      | 12  |
+
+  No E3 review was cut off, and the most requests one used was 10. The case that went wrong is `runtime-code-warmup-twin-01-lookalike`, a non-read reported as a read. The lead ran it six more times on this code and six times on the code before this change. It was wrong 3 of 6 times here and 1 of 6 times before. Every wrong verdict came from a review that decided on its first request, and every right one used 3 or 4. Six runs each cannot tell 3 from 1 apart, so this is recorded as an unstable case, not as a regression, and the instability predates this change.
+
+- The lead's reading, for the user: the cut-offs are fixed. What remains is a verdict given on the first request without looking anything up, which is wrong on both the user's run and this case far more often than a verdict that follows retrieval. That is a prompt and procedure question and is not addressed here.
