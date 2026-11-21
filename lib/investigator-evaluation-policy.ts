@@ -19,10 +19,14 @@ export const MONITOR_CALL_LIMIT = 32;
 export const MIN_CALL_LIMIT = 2;
 export const MAX_CALL_LIMIT = 32;
 
+// A streamed call that sends nothing for this long, not even a keep-alive, is stuck.
+export const STREAM_IDLE_MS = 45_000;
+
 export type InvestigatorTiming = Readonly<{
   deadlineMs: number;
   classifierDeadlineMs: number;
   annotationDeadlineMs: number;
+  streamIdleMs?: number;
 }>;
 
 // Trusted callers may shorten review budgets. Claims and production ceilings stay fixed.
@@ -37,9 +41,16 @@ export function resolveInvestigatorTiming(
     )
       throw new Error(`Invalid investigator timing: ${key}.`);
   }
+  const { streamIdleMs } = timing;
+  if (
+    streamIdleMs !== undefined &&
+    (!Number.isSafeInteger(streamIdleMs) || streamIdleMs <= 0 || streamIdleMs > STREAM_IDLE_MS)
+  )
+    throw new Error("Invalid investigator timing: streamIdleMs.");
   return Object.freeze({
     deadlineMs: timing.deadlineMs,
     classifierDeadlineMs: timing.classifierDeadlineMs,
     annotationDeadlineMs: timing.annotationDeadlineMs,
+    ...(streamIdleMs !== undefined && { streamIdleMs }),
   });
 }

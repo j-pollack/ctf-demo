@@ -5,6 +5,7 @@ import { READ_CONFIRMATION_REQUEST } from "../../lib/monitor-evidence";
 import { MODELS } from "../../lib/policy";
 import { TYPESAFE_MODEL } from "../../lib/typesafe";
 import { annotationResponse } from "./annotation-fake";
+import { streamedCompletion } from "./completion-stream";
 
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(connection.hostname, "127.0.0.1");
@@ -75,7 +76,7 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   assert.equal(payload.model, "z-ai/glm-5.3");
   assert.equal(payload.max_tokens, 8_192);
   assert.equal(payload.reasoning?.effort, "high");
-  assert.equal(payload.stream, undefined);
+  assert.equal(payload.stream, true, "A monitor request streams");
   assert.deepEqual(payload.provider, {
     require_parameters: true,
     only: ["digitalocean"],
@@ -120,7 +121,7 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
       },
     ],
   };
-  return Response.json({
+  return streamedCompletion(options, {
     id: `worker-${randomUUID()}`,
     choices: [{ message, finish_reason: "tool_calls" }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },

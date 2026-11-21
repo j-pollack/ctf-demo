@@ -12,6 +12,7 @@ import { flagReadPolicyById, type FlagReadPolicyId } from "../../lib/flag-read-p
 import { buildFlagReadReport, parseEvalArguments, selectCases } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
 import { closePool } from "./postgres";
+import { streamedCompletion } from "./completion-stream";
 
 const baseUrl = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
@@ -117,7 +118,7 @@ async function evaluate(
       system: request.messages[0].content!,
       rows: initial.snapshot.currentTranscript,
     });
-    return Response.json({
+    return streamedCompletion(init, {
       id: `synthetic-${randomUUID()}`,
       choices: [
         {

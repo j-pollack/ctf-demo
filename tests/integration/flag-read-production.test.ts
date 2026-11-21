@@ -12,9 +12,11 @@ import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-liv
 import { FLAG_READ_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } from "../../lib/control";
 import { READ_CONFIRMATION_REQUEST } from "../../lib/monitor-evidence";
 import { flagReadPolicyById } from "../../lib/flag-read-policy";
+import { STREAM_IDLE_MS } from "../../lib/investigator-evaluation-policy";
 import { DAILY_CAP_MICRODOLLARS } from "../../lib/policy";
 import { closePool } from "./postgres";
 import { fastMonitorTiming, fastMonitorDelays } from "./monitor-timing";
+import { slowCompletion, streamedCompletion } from "./completion-stream";
 
 const base = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test");
@@ -61,7 +63,7 @@ await test(
     const mode = process.env.CTF_PRODUCTION_TEST_MODE;
     const realTiming = process.env.CTF_REAL_MONITOR_TIMING === "1";
     if (!mode) {
-      for (const value of realTiming ? ["deadline"] : modes)
+      for (const value of realTiming ? ["slow-success", "deadline"] : modes)
         await t.test(value, () => {
           const result = spawnSync(
             process.execPath,
@@ -208,6 +210,7 @@ await test(
           }
           assert.equal(endpoint, "https://openrouter.ai/api/v1/chat/completions");
           investigator++;
+          assert.equal(body.stream, true, "investigator requests stream");
           if (exemptModes.includes(mode)) assert.equal(body.max_tokens, 8192);
           assert.equal(body.messages[0].content, policy.systemPrompt);
           assert.equal(body.reasoning.effort, "high");
@@ -224,26 +227,23 @@ await test(
           );
           assert.equal(
             reservation.cost,
-            Math.ceil((reservation.token_ceiling - body.max_tokens) * 0.91 * 2) +
-              Math.ceil(body.max_tokens * 2.86),
+            Math.ceil(
+              (reservation.token_ceiling - body.max_tokens) *
+                (body.provider.max_price.prompt / 1e6) *
+                2 *
+                1e6,
+            ) + Math.ceil(body.max_tokens * (body.provider.max_price.completion / 1e6) * 1e6),
           );
           if (mode === "unavailable")
             return Response.json(
               { error: { message: "No eligible DigitalOcean endpoint", code: 404 } },
               { status: 404 },
             );
-          if (mode === "slow-success" || mode === "deadline")
-            await delay(
-              realTiming
-                ? 95_000
-                : mode === "slow-success"
-                  ? fastMonitorDelays.successMs
-                  : fastMonitorDelays.investigatorMs,
-              undefined,
-              {
-                signal: init.signal!,
-              },
-            );
+          // A slow success keeps its stream alive; a deadline never sends headers.
+          if (mode === "deadline")
+            await delay(realTiming ? 95_000 : fastMonitorDelays.investigatorMs, undefined, {
+              signal: init.signal!,
+            });
           // The second request of a blocking review answers the confirmation.
           if (blocking && investigator === 2) {
             assert.equal(body.messages.at(-1).role, "tool");
@@ -271,7 +271,7 @@ await test(
                     evidence: blocking ? [{ ref }] : [],
                   }),
                 };
-          return Response.json({
+          const completion = {
             id: `synthetic-${randomUUID()}`,
             choices: [
               {
@@ -288,7 +288,13 @@ await test(
               total_tokens: 130,
               cost: mode === "overrun" ? 1 : 0.00001,
             },
-          });
+          };
+          if (mode === "slow-success")
+            return slowCompletion(init, completion, {
+              totalMs: realTiming ? 95_000 : fastMonitorDelays.successMs,
+              tickMs: realTiming ? 5_000 : 100,
+            });
+          return streamedCompletion(init, completion);
         } catch (error) {
           if (
             !(
@@ -509,15 +515,24 @@ await test(
     if (["deadline", "classifier-timeout"].includes(mode)) assert.ok(game.held > 0);
     else assert.equal(game.held, 0);
     if (mode === "overrun") assert.match(job.reason, /reserved|allowance/i);
-    if (mode === "deadline" && realTiming) assert.match(job.reason, /timeout/i);
+    if (mode === "deadline" && realTiming) {
+      // No headers ever arrived, so the request has no generation id and its hold stays open.
+      assert.match(job.reason, /The investigator's model stopped responding\./);
+      const { rows: unidentified } = await pool.query(
+        "SELECT 1 FROM ctf.inference WHERE model='z-ai/glm-5.3' AND settled_at IS NULL AND generation_id IS NULL",
+      );
+      assert.equal(unidentified.length, 1);
+    }
     const expectedMs =
       mode === "slow-success"
-        ? fastMonitorDelays.successMs
+        ? realTiming
+          ? 95_000
+          : fastMonitorDelays.successMs
         : mode === "deadline"
           ? realTiming
-            ? // A provider that hangs: the 90 second per-request timeout in infer fires before
+            ? // A provider that sends no headers: the 45 second idle bound in infer fires before
               // the 600 second review deadline, which this suite cannot reach.
-              90_000
+              STREAM_IDLE_MS
             : fastMonitorTiming.deadlineMs
           : mode === "classifier-timeout"
             ? fastMonitorTiming.classifierDeadlineMs

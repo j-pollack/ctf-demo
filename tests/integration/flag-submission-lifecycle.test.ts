@@ -10,6 +10,7 @@ import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-liv
 import { annotationResponse } from "./annotation-fake";
 import { createScreenFake } from "./screen-fake";
 import { closePool } from "./postgres";
+import { streamedCompletion } from "./completion-stream";
 
 // The HTTP flag-submission lifecycle (docs/plans/flag-http-submission.md, "Lifecycle" 3-7) driven
 // through the real runner, monitor worker, receipt path and Postgres. Only the Sprite SDK, OpenRouter
@@ -262,7 +263,7 @@ await test(
           const read = (
             evidence.snapshot.currentTranscript as { ref: string; role: string; text: string }[]
           ).find((row) => row.role === "tool" && /flag\{[\w-]{32}\}/.test(row.text));
-          return Response.json({
+          return streamedCompletion(options, {
             id,
             choices: [
               {

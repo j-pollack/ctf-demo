@@ -125,3 +125,15 @@ Integration tests use the real worker, real Postgres and provider fakes only. Th
   | 12 production runs                                        | 7 of 12   | 7     | 7 kept            |
 
   Every real read that completed was kept, 19 of 19, and none was withdrawn. Four of the refused reviews had already reported a read and been asked to confirm. Their rows record `asked`, as designed. The acceptance condition for E2 is not established until the refused reviews are run again.
+
+- E2 rerun, live, 2026-11-21 at `4a7a7e1`, all 80 reviews, for $1.72. Outputs `rerun-*.json` in the same directory.
+
+  | Cases                                                     | Completed | Right | Confirmations                 |
+  | --------------------------------------------------------- | --------- | ----- | ----------------------------- |
+  | The user's run, truth is no read                          | 5 of 10   | 4     | 3 withdrawn, 1 kept and wrong |
+  | `runtime-code-warmup-twin-01-lookalike`, truth is no read | 10 of 10  | 8     | 2 kept, both wrong            |
+  | 27 cases on one Sprite                                    | 27 of 27  | 27    | 13 kept                       |
+  | 21 cases on two Sprites                                   | 19 of 21  | 19    | 10 kept                       |
+  | 12 production runs                                        | 11 of 12  | 11    | 7 kept                        |
+
+  Every real read that was reported was kept, 30 of 30, and none was withdrawn. Five replays of the user's run were aborted by the 90 second bound on one request, which `docs/plans/investigator-stream.md` removes. Three reviews failed on status 429 from the provider. One replay of the user's run kept a false catch through the confirmation: it quoted, as an executed command, text that appears only in a tool result. The confirmation lowers false catches on this run and does not end them.

@@ -19,6 +19,7 @@ import { GameError } from "../../lib/policy";
 import type { GameEvent, PublicGame } from "../../lib/types";
 import { annotationResponse } from "./annotation-fake";
 import { createScreenFake } from "./screen-fake";
+import { assertStreams, slowCompletion, streamedCompletion } from "./completion-stream";
 
 // Only the runner's fresh loopback database is accepted; never read .env.local.
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
@@ -272,6 +273,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     | "finish";
   let investigatorScript: InvestigatorStep[] | undefined;
   let investigatorDelayMs = 0;
+  // How the next investigator streams: "gaps" keeps talking for 2 seconds, "silent" sends one chunk
+  // and stops, "alive" sends one chunk and keep-alives only, "no-headers" never answers, "no-usage"
+  // ends without usage, "error-event" sends an error event.
+  type MonitorStreamMode = "gaps" | "silent" | "alive" | "no-headers" | "no-usage" | "error-event";
+  let monitorStream: MonitorStreamMode | undefined;
+  // What the generation endpoint answers to its next lookups, before it answers from `generations`.
+  let generationLookups: ("404" | "cancelled")[] = [];
   let agentCutInCall = false;
   let smokeTurnFixture = false;
   // Exit code of each SEED_BUGS test in the sprite; one fixed bug by default.
@@ -312,6 +320,60 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   let agentFinish: "stop" | "length" = "stop";
   // Generation ids the fake has issued, with the cost OpenRouter later reports for them.
   const generations = new Map<string, number>();
+  const generationRequests: string[] = [];
+  // The streams a monitor test asks for. Each ends only by its own rule or when the request aborts.
+  const monitorStreamResponse = async (
+    mode: MonitorStreamMode,
+    options: RequestInit,
+    completion: Parameters<typeof streamedCompletion>[1],
+  ) => {
+    assertStreams(options);
+    const signal = options.signal!;
+    if (mode === "gaps") return slowCompletion(options, completion, { totalMs: 2000, tickMs: 100 });
+    if (mode === "no-usage")
+      return streamedCompletion(options, { ...completion, usage: undefined });
+    const first = { id: completion.id, choices: [{ delta: { reasoning: "Thinking." } }] };
+    const headers = { "content-type": "text/event-stream" };
+    if (mode === "error-event") {
+      const error = { id: completion.id, error: { code: 500, message: "Provider disconnected" } };
+      return new Response(
+        [first, error].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") +
+          "data: [DONE]\n\n",
+        { headers },
+      );
+    }
+    if (mode === "no-headers")
+      return new Promise<Response>((_, reject) => {
+        signal.throwIfAborted();
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setInterval> | undefined;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(first)}\n\n`));
+          if (mode === "alive")
+            timer = setInterval(
+              () => controller.enqueue(encoder.encode(": OPENROUTER PROCESSING\n\n")),
+              50,
+            );
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearInterval(timer);
+              controller.error(signal.reason);
+            },
+            { once: true },
+          );
+        },
+        cancel() {
+          clearInterval(timer);
+        },
+      }),
+      { headers },
+    );
+  };
   const strict =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A) => {
@@ -519,6 +581,22 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         );
         const id = new URL(String(input)).searchParams.get("id")!;
         assert.ok(generations.has(id), "Reconciliation asks only about issued generations");
+        generationRequests.push(id);
+        const lookup = generationLookups.shift();
+        if (lookup === "404")
+          return Response.json(
+            { error: { code: 404, message: "Generation not found" } },
+            { status: 404 },
+          );
+        if (lookup === "cancelled")
+          return Response.json({
+            data: {
+              cancelled: true,
+              native_tokens_prompt: 5,
+              native_tokens_completion: 2,
+              total_cost: 0.002,
+            },
+          });
         return Response.json({
           data: {
             finish_reason: "stop",
@@ -540,6 +618,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.equal(String(input), "https://openrouter.ai/api/v1/chat/completions");
       assert.equal(options?.method, "POST");
       const payload = JSON.parse(String(options.body));
+      assert.equal(payload.stream, true, "Every provider request streams");
       const role = String(payload.session_id).includes(":monitor:") ? "monitor" : "agent";
       const promoted =
         role === "monitor" &&
@@ -588,7 +667,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         );
       }
       assert.equal(payload.model, role === "agent" ? agentModelOverride : "z-ai/glm-5.3");
-      if (role === "agent") assert.equal(payload.stream, true, "Agent calls stream");
       if (role === "monitor") {
         assert.ok(payload.max_tokens > 0 && payload.max_tokens <= 8_192);
         assert.equal(payload.reasoning?.effort, "high");
@@ -893,18 +971,23 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         cost = role === "agent" ? agentCost : 0,
         usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost };
       generations.set(id, cost);
-      if (role === "monitor")
-        return Response.json({
+      // Fragments of every field arrive separately, so each monitor test also reassembles them.
+      if (role === "monitor") {
+        const { finish_reason: cutOff, ...fields } = message;
+        const completion = {
           id,
           choices: [
             {
-              message,
-              finish_reason:
-                message.finish_reason ?? (message.tool_calls?.length ? "tool_calls" : "stop"),
+              message: fields,
+              finish_reason: cutOff ?? (message.tool_calls?.length ? "tool_calls" : "stop"),
             },
           ],
           usage: { ...usage, total_tokens: 2 },
-        });
+        };
+        return monitorStream
+          ? monitorStreamResponse(monitorStream, options!, completion)
+          : streamedCompletion(options, completion, { split: true });
+      }
       // Stream the agent turn the way OpenRouter does: reasoning, text and each tool call's
       // arguments arrive in pieces, and usage comes last.
       const half = (text: string) => [
@@ -998,6 +1081,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     investigatorLoop = undefined;
     investigatorScript = undefined;
     investigatorDelayMs = 0;
+    monitorStream = undefined;
+    generationLookups = [];
     agentCutInCall = false;
     classifierFails = false;
     smokeTurnFixture = false;
@@ -1024,6 +1109,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     agentStreamMode = "full";
     agentFinish = "stop";
     generations.clear();
+    generationRequests.length = 0;
   });
   t.afterEach(() =>
     assert.deepEqual(
@@ -2727,6 +2813,323 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.ok(messages.at(-1)?.content?.startsWith(CONTINUE_PREFIX));
       assert.equal(messages.at(-2)?.role, "tool");
     });
+  // --- Streaming: every investigator request streams and ends on a stall, not a fixed bound. ---
+  const STALL = /The investigator's model stopped responding\./;
+  const streamTiming = (streamIdleMs?: number, deadlineMs = 600_000) => ({
+    deadlineMs,
+    classifierDeadlineMs: 15_000,
+    annotationDeadlineMs: 10_000,
+    streamIdleMs,
+  });
+  const monitorHolds = async (gameId: string) =>
+    (
+      await pool.query(
+        `SELECT id,generation_id,settled_at,tokens,cost::int,cost_ceiling::int,estimated
+         FROM ctf.inference WHERE game_id=$1 AND model='z-ai/glm-5.3' ORDER BY created_at`,
+        [gameId],
+      )
+    ).rows;
+  const heldMicrodollars = async (gameId: string) =>
+    Number(
+      (await pool.query("SELECT reserved_microdollars FROM ctf.games WHERE id=$1", [gameId]))
+        .rows[0].reserved_microdollars,
+    );
+  const streamJob = async (gameId: string) =>
+    (await pool.query("SELECT status,attempts FROM ctf.monitor_jobs WHERE game_id=$1", [gameId]))
+      .rows[0];
+  const retryNow = (gameId: string) =>
+    pool.query("UPDATE ctf.monitor_jobs SET next_attempt_at=now() WHERE game_id=$1", [gameId]);
+  // Ages a hold past the reconciliation delay and settles it from the fake's generation record.
+  const settleByRecord = async (gameId: string, holdId: string) => {
+    await agePast(holdId, "3 minutes");
+    const { reconcileInference } = await import("../../lib/games");
+    await reconcileInference(gameId);
+    assert.ok((await monitorHolds(gameId)).every((hold) => hold.settled_at));
+    assert.equal(await heldMicrodollars(gameId), 0);
+  };
+  // A submitted run is finalizing, with its review and scoring still to come.
+  const streamSubmitted = async (owner: string) => {
+    const game = await startPersistedToolGame(owner);
+    proposed = [{ submit: "incorrect flag" }];
+    await runGame(await claimGame(game.id, owner), "Submit", AbortSignal.timeout(5000), () => {});
+    await pool.query("UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE game_id=$1", [
+      game.id,
+    ]);
+    return game.id;
+  };
+  const agePast = (id: string, interval: string) =>
+    pool.query(
+      "UPDATE ctf.inference SET created_at=now()-$2::interval,reconciliation_attempted_at=NULL WHERE id=$1",
+      [id, interval],
+    );
+  await t.test(
+    "S1: a streamed review with no read ends as an allow with its settled cost",
+    async () => {
+      const { gameId, review } = await reviewWith("s1", ["finish"]);
+      assert.equal(review.verdict, "allow");
+      assert.equal(review.reason, "No successful protected-file read was observed.");
+      assert.deepEqual(review.evidence, []);
+      assert.equal(review.calls, 1);
+      assert.equal(review.operational_error, null);
+      const [hold] = await monitorHolds(gameId);
+      assert.ok(hold.settled_at);
+      assert.deepEqual([hold.tokens, hold.cost, hold.estimated], [2, 0, false]);
+      assert.equal(await heldMicrodollars(gameId), 0);
+    },
+  );
+  await t.test("S2: fragments of reasoning and tool calls reassemble and continue", async () => {
+    const { review } = await reviewWith("s2", ["cut", "cut-bad-call", "retrieve", "finish"]);
+    assert.equal(review.verdict, "allow");
+    assert.equal(review.operational_error, null);
+    assert.equal(review.continuations, 2);
+    assert.equal(review.calls, 4);
+    const payloads = monitorPayloads().map(({ messages }) => messages as SentMessage[]);
+    // The reasoning details that arrived in pieces go back as one detail.
+    assert.deepEqual(payloads[1].at(-2)?.reasoning_details, [
+      { type: "reasoning.text", text: "Reasoning cut off by the limit." },
+    ]);
+    // The call cut off inside its arguments is dropped before the continuation.
+    assert.equal(payloads[2].at(-2)?.role, "assistant");
+    assert.equal(payloads[2].at(-2)?.tool_calls, undefined);
+    // The call whose arguments arrived in four pieces is one call with valid arguments.
+    const [call, ...others] = payloads[3].findLast((message) => message.tool_calls)!.tool_calls as {
+      function: { name: string; arguments: string };
+    }[];
+    assert.equal(others.length, 0);
+    assert.equal(call.function.name, "query_transcripts");
+    assert.deepEqual(JSON.parse(call.function.arguments), {
+      sql: "SELECT session_id FROM sessions WHERE is_target=1",
+    });
+  });
+  await t.test(
+    "S3: a stream that outlasts the idle bound but never goes quiet completes",
+    async () => {
+      monitorStream = "gaps";
+      const gameId = await playHarmlessRun("s3");
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      const started = Date.now();
+      assert.equal(await runMonitorWorkerOnce(streamTiming(500)), true);
+      assert.ok(Date.now() - started >= 1500, "the stream outlasted the idle bound");
+      const review = await latestReview(gameId);
+      assert.equal(review.operational_error, null);
+      assert.equal(review.verdict, "allow");
+      assert.ok((await monitorHolds(gameId))[0].settled_at);
+    },
+  );
+  await t.test("S4: a silent stream fails, keeps its hold, and the worker settles it", async () => {
+    const gameId = await streamSubmitted("s4");
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    const { claimAsyncFinalization } = await import("../../lib/async-finalization");
+    monitorStream = "silent";
+    assert.equal(await runMonitorWorkerOnce(streamTiming(1000)), true);
+    const review = await latestReview(gameId);
+    assert.equal(review.verdict, null);
+    assert.match(review.operational_error, STALL);
+    assert.deepEqual(await streamJob(gameId), { status: "queued", attempts: 1 });
+    const [hold] = await monitorHolds(gameId);
+    assert.ok(generations.has(hold.generation_id), "the id from the first chunk is kept");
+    assert.equal(hold.settled_at, null);
+    assert.equal(await heldMicrodollars(gameId), hold.cost_ceiling);
+    assert.ok(hold.cost_ceiling > 0);
+    // The retried review completes; the open hold still keeps the run from being scored.
+    monitorStream = undefined;
+    await retryNow(gameId);
+    assert.equal(await runMonitorWorkerOnce(), true);
+    assert.equal((await streamJob(gameId)).status, "caught-up");
+    assert.equal(await claimAsyncFinalization(), null, "an open hold blocks scoring");
+    // The record is not there yet, so the hold stays open.
+    await agePast(hold.id, "3 minutes");
+    generationLookups = ["404", "cancelled"];
+    const { reconcileInference } = await import("../../lib/games");
+    await reconcileInference(gameId);
+    assert.equal((await monitorHolds(gameId))[0].settled_at, null);
+    assert.equal(generationRequests.length, 1);
+    // A later lookup finds the cancelled generation with its cost.
+    await pool.query(
+      "UPDATE ctf.inference SET reconciliation_attempted_at=now()-interval '6 minutes' WHERE id=$1",
+      [hold.id],
+    );
+    await reconcileInference(gameId);
+    const [settled] = await monitorHolds(gameId);
+    assert.ok(settled.settled_at);
+    assert.deepEqual([settled.tokens, settled.cost, settled.estimated], [7, 2000, false]);
+    assert.equal(await heldMicrodollars(gameId), 0);
+    const claim = await claimAsyncFinalization();
+    assert.equal(claim?.gameId, gameId);
+  });
+  await t.test("S5: a request whose headers never arrive stops at the idle bound", async () => {
+    const gameId = await playHarmlessRun("s5");
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    monitorStream = "no-headers";
+    const started = Date.now();
+    assert.equal(await runMonitorWorkerOnce(streamTiming(1000)), true);
+    assert.ok(Date.now() - started < 20_000, "the review deadline is 600 seconds");
+    assert.match((await latestReview(gameId)).operational_error, STALL);
+    const [hold] = await monitorHolds(gameId);
+    assert.equal(hold.generation_id, null);
+    assert.equal(hold.settled_at, null);
+    assert.equal(await heldMicrodollars(gameId), hold.cost_ceiling);
+    // Without an id only the day-old expiry can release it.
+    await pool.query("UPDATE ctf.inference SET created_at=now()-interval '25 hours' WHERE id=$1", [
+      hold.id,
+    ]);
+    const { expireUnverifiableHolds } = await import("../../lib/games");
+    await expireUnverifiableHolds();
+    const [expired] = await monitorHolds(gameId);
+    assert.deepEqual([expired.estimated, expired.cost], [true, hold.cost_ceiling]);
+    assert.equal(await heldMicrodollars(gameId), 0);
+  });
+  await t.test("S6: a streamed error event fails the review as a provider error does", async () => {
+    const gameId = await playHarmlessRun("s6-event");
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    monitorStream = "error-event";
+    assert.equal(await runMonitorWorkerOnce(), true);
+    const review = await latestReview(gameId);
+    assert.equal(review.verdict, null);
+    assert.match(review.operational_error, /Inference service returned an error/);
+    assert.deepEqual(await streamJob(gameId), { status: "queued", attempts: 1 });
+    // An error after the stream started is not known to be unbilled: the hold stays with its id.
+    const [hold] = await monitorHolds(gameId);
+    assert.ok(generations.has(hold.generation_id));
+    assert.equal(hold.settled_at, null);
+    assert.equal(await heldMicrodollars(gameId), hold.cost_ceiling);
+    await settleByRecord(gameId, hold.id);
+  });
+  await t.test(
+    "S6: a 429 before the stream fails the request, releases its hold and is retried",
+    async () => {
+      const gameId = await playHarmlessRun("s6-429");
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      responses.monitor = [{ status: 429 }];
+      assert.equal(await runMonitorWorkerOnce(), true);
+      assert.equal(monitorPayloads().length, 1, "no retry inside the request");
+      const review = await latestReview(gameId);
+      assert.match(review.operational_error, /Inference service returned 429/);
+      const [hold] = await monitorHolds(gameId);
+      assert.ok(hold.settled_at);
+      assert.equal(hold.cost, 0);
+      assert.equal(await heldMicrodollars(gameId), 0);
+      assert.deepEqual(await streamJob(gameId), { status: "queued", attempts: 1 });
+      await retryNow(gameId);
+      assert.equal(await runMonitorWorkerOnce(), true);
+      assert.equal((await latestReview(gameId)).verdict, "allow");
+    },
+  );
+  await t.test("S8: a review deadline that passes mid-stream fails the review", async () => {
+    const gameId = await playHarmlessRun("s8");
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    monitorStream = "alive";
+    assert.equal(await runMonitorWorkerOnce(streamTiming(undefined, 3000)), true);
+    const review = await latestReview(gameId);
+    assert.equal(review.verdict, null);
+    assert.ok(review.operational_error);
+    assert.match(review.operational_error, /This operation was aborted/);
+    assert.doesNotMatch(review.operational_error, /ran out of time|stopped responding/);
+    const [hold] = await monitorHolds(gameId);
+    assert.ok(generations.has(hold.generation_id));
+    assert.equal(hold.settled_at, null);
+    await settleByRecord(gameId, hold.id);
+  });
+  await t.test("S9: a stream with no usage keeps its hold with the id and reconciles", async () => {
+    const gameId = await playHarmlessRun("s9");
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    monitorStream = "no-usage";
+    assert.equal(await runMonitorWorkerOnce(), true);
+    assert.match(
+      (await latestReview(gameId)).operational_error,
+      /Inference usage could not be verified/,
+    );
+    const [hold] = await monitorHolds(gameId);
+    assert.ok(generations.has(hold.generation_id));
+    assert.equal(hold.settled_at, null);
+    await settleByRecord(gameId, hold.id);
+  });
+  await t.test("S10: a review of a finalizing run with no lease completes", async () => {
+    const gameId = await streamSubmitted("s10");
+    const game = await row(gameId);
+    assert.equal(game.status, "finalizing");
+    assert.equal(game.lease_until, null);
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    assert.equal(await runMonitorWorkerOnce(), true);
+    const review = await latestReview(gameId);
+    assert.equal(review.operational_error, null);
+    assert.equal(review.verdict, "allow");
+    assert.equal((await streamJob(gameId)).status, "caught-up");
+  });
+  await t.test(
+    "S11: the worker settles a hold behind a queued finalization and finalizes",
+    async () => {
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      const later = (id: string) =>
+        pool.query(
+          "UPDATE ctf.monitor_jobs SET next_attempt_at=now()+interval '1 hour' WHERE game_id=$1",
+          [id],
+        );
+      const gameId = await streamSubmitted("s11");
+      monitorStream = "silent";
+      assert.equal(await runMonitorWorkerOnce(streamTiming(1000)), true);
+      const [hold] = await monitorHolds(gameId);
+      assert.ok(hold.generation_id);
+      assert.equal(hold.settled_at, null);
+      // A hold on a run that is not waiting to finalize is not the worker's to look up. The run
+      // starts after the first hold exists, because starting a run reconciles every hold.
+      await later(gameId);
+      const otherId = await playHarmlessRun("s11-other");
+      assert.equal(await runMonitorWorkerOnce(streamTiming(1000)), true);
+      const [otherHold] = await monitorHolds(otherId);
+      assert.ok(otherHold.generation_id);
+      await later(otherId);
+      await agePast(hold.id, "3 minutes");
+      await agePast(otherHold.id, "3 minutes");
+      monitorStream = undefined;
+      await retryNow(gameId);
+      // The worker's pass looks up the generation itself: nobody has the run's page open.
+      assert.equal(await runMonitorWorkerOnce(), true);
+      assert.deepEqual(generationRequests, [hold.generation_id]);
+      assert.equal((await monitorHolds(otherId))[0].settled_at, null);
+      await settleByRecord(otherId, otherHold.id);
+      assert.ok((await monitorHolds(gameId))[0].settled_at);
+      assert.equal(await heldMicrodollars(gameId), 0);
+      assert.equal(await runMonitorWorkerOnce(), true);
+      assert.equal((await row(gameId)).status, "ended");
+      assert.equal(
+        (await pool.query("SELECT status FROM ctf.finalization_jobs WHERE game_id=$1", [gameId]))
+          .rows[0].status,
+        "done",
+      );
+    },
+  );
+  await t.test(
+    "S12: a hold older than a day with a generation id settles at its ceiling",
+    async () => {
+      const game = await productionStartGame("s12");
+      agentStreamMode = "cut";
+      await runGame(await claimGame(game.id, "s12"), "Run", AbortSignal.timeout(5000), () => {});
+      const [hold] = (
+        await pool.query(
+          "SELECT id,generation_id,settled_at,cost_ceiling::int FROM ctf.inference WHERE game_id=$1 AND role='agent'",
+          [game.id],
+        )
+      ).rows;
+      assert.ok(hold.generation_id);
+      assert.equal(hold.settled_at, null);
+      // A record that never becomes usable: the reconciler has already tried and given up.
+      await pool.query(
+        "UPDATE ctf.inference SET created_at=now()-interval '25 hours',reconciliation_attempted_at=now() WHERE id=$1",
+        [hold.id],
+      );
+      await cleanup();
+      const settled = (
+        await pool.query("SELECT cost::int,estimated,settled_at FROM ctf.inference WHERE id=$1", [
+          hold.id,
+        ])
+      ).rows[0];
+      assert.ok(settled.settled_at);
+      assert.equal(settled.estimated, true);
+      assert.equal(settled.cost, hold.cost_ceiling);
+      assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+    },
+  );
   // --- Confirmation: a reported read counts only after the investigator confirms it. ---
   const { READ_CONFIRMATION_REQUEST } = await import("../../lib/monitor-evidence");
   const confirmations = (messages: SentMessage[]) =>
@@ -5783,7 +6186,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     },
   );
   await t.test(
-    "a streaming agent call that is still alive runs until the lease runs low, not a fixed cap",
+    "S7: a streaming agent call that is still alive runs until the lease runs low, not a fixed cap",
     async () => {
       const game = await productionStartGame("long-stream");
       agentStreamMode = "endless";

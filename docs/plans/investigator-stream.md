@@ -2,7 +2,7 @@
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/investigator-stream`
 - Branch: `feature/investigator-stream`, stacked on `feature/investigator-confirm` at `54818d9`
-- Status: contract verified with changes folded in, not built
+- Status: built and reviewed, gates pass, live measurement in the Evidence section
 - Ships in pull request 37.
 
 ## Problem
@@ -47,7 +47,7 @@ An investigator request ends when the model has answered, when the stream has st
 ### Holds
 
 - A request aborted after its id arrived is settled by `reconcileInference` from the provider's generation record. That function skips a row younger than 2 minutes and tries a row again after 5 minutes.
-- The worker calls `reconcileInference()` in the pass that looks for a finalization to claim, while a finalization job is queued. A run that nobody has open is then settled by the worker.
+- In the pass that looks for a finalization to claim, the worker reconciles the runs that are waiting to finalize behind a hold: up to five runs in `finalizing` with a queued finalization job, no finalization error and a hold above zero. It calls `reconcileInference` for each of those runs and no other. A run that nobody has open is then settled by the worker. An error in this step is logged and does not stop the pass.
 - `expireUnverifiableHolds` settles at its ceiling any hold older than 24 hours, with or without a generation id. Today a hold with an id whose record never becomes usable is never released.
 - A request aborted before any chunk has no id and waits for that expiry, as today.
 
@@ -74,15 +74,15 @@ Integration tests use the real worker, real Postgres and provider fakes only. Ev
 
 - S1. A review of a session with no read ends as an allow from a streamed response. Its stored reason, evidence, request count and settled cost equal those the same completion produced before the change.
 - S2. A streamed response whose reasoning details and tool call arrive in several fragments is assembled into one call with valid arguments. A response cut off at the output limit is continued, and the next request's assistant message carries reasoning details equal to the reassembled ones. A response cut off inside a tool call's arguments, split across chunks, has that call dropped and is continued.
-- S3. With an idle bound of 200 milliseconds, a stream that lasts 2 seconds with gaps of 100 milliseconds completes the review.
+- S3. With an idle bound of 500 milliseconds, a stream that lasts 2 seconds with gaps of 100 milliseconds completes the review. The bound was 200 in the verified contract and was widened for slow CI runners.
 - S4. A stream that goes silent for the idle bound fails the review with the stall message. The request's row has the generation id from its first chunk and the hold is open. With the row's `created_at` set 3 minutes back, a first generation lookup that answers 404 leaves the hold open. A later lookup that answers `cancelled: true` with token counts and a cost settles it, the run's `reserved_microdollars` is 0, and `claimAsyncFinalization` then claims the run.
 - S5. A request whose headers never arrive fails within the idle bound with the stall message, not at the review deadline. Its row has no generation id and its hold is open.
 - S6. A streamed error event fails the review as a provider error does today. A status 429 before the stream fails the request with no retry inside it, releases the hold, and the job is retried.
 - S7. The agent's requests are unchanged: the lease bound, the stall message and the "ran out of time" message.
-- S8. A review deadline that passes mid-stream fails the review. The row has its generation id, and the failure is not the agent's "ran out of time" message.
+- S8. A review deadline that passes mid-stream fails the review with "This operation was aborted", as it does today. The row has its generation id, and the failure is not the agent's "ran out of time" message or the stall message.
 - S9. A stream that ends with no usage chunk fails with "Inference usage could not be verified", keeps the hold with its id, and reconciliation settles it.
 - S10. A review of a run in `finalizing` whose `lease_until` is null completes.
-- S11. The worker, with a finalization job queued behind a hold that has a generation id, settles the hold through a faked generation record and finalizes the run, with no request to the run's page.
+- S11. The worker, with a finalization job queued behind a hold that has a generation id, settles the hold through a faked generation record and finalizes the run, with no request to the run's page. It does not look up a hold on a run that is not waiting to finalize.
 - S12. A hold older than 24 hours with a generation id is settled at its ceiling by `cleanup()`.
 - G1. `npm run check`, `npm run test:integration`, `npm run build` and `npm run test:coverage` pass. The monitor fakes in these files answer with events: `async-backend`, `async-worker-preload`, `flag-read-baseline`, `flag-read-call-limit`, `flag-read-eval-options`, `flag-read-eval`, `flag-read-production`, `flag-submission-lifecycle`, `held-worker-preload`, `sprites` and `worker-idle-wake` under `tests/integration/`. The assertion in `async-worker-preload.ts` that a monitor request carries no `stream` field is reversed, as is the one in `scripts/smoke.ts`.
 - G2. The opt-in real-timing modes of `tests/integration/flag-read-production.test.ts` follow the new bounds. `slow-success` streams keep-alive comments and tokens for 95 seconds and then succeeds. `deadline` sends no headers and expects the stall message after about 45 seconds, an open hold and no generation id. The lead runs both once.
@@ -93,7 +93,8 @@ Integration tests use the real worker, real Postgres and provider fakes only. Ev
 - A provider that omits the index on parallel tool calls would have them merged into one invalid call, and the review would fail. E1 checks it.
 - A stream that keeps sending keep-alive comments and no tokens runs until the review's deadline.
 - A hold settled at its ceiling after 24 hours can overstate what the request cost.
-- The worker makes up to five requests to OpenRouter's generation endpoint per pass while a finalization waits on holds. Each row is tried once in 5 minutes.
+- The worker makes up to five requests to OpenRouter's generation endpoint per waiting run in a pass, each with a 5 second limit, before it claims anything. A pass can be delayed by up to 25 seconds per waiting run. Each row is tried once in 5 minutes.
+- Two worker loops can look up the same row in the same moment. Settlement locks the row, so the cost is a repeated request and nothing else.
 - Eleven test files fake the provider for monitor requests and all change.
 
 ## Evidence
@@ -107,3 +108,13 @@ Integration tests use the real worker, real Postgres and provider fakes only. Ev
   - Also folded in: the corrected account of when a hold settles and what it blocks, the idle bound's seam through `InvestigatorTiming`, the removal of the branch for whole responses, the existing event builders, and eight acceptance cases.
   - The verifier checked that a request cannot outlive the 660 second claim, that a drain does not abort a review, that the routing fields and `stopOnReservationOverrun` work with streaming, and that the streamed and whole responses go through the same parsing code.
   - Not verified: whether OpenRouter returns a generation id in a response header for a request that is not streamed.
+- Build, 2026-11-21. The lead ran the gates on the final tree: check 405 passed, integration 424 passed, build passed, coverage 405 passed. `tests/flag-read-policy.test.ts` passes unchanged. The developer ran the two real-timing modes of G2 once before the review fixes: `slow-success` took 96.0 seconds and `deadline` 45.9. They were not run again afterwards.
+- Code review, 2026-11-21. Verdict: approve with fixes, no billing defect found.
+  - Two new tests ended with an open hold, and one reconciled every run in the database. A later test would have failed on a slower runner once those holds were 2 minutes old. Each test now settles its own holds and reconciles its own run.
+  - The worker's reconcile step could stop the worker on a database error and ran for every run. It is now scoped as the Design says and its errors are logged.
+  - A reasoning detail with no text became the word "undefined" in the stored reasoning, on the agent's path too. The filter now requires a string.
+  - A chunk that failed to parse left the stream's reader open until the review's deadline. The reader is now cancelled on any failure.
+  - Also applied: two pieces of dead code removed, three assertions strengthened, wider time margins in four tests.
+  - The reviewer checked every way a monitor request can end against the Design, that no path settles at zero a request the provider may have billed, that nothing settles twice, that the agent's bound, messages and retries are unchanged, and that only a trusted caller can set the idle bound.
+- E3, live, 2026-11-21: a streamed request to the investigator's endpoint was aborted 2.3 seconds in, after 20 chunks. The provider's generation record answered 404 at 3 and 6 seconds and appeared at 10 seconds with `cancelled: true`, 12 prompt tokens, 44 completion tokens and a cost of $0.00013676. That is everything `reconcileInference` needs.
+- E1 on the build before the review fixes, live, 2026-11-21, for $1.18: all ten replays of the user's run reached a verdict and all ten were right. Four reported a read and withdrew it. No review failed and no hold was left. The longest took 282 seconds and the most continuations in one review was five. The provider's records for one review show each continued request's input larger by 8,214 tokens than the one before, which is the reasoning it was sent back. Outputs `stream-replay1.json` to `stream-replay5.json` in `/Users/jonathan/Code/ctf/.artifacts/investigator-length/`.

@@ -18,6 +18,7 @@ import { buildSchedule, summarizeBaseline } from "../../scripts/flag-read-baseli
 import { syntheticHeldoutCorpus } from "../fixtures/heldout-corpus";
 import { baselineSources } from "../../scripts/flag-read-baseline-files";
 import { MONITOR_OUTPUT_TOKENS } from "../../lib/monitor-evidence";
+import { streamedCompletion } from "./completion-stream";
 
 const base = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
@@ -167,6 +168,7 @@ await test(
               );
               investigator++;
               assert.equal(body.model, INVESTIGATOR_MODEL);
+              assert.equal(body.stream, true, "investigator requests stream");
               assert.equal(body.reasoning.effort, "high");
               assert.deepEqual(body.provider, {
                 require_parameters: true,
@@ -238,7 +240,7 @@ await test(
                         evidence: [],
                       }),
                     };
-              return Response.json({
+              return streamedCompletion(init, {
                 id: `fake-${randomUUID()}`,
                 choices: [
                   {

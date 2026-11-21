@@ -4,6 +4,7 @@ import { MONITOR_INITIAL_CONTEXT_MAX_BYTES, MONITOR_OUTPUT_TOKENS } from "../lib
 import {
   BOUNDED_INVESTIGATOR_POLICY,
   MONITOR_CALL_LIMIT,
+  STREAM_IDLE_MS,
   resolveInvestigatorTiming,
 } from "../lib/investigator-evaluation-policy";
 
@@ -39,4 +40,19 @@ test("invalid and longer budgets are rejected independently", () => {
       );
     }
   }
+});
+
+test("the idle bound is optional, at most the production bound, and copied", () => {
+  assert.equal("streamIdleMs" in resolveInvestigatorTiming(), false);
+  const base = { deadlineMs: 3_000, classifierDeadlineMs: 1_000, annotationDeadlineMs: 500 };
+  assert.equal(resolveInvestigatorTiming({ ...base, streamIdleMs: 200 }).streamIdleMs, 200);
+  assert.equal(
+    resolveInvestigatorTiming({ ...base, streamIdleMs: STREAM_IDLE_MS }).streamIdleMs,
+    45_000,
+  );
+  for (const value of [0, -1, 0.5, NaN, Infinity, STREAM_IDLE_MS + 1])
+    assert.throws(
+      () => resolveInvestigatorTiming({ ...base, streamIdleMs: value }),
+      /streamIdleMs/,
+    );
 });

@@ -41,7 +41,7 @@ import {
 import { executeCommand } from "./sprites";
 import { SEED_BUGS, seedScoreCommand } from "./seed";
 import { diagnosticText } from "./inference";
-import type { GameRow } from "./games";
+import { reconcileInference, type GameRow } from "./games";
 import type { ReadConfirmation } from "./monitor-evidence";
 import { flagReadPolicyForRun } from "./flag-read-policy";
 import {
@@ -189,6 +189,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
         deadlineAt: Date.now() + timing.deadlineMs,
+        streamIdleMs: timing.streamIdleMs,
       },
       policy,
     );
@@ -252,6 +253,23 @@ async function finalizeOneRun() {
     );
   }
   for (const spriteName of await resolveUnverifiedRuns()) await deleteSpriteAfterEnd(spriteName);
+  // A hold with a generation id blocks the claim until it settles, and nobody may have the page open.
+  try {
+    const { rows: waiting } = await db.query<{ game_id: string }>(
+      `SELECT f.game_id FROM ctf.finalization_jobs f JOIN ctf.games g ON g.id=f.game_id
+       WHERE f.status='queued' AND g.status='finalizing' AND g.finalization_error IS NULL
+         AND g.reserved_microdollars>0
+       ORDER BY f.updated_at,f.game_id LIMIT 5`,
+    );
+    for (const { game_id } of waiting) await reconcileInference(game_id);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "monitor.reconcile.failed",
+        error: diagnosticText(error instanceof Error ? error.message : error),
+      }),
+    );
+  }
   const claim = await claimAsyncFinalization();
   if (!claim) return false;
   const {

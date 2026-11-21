@@ -11,6 +11,7 @@ import { Pool } from "pg";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
 import { closePool } from "./postgres";
 import { fastMonitorTiming } from "./monitor-timing";
+import { streamedCompletion } from "./completion-stream";
 
 // The idle monitor worker (docs/plans/worker-idle-wake.md, W2 to W5 and W7), driven through the real
 // application paths, wake server, loop and Postgres. Only OpenRouter is faked; wake requests go to
@@ -96,7 +97,7 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
       });
     }
     if (endpoint === "https://openrouter.ai/api/v1/chat/completions")
-      return Response.json({
+      return streamedCompletion(init, {
         id: `synthetic-${randomUUID()}`,
         choices: [
           {

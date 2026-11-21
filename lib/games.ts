@@ -891,12 +891,12 @@ export async function settleInference(
     );
   });
 }
-// A hold with no generation id (the request died before the provider answered) can never be
-// reconciled. After a day, settle it at its ceiling: never undercount spend, never hold forever.
+// A hold the provider's record never settles (no generation id, or a record that never becomes
+// usable) is released after a day at its ceiling: never undercount spend, never hold forever.
 export async function expireUnverifiableHolds() {
   await transaction(async (client) => {
     const { rows } = await client.query(
-      "UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE settled_at IS NULL AND generation_id IS NULL AND created_at<now()-interval '24 hours' RETURNING game_id,day,token_ceiling,cost_ceiling",
+      "UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE settled_at IS NULL AND created_at<now()-interval '24 hours' RETURNING game_id,day,token_ceiling,cost_ceiling",
     );
     for (const call of rows) {
       await client.query(

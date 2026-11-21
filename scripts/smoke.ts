@@ -165,7 +165,7 @@ function controlledReply(
   },
 ) {
   controlledGenerations.add(body.id);
-  if (!payload.stream) return Response.json(body);
+  assert.equal(payload.stream, true, "Every provider request streams");
   const { message, finish_reason } = body.choices[0];
   const delta = {
     ...message,
@@ -607,7 +607,7 @@ try {
     assert.equal(payload.model, investigator ? INVESTIGATOR_MODEL : AGENT_MODEL);
     let message: Record<string, unknown>;
     if (investigator) {
-      assert.equal(payload.stream, undefined);
+      assert.equal(payload.stream, true);
       assert.ok(
         payload.max_tokens !== undefined && payload.max_tokens > 0 && payload.max_tokens <= 8_192,
       );

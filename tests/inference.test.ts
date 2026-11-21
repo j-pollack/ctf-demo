@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { GameError } from "../lib/policy";
 import {
   collectStream,
   diagnosticText,
@@ -7,6 +8,7 @@ import {
   providerTranscript,
   providerErrorDetails,
   reasoningParam,
+  reasoningText,
   type AgentDelta,
 } from "../lib/inference";
 
@@ -277,7 +279,7 @@ const timed = (steps: { after: number; text: string }[], close: boolean) =>
     },
   });
 
-test("a stream that goes silent is stopped, but keep-alives count as progress", async () => {
+test("S7: the agent's stream stall keeps its message, and keep-alives count as progress", async () => {
   const first = frame({ id: "gen-4", choices: [{ delta: { reasoning: "a" } }] });
   const started = Date.now();
   await assert.rejects(
@@ -324,4 +326,78 @@ test("a cut-off turn with nothing left to send goes back as empty content, not n
     sent(turn("length", [{ type: "toolCall", id: "c", name: "t", arguments: {} }])),
     null,
   );
+});
+
+test("a stalled stream fails with the message the caller names, and 504", async () => {
+  const stalled = () =>
+    collectStream(
+      timed([{ after: 0, text: frame({ id: "gen-5", choices: [{ delta: {} }] }) }], false),
+      () => {},
+      async () => {},
+      40,
+      "The investigator's model stopped responding.",
+    );
+  await assert.rejects(stalled(), (error: GameError) => {
+    assert.equal(error.message, "The investigator's model stopped responding.");
+    assert.equal(error.status, 504);
+    return true;
+  });
+});
+
+test("reasoning text comes from the reasoning string or text details, never undefined", () => {
+  assert.equal(reasoningText({ reasoning: "plain", reasoning_details: [{ type: "x" }] }), "plain");
+  assert.equal(reasoningText({ reasoning_details: [{ type: "reasoning.text" }] }), "");
+  assert.equal(
+    reasoningText({
+      reasoning_details: [
+        { type: "reasoning.text", text: "a" },
+        { type: "reasoning.encrypted", data: "z" },
+        { type: "reasoning.text", text: "b" },
+      ],
+    }),
+    "a\nb",
+  );
+  assert.equal(reasoningText({}), "");
+});
+
+test("a chunk that cannot be handled cancels the stream and rethrows", async () => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("data: {not json\n\n"));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await assert.rejects(
+    collectStream(
+      body,
+      () => {},
+      async () => {},
+    ),
+    SyntaxError,
+  );
+  assert.equal(cancelled, true);
+  // A failing first-chunk id write is a handler failure too.
+  cancelled = false;
+  const identified = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame({ id: "gen-6", choices: [] })));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await assert.rejects(
+    collectStream(
+      identified,
+      () => {},
+      async () => {
+        throw new Error("id write failed");
+      },
+    ),
+    /id write failed/,
+  );
+  assert.equal(cancelled, true);
 });

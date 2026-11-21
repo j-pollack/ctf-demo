@@ -13,6 +13,7 @@ import type { InvestigationObserver } from "../../lib/investigation-trace";
 import { buildFlagReadReport } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
 import { flagReadCases } from "../../scripts/flag-read-cases";
+import { assertStreams, streamedCompletion } from "./completion-stream";
 
 const baseUrl = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
@@ -71,10 +72,12 @@ await test(
     const rawRequestBodies: string[] = [];
     const modelVisibleInitials = new Map<string, unknown>();
     const modelVisibleCorrectedResults: string[] = [];
+    // The request the investigator fake is answering, so its reply is checked to stream.
+    let answering: RequestInit | undefined;
     const toolReply = (name: string, args: object, reasoning?: string) => {
       const completionTokens = reasoning ? 3_900 : 30;
       assert.ok(completionTokens <= 4_096);
-      return Response.json({
+      return streamedCompletion(answering, {
         id: `synthetic-${randomUUID()}`,
         choices: [
           {
@@ -157,6 +160,8 @@ await test(
             messages: { role: string; content?: string }[];
             tools: { function: { name: string } }[];
           };
+          assertStreams(init);
+          answering = init;
           assert.equal(request.model, "z-ai/glm-5.3");
           assert.deepEqual(request.provider, {
             require_parameters: true,

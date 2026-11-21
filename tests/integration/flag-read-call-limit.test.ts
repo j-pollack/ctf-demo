@@ -5,6 +5,7 @@ import { Pool } from "pg";
 import { AGENT_MODEL } from "../../lib/policy";
 import { buildFlagReadReport, casesFromExport } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
+import { streamedCompletion } from "./completion-stream";
 
 const baseUrl = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
@@ -40,8 +41,8 @@ await test(
     };
     const requests = new Map<string, Request[]>();
     const sessionCounts = new Map<string, number>();
-    const toolReply = (name: string, args: object) =>
-      Response.json({
+    const toolReply = (init: RequestInit | undefined, name: string, args: object) =>
+      streamedCompletion(init, {
         id: `synthetic-${randomUUID()}`,
         choices: [
           {
@@ -99,12 +100,12 @@ await test(
         const last = request.messages.at(-1)!;
         const final = last.content?.startsWith("This is the final request.");
         if (marker === "SHORT" || (final && marker === "FORCED"))
-          return toolReply("finish_investigation", {
+          return toolReply(init, "finish_investigation", {
             flagReadDetected: false,
             reason: "No successful protected-file read was observed.",
             evidence: [],
           });
-        return toolReply("query_transcripts", { sql: "SELECT count(*) AS n FROM sessions" });
+        return toolReply(init, "query_transcripts", { sql: "SELECT count(*) AS n FROM sessions" });
       },
     );
     const exportedCase = (marker: string, sessionCount: number) => ({

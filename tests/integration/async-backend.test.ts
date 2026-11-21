@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Pool } from "pg";
 import { closePool } from "./postgres";
+import { streamedCompletion } from "./completion-stream";
 
 const baseUrl = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
@@ -1817,7 +1818,7 @@ await test(
             }
           }
           assert.equal(endpoint, "https://openrouter.ai/api/v1/chat/completions");
-          return Response.json({
+          return streamedCompletion(init, {
             id: `synthetic-${randomUUID()}`,
             choices: [
               {

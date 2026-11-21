@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import "./async-worker-preload";
+import { streamedCompletion } from "./completion-stream";
 
 const inner = globalThis.fetch;
 const release = process.env.HELD_REVIEW_RELEASE_FILE ?? "";
@@ -14,11 +15,12 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   assert.equal(options?.method, "POST");
   assert.equal(new Headers(options.headers).get("authorization"), "Bearer integration-router-key");
   assert.equal(JSON.parse(String(options.body)).model, "z-ai/glm-5.3");
+  assert.equal(JSON.parse(String(options.body)).stream, true);
   while (!existsSync(release)) {
     options?.signal?.throwIfAborted();
     await delay(25);
   }
-  return Response.json({
+  return streamedCompletion(options, {
     id: "held-review",
     choices: [
       {

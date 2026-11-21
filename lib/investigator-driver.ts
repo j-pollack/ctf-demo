@@ -276,6 +276,7 @@ export async function runInvestigatorDriver<T>(
       stage: "investigator",
       jobClaim: input.jobClaim,
       singleAttempt: true,
+      streamIdleMs: input.streamIdleMs,
       stopOnReservationOverrun: true,
       providerEndpoint: BOUNDED_INVESTIGATOR_POLICY.providerEndpoint,
     } satisfies TrustedInferenceOptions);

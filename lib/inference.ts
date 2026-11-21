@@ -13,6 +13,10 @@ import { db } from "./db";
 import { GameError, inputCeiling, MODELS, PLAYER_AGENT_EFFORT } from "./policy";
 import type { AgentEffort } from "./types";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
+import { STREAM_IDLE_MS } from "./investigator-evaluation-policy";
+
+const AGENT_STALL_MESSAGE = "The agent stopped responding. Please try again.";
+const INVESTIGATOR_STALL_MESSAGE = "The investigator's model stopped responding.";
 
 export type TrustedInferenceOptions = {
   role?: "agent" | "monitor";
@@ -23,6 +27,8 @@ export type TrustedInferenceOptions = {
   jobClaim?: MonitorJobClaim;
   stage?: string;
   singleAttempt?: boolean;
+  // Shortens the idle bound of a monitor request; tests only.
+  streamIdleMs?: number;
   providerEndpoint?: string;
   // Bounded evaluations cap provider rates before dispatch and verify actual cost after settlement.
   stopOnReservationOverrun?: boolean;
@@ -216,8 +222,6 @@ export type AgentDelta = { reasoning?: string; text?: string; calls?: CallFragme
 // Reasoning counts toward output, so agents need room to think and then answer. Admission still
 // lowers this to what the run's remaining budget can pay for.
 export const AGENT_OUTPUT_TOKENS = 16_384;
-// A streamed call that sends nothing for this long, not even a keep-alive, is stuck.
-export const STREAM_IDLE_MS = 45_000;
 // Time kept back from the lease so a stopped call can still record its error.
 const LEASE_MARGIN_MS = 5_000;
 type StreamedToolCall = { id: string; type: string; function: { name: string; arguments: string } };
@@ -240,6 +244,7 @@ export async function collectStream(
   onDelta: (delta: AgentDelta) => void,
   onId: (id: string) => Promise<unknown>,
   idleMs = STREAM_IDLE_MS,
+  stallMessage = AGENT_STALL_MESSAGE,
 ) {
   const message = {
     content: "",
@@ -306,32 +311,40 @@ export async function collectStream(
       });
   };
   const reader = body.getReader();
-  while (true) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const stalled = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new GameError("The agent stopped responding. Please try again.", 504)),
-        idleMs,
-      );
-    });
-    const next = await Promise.race([reader.read(), stalled])
-      .catch(async (error) => {
-        await reader.cancel().catch(() => {});
-        throw error;
-      })
-      .finally(() => clearTimeout(timer));
-    if (next.done) break;
-    const bytes = next.value;
-    buffer += decoder.decode(bytes, { stream: true });
-    let end;
-    while ((end = buffer.indexOf("\n")) >= 0) {
-      const text = buffer.slice(0, end).trim();
-      buffer = buffer.slice(end + 1);
-      await line(text);
+  try {
+    while (true) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stalled = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new GameError(stallMessage, 504)), idleMs);
+      });
+      const next = await Promise.race([reader.read(), stalled]).finally(() => clearTimeout(timer));
+      if (next.done) break;
+      buffer += decoder.decode(next.value, { stream: true });
+      let end;
+      while ((end = buffer.indexOf("\n")) >= 0) {
+        const text = buffer.slice(0, end).trim();
+        buffer = buffer.slice(end + 1);
+        await line(text);
+      }
     }
+    await line((buffer + decoder.decode()).trim());
+  } catch (error) {
+    // A stall, an abort or a chunk that cannot be handled must not leave the request open.
+    await reader.cancel().catch(() => {});
+    throw error;
   }
-  await line((buffer + decoder.decode()).trim());
   return data;
+}
+
+// The readable reasoning of an assembled response: its reasoning text, else its text details.
+export function reasoningText(message: { reasoning?: string; reasoning_details?: Fragment[] }) {
+  return (
+    message.reasoning ||
+    (message.reasoning_details ?? [])
+      .filter((part) => part.type === "reasoning.text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("\n")
+  );
 }
 
 // Reasoning effort is a provider hint, not a hard token partition. Reasoning can consume
@@ -343,8 +356,10 @@ export function reasoningParam(
   return model.reasoning ? { effort, exclude: false } : undefined;
 }
 
-// Agent calls stream so the player can watch reasoning arrive; the assembled response is still
-// the one authoritative record for accounting and the transcript.
+// Every call streams, so a response that is still arriving is never cut off by a fixed bound and
+// its generation id is known early. The assembled response is the one authoritative record for
+// accounting and the transcript. Only the agent's request is bounded by its lease; a monitor
+// request ends on a stall or the caller's signal.
 export async function infer(
   game: GameRow,
   model: Model<"openai-completions">,
@@ -381,7 +396,7 @@ export async function infer(
           }
         : {}),
     },
-    ...(onDelta ? { stream: true } : {}),
+    stream: true,
   };
   const ceiling = inputCeiling(payload);
   if (ceiling + 4096 > model.contextWindow)
@@ -416,14 +431,19 @@ export async function infer(
   let knownUnbilled = true;
   let response: Response | undefined,
     providerError: ReturnType<typeof providerErrorDetails> | undefined;
-  // A streamed agent call may use whatever the response's lease has left while it keeps making
-  // progress; non-streaming calls keep a fixed bound.
-  const deadline = AbortSignal.timeout(
-    onDelta
-      ? Math.max(0, new Date(game.lease_until ?? 0).getTime() - Date.now() - LEASE_MARGIN_MS)
-      : 90000,
+  // An agent call may use whatever the response's lease has left while it keeps making progress.
+  // A run being finalized has no usable lease, so a monitor call has no lease bound.
+  const deadline =
+    role === "agent"
+      ? AbortSignal.timeout(
+          Math.max(0, new Date(game.lease_until ?? 0).getTime() - Date.now() - LEASE_MARGIN_MS),
+        )
+      : undefined;
+  const requestSignal = AbortSignal.any(
+    [signal, deadline].filter((item): item is AbortSignal => item !== undefined),
   );
-  const requestSignal = AbortSignal.any([signal ?? new AbortController().signal, deadline]);
+  const idleMs = trusted.streamIdleMs ?? STREAM_IDLE_MS;
+  const stallMessage = role === "monitor" ? INVESTIGATOR_STALL_MESSAGE : AGENT_STALL_MESSAGE;
   const assertDispatchPermit = async () => {
     requestSignal.throwIfAborted();
     if (role === "agent") {
@@ -450,15 +470,29 @@ export async function infer(
       response = undefined;
       providerError = undefined;
       knownUnbilled = false;
-      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ ...payload, max_tokens: reservation.maxTokens }),
-        signal: requestSignal,
-      });
+      // A monitor request whose headers never arrive is stuck as much as a silent stream.
+      const noHeaders = new AbortController();
+      const headerTimer =
+        role === "monitor"
+          ? setTimeout(() => noHeaders.abort(new GameError(stallMessage, 504)), idleMs)
+          : undefined;
+      try {
+        response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ...payload, max_tokens: reservation.maxTokens }),
+          signal: AbortSignal.any([requestSignal, noHeaders.signal]),
+        });
+      } catch (error) {
+        // The stall is the cause even when the transport reports a generic abort.
+        if (noHeaders.signal.aborted && !requestSignal.aborted) throw noHeaders.signal.reason;
+        throw error;
+      } finally {
+        clearTimeout(headerTimer);
+      }
       knownUnbilled = !response.ok && [400, 401, 402, 403, 404, 422, 429].includes(response.status);
       requestSignal.throwIfAborted();
       if (response.ok) break;
@@ -484,18 +518,16 @@ export async function infer(
       onRetry?.("Agent thinking");
     }
     if (!response) throw new Error("Inference service did not respond.");
-    const data =
-      onDelta && response.body
-        ? await collectStream(response.body, onDelta, (id) =>
-            db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [reservation.id, id]),
-          )
-        : await response.json();
+    if (!response.body) throw new Error("Inference service did not return a response.");
+    const data = await collectStream(
+      response.body,
+      onDelta ?? (() => {}),
+      (id) =>
+        db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [reservation.id, id]),
+      idleMs,
+      stallMessage,
+    );
     requestSignal.throwIfAborted();
-    if (typeof data.id === "string")
-      await db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [
-        reservation.id,
-        data.id,
-      ]);
     if (data.error) {
       providerError = providerErrorDetails(response, data);
       throw new GameError(
@@ -527,13 +559,7 @@ export async function infer(
       source = choice?.message;
     if (!source) throw new Error("Inference service did not return a response.");
     const details = source.reasoning_details ?? [];
-    const reasoning =
-      source.reasoning ||
-      source.reasoning_content ||
-      details
-        .filter((part: { type: string }) => part.type === "reasoning.text")
-        .map((part: { text: string }) => part.text)
-        .join("\n");
+    const reasoning = reasoningText(source);
     const content: AssistantMessage["content"] = [];
     if (reasoning || details.length)
       content.push({
@@ -608,7 +634,10 @@ export async function infer(
         usageVerified: settled,
       }),
     );
-    if (onDelta && (deadline.aborted || (error instanceof Error && error.name === "TimeoutError")))
+    if (
+      role === "agent" &&
+      (deadline?.aborted || (error instanceof Error && error.name === "TimeoutError"))
+    )
       throw new GameError(
         "The agent ran out of time for this response. Any charge settles automatically; try again or ask for a shorter answer.",
         504,
