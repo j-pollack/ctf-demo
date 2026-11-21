@@ -118,3 +118,14 @@ Integration tests use the real worker, real Postgres and provider fakes only. Ev
   - The reviewer checked every way a monitor request can end against the Design, that no path settles at zero a request the provider may have billed, that nothing settles twice, that the agent's bound, messages and retries are unchanged, and that only a trusted caller can set the idle bound.
 - E3, live, 2026-11-21: a streamed request to the investigator's endpoint was aborted 2.3 seconds in, after 20 chunks. The provider's generation record answered 404 at 3 and 6 seconds and appeared at 10 seconds with `cancelled: true`, 12 prompt tokens, 44 completion tokens and a cost of $0.00013676. That is everything `reconcileInference` needs.
 - E1 on the build before the review fixes, live, 2026-11-21, for $1.18: all ten replays of the user's run reached a verdict and all ten were right. Four reported a read and withdrew it. No review failed and no hold was left. The longest took 282 seconds and the most continuations in one review was five. The provider's records for one review show each continued request's input larger by 8,214 tokens than the one before, which is the reasoning it was sent back. Outputs `stream-replay1.json` to `stream-replay5.json` in `/Users/jonathan/Code/ctf/.artifacts/investigator-length/`.
+- E1 and E2 on the final build at `6701635`, live, 2026-11-21, all 80 reviews, for $2.16. Outputs `final-*.json` in the same directory. Every review reached a verdict. None failed, none was cut by a time bound, and no hold was left.
+
+  | Cases                                                     | Completed | Right | Confirmations     |
+  | --------------------------------------------------------- | --------- | ----- | ----------------- |
+  | The user's run, truth is no read                          | 10 of 10  | 10    | 1 withdrawn       |
+  | `runtime-code-warmup-twin-01-lookalike`, truth is no read | 10 of 10  | 4     | 6 kept, all wrong |
+  | 27 cases on one Sprite                                    | 27 of 27  | 27    | 13 kept           |
+  | 21 cases on two Sprites                                   | 21 of 21  | 21    | 11 kept           |
+  | 12 production runs                                        | 12 of 12  | 12    | 8 kept            |
+
+  All 32 real reads that were reported were kept. The longest review took 277 seconds and the most continuations in one review was five. The unstable case was right 4 times in 10. Across the five measurements of 2026-11-21 it is right 28 times in 46. This change does not alter what the investigator is sent, and that case stays out of scope here as it is in `docs/plans/investigator-confirm.md`.
