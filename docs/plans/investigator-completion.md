@@ -2,14 +2,14 @@
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/investigator-completion`
 - Branch: `feature/investigator-completion`, stacked on `feature/worker-idle-wake` at `860e5b8`
-- Status: contract, not verified, not built
+- Status: contract verified with changes folded in, not built
 - Ships in pull request 37.
 
 ## Problem
 
 The investigator is cut off before it finishes, and a cut-off review starts over.
 
-- A response may use 8,192 output tokens (`MONITOR_OUTPUT_TOKENS`), and reasoning counts against them. Reasoning effort is high. When a response ends at that limit, the driver records "Investigator output reached its token limit." (`lib/investigator-driver.ts:297`) and the review fails.
+- A response may use 8,192 output tokens (`MONITOR_OUTPUT_TOKENS`), and reasoning counts against them. Reasoning effort is high. When a response ends at that limit, the driver records "Investigator output reached its token limit." (`lib/investigator-driver.ts:299`) and the review fails.
 - A review has 90 seconds (`BOUNDED_INVESTIGATOR_POLICY.deadlineMs`) and 12 requests (`MONITOR_CALL_LIMIT`).
 - The worker retries a failed review from scratch with the same input and the same limits.
 
@@ -25,7 +25,7 @@ The user played run `0496a49a` on the preview on 2026-11-21. The agent was given
 | Output token limit | 3     | 1 each   | 32 to 62 s     |
 | Aborted            | 2     |          | 99 s and 594 s |
 
-The other three never started, because one request hung for ten minutes and used up the evaluation's time.
+The other three never started. One try shows a single request open for 594 seconds, which used up the evaluation's time. The cause is not established: the plan verifier noted it fits the lead's machine sleeping as well as it fits a provider that hung.
 
 ## Decisions by the user
 
@@ -36,6 +36,7 @@ The other three never started, because one request hung for ten minutes and used
 
 - Limits stay, set far beyond what a review needs. They guard against a provider that hangs and a model that loops. The values are below.
 - The money ceilings do not change: the run budget plus $0.25 during play and plus $1.00 after submission.
+- A deploy must not cost a review. That is a separate contract, `worker-handover`: the new worker tells the old one to drain, and the old one finishes its reviews and exits. This contract does not change shutdown, except that `kill_timeout` goes to Fly's maximum of 300 seconds as a backstop.
 
 ## Goal
 
@@ -45,76 +46,98 @@ A review ends when the investigator calls the finish tool. A cut-off response is
 
 ### Continue after a cut-off
 
-- When an assistant response ends with stop reason `length`, the driver does not record a failure. The cut-off message stays in the conversation, and the next request adds a user message: "Your last response reached the output limit and was cut off. Continue from where you stopped."
-- The request builder already returns a previous assistant message's reasoning to the model (`lib/inference.ts:200`). The continuation must carry it. A test asserts the outgoing request holds the cut-off response's reasoning.
-- A continuation is a request like any other. It counts against the request limit and the deadline.
-- The tools and the reasoning effort do not change on a continuation.
-- The forced last request of `docs/plans/investigator-verdicts.md` still applies. If the last request allowed is itself cut off, the review fails with the existing message, as today.
-- `ctf.monitor_reviews` records how many responses were cut off: `continuations integer NOT NULL DEFAULT 0`. Migration 028. The eval report carries it per entry.
+The mechanism uses the agent library's public hooks.
+
+- `investigator.finishTurn` returns `{ action: "continue" }` when the turn's message has stop reason `length`, the review has no decision and no failure, and requests remain. Without this the loop ends after a message with no tool call, and the driver's `agent_end` handler records "ended without a valid decision".
+- `prepareNextTurnWithContext` adds a user message when the previous message's stop reason is `length`: "Your last response reached the output limit and was cut off. Continue from where you stopped." When the next request is also the last one allowed, the final-request notice comes after it, so the last instruction the model reads is to decide.
+- The `message_end` handler no longer records a failure for `length`, except when no request remains. Then it records the existing "Investigator output reached its token limit.", so that message, and not "call limit reached", is what the review row shows.
+- A cut-off can end inside a tool call.
+  - Arguments that do not parse: when the finish reason is `length`, the inference layer drops such a tool call for the monitor role only. Today it throws "The agent proposed an invalid tool call.", which fails the review. The player agent's behaviour does not change.
+  - Arguments that parse: the agent library does not execute tool calls from a truncated message and reports each as a tool error. The driver treats those tool errors as part of the cut-off, not as "Investigator tool failed" or "finish tool failed".
+- A continuation is a request like any other. It counts against the request limit and the deadline. Tools and reasoning effort do not change.
+- The cut-off message goes back to the provider with its reasoning. The lead tested the provider on 2026-11-21: a cut-off turn with null content and `reasoning_details` is accepted, and the next request's input grew from 79 to 779 tokens for 700 reasoning tokens. No change to the request builder is needed. A test asserts the outgoing request carries the cut-off response's reasoning.
+- `ctf.monitor_reviews.continuations integer NOT NULL DEFAULT 0` records how many responses were cut off. Migration 028. It is written on success through `completeMonitorReview` and on failure through `failMonitorReview`, and the driver's failure facts carry it beside `calls` and `forced`. The eval report carries it per entry, on success and on failure.
 
 ### Limits
 
-| Limit                                        | Today       | New         |
-| -------------------------------------------- | ----------- | ----------- |
-| Output per response, `MONITOR_OUTPUT_TOKENS` | 8,192       | 16,384      |
-| Time per review, `deadlineMs`                | 90 seconds  | 600 seconds |
-| Claim, `claimMs`                             | 120 seconds | 660 seconds |
-| Requests per review, `MONITOR_CALL_LIMIT`    | 12          | 32          |
-| `MAX_CALL_LIMIT`                             | 32          | 64          |
+| Limit                                                                             | Today         | New           |
+| --------------------------------------------------------------------------------- | ------------- | ------------- |
+| Output per response, `MONITOR_OUTPUT_TOKENS`                                      | 8,192         | 8,192         |
+| Time per request, in `infer`                                                      | 90 seconds    | 90 seconds    |
+| Time per review, `deadlineMs`                                                     | 90 seconds    | 600 seconds   |
+| Claim, `claimMs`                                                                  | 120 seconds   | 660 seconds   |
+| Requests per review, `MONITOR_CALL_LIMIT`                                         | 12            | 32            |
+| Context sent per request, the 256,000 byte cap in `lib/flag-read-investigator.ts` | 256,000 bytes | 512,000 bytes |
+| `kill_timeout` in `fly.toml`                                                      | 100 seconds   | 300 seconds   |
 
-- 16,384 is the player agent's own limit. With continuation the per-response limit only decides how often the conversation is re-sent, so it does not need to be larger. E2 may raise it to 32,768 if continuations are frequent.
+- The output limit stays. With continuation it only decides how often the conversation is re-sent. A response of 8,192 tokens took 32 to 62 seconds in E1, inside the 90 second request timeout. A larger limit would not be.
+- The request timeout stays. It is the guard against a provider that hangs.
+- Each cut-off adds its reasoning to the context, about 30,000 bytes. The context cap doubles so that several continuations fit.
 - The claim must outlast the deadline, as today.
-- The budget line the investigator reads states the new request count.
-
-### Shutdown
-
-- `fly.toml` gives the worker 100 seconds to finish its current review on `SIGTERM`. A review can now take ten minutes. Fly allows at most 300 seconds.
-- On `SIGTERM` the worker aborts reviews in flight and finishes each job as an error that will be retried, so the job is claimable at once and does not wait for its claim to expire. `kill_timeout` stays 100 seconds.
-- The aborted attempt is recorded as a failed review with "Investigator review was cancelled.", and it does not count against the job's three attempts.
+- The budget line the investigator reads is built from the request limit and will state 32.
+- `MAX_CALL_LIMIT` stays 32.
 
 ### What does not change
 
 - The flag-read prompt and its three policies, byte for byte. The pinned hashes stay.
 - Retries, requeues and finalization.
+- How the worker stops: it finishes its current pass, as today.
 - The classifier and annotation deadlines.
 
 ## Measurement
 
 - E1, before, done: the table above. Outputs in `/Users/jonathan/Code/ctf/.artifacts/investigator-length/before.json`.
-- E2, after the build, live: the same case ten times. The truth is no read. Recorded per try: verdict, requests, continuations, time and cost.
-- E3, regression, live: the step 4b sets under their policies. 27 one-Sprite cases isolated under `v15-shared`, 21 two-Sprite cases under `v15-unknown`, 12 production runs under `v15-shared`. Each must match its step 4b result: 27, 21 and 12 right.
-- Acceptable when, in E2, no try ends on the output limit or the deadline, and E3 holds. The number of false catches in E2 is reported, not gated: a verdict that confuses a printed command with an executed one is a prompt problem and goes to the user with the numbers.
+- E2, after the build, live: the same case ten times. The truth is no read. Recorded per try: verdict, requests, continuations, time, cost, and for each continuation whether the next request's input grew by about the cut-off response's reasoning tokens.
+- E3, regression, live: the step 4b sets under their policies through `scripts/flag-read-eval.ts`. 27 one-Sprite cases isolated under `v15-shared`, 21 two-Sprite cases under `v15-unknown`, 12 production runs under `v15-shared`. Each must match its step 4b result: 27, 21 and 12 right.
+- Acceptable when, in E2, no try ends on the output limit or the review deadline, and E3 holds. The number of false catches in E2 is reported, not gated: a verdict that confuses a printed command with an executed one is a prompt problem and goes to the user with the numbers.
 
 ## Out of scope
 
 - Changing the prompt to separate printed from executed commands.
 - A decoding tool for the investigator.
 - Raising the money ceilings.
+- Handing a review from one worker to the next on a deploy. See `worker-handover`.
+- Saving a review's conversation so another worker can resume it after a crash.
 - More than 4 review loops in the worker. A ten minute review holds one loop for ten minutes.
+- The frozen baseline schedules in `evals/flag-read/` and `scripts/flag-read-baseline.ts`, which pin the old limits and no longer load since step 4b.
 
 ## Acceptance
 
-Integration tests use the real worker, real Postgres and provider fakes only.
+Integration tests use the real worker, real Postgres and provider fakes only. A fake response may carry `finish_reason: "length"` with reasoning and no content.
 
-- C1. A review whose first response is cut off and whose second calls the finish tool ends with that verdict. The review row has `continuations` 1 and no error. The second request carries the continue message and the first response's reasoning.
+- C1. A review whose first response is cut off and whose second calls the finish tool ends with that verdict. The review row has `continuations` 1 and no error. The second request holds the cut-off assistant turn with its reasoning, followed by the continue message.
 - C2. A review cut off twice and then finished ends with a verdict and `continuations` 2.
-- C3. A review whose last allowed request is cut off fails with the existing token-limit message, and its row records the continuations.
-- C4. Requests are counted across continuations: with a limit of 3, two cut-offs leave one request, which is the forced last request with only the finish tool.
-- L1. The four limits have the new values, and the budget line states 32 requests. The claim is longer than the deadline.
-- S1. A worker that receives `SIGTERM` during a review ends within a few seconds. The job is `queued` and claimable at once, its `attempts` is unchanged, and the review row records the cancellation.
-- M1. Migration 028 adds `ctf.monitor_reviews.continuations`, applies to a database at 027 and is additive. Every hand-written migration list includes it.
-- G1. `npm run check`, `npm run test:integration`, `npm run build` and `npm run test:coverage` pass. Tests that pin the old limits are updated.
+- C3. A review whose last allowed request is cut off fails with "Investigator output reached its token limit.", and its failed row records the calls and the continuations.
+- C4. Requests are counted across continuations: with a limit of 3, two cut-offs leave one request. It offers only the finish tool, and its messages end with the continue message and then the final-request notice.
+- C5. A response cut off inside a tool call whose arguments do not parse is continued, and the review reaches a verdict. The same response for the player agent still fails as today.
+- C6. A response cut off after a complete tool call is continued. The unexecuted call does not fail the review, whether it names a retrieval tool or the finish tool.
+- L1. The limits have the values in the table. The claim is longer than the deadline. The first user message states 32 requests.
+- L2. A review can run past 90 seconds: with test timing, a review whose requests together take longer than the old deadline and less than the new one reaches a verdict.
+- M1. Migration 028 adds `ctf.monitor_reviews.continuations`, applies to a database at 027 and is additive. These hand-written lists include it: `scripts/setup.ts`, `scripts/monitor-investigate-eval-live.ts`, and the integration harnesses `async-backend`, `flag-submission-route`, `flag-submission-runner`, `flag-submission` and `sprites`.
+- G1. `npm run check`, `npm run test:integration`, `npm run build` and `npm run test:coverage` pass. Tests and fakes that pin the old limits are updated: the 90 second deadline and 120 second claim in the timing tests and the real-timing deadline test, and the fakes that assert the request's `max_tokens`.
 
 ## Risks
 
 - A hard review can take minutes. A catch during play arrives later, and a submitted run waits longer for its result.
-- A long review costs more. At $2.86 per million output tokens, 100,000 tokens of reasoning is about $0.29, which is above the $0.25 ceiling during play. A review refused for money fails as it does today.
+- A long review costs more, mostly through re-sent input. Every request re-sends the conversation. 32 requests at 40,000 input tokens is about $1.16 of input at $0.91 per million, before output at $2.86 per million. One long review can use the whole $0.25 play ceiling or the whole $1.00 ceiling after submission. The request after the ceiling is refused, and the review fails with "Your inference budget is exhausted.", as a review refused for money does today.
+- With up to 32 requests and one attempt each, one HTTP 429 from the provider fails the review.
 - A model that loops spends its 32 requests before it is stopped.
 - Four long reviews hold all four worker loops, and other sessions wait.
 - A crashed worker's claim now takes 11 minutes to expire.
+- Until `worker-handover` is built, a deploy still stops the worker after at most 300 seconds and a review still running then is lost.
 
 ## Evidence
 
 - Run `0496a49a` read by the lead from the preview database on 2026-11-21: the transcript, the review rows with their errors, the inference rows (about 13,700 tokens for each cut-off attempt, 7,485 for the attempt that finished), no submission, no command piped to a shell.
 - OpenRouter documentation, "Reasoning tokens": reasoning counts against `max_tokens`, and "If the model spends all of it reasoning, the response returns `finish_reason: "length"` with an empty `content`".
 - The lead's first report of this run called the block correct. It was not. The correction is in the table above.
+- Provider probe by the lead, 2026-11-21, `z-ai/glm-5.3` on the DigitalOcean endpoint: a response cut off at 700 tokens returned `finish_reason: "length"`, null content and one `reasoning.text` detail. Sent back with a continue message, it was accepted with null content, with empty content, with `reasoning_details` and with plain `reasoning`. Input was 779 tokens with the reasoning and 79 without.
+- Fly documentation: `kill_timeout` "up to a maximum of 300 seconds (5 minutes)", and best-effort.
+- Plan verification, 2026-11-21. Verdict: not ready, six blocking findings, all folded in.
+  - A 16,384 token response would have run into the 90 second request timeout. The output limit stays 8,192.
+  - A cut-off inside a tool call failed the review in two ways. Both are now continuations, C5 and C6.
+  - Not recording the failure was not enough: the loop ends on a message with no tool call. The contract names `finishTurn` and the order of the two messages.
+  - A cut-off on the last request would have been reported as the call limit. C3 states the message.
+  - Finishing a job as an error on `SIGTERM` could not requeue it at once and would have counted an attempt. Shutdown is out of this contract and goes to `worker-handover`.
+  - Nothing proved the reasoning reaches the model. The probe above does, and E2 records it per continuation.
+  - Also folded in: the context cap, the cost figures, continuations on both failure paths, the migration lists, `MAX_CALL_LIMIT` unchanged.
