@@ -1,8 +1,8 @@
-# Worker handover: a deploy does not cost a review
+# Worker drain: a deploy does not cost a review
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/worker-handover`
 - Branch: `feature/worker-handover`, stacked on `feature/investigator-completion`
-- Status: contract, not verified, not built
+- Status: contract, second draft after plan verification, not built
 - Ships in pull request 37.
 
 ## Problem
@@ -20,87 +20,102 @@ The worker already finishes its current reviews when it is asked to stop. Only t
 
 - 2026-11-21: losing a review that has run for five minutes is a huge loss. The worker stays on a review until the investigator is done.
 
+## Decisions by the lead, open to the user
+
+- The deploy waits for the old worker. The first draft started a new worker beside the old one and had the new one drain the old. The plan verifier found five blocking problems in it, among them an older worker draining a newer one and production left with no machine, and proposed this simpler design. It keeps production's deploy command, restart policy and rollback as they are.
+- The cost is that no new review starts while the old worker finishes, at most about eleven minutes, and the deploy takes that much longer. Queued work is reviewed when the new worker starts.
+
 ## Goal
 
-On a deploy the new worker starts beside the old one. The old one takes no new work, finishes what it has and then exits. No review is interrupted by a deploy.
+Before a deploy replaces the worker, the worker is told to drain. It takes no new work and finishes what it has. The deploy replaces it only when it is done.
 
 ## Design
 
 ### Drain endpoint
 
-- The worker's HTTP server gains `POST /drain`, with the same bearer token as `/wake`. It answers 204 and stops the loops the way `SIGTERM` does: no new pass starts, and passes in flight run to their end.
-- When the loops have settled the worker closes its server, removes its own registration row if it still holds it, ends its pool and exits 0, as it does today after a signal.
-- `/drain` on a worker that is already stopping answers 204 and changes nothing.
+- The worker's HTTP server gains `POST /drain`, with the same bearer token as `/wake`. It answers 204 and stops the loops the way a signal does: no new pass starts, and passes in flight run to their end.
+- When the loops have settled after a drain, the worker closes its server, removes its own registration row and ends its pool. It does not exit. It waits for a stop signal, and on `SIGTERM` or `SIGINT` it exits 0 at once.
+- It does not exit because production's machine restarts on every exit, and a restart would put it back to work in the middle of a deploy.
+- If no signal arrives within 15 minutes of the drain completing, the worker exits with code 1. Both restart policies then restart it and it works again. A deploy that failed after the drain, or a drain sent by mistake, therefore pauses reviews for at most 15 minutes.
+- A worker stopped by a signal without a drain behaves as today, and exits 0 whatever its passes returned.
+- `/drain` on a worker that is already draining answers 204 and changes nothing.
 
-### The new worker drains the old one
+### Drain script
 
-- At start, before it writes its own registration, the worker reads the existing `worker_wake` row.
-- After its own registration is written, it sends `POST /drain` to the old worker when all of these hold:
-  - it runs on Fly, that is `FLY_APP_NAME` is set;
-  - the old row parses, and its URL's host is this app's own host, `<FLY_APP_NAME>.fly.dev`;
-  - the old row's `instance` is set and is not this machine's `FLY_MACHINE_ID`.
-- The request goes to the old row's URL with `/wake` replaced by `/drain`, the old row's token and the header `fly-force-instance-id: <old instance>`. It has a 5 second timeout.
-- A failure is logged as `worker.drain.failed` with a reason code and no token. The new worker carries on. The old machine is then gone already, or it runs code from before this change.
-- The host check matters. A preview's database starts as a copy of production's and holds production's row. Without the check, a new preview's worker would drain production's.
-- Local development does not drain. Worktrees share one development database, and one worktree's worker must not stop another's.
+`scripts/drain-worker.ts`, run by the deploy jobs with the database URL and the Fly app name.
 
-### Machines
+1. It reads the `worker_wake` row. No row: it prints that there is nothing to drain and exits 0.
+2. The row must parse, and its URL's host must be `<app>.fly.dev` for the app name it was given. Otherwise it prints why and exits 0 without sending anything. A preview's database starts as a copy of production's and can still hold production's row. This check is what keeps a preview's deploy from draining production.
+3. It sends `POST /drain` to the row's URL with the path set to `/drain`, the row's token and the `fly-force-instance-id` header, with a 10 second timeout and no redirects.
+   - 204: it polls the row every 2 seconds until the row is gone or its value has changed, for at most 12 minutes, then exits 0. If the 12 minutes pass it prints a warning and exits 0, and the deploy goes on.
+   - 404: the worker runs code from before this change. It exits 0.
+   - A refused connection, a timeout or any other status: it prints the reason code and exits 0. The worker is not reachable, so there is nothing to wait for.
+4. It never prints the token or the database URL.
 
-Both deploys become: build the image, start a new machine, leave the old one to drain.
+### Workflows
 
-- Every worker machine is started with `--restart on-failure`, `--rm`, `--port 443:8080/tcp:http:tls` and `--metadata handover=1`. `--rm` removes a machine when its process exits cleanly, which is how a drained worker's machine goes away.
-- **Previews**, `.github/workflows/preview-worker.yml`: the deploy job starts the new machine first. It then force-destroys only the branch's machines that lack `handover=1`, which are machines from before this change. It no longer destroys the branch's other machines. The destroy job for a deleted branch is unchanged.
-- **Production**, `.github/workflows/migrate-prod.yml`: the deploy job builds and pushes with `flyctl deploy --build-only --push`, as previews do, and starts a machine with `flyctl machine run` in `ctf-monitor-worker`. It then force-destroys the app's machines that lack `handover=1`. That happens once: the machine `flyctl deploy` made runs the old code, has no `/drain`, and restarts itself whenever it exits.
-- `fly.toml` keeps its `[build]` section for the image build. Its `[http_service]`, `[[restart]]` and `[[vm]]` sections no longer describe a running machine and are removed, with a comment that names the workflow as the place machines are configured. `kill_timeout` is set per machine with `--kill-timeout 300` if `flyctl machine run` accepts it, and otherwise left at Fly's default.
-- Production's secrets are app secrets on `ctf-monitor-worker` and reach every machine in the app.
+- **Production**, the `deploy worker` job in `.github/workflows/migrate-prod.yml`. The steps become:
+  1. build and push the image: `flyctl deploy --build-only --push --remote-only --image-label "$HEAD_SHA"`;
+  2. install dependencies and run the drain script with `DATABASE_URL_UNPOOLED` from the repository secret the migrate job already uses, and the app name `ctf-monitor-worker`;
+  3. release the built image: `flyctl deploy --ha=false --image "registry.fly.io/ctf-monitor-worker:$HEAD_SHA"`.
 
-### Starting without Fly's restart loop
+  Building first keeps the time with no worker to the drain plus the machine's restart. The job's timeout goes from 20 to 40 minutes.
 
-Production's machine restarts on any exit today. Under `on-failure` Fly retries a failing machine 10 times in 5 minutes and then leaves it stopped. A database outage longer than that would leave production with no worker.
+- **Previews**, the deploy job in `.github/workflows/preview-worker.yml`: after the image is built and before the branch's old machines are destroyed, it runs the drain script with the branch's database URL and the app name `ctf-monitor-worker-preview`. The job's timeout goes from 20 to 40 minutes.
+- `fly.toml`: `kill_timeout` is 300 seconds, set by `investigator-completion`. Nothing else changes. Production keeps `[[restart]] policy = "always"`.
+- `README.md` describes the drain step, and says that a manual `flyctl deploy` or `flyctl machine restart` skips it.
 
-- At start the worker retries its registration with a backoff that grows to 30 seconds, for as long as it takes, and logs each failure as `monitor.worker.start.retry`. It exits non-zero only for an error that is not a connection or availability error.
-- A pass that throws still stops the loops and exits non-zero, as today. Fly restarts the machine, and the new process then waits in the registration retry until the database answers.
+## What a deploy looks like
 
-## Deploy order and overlap
-
-- Two workers run at once for as long as the old one's reviews take, at most about eleven minutes. Claims are exclusive, so no job is reviewed twice.
-- The registration row points at the new worker from the moment it starts. Wake calls go to it.
-- Several deploys in a row leave several workers draining. Each exits when its own reviews end.
-- The new worker's code may be newer than a review the old one is finishing. Each review is finished by the code that started it.
+- Idle worker: the drain completes in under a second, and the deploy takes about as long as today.
+- A review in flight: the deploy waits for it, at most the review's ten minute deadline plus the worker's bookkeeping. Wake calls in that time find no row and send nothing. The work stays queued, and the new worker reviews it during its start window.
+- Production's alias waits for the `deploy worker` check, so the new app goes live that much later.
 
 ## Out of scope
 
+- Starting the new worker before the old one has finished, so that reviews never pause.
 - A crash of the worker or its host. A review in flight is lost then. Saving a review's conversation so another worker can resume it is a separate change.
-- Stopping an idle machine to save its cost.
-- More than one active worker per database.
+- A stop that does not go through the deploy jobs: `flyctl machine restart`, `flyctl secrets set`, host maintenance.
+- A second credential for `/drain`. Whoever can read a database's `worker_wake` row can pause that worker for up to 15 minutes at a time.
 
 ## Acceptance
 
-Integration tests use real Postgres and the real worker code, with provider fakes only.
+Integration tests use real Postgres and the real worker code, with provider fakes only. The worker runs as a child process where an exit code is asserted, as the existing W7 test does.
 
-- H1. `POST /drain` with the right token answers 204. A wrong or missing token answers 401. The worker then starts no new pass, a pass in flight runs to its end with its verdict stored, and the process exits 0.
-- H2. A worker that starts with another worker's row present, with the Fly environment set for the same app, sends one authenticated `POST /drain` to the old address with the old token and the old instance header. The test serves the old address locally through the existing fetch seam.
-- H3. No drain is sent when `FLY_APP_NAME` is not set, when the old row's host is another app's, when the old row is malformed, and when the old row's instance is this machine's.
-- H4. A failed drain call logs `worker.drain.failed` without the token and the worker runs normally.
-- H5. Registration is retried: with the settings table unavailable at start and then restored, the worker logs `monitor.worker.start.retry`, registers and runs. It has not exited.
-- H6. End to end in process: an old worker is in a review that a fake provider holds open. A new worker starts and drains it. The new worker claims a second job while the first review is still held. When the fake releases, the old worker stores its verdict and exits 0. The first job has one review row and one attempt.
+- D1. `POST /drain` with the right token answers 204 while a review is held open by the fake provider. A wrong or missing token answers 401. A job queued after the drain is not claimed. When the fake releases, the held review's verdict is stored with one review row and one attempt. The registration row is then gone and the process is still running.
+- D2. A drained worker exits 0 within a few seconds of `SIGTERM`.
+- D3. A drained worker that gets no signal exits with code 1 when its wait ends. The test passes a short wait.
+- D4. A worker stopped by `SIGTERM` without a drain exits 0 even when a pass failed while it was stopping.
+- D5. The drain script, against a real worker child process: it sends the drain, waits, and exits 0 after the row is gone. Its output holds neither the token nor the database URL.
+- D6. The drain script sends nothing and exits 0 when there is no row, when the row is malformed and when the row's host belongs to another app. It exits 0 on a 404, on a refused connection and when its wait runs out, with a line that names the reason. The test passes a short wait.
+- D7. A wake call made while the worker is drained sends nothing and the write commits.
 - G1. `npm run check`, `npm run test:integration`, `npm run build` and `npm run test:coverage` pass.
 
 ## Live check by the lead
 
-- E1. On the preview: with a review in flight, push a commit. The old machine finishes the review, the review has one row, and the machine is gone afterwards. The new machine is running and registered.
-- E2. On the preview: a machine from before this change is destroyed by the deploy job.
-- E3. Production cannot be checked before merge. The first production deploy is watched by the lead with the user: one new machine running and registered, the old machine destroyed, a review completing.
+- E1. On the preview, with a review in flight, push a commit. The deploy job waits. The review finishes with one row and one attempt. The new machine then starts, registers and reviews queued work.
+- E2. On the preview with an idle worker, the drain step takes a few seconds.
+- E3. The first deploy after this change meets a worker without `/drain`. The script reports the 404 and the deploy goes on.
+- E4. Production cannot be checked before merge. The lead watches the first production deploy with the user.
 
 ## Risks
 
-- Production's deploy mechanics change, and the change cannot be rehearsed on production. The preview uses the same commands in a different app.
-- If the new worker fails before it drains the old one, both keep working. Nothing is lost and the next deploy drains them.
-- A drained machine that never exits, because a review hangs past every limit, stays until a later deploy. Its review deadline bounds this at ten minutes.
-- `--rm` with `--restart on-failure` is used as Fly documents each flag. Their combination is not documented and E1 is the first proof.
-- The first production deploy force-destroys the old machine, so a review in flight at that moment is lost, once.
+- For up to about eleven minutes during a deploy no new review starts. A catch during play arrives that much later, and a submitted run waits that much longer.
+- A deploy can take up to 12 minutes longer, and the production app's release waits with it.
+- The deploy jobs now install dependencies and read the database.
+- If the drain script's wait runs out, the deploy goes on and the review in flight is lost. The review deadline of ten minutes makes that unlikely.
+- A drain followed by no deploy pauses reviews for 15 minutes.
+- The first production deploy cannot drain the old worker, which has no `/drain`. A review in flight at that moment is lost, once.
 
 ## Evidence
 
 - Deploy steps read by the lead at `f067863`: `.github/workflows/preview-worker.yml`, the `deploy worker` job in `.github/workflows/migrate-prod.yml`, `fly.toml`, `scripts/monitor-worker.ts`, `lib/monitor-wake-server.ts`.
-- Fly documentation: `kill_timeout` "up to a maximum of 300 seconds (5 minutes)" and best-effort. `fly machine run --rm`: "Automatically remove the Machine when it exits. Sets the restart-policy to 'never' if not otherwise specified." Restart policy `on-failure`: "Try up to `max_retries` (default 10) times within a 5-minute window". `always`: "never let it enter a `stopped` state, even when the main process exits cleanly". `fly machine kill` sends SIGKILL only, and no command sends another signal without a stop deadline.
+- Fly documentation: `kill_timeout` "up to a maximum of 300 seconds (5 minutes)" and best-effort. Restart policy `always`: "never let it enter a `stopped` state, even when the main process exits cleanly". `on-failure`: "Try up to `max_retries` (default 10) times within a 5-minute window". `fly machine kill` sends SIGKILL only, and no command sends another signal without a stop deadline.
+- Plan verification of the first draft, 2026-11-21. Verdict: not ready, five blocking findings.
+  - Any worker that started drained whichever worker was registered, so a restarted older worker could drain a newer one.
+  - With removal on clean exit, a signal from Fly for any reason could remove production's only machine.
+  - The drain rode on a token that every preview database holds a copy of, and a drained machine was removed.
+  - Reading the old row and writing the new one was not atomic, so two workers starting together could leave one that nothing drains.
+  - Two acceptance items could not be built as written.
+  - The verifier confirmed from the code that a pass in flight runs to its end after the loops are stopped, that the old worker's delete matches only its own row, and that wake calls read the row each time.
+  - This draft is the verifier's simpler alternative, with two additions by the lead: the image is built before the drain, and a drained worker that sees no deploy restarts itself after 15 minutes.
