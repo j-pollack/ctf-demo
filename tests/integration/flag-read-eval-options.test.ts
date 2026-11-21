@@ -11,6 +11,7 @@ import { AGENT_MODEL } from "../../lib/policy";
 import { flagReadPolicyById, type FlagReadPolicyId } from "../../lib/flag-read-policy";
 import { buildFlagReadReport, parseEvalArguments, selectCases } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
+import { closePool } from "./postgres";
 
 const baseUrl = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(process.env.NODE_ENV, "test", "Use npm run test:integration");
@@ -151,7 +152,7 @@ async function evaluate(
   );
   const inspect = new Pool({ connectionString: databaseUrl.toString(), max: 1 });
   t.after(async () => {
-    await inspect.end();
+    await closePool(inspect);
     await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`);
     await admin.end();
   });
