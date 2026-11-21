@@ -154,6 +154,9 @@ export async function exportTranscriptQueryProjection(
     }));
     const observations: SqlProjection["observations"] = [];
     const messages: SqlProjection["messages"] = [];
+    const times = new Map(
+      (snapshot.operationTimes ?? []).map((time) => [`${time.sessionId}:${time.toolCallId}`, time]),
+    );
     const previous = new Map<string, { version: number; count: number }>();
     for (const row of rows) {
       const version = Number(row.version);
@@ -181,6 +184,9 @@ export async function exportTranscriptQueryProjection(
           includeReasoning && row.reasoningVisible && row.currentReasoningVisible,
         );
         if (!rendered) continue;
+        const operation = rendered.toolCallId
+          ? times.get(`${row.sessionId}:${rendered.toolCallId}`)
+          : undefined;
         messages.push({
           observation_ref: observationRef,
           session_id: sessionId,
@@ -194,6 +200,8 @@ export async function exportTranscriptQueryProjection(
               ? source.toolName
               : (rendered.toolCalls?.map((call) => call.name).join(",") ?? null),
           tool_error: rendered.toolError === undefined ? null : Number(rendered.toolError),
+          sent_at: operation?.sentAt ?? null,
+          returned_at: operation?.returnedAt ?? null,
         });
       }
     }

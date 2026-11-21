@@ -141,6 +141,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         "utf8",
       ),
     );
+  for (let pass = 0; pass < 2; pass++)
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/027-review-prompt-hash.sql", import.meta.url),
+        "utf8",
+      ),
+    );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
@@ -965,7 +972,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     const game = await productionStartGame("async-default");
     assert.equal((await row(game.id)).monitor_mode, "async");
     assert.equal((await row(game.id)).submission_transport, "http");
-    assert.equal((await row(game.id)).monitor_version, FLAG_READ_MONITOR_VERSION);
+    assert.equal(
+      (await row(game.id)).monitor_version,
+      "investigator-v15-glm53-jev114-isolation-times-digitalocean",
+    );
+    assert.equal(FLAG_READ_MONITOR_VERSION, (await row(game.id)).monitor_version);
   });
   for (const input of [
     { name: "missing", endpoint: undefined },
@@ -6933,6 +6944,15 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     }
   };
 
+  await t.test("M1: migration 027 adds a nullable prompt_hash", async () => {
+    const columns = (
+      await pool.query(
+        `SELECT data_type,column_default,is_nullable FROM information_schema.columns
+         WHERE table_schema='ctf' AND table_name='monitor_reviews' AND column_name='prompt_hash'`,
+      )
+    ).rows;
+    assert.deepEqual(columns, [{ data_type: "text", column_default: null, is_nullable: "YES" }]);
+  });
   await t.test("M1: migration 026 adds the forced-decision and requeue columns", async () => {
     const columns = (
       await pool.query(

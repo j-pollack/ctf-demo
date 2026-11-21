@@ -6,7 +6,7 @@ import {
   type FlagReadInvestigationResult,
 } from "../lib/flag-read-investigator";
 import { FLAG_READ_MONITOR_VERSION } from "../lib/control";
-import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
+import { flagReadPolicyById } from "../lib/flag-read-policy";
 import { INVESTIGATOR_EFFORT, INVESTIGATOR_MODEL } from "../lib/investigator-driver";
 import {
   MONITOR_MESSAGE_CHUNK_JSON_BYTES,
@@ -196,8 +196,8 @@ test("storage adapter maps every valid negative to coverage", () => {
     reason: "More evidence is needed.",
     evidence: [],
     monitorVersion: FLAG_READ_MONITOR_VERSION,
-    promptHash: resolveFlagReadPolicy().promptHash,
-    searchStrategy: "closed-world-presumption",
+    promptHash: flagReadPolicyById("v15-unknown").promptHash,
+    policyId: "v15-unknown",
     investigatorModel: INVESTIGATOR_MODEL,
     investigatorEffort: INVESTIGATOR_EFFORT,
     revision: 2,

@@ -49,7 +49,9 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   await (await getMigrations(auth.options)).runMigrations();
   const { adminStats, isAdmin } = await import("../../lib/admin");
   const { MODELS } = await import("../../lib/policy");
-  const { ASYNC_MONITOR_VERSION } = await import("../../lib/control");
+  const { ASYNC_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } =
+    await import("../../lib/control");
+  assert.equal(ASYNC_MONITOR_VERSION, "investigator-v15-glm53-jev114-isolation-times-digitalocean");
 
   // The flag is SQL-granted only: real Better Auth handlers must refuse it from users.
   const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });
@@ -325,11 +327,11 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   );
 
   await user("m3", "three@example.invalid", false, "2026-09-04T00:00:00Z");
-  // Runs against another monitor model and difficulty; one against an old monitor version never ranks.
+  // Runs against another monitor model and difficulty; one against the previous monitor version (v14) never ranks.
   await game("m3", "captured", 500_000, 0, 2, 0, { monitor: "mon/b" });
   await game("m3", "captured", 400_000, 0, 3, 0, { difficulty: "easy" });
   await game("m3", "captured", 100_000, 0, 1, 0, {
-    version: "investigator-v4-glm53-jev114-policy-delivery",
+    version: PREVIOUS_FLAG_READ_MONITOR_VERSION,
   });
   await game("m3", "captured", 300_000, 0, 5, 0, { monitor: "mon/c" });
 
@@ -360,7 +362,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
         entries: { spend: number; monitor_reasoning: boolean }[];
       };
     const spends = async (query: string) => (await get(query)).entries.map((x) => x.spend);
-    // Each player's cheapest capture; m3's cheaper old-version capture (100_000) never ranks.
+    // Each player's cheapest capture; m3's cheaper v14 capture (100_000) never ranks.
     // The difficulty parameter is ignored: m3's captured easy run (400_000) never ranks.
     for (const query of ["", "?difficulty=easy", "?difficulty=medium", "?difficulty=extreme"])
       assert.deepEqual(await spends(query), [300_000, 700_000, 1_000_000], `query ${query}`);

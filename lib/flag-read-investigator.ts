@@ -8,11 +8,7 @@ import {
   type FlagReadDecision,
   type MonitorDecision,
 } from "./monitor-evidence";
-import {
-  resolveFlagReadPolicy,
-  type FlagReadPolicy,
-  type FlagReadSearchStrategy,
-} from "./flag-read-policy";
+import type { FlagReadPolicy, FlagReadPolicyId } from "./flag-read-policy";
 import type { MonitorEvidenceMessage } from "./monitor-tools";
 import {
   INVESTIGATOR_EFFORT,
@@ -28,7 +24,7 @@ import { notifyInvestigationObserver, type InvestigationObserver } from "./inves
 export type FlagReadInvestigationResult = FlagReadDecision & {
   monitorVersion: FlagReadPolicy["monitorVersion"];
   promptHash: string;
-  searchStrategy: FlagReadSearchStrategy;
+  policyId: FlagReadPolicyId;
   investigatorModel: typeof INVESTIGATOR_MODEL;
   investigatorEffort: typeof INVESTIGATOR_EFFORT;
   revision: number;
@@ -71,12 +67,9 @@ function contextLimit(
 
 export async function runFlagReadInvestigation(
   input: RunMonitorReviewInput,
-  options?: {
-    observer?: InvestigationObserver;
-    searchStrategy?: FlagReadSearchStrategy;
-  },
+  policy: FlagReadPolicy,
+  options?: { observer?: InvestigationObserver },
 ): Promise<FlagReadInvestigationResult> {
-  const policy = resolveFlagReadPolicy(options?.searchStrategy);
   const { target, snapshot } = validateReviewScope(input);
   if (target.kind !== "transcript")
     throw new Error("Flag read investigation requires a transcript target.");
@@ -135,7 +128,7 @@ export async function runFlagReadInvestigation(
     ...result.decision,
     monitorVersion: policy.monitorVersion,
     promptHash: policy.promptHash,
-    searchStrategy: policy.searchStrategy,
+    policyId: policy.id,
     investigatorModel: INVESTIGATOR_MODEL,
     investigatorEffort: INVESTIGATOR_EFFORT,
     revision: result.revision,

@@ -106,6 +106,8 @@ export type MonitorSnapshot = {
   targetSessionId: string;
   revision: number;
   omittedSessions: number;
+  // The run's isolation rule when the snapshot was read; it decides which evidence the manifest holds.
+  isolated: boolean;
   searchableHistorySessions?: number;
   evidenceManifest?: readonly {
     sessionId: string;
@@ -133,6 +135,14 @@ export type MonitorSnapshot = {
     admittedRevision: number | null;
     completedRevision: number | null;
     outcome: "completed" | "interrupted" | "unknown" | null;
+  }[];
+  // When each command of the evidence sessions was sent to the computer and when it returned, as
+  // ISO 8601 UTC. Null when unknown.
+  operationTimes?: readonly {
+    sessionId: string;
+    toolCallId: string;
+    sentAt: string | null;
+    returnedAt: string | null;
   }[];
 };
 export type PublicGame = {

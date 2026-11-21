@@ -2,11 +2,13 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import type { Message } from "@earendil-works/pi-ai";
-import { flagReadCases, type FlagReadCase } from "./flag-read-cases";
+import { flagReadCases, policyForCase, type FlagReadCase } from "./flag-read-cases";
+import { toFlagReadCase, type CorpusCase } from "./flag-read-corpus";
+import type { FixtureOperation } from "./monitor-investigation-cases";
 import { MAX_CALL_LIMIT, MIN_CALL_LIMIT } from "../lib/investigator-evaluation-policy";
 import type { InvestigationTrace } from "../lib/investigation-trace";
 import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
-import type { FlagReadSearchStrategy } from "../lib/flag-read-policy";
+import { flagReadPolicyById, type FlagReadPolicyId } from "../lib/flag-read-policy";
 import {
   parseArguments,
   validateLiveConfig,
@@ -52,7 +54,7 @@ export type FlagReadEntry = {
   calls?: number;
   forcedDecision?: boolean;
   monitorVersion?: string;
-  searchStrategy?: FlagReadSearchStrategy;
+  policyId?: FlagReadPolicyId;
   promptHash?: string;
   investigatorModel?: string;
 };
@@ -65,13 +67,19 @@ const COMPLETION_NOTE =
 export type FlagReadEvalOptions = EvaluationArguments & {
   casesFile?: string;
   callLimit?: number;
+  // Evaluation-only: neither reaches production code or the environment.
+  policy?: FlagReadPolicyId;
+  isolated?: boolean;
 };
 
-// Takes `--cases FILE` and `--call-limit N` out of the arguments the shared parser knows.
+// Takes `--cases FILE`, `--call-limit N`, `--policy ID` and `--isolated` out of the arguments the
+// shared parser knows.
 export function parseEvalArguments(args: string[]): FlagReadEvalOptions {
   const rest: string[] = [];
   let casesFile: string | undefined;
   let callLimit: number | undefined;
+  let policy: FlagReadPolicyId | undefined;
+  let isolated = false;
   for (let index = 0; index < args.length; index++) {
     if (args[index] === "--cases") {
       if (casesFile !== undefined) throw new Error("--cases may only be supplied once.");
@@ -85,12 +93,20 @@ export function parseEvalArguments(args: string[]): FlagReadEvalOptions {
         throw new Error(
           `--call-limit must be an integer from ${MIN_CALL_LIMIT} to ${MAX_CALL_LIMIT}.`,
         );
+    } else if (args[index] === "--policy") {
+      if (policy !== undefined) throw new Error("--policy may only be supplied once.");
+      policy = flagReadPolicyById(args[++index] ?? "").id;
+    } else if (args[index] === "--isolated") {
+      if (isolated) throw new Error("--isolated may only be supplied once.");
+      isolated = true;
     } else rest.push(args[index]);
   }
   return {
     ...parseArguments(rest),
     ...(casesFile ? { casesFile } : {}),
     ...(callLimit === undefined ? {} : { callLimit }),
+    ...(policy ? { policy } : {}),
+    ...(isolated ? { isolated } : {}),
   };
 }
 
@@ -105,6 +121,23 @@ function field<T>(
   const found = (value as Record<string, unknown> | null)?.[key];
   if (typeof found !== type) throw new Error(`${where}: "${key}" must be a ${type}.`);
   return found as T;
+}
+
+const timeOf = (value: unknown, where: string) => {
+  const time = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  if (Number.isNaN(time))
+    throw new Error(`${where}: an operation time must be an ISO 8601 string.`);
+  return new Date(time).toISOString();
+};
+
+function operationsOf(value: unknown, where: string): FixtureOperation[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${where}: "operations" must be an array.`);
+  return value.map((operation) => ({
+    toolCallId: field<string>(operation, "toolCallId", "string", where),
+    sentAt: timeOf(operation.sentAt, where),
+    returnedAt: operation.returnedAt === null ? null : timeOf(operation.returnedAt, where),
+  }));
 }
 
 // An exported production run becomes a case: all its sessions go into one snapshot, so one
@@ -129,6 +162,9 @@ export function casesFromExport(raw: unknown): FlagReadCase[] {
         turns: (messages as Message[]).filter((message) => message.role === "assistant").length,
         busy: false,
         messages: messages as Message[],
+        ...(session.operations === undefined
+          ? {}
+          : { operations: operationsOf(session.operations, id) }),
       };
     });
     if (!snapshot.some((session) => session.id === targetSessionId))
@@ -139,16 +175,39 @@ export function casesFromExport(raw: unknown): FlagReadCase[] {
       readOccurred: field<boolean>(entry, "readOccurred", "boolean", id),
       observableSufficiency: "sufficient",
       targetSessionId,
+      ...(entry.isolated === undefined
+        ? {}
+        : { isolated: field<boolean>(entry, "isolated", "boolean", id) }),
       snapshot: { gameId: id, revision: 1, sessions: snapshot, commands: [] },
     };
   });
 }
 
+// A file in the corpus format of evals/flag-read/cases.json goes through the corpus converter.
 export function loadCasesFile(path: string) {
-  return casesFromExport(JSON.parse(readFileSync(path, "utf8")));
+  const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const corpus = Array.isArray(raw)
+    ? raw.map((item) => Boolean((item as { hiddenSprites?: unknown } | null)?.hiddenSprites))
+    : [];
+  if (corpus.some(Boolean) && !corpus.every(Boolean))
+    throw new Error("A cases file holds either corpus cases or exported runs, not both.");
+  return corpus.length && corpus[0]
+    ? (raw as CorpusCase[]).map((item) => toFlagReadCase(item, "presumption"))
+    : casesFromExport(raw);
 }
 
-export function buildDryRunReport(cases: readonly FlagReadCase[] = flagReadCases) {
+// The cases an evaluation runs. A case's own isolation rule wins over --isolated.
+export function selectCases(options: FlagReadEvalOptions): FlagReadCase[] {
+  return (options.casesFile ? loadCasesFile(options.casesFile) : flagReadCases).map((item) => ({
+    ...item,
+    isolated: item.isolated ?? options.isolated === true,
+  }));
+}
+
+export function buildDryRunReport(
+  cases: readonly FlagReadCase[] = flagReadCases,
+  policyId?: FlagReadPolicyId,
+) {
   return {
     mode: "dry-run" as const,
     evaluationPerformed: false,
@@ -161,6 +220,8 @@ export function buildDryRunReport(cases: readonly FlagReadCase[] = flagReadCases
       scenario: item.scenario,
       sessions: item.snapshot.sessions.length,
       readOccurred: item.readOccurred,
+      isolated: item.isolated === true,
+      policyId: policyForCase(item, policyId).id,
       observableSufficiency: item.observableSufficiency,
       ...(item.observableEquivalenceGroup
         ? { observableEquivalenceGroup: item.observableEquivalenceGroup }
@@ -170,24 +231,26 @@ export function buildDryRunReport(cases: readonly FlagReadCase[] = flagReadCases
 }
 
 export function buildFlagReadReport(entries: readonly FlagReadEntry[], budgetMicrodollars: number) {
-  const first = entries[0];
-  if (
-    entries.some(
-      (entry) =>
-        entry.searchStrategy !== first.searchStrategy ||
-        entry.monitorVersion !== first.monitorVersion ||
-        entry.promptHash !== first.promptHash,
-    )
-  )
-    throw new Error("Evaluation entries have inconsistent investigator policy metadata.");
-  const policy =
-    first?.searchStrategy && first.monitorVersion && first.promptHash
-      ? {
-          searchStrategy: first.searchStrategy,
-          monitorVersion: first.monitorVersion,
-          promptHash: first.promptHash,
-        }
-      : null;
+  const policies = [
+    ...new Map(
+      entries.flatMap((entry) =>
+        entry.policyId && entry.monitorVersion && entry.promptHash
+          ? [
+              [
+                `${entry.policyId}:${entry.promptHash}`,
+                {
+                  policyId: entry.policyId,
+                  monitorVersion: entry.monitorVersion,
+                  promptHash: entry.promptHash,
+                },
+              ] as const,
+            ]
+          : [],
+      ),
+    ).values(),
+  ];
+  // One policy for a file whose cases share a rule; a file mixing isolated and other cases lists each.
+  const policy = policies.length === 1 ? policies[0] : null;
   const outcomes = (items: readonly FlagReadEntry[]) => ({
     cases: items.length,
     hiddenReads: items.filter((item) => item.readOccurred).length,
@@ -210,6 +273,7 @@ export function buildFlagReadReport(entries: readonly FlagReadEntry[], budgetMic
   return {
     mode: "live" as const,
     policy,
+    policies,
     budgetMicrodollars,
     limitations: [FIXTURE_LIMITATION, COMPLETION_NOTE],
     totals: {
@@ -247,19 +311,20 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   const options = parseEvalArguments(args);
   if (options.mode === "help") {
     process.stdout.write(
-      "Usage: node --import tsx scripts/flag-read-eval.ts [--cases FILE] [--call-limit N] [--dry-run | --live --budget-usd AMOUNT]\n",
+      "Usage: node --import tsx scripts/flag-read-eval.ts [--cases FILE] [--call-limit N] [--isolated] [--policy v14|v15-shared|v15-unknown] [--dry-run | --live --budget-usd AMOUNT]\n",
     );
     return;
   }
-  const cases = options.casesFile ? loadCasesFile(options.casesFile) : flagReadCases;
+  const cases = selectCases(options);
   if (options.mode === "dry-run") {
-    process.stdout.write(`${JSON.stringify(buildDryRunReport(cases), null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(buildDryRunReport(cases, options.policy), null, 2)}\n`);
     return;
   }
   const config: LiveEvaluationConfig = validateLiveConfig(options, env);
   const { runFlagReadLiveEvaluation } = await import("./flag-read-eval-live");
   const entries = await runFlagReadLiveEvaluation(config, cases, undefined, {
     callLimit: options.callLimit,
+    policyId: options.policy,
   });
   process.stdout.write(
     `${JSON.stringify(buildFlagReadReport(entries, config.budgetMicrodollars), null, 2)}\n`,

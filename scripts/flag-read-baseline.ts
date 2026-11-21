@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toFlagReadCase, scoreCorpusEntries, type CorpusCase } from "./flag-read-corpus";
 import type { FlagReadEntry } from "./flag-read-eval";
-import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
+import { flagReadPolicyById } from "../lib/flag-read-policy";
 import { INVESTIGATOR_MODEL } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { baselineSources } from "./flag-read-baseline-files";
@@ -16,7 +16,9 @@ import {
 type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-export type BaselineStrategy = "closed-world-presumption";
+// The corpus converter puts a case's other sessions into a second run of the same owner, so the
+// baseline measures the policy of a run without isolation.
+export type BaselinePolicyId = "v15-unknown";
 export type BaselineSplit = "dev" | "test";
 
 export function parseBaselineSplit(value: string): BaselineSplit {
@@ -24,9 +26,9 @@ export function parseBaselineSplit(value: string): BaselineSplit {
   throw new Error("Baseline split must be dev or test.");
 }
 
-export function parseBaselineStrategy(value: string): BaselineStrategy {
-  if (value === "closed-world-presumption") return value;
-  throw new Error("Baseline strategy must be closed-world-presumption.");
+export function parseBaselinePolicy(value: string): BaselinePolicyId {
+  if (value === "v15-unknown") return value;
+  throw new Error("Baseline policy must be v15-unknown.");
 }
 
 export function selectBaseline(cases: readonly SplitCase[], split: BaselineSplit = "dev") {
@@ -61,10 +63,10 @@ export function selectBaseline(cases: readonly SplitCase[], split: BaselineSplit
 export function buildSchedule(
   corpusText: string,
   sources: Record<string, string>,
-  strategy: BaselineStrategy = "closed-world-presumption",
+  policyId: BaselinePolicyId = "v15-unknown",
   split: BaselineSplit = "dev",
 ) {
-  const policy = resolveFlagReadPolicy(parseBaselineStrategy(strategy));
+  const policy = flagReadPolicyById(parseBaselinePolicy(policyId));
   const selected = selectBaseline(JSON.parse(corpusText), split);
   const count = selected.length;
   const proposedMicrodollars = count * 125_000 + 1_000_000;
@@ -80,7 +82,7 @@ export function buildSchedule(
         .map(([path, text]) => [path, hash(text)]),
     ),
     policy: {
-      strategy,
+      policyId,
       monitorVersion: policy.monitorVersion,
       promptHash: policy.promptHash,
       investigatorModel: INVESTIGATOR_MODEL,
@@ -165,13 +167,13 @@ export function summarizeBaseline(
   const split = parseBaselineSplit(schedule.split ?? "dev");
   const selected = selectBaseline(JSON.parse(corpusText), split);
   if (
-    JSON.stringify(buildSchedule(corpusText, {}, schedule.policy.strategy, split).cases) !==
+    JSON.stringify(buildSchedule(corpusText, {}, schedule.policy.policyId, split).cases) !==
     JSON.stringify(schedule.cases)
   )
     throw new Error("Case selection differs from frozen schedule.");
   for (const entry of entries) {
     if (
-      entry.searchStrategy !== schedule.policy.strategy ||
+      entry.policyId !== schedule.policy.policyId ||
       entry.monitorVersion !== schedule.policy.monitorVersion ||
       entry.promptHash !== schedule.policy.promptHash ||
       (entry.investigatorModel !== undefined
@@ -213,25 +215,25 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [command, output, ...options] = process.argv.slice(2);
   if (command !== "--dry-run" || !output || output.startsWith("--"))
     throw new Error(
-      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--strategy closed-world-presumption] [--split dev|test]",
+      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--policy v15-unknown] [--split dev|test]",
     );
   const selections = new Map<string, string>();
   for (let index = 0; index < options.length; index += 2) {
     const option = options[index],
       value = options[index + 1];
     if (
-      !["--strategy", "--split"].includes(option) ||
+      !["--policy", "--split"].includes(option) ||
       selections.has(option) ||
       !value ||
       value.startsWith("--")
     )
-      throw new Error("Supply --strategy or --split once with a value.");
+      throw new Error("Supply --policy or --split once with a value.");
     selections.set(option, value);
   }
   const schedule = buildSchedule(
     readFileSync("evals/flag-read/cases.json", "utf8"),
     baselineSources(),
-    parseBaselineStrategy(selections.get("--strategy") ?? "closed-world-presumption"),
+    parseBaselinePolicy(selections.get("--policy") ?? "v15-unknown"),
     parseBaselineSplit(selections.get("--split") ?? "dev"),
   );
   writeFileSync(output, `${JSON.stringify(schedule, null, 2)}\n`, { flag: "wx" });

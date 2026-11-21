@@ -28,6 +28,7 @@ const MIGRATIONS = [
   "024-command-returned.sql",
   "025-jailbreak-catch.sql",
   "026-investigator-verdicts.sql",
+  "027-review-prompt-hash.sql",
 ];
 
 export type SeededWorkspace = {
@@ -61,6 +62,7 @@ export async function seedWorkspace(
     activeSessionId?: string;
     observations?: Record<string, readonly Message[][]>;
     observationTimes?: Record<string, readonly string[]>;
+    isolated?: boolean;
   } = {},
 ): Promise<SeededWorkspace> {
   const gameId = randomUUID();
@@ -79,9 +81,9 @@ export async function seedWorkspace(
     `INSERT INTO ctf.games
       (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,monitor_difficulty,
        token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,lease,lease_until,
-       observation_revision,monitor_settings_locked)
+       observation_revision,monitor_settings_locked,monitor_isolation)
      VALUES($1,$2,$3,'synthetic-no-secret',$4,$5,$6,'hard',500000,$7,'',true,$10,$8,
-       CASE WHEN $8::uuid IS NOT NULL THEN now()+interval '30 minutes' ELSE NULL END,$9,true)`,
+       CASE WHEN $8::uuid IS NOT NULL THEN now()+interval '30 minutes' ELSE NULL END,$9,true,$11)`,
     [
       gameId,
       ownerId,
@@ -93,6 +95,7 @@ export async function seedWorkspace(
       gameLease,
       source.revision,
       activeSession ? "active" : "ended",
+      options.isolated === true,
     ],
   );
   for (const session of source.sessions) {
@@ -115,6 +118,22 @@ export async function seedWorkspace(
       ],
     );
   }
+  for (const session of source.sessions)
+    for (const operation of session.operations ?? [])
+      await pool.query(
+        `INSERT INTO ctf.sprite_operations
+          (id,sprite_name,game_id,session_id,tool_call_id,kind,status,started_at,returned_at,completed_at)
+         VALUES(gen_random_uuid(),$1,$2,$3,$4,'command',
+           CASE WHEN $6::timestamptz IS NULL THEN 'interrupted' ELSE 'completed' END,$5,$6,$6)`,
+        [
+          `monitor-eval-${gameId}`,
+          gameId,
+          sessionIds.get(session.id),
+          operation.toolCallId,
+          operation.sentAt,
+          operation.returnedAt,
+        ],
+      );
   const { persistTranscriptEvidence } = await import("../lib/transcript-evidence");
   const evidenceClient = await pool.connect();
   try {

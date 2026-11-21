@@ -68,7 +68,6 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     rows: [game],
   } = await db.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1", [claim.gameId]);
   if (!game) throw new Error("Monitor job run is missing.");
-  const policy = flagReadPolicyForRun(game.monitor_version);
   const {
     rows: [session],
   } = await db.query<GameRow>(
@@ -85,11 +84,13 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
   });
   const current = snapshot.sessions.find((entry) => entry.id === claim.sessionId);
   if (!current) throw new Error("Committed review target is missing.");
+  // The snapshot's own isolation rule, so the prompt and the evidence manifest cannot disagree.
+  const policy = flagReadPolicyForRun(game.monitor_version, snapshot.isolated);
   const reviewId = randomUUID();
   await db.query(
     `INSERT INTO ctf.monitor_reviews
-     (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,job_id,job_claim_token)
-     VALUES($1,$2,$3,$4,'transcript',$5,$6,$7,$8)`,
+     (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,prompt_hash,job_id,job_claim_token)
+     VALUES($1,$2,$3,$4,'transcript',$5,$6,$7,$8,$9)`,
     [
       reviewId,
       claim.gameId,
@@ -97,6 +98,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
       snapshot.revision,
       INVESTIGATOR_MODEL,
       policy.monitorVersion,
+      policy.promptHash,
       claim.jobId,
       claim.claimToken,
     ],
@@ -161,7 +163,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
         includeReasoning: game.monitor_reasoning,
         deadlineAt: Date.now() + timing.deadlineMs,
       },
-      { searchStrategy: policy.searchStrategy },
+      policy,
     );
     returned.calls = investigation.calls;
     returned.forced = investigation.forcedDecision;

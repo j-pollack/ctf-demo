@@ -11,6 +11,7 @@ import type { MonitorSnapshot } from "../lib/types";
 const snapshot = (
   messages: MonitorSnapshot["sessions"][number]["messages"] = [],
   commands: MonitorSnapshot["commands"] = [],
+  operationTimes: MonitorSnapshot["operationTimes"] = [],
 ): MonitorSnapshot => ({
   gameId: "game-a",
   snapshotId: "capture-a",
@@ -18,6 +19,7 @@ const snapshot = (
   targetSessionId: "session-a",
   revision: 7,
   omittedSessions: 0,
+  isolated: false,
   sessions: [
     {
       id: "session-a",
@@ -41,6 +43,7 @@ const snapshot = (
     })),
   ],
   commands,
+  operationTimes,
 });
 
 const message = (role: "system" | "user" | "assistant" | "toolResult", text: string) =>
@@ -249,4 +252,72 @@ test("search text carries the system prompt in effect, and an empty prompt adds 
   assert.match(visibleText(instruction("go", "PLAN-A"), false)!.text, /PLAN-A[\s\S]*go/);
   assert.equal(visibleText(instruction("go", ""), false)!.text, "go");
   assert.equal(visibleText(instruction("go"), false)!.text, "go");
+});
+
+const toolResult = (toolCallId: string, text: string) =>
+  ({
+    role: "toolResult",
+    toolCallId,
+    toolName: "sprite_exec",
+    content: [{ type: "text", text }],
+    isError: false,
+    timestamp: 99,
+  }) as Message;
+
+test("T1: a tool result row carries its command's times on every chunk, and no other row does", () => {
+  const times = [
+    {
+      sessionId: "session-a",
+      toolCallId: "call-1",
+      sentAt: "2026-11-20T10:00:00.250Z",
+      returnedAt: "2026-11-20T10:00:01.500Z",
+    },
+    {
+      sessionId: "session-b",
+      toolCallId: "call-2",
+      sentAt: "2026-11-20T11:00:00.000Z",
+      returnedAt: null,
+    },
+  ];
+  const long = "y".repeat(MONITOR_MESSAGE_CHUNK_JSON_BYTES * 2);
+  const rows = evidenceMessages(
+    snapshot([], [], times),
+    "session-a",
+    [message("user", "go"), toolResult("call-1", long), toolResult("call-2", "other session")],
+    false,
+  );
+  const results = rows.filter((row) => row.role === "tool");
+  assert.ok(results.filter((row) => row.toolCallId === "call-1").length > 1);
+  for (const row of results.filter((row) => row.toolCallId === "call-1")) {
+    assert.equal(row.sentAt, "2026-11-20T10:00:00.250Z");
+    assert.equal(row.returnedAt, "2026-11-20T10:00:01.500Z");
+  }
+  // A time attaches by session and tool call id: another session's call id gives nulls.
+  const other = results.find((row) => row.toolCallId === "call-2")!;
+  assert.equal(other.sentAt, null);
+  assert.equal(other.returnedAt, null);
+  const user = rows.find((row) => row.role === "user")!;
+  assert.ok(!("sentAt" in user) && !("returnedAt" in user));
+});
+
+test("T3: a null return time stays null beside a known send time", () => {
+  const [row] = evidenceMessages(
+    snapshot(
+      [],
+      [],
+      [
+        {
+          sessionId: "session-a",
+          toolCallId: "c",
+          sentAt: "2026-11-20T10:00:00.000Z",
+          returnedAt: null,
+        },
+      ],
+    ),
+    "session-a",
+    [toolResult("c", "interrupted")],
+    false,
+  );
+  assert.equal(row.sentAt, "2026-11-20T10:00:00.000Z");
+  assert.equal(row.returnedAt, null);
 });

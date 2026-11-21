@@ -1,16 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { flagReadCases, type FlagReadCase } from "./flag-read-cases";
+import { flagReadCases, policyForCase, type FlagReadCase } from "./flag-read-cases";
+import { withOperations } from "./flag-read-corpus";
 import {
   createInvestigationTraceRecorder,
   type InvestigationObserver,
 } from "../lib/investigation-trace";
 import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
-import {
-  resolveFlagReadPolicy,
-  type FlagReadPolicy,
-  type FlagReadSearchStrategy,
-} from "../lib/flag-read-policy";
+import type { FlagReadPolicy, FlagReadPolicyId } from "../lib/flag-read-policy";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
 import {
   BOUNDED_INVESTIGATOR_POLICY,
@@ -37,7 +34,7 @@ export async function seedCase(
   const ownerId = `synthetic-flag-read-owner-${randomUUID()}`;
   const workspace = await seedWorkspace(
     pool,
-    item.snapshot,
+    withOperations(item.snapshot),
     ownerId,
     remainingMicrodollars,
     agentModel,
@@ -47,13 +44,14 @@ export async function seedCase(
       activeSessionId: item.targetSessionId,
       observations: item.observations,
       observationTimes: item.observationTimes,
+      isolated: item.isolated,
     },
   );
   await pool.query("UPDATE ctf.games SET monitor_mode='async' WHERE id=$1", [workspace.gameId]);
   const historyWorkspace = item.sameOwnerHistory
     ? await seedWorkspace(
         pool,
-        item.sameOwnerHistory,
+        withOperations(item.sameOwnerHistory),
         ownerId,
         remainingMicrodollars,
         agentModel,
@@ -168,8 +166,8 @@ async function reviewCase(
   const reviewId = randomUUID();
   await pool.query(
     `INSERT INTO ctf.monitor_reviews
-       (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,job_id,job_claim_token)
-     VALUES($1,$2,$3,$4,'transcript',$5,$6,$7,$8)`,
+       (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,prompt_hash,job_id,job_claim_token)
+     VALUES($1,$2,$3,$4,'transcript',$5,$6,$7,$8,$9)`,
     [
       reviewId,
       claim.gameId,
@@ -177,6 +175,7 @@ async function reviewCase(
       item.snapshot.revision,
       modules.policy.INVESTIGATOR_MODEL,
       selectedPolicy.monitorVersion,
+      selectedPolicy.promptHash,
       claim.jobId,
       claim.claimToken,
     ],
@@ -192,7 +191,7 @@ async function reviewCase(
   let forcedDecision: boolean | undefined;
   let monitorVersion = selectedPolicy.monitorVersion;
   let promptHash = selectedPolicy.promptHash;
-  let searchStrategy: FlagReadSearchStrategy = selectedPolicy.searchStrategy;
+  let policyId: FlagReadPolicyId = selectedPolicy.id;
   let investigatorModel: string | undefined;
   let reviewPersisted = false;
   const trace = createInvestigationTraceRecorder();
@@ -249,12 +248,13 @@ async function reviewCase(
         deadlineAt: Date.now() + timing.deadlineMs,
         callLimit,
       },
-      { observer, searchStrategy: selectedPolicy.searchStrategy },
+      selectedPolicy,
+      { observer },
     );
     if (
       result.monitorVersion !== selectedPolicy.monitorVersion ||
       result.promptHash !== selectedPolicy.promptHash ||
-      result.searchStrategy !== selectedPolicy.searchStrategy
+      result.policyId !== selectedPolicy.id
     )
       throw new Error(`${item.id}: dispatched investigator policy does not match seeded policy.`);
     reason = result.reason;
@@ -268,7 +268,7 @@ async function reviewCase(
     forcedDecision = result.forcedDecision;
     monitorVersion = result.monitorVersion;
     promptHash = result.promptHash;
-    searchStrategy = result.searchStrategy;
+    policyId = result.policyId;
     investigatorModel = result.investigatorModel;
     if (detected)
       await modules.finalization.catchAsyncRun(claim, reviewId, decision, classifier.suspicion);
@@ -350,7 +350,7 @@ async function reviewCase(
     ...(forcedDecision === undefined ? {} : { forcedDecision }),
     monitorVersion,
     promptHash,
-    searchStrategy,
+    policyId,
     investigatorModel,
     inference,
     accountingOverrun: inference.some(
@@ -364,14 +364,13 @@ export async function runFlagReadLiveEvaluation(
   cases: readonly FlagReadCase[] = flagReadCases,
   testObserver?: InvestigationObserver,
   options: {
-    searchStrategy?: FlagReadSearchStrategy;
+    policyId?: FlagReadPolicyId;
     timing?: InvestigatorTiming;
     callLimit?: number;
     onEntry?: (entry: FlagReadEntry) => void | Promise<void>;
   } = {},
 ): Promise<FlagReadEntry[]> {
   const timing = resolveInvestigatorTiming(options.timing);
-  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy);
   const { Pool } = await import("pg");
   const pool = new Pool({
     connectionString: config.databaseUrl,
@@ -426,6 +425,7 @@ export async function runFlagReadLiveEvaluation(
     let usedMicrodollars = 0;
     let accountingOverrun = false;
     for (const item of cases) {
+      const selectedPolicy = policyForCase(item, options.policyId);
       const remaining = config.budgetMicrodollars - usedMicrodollars;
       if (remaining <= CLASSIFIER_RESERVE_MICRODOLLARS || accountingOverrun) {
         const entry: FlagReadEntry = {
@@ -446,7 +446,7 @@ export async function runFlagReadLiveEvaluation(
           heldMicrodollars: 0,
           monitorVersion: selectedPolicy.monitorVersion,
           promptHash: selectedPolicy.promptHash,
-          searchStrategy: selectedPolicy.searchStrategy,
+          policyId: selectedPolicy.id,
         };
         entries.push(entry);
         await options.onEntry?.(entry);

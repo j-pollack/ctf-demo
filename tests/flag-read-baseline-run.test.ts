@@ -17,7 +17,7 @@ const schedule = buildSchedule(corpus, sources);
 
 test("held-out preflight refuses cross-split schedules and accepts the explicit frozen split", () => {
   const synthetic = syntheticHeldoutCorpus(corpus);
-  const strategy = "closed-world-presumption";
+  const strategy = "v15-unknown";
   const heldout = buildSchedule(synthetic, sources, strategy, "test");
   const dev = buildSchedule(synthetic, sources, strategy);
   assert.equal(
@@ -48,8 +48,8 @@ test("held-out CLI requires explicit split and schedule before live access", asy
     "scripts/flag-read-baseline.ts",
     "--dry-run",
     path,
-    "--strategy",
-    "closed-world-presumption",
+    "--policy",
+    "v15-unknown",
     "--split",
     "test",
   ];
@@ -62,12 +62,9 @@ test("held-out CLI requires explicit split and schedule before live access", asy
   const frozen = JSON.parse(readFileSync(path, "utf8"));
   assert.equal(frozen.cases.length, 40);
   assert.equal(frozen.split, "test");
-  await main(
-    ["--dry-run", "--strategy", "closed-world-presumption", "--split", "test", "--schedule", path],
-    {},
-  );
+  await main(["--dry-run", "--policy", "v15-unknown", "--split", "test", "--schedule", path], {});
   await assert.rejects(
-    main(["--dry-run", "--strategy", "closed-world-presumption", "--schedule", path], {}),
+    main(["--dry-run", "--policy", "v15-unknown", "--schedule", path], {}),
     /differs/,
   );
   const output = join(folder, "not-created");
@@ -79,8 +76,8 @@ test("held-out CLI requires explicit split and schedule before live access", asy
         "2",
         "--output-dir",
         output,
-        "--strategy",
-        "closed-world-presumption",
+        "--policy",
+        "v15-unknown",
         "--schedule",
         path,
       ],
@@ -93,9 +90,9 @@ test("held-out CLI requires explicit split and schedule before live access", asy
 });
 
 test("production preflight freezes its policy and sources", () => {
-  const strategy = "closed-world-presumption";
+  const strategy = "v15-unknown";
   const frozen = buildSchedule(corpus, sources, strategy);
-  assert.equal(frozen.policy.strategy, strategy);
+  assert.equal(frozen.policy.policyId, strategy);
   assert.equal(prepareBaseline(corpus, frozen, sources, 1_000_000, strategy).cases.length, 72);
   assert.throws(
     () =>
@@ -129,12 +126,12 @@ test("production preflight freezes its policy and sources", () => {
 test("CLI rejects ambiguous selection before any network or output", async (t) => {
   t.mock.method(globalThis, "fetch", () => assert.fail("unexpected network request"));
   await assert.rejects(main(["--dry-run"]), /schedule/);
-  await assert.rejects(main(["--dry-run", "--strategy", "closed-world-presumption"]), /schedule/);
-  for (const option of ["--strategy", "--schedule", "--split"]) {
+  await assert.rejects(main(["--dry-run", "--policy", "v15-unknown"]), /schedule/);
+  for (const option of ["--policy", "--schedule", "--split"]) {
     await assert.rejects(main(["--dry-run", option]), /value/);
     await assert.rejects(main(["--dry-run", option, "one", option, "two"]), /once/);
   }
-  await assert.rejects(main(["--dry-run", "--strategy", "focused"]), /strategy/);
+  await assert.rejects(main(["--dry-run", "--policy", "focused"]), /policy/);
 });
 
 test("schedule generation and dry-run are offline and preserve the committed schedule", async (t) => {
@@ -149,16 +146,16 @@ test("schedule generation and dry-run are offline and preserve the committed sch
     "scripts/flag-read-baseline.ts",
     "--dry-run",
     path,
-    "--strategy",
-    "closed-world-presumption",
+    "--policy",
+    "v15-unknown",
   ];
   const env = { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "test" as const };
   const result = spawnSync(process.execPath, args, { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
   const generated = JSON.parse(readFileSync(path, "utf8"));
-  assert.equal(generated.policy.strategy, "closed-world-presumption");
+  assert.equal(generated.policy.policyId, "v15-unknown");
   assert.deepEqual(generated.cases, JSON.parse(baselineBefore).cases);
-  await main(["--dry-run", "--strategy", "closed-world-presumption", "--schedule", path], {});
+  await main(["--dry-run", "--policy", "v15-unknown", "--schedule", path], {});
   // Drift must fail before live credential checks, output creation or provider access.
   generated.policy.promptHash = "changed";
   writeFileSync(path, JSON.stringify(generated));
@@ -171,8 +168,8 @@ test("schedule generation and dry-run are offline and preserve the committed sch
         "1",
         "--output-dir",
         output,
-        "--strategy",
-        "closed-world-presumption",
+        "--policy",
+        "v15-unknown",
         "--schedule",
         path,
       ],

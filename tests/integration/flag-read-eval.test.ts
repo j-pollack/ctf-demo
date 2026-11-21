@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { MONITOR_INITIAL_CONTEXT_MAX_BYTES } from "../../lib/monitor-evidence";
 import { AGENT_MODEL } from "../../lib/policy";
-import { resolveFlagReadPolicy } from "../../lib/flag-read-policy";
+import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import type { InvestigationObserver } from "../../lib/investigation-trace";
 import { buildFlagReadReport } from "../../scripts/flag-read-eval";
 import { runFlagReadLiveEvaluation } from "../../scripts/flag-read-eval-live";
@@ -167,12 +167,12 @@ await test(
           )?.content;
           assert.equal(
             dispatchedPrompt,
-            resolveFlagReadPolicy().systemPrompt,
+            flagReadPolicyById("v15-unknown").systemPrompt,
             "default investigator policy leads the provider request",
           );
           assert.equal(
             createHash("sha256").update(dispatchedPrompt!).digest("hex"),
-            resolveFlagReadPolicy().promptHash,
+            flagReadPolicyById("v15-unknown").promptHash,
           );
           modelVisiblePayloads.push(JSON.stringify(request.messages));
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
@@ -550,7 +550,9 @@ await test(
     assert.ok(
       entries
         .filter((entry) => entry.investigationComplete)
-        .every((entry) => entry.monitorVersion === resolveFlagReadPolicy().monitorVersion),
+        .every(
+          (entry) => entry.monitorVersion === flagReadPolicyById("v15-unknown").monitorVersion,
+        ),
     );
     assert.ok(
       entries
@@ -685,7 +687,7 @@ await test(
         [entries.map((entry) => entry.reviewId)],
       );
       assert.deepEqual(reviewModels.rows, [
-        { model: "z-ai/glm-5.3", prompt_version: resolveFlagReadPolicy().monitorVersion },
+        { model: "z-ai/glm-5.3", prompt_version: flagReadPolicyById("v15-unknown").monitorVersion },
       ]);
       const rawIds = await persisted.query<{ id: string }>(
         "SELECT id FROM ctf.games UNION SELECT id FROM ctf.agent_sessions",

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
+import { flagReadPolicyById } from "../lib/flag-read-policy";
 import {
   buildSchedule,
-  parseBaselineStrategy,
+  parseBaselinePolicy,
   selectBaseline,
   summarizeBaseline,
 } from "../scripts/flag-read-baseline";
@@ -16,7 +16,7 @@ const cases = JSON.parse(text);
 test("explicit held-out selection freezes 40 cases and scores only that split", () => {
   const corpus = syntheticHeldoutCorpus(text);
   const items = JSON.parse(corpus);
-  const schedule = buildSchedule(corpus, {}, "closed-world-presumption", "test");
+  const schedule = buildSchedule(corpus, {}, "v15-unknown", "test");
   assert.equal(schedule.split, "test");
   assert.equal(schedule.cases.length, 40);
   assert.equal(new Set(schedule.cases.map((item) => item.pair)).size, 20);
@@ -45,7 +45,6 @@ test("explicit held-out selection freezes 40 cases and scores only that split", 
     latencyMs: 1,
     settledMicrodollars: 1,
     heldMicrodollars: 0,
-    searchStrategy: "closed-world-presumption" as const,
     ...schedule.policy,
   }));
   const summary = summarizeBaseline(corpus, entries, schedule);
@@ -87,14 +86,16 @@ test("bounded schedules freeze DigitalOcean pricing and the 90-second investigat
   assert.equal(schedule.budget.pricing.investigator.outputUsdPerMillion, 2.86);
 });
 
-test("the production strategy is the default, records the production policy and its summaries enforce the saved prompt hash", () => {
-  assert.equal(parseBaselineStrategy("closed-world-presumption"), "closed-world-presumption");
-  assert.throws(() => parseBaselineStrategy("focused"), /strategy/);
-  assert.throws(() => buildSchedule(text, {}, "focused" as "closed-world-presumption"), /strategy/);
-  const production = resolveFlagReadPolicy("closed-world-presumption");
-  const schedule = buildSchedule(text, { source: "same" }, "closed-world-presumption");
+test("the v15-unknown policy is the default, records its policy and its summaries enforce the saved prompt hash", () => {
+  assert.equal(parseBaselinePolicy("v15-unknown"), "v15-unknown");
+  assert.throws(() => parseBaselinePolicy("v15-shared"), /policy/);
+  assert.throws(() => parseBaselinePolicy("closed-world-presumption"), /policy/);
+  assert.throws(() => parseBaselinePolicy("focused"), /policy/);
+  assert.throws(() => buildSchedule(text, {}, "focused" as "v15-unknown"), /policy/);
+  const production = flagReadPolicyById("v15-unknown");
+  const schedule = buildSchedule(text, { source: "same" }, "v15-unknown");
   assert.deepEqual(schedule, buildSchedule(text, { source: "same" }));
-  assert.equal(schedule.policy.strategy, "closed-world-presumption");
+  assert.equal(schedule.policy.policyId, "v15-unknown");
   assert.equal(schedule.policy.monitorVersion, production.monitorVersion);
   assert.equal(schedule.policy.promptHash, production.promptHash);
   const entry = {
@@ -106,7 +107,6 @@ test("the production strategy is the default, records the production policy and 
     latencyMs: 10,
     settledMicrodollars: 12,
     heldMicrodollars: 0,
-    searchStrategy: "closed-world-presumption" as const,
     ...schedule.policy,
   };
   assert.equal(summarizeBaseline(text, [entry], schedule).settledMicrodollars, 12);
@@ -153,7 +153,7 @@ test("missing results remain incomplete and unknown policy is rejected", () => {
     latencyMs: 20,
     settledMicrodollars: 100,
     heldMicrodollars: 50,
-    searchStrategy: "closed-world-presumption" as const,
+    policyId: schedule.policy.policyId,
     monitorVersion: schedule.policy.monitorVersion,
     promptHash: schedule.policy.promptHash,
     investigatorModel: schedule.policy.investigatorModel,

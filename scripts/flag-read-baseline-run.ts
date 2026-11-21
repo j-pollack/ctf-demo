@@ -14,11 +14,11 @@ import { fileURLToPath } from "node:url";
 import { baselineSources } from "./flag-read-baseline-files";
 import {
   buildSchedule,
-  parseBaselineStrategy,
+  parseBaselinePolicy,
   parseBaselineSplit,
   selectBaseline,
   summarizeBaseline,
-  type BaselineStrategy,
+  type BaselinePolicyId,
   type BaselineSplit,
 } from "./flag-read-baseline";
 import { toFlagReadCase } from "./flag-read-corpus";
@@ -34,10 +34,10 @@ export function prepareBaseline(
   schedule: unknown,
   sources: Record<string, string>,
   budget?: number,
-  strategy: BaselineStrategy = "closed-world-presumption",
+  policyId: BaselinePolicyId = "v15-unknown",
   split: BaselineSplit = "dev",
 ) {
-  const expected = buildSchedule(corpus, sources, strategy, split);
+  const expected = buildSchedule(corpus, sources, policyId, split);
   if (!isDeepStrictEqual(schedule, expected))
     throw new Error(
       "Frozen baseline schedule differs from corpus, sources or runtime policy. Regenerate and review it before execution.",
@@ -63,7 +63,7 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   const evaluationArgs: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const option = args[index];
-    if (!["--output-dir", "--strategy", "--schedule", "--split"].includes(option)) {
+    if (!["--output-dir", "--policy", "--schedule", "--split"].includes(option)) {
       evaluationArgs.push(args[index]);
       continue;
     }
@@ -75,13 +75,11 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   if (options.mode === "help") {
     if (selections.size) throw new Error("--help cannot be combined with other options.");
     console.log(
-      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--strategy closed-world-presumption] --schedule FILE [--split dev|test]. A schedule file is required.",
+      "Usage: node --import tsx scripts/flag-read-baseline-run.ts [--dry-run | --live --budget-usd AMOUNT --output-dir NEW_DIRECTORY] [--policy v15-unknown] --schedule FILE [--split dev|test]. A schedule file is required.",
     );
     return;
   }
-  const strategy = parseBaselineStrategy(
-    selections.get("--strategy") ?? "closed-world-presumption",
-  );
+  const policyId = parseBaselinePolicy(selections.get("--policy") ?? "v15-unknown");
   const split = parseBaselineSplit(selections.get("--split") ?? "dev");
   const schedulePath = selections.get("--schedule");
   if (!schedulePath) throw new Error("An explicit --schedule FILE is required.");
@@ -95,7 +93,7 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
     JSON.parse(scheduleText),
     baselineSources(),
     options.budgetMicrodollars,
-    strategy,
+    policyId,
     split,
   );
   if (options.mode === "dry-run") {
@@ -105,7 +103,7 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
           mode: "dry-run",
           evaluationPerformed: false,
           cases: prepared.cases.length,
-          strategy,
+          policyId,
           split,
           promptHash: prepared.schedule.policy.promptHash,
           scheduleSha256: createHash("sha256").update(scheduleText).digest("hex"),
@@ -156,7 +154,7 @@ export async function main(args = process.argv.slice(2), env: EvaluationEnvironm
   try {
     const { runFlagReadLiveEvaluation } = await import("./flag-read-eval-live");
     await runFlagReadLiveEvaluation(config, prepared.cases, undefined, {
-      searchStrategy: strategy,
+      policyId,
       onEntry: (entry) => {
         // Stop before another case if serialization or disk persistence fails.
         writeFileSync(journal, `${JSON.stringify(entry)}\n`);

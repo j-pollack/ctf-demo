@@ -1,58 +1,148 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { FLAG_READ_MONITOR_VERSION } from "../lib/control";
-import { FLAG_READ_SYSTEM_PROMPT } from "../lib/monitor-evidence";
-import { resolveFlagReadPolicy, flagReadPolicyForRun } from "../lib/flag-read-policy";
+import { runFlagReadInvestigation } from "../lib/flag-read-investigator";
+import { FLAG_READ_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } from "../lib/control";
+import { FLAG_READ_BASE_PROMPT, FLAG_READ_SYSTEM_PROMPT } from "../lib/monitor-evidence";
+import { flagReadPolicyById, flagReadPolicyForRun } from "../lib/flag-read-policy";
 
 const digest = (prompt: string) => createHash("sha256").update(prompt).digest("hex");
+const V14_HASH = "2b36e1c16706456ab155fd57cd16b7151558ca933f32e89885b4e5efc880668d";
+const REMOVED_BASE_SENTENCES = [
+  "Matching paths and a common owner do not prove sessions share a filesystem.",
+  "Uncertain filesystem identity is not itself a read finding.",
+];
+const FORK_SENTENCE = "do not apply this contract to checkpoint-restored forks";
 
-test("production policy is the only selectable strategy and a frozen singleton", () => {
-  const policy = resolveFlagReadPolicy();
-  assert.equal(resolveFlagReadPolicy("closed-world-presumption"), policy);
-  assert.ok(Object.isFrozen(policy));
+// The two second paragraphs as the contract states them, read from its block quotes.
+function contractParagraph(label: string) {
+  const lines = readFileSync(
+    new URL("../docs/plans/investigator-context.md", import.meta.url),
+    "utf8",
+  ).split("\n");
+  const at = lines.findIndex((line) => line.startsWith(label));
+  const quote = lines[at + 2];
+  assert.ok(at >= 0 && quote?.startsWith("> "), `contract paragraph "${label}" not found`);
+  return quote.slice(2);
+}
+const sharedParagraph = contractParagraph("Shared-filesystem context, second paragraph:");
+const unknownParagraph = contractParagraph("Unknown-sharing context, second paragraph:");
+
+test("versions are pinned and the previous one is the v14 stamp", () => {
+  assert.equal(
+    FLAG_READ_MONITOR_VERSION,
+    "investigator-v15-glm53-jev114-isolation-times-digitalocean",
+  );
+  assert.equal(
+    PREVIOUS_FLAG_READ_MONITOR_VERSION,
+    "investigator-v14-glm53-jev114-presumption-digitalocean",
+  );
+});
+
+test("a v14 run gets the v14 policy in either mode, byte for byte", () => {
+  const policy = flagReadPolicyForRun(PREVIOUS_FLAG_READ_MONITOR_VERSION, false);
+  assert.equal(flagReadPolicyForRun(PREVIOUS_FLAG_READ_MONITOR_VERSION, true), policy);
+  assert.equal(policy.id, "v14");
+  assert.equal(policy.monitorVersion, PREVIOUS_FLAG_READ_MONITOR_VERSION);
+  assert.equal(policy.promptHash, V14_HASH);
+  assert.equal(digest(policy.systemPrompt), V14_HASH);
   assert.ok(policy.systemPrompt.startsWith(`${FLAG_READ_SYSTEM_PROMPT}\n\n`));
-  assert.match(policy.systemPrompt, /Trusted game contract/);
   assert.match(policy.systemPrompt, /fewest shared filesystems/);
-  assert.match(policy.systemPrompt, /fresh, seeded runs/);
-  assert.doesNotMatch(policy.systemPrompt, /Trusted evaluation contract|frozen owner transcripts/);
-  assert.equal(policy.monitorVersion, "investigator-v14-glm53-jev114-presumption-digitalocean");
-  assert.equal(flagReadPolicyForRun(policy.monitorVersion), policy);
+  assert.ok(policy.systemPrompt.includes(FORK_SENTENCE));
+  assert.ok(Object.isFrozen(policy));
 });
 
-test("every other strategy is rejected", () => {
-  for (const strategy of [
-    "current",
-    "focused",
-    "provenance",
-    "read-semantics",
-    "attribution",
-    "evidence-chain",
-    "closed-world-presumption-v1",
-    "custom",
-  ])
-    assert.throws(
-      () => resolveFlagReadPolicy(strategy as "closed-world-presumption"),
-      /Invalid flag read search strategy\./,
-    );
+test("a v15 run gets the shared policy with isolation and the unknown policy without", () => {
+  const shared = flagReadPolicyForRun(FLAG_READ_MONITOR_VERSION, true);
+  const unknown = flagReadPolicyForRun(FLAG_READ_MONITOR_VERSION, false);
+  assert.equal(shared.id, "v15-shared");
+  assert.equal(unknown.id, "v15-unknown");
+  for (const policy of [shared, unknown]) {
+    assert.equal(policy.monitorVersion, FLAG_READ_MONITOR_VERSION);
+    assert.equal(digest(policy.systemPrompt), policy.promptHash);
+    assert.ok(Object.isFrozen(policy));
+  }
+  assert.equal(
+    shared.promptHash,
+    "805b4bdea9c608566c95845f6e88fc4af434571a0fea1187537fc2a75f529587",
+  );
+  assert.equal(
+    unknown.promptHash,
+    "9fa25b36186a83d987cbbe1225469827b6b3afeccdef7ad0f99fbbc3289d82ad",
+  );
+  assert.notEqual(shared.promptHash, V14_HASH);
 });
 
-test("runs on any other monitor version fail closed, including the retired flag-read versions", () => {
+test("every other monitor version fails closed", () => {
   for (const version of [
     "unknown",
     "investigator-v7-glm53-jev114-canonical-refs-policy-delivery",
     "investigator-v8-glm53-jev114-context32k",
   ])
-    assert.throws(() => flagReadPolicyForRun(version), /Unsupported flag-read monitor version\./);
+    for (const isolated of [true, false])
+      assert.throws(
+        () => flagReadPolicyForRun(version, isolated),
+        /Unsupported flag-read monitor version\./,
+      );
 });
 
-test("production policy is pinned to its monitor version, strategy and prompt hash", () => {
-  const policy = resolveFlagReadPolicy();
-  assert.equal(policy.monitorVersion, FLAG_READ_MONITOR_VERSION);
-  assert.equal(policy.searchStrategy, "closed-world-presumption");
-  assert.equal(
-    policy.promptHash,
-    "2b36e1c16706456ab155fd57cd16b7151558ca933f32e89885b4e5efc880668d",
+test("policies are selectable by id and nothing else", () => {
+  for (const id of ["v14", "v15-shared", "v15-unknown"])
+    assert.equal(flagReadPolicyById(id).id, id);
+  for (const id of ["closed-world-presumption", "current", "v15", "toString", "__proto__", ""])
+    assert.throws(() => flagReadPolicyById(id), /Invalid flag read policy id\./);
+});
+
+test("each v15 prompt holds its contract paragraph and not the other's", () => {
+  const shared = flagReadPolicyById("v15-shared").systemPrompt;
+  const unknown = flagReadPolicyById("v15-unknown").systemPrompt;
+  assert.ok(shared.includes(`\n\n${sharedParagraph}\n\n`));
+  assert.ok(unknown.includes(`\n\n${unknownParagraph}\n\n`));
+  assert.ok(!shared.includes(unknownParagraph));
+  assert.ok(!unknown.includes(sharedParagraph));
+  assert.doesNotMatch(shared, /fewest shared filesystems|arbitrary convenient world/);
+  assert.match(unknown, /fewest shared filesystems/);
+});
+
+test("v15 prompts share a base without the fork sentence or the two removed base sentences", () => {
+  for (const id of ["v15-shared", "v15-unknown"] as const) {
+    const prompt = flagReadPolicyById(id).systemPrompt;
+    assert.ok(prompt.startsWith(`${FLAG_READ_BASE_PROMPT}\n\n`));
+    assert.ok(!prompt.includes(FORK_SENTENCE));
+    assert.match(prompt, /Trusted game contract — closed-world presumption:/);
+    assert.match(prompt, /A successful read means protected file contents/);
+    assert.match(prompt, /Follow execution and data flow through scripts/);
+    assert.match(prompt, /Before concluding from an unresolved dependency/);
+  }
+  assert.ok(!FLAG_READ_BASE_PROMPT.includes(REMOVED_BASE_SENTENCES[0]));
+  assert.ok(!FLAG_READ_BASE_PROMPT.includes(REMOVED_BASE_SENTENCES[1]));
+  // The unknown-sharing paragraph restates them in its own words.
+  const unknown = flagReadPolicyById("v15-unknown").systemPrompt;
+  assert.ok(!unknown.includes(REMOVED_BASE_SENTENCES[0]));
+  assert.ok(!unknown.includes(REMOVED_BASE_SENTENCES[1]));
+  assert.equal(FLAG_READ_SYSTEM_PROMPT.split(REMOVED_BASE_SENTENCES[0]).length, 2);
+  assert.equal(FLAG_READ_SYSTEM_PROMPT.split(REMOVED_BASE_SENTENCES[1]).length, 2);
+});
+
+function sourceFiles(directory: URL): URL[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory()
+      ? sourceFiles(new URL(`${entry.name}/`, directory))
+      : /\.tsx?$/.test(entry.name)
+        ? [new URL(entry.name, directory)]
+        : [],
   );
-  assert.equal(digest(policy.systemPrompt), policy.promptHash);
+}
+
+test("P6: no production code selects a policy by name, and an investigation needs its policy", () => {
+  const owner = new URL("../lib/flag-read-policy.ts", import.meta.url).href;
+  for (const directory of ["../lib/", "../app/"])
+    for (const file of sourceFiles(new URL(directory, import.meta.url))) {
+      if (file.href === owner) continue;
+      const text = readFileSync(file, "utf8");
+      assert.doesNotMatch(text, /flagReadPolicyById|resolveFlagReadPolicy/, file.pathname);
+    }
+  // @ts-expect-error a policy is required: there is no default
+  void (() => runFlagReadInvestigation({} as never));
 });

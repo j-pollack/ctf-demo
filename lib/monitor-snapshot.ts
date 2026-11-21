@@ -108,12 +108,13 @@ export async function captureCommittedMonitorSnapshot(input: {
     const current = sessions[0];
     if (!current) throw new Error("Evidence target session is unavailable.");
     const { rows: manifestRows } = await client.query<{
+      gameId: string;
       sessionId: string;
       version: string;
       reasoningVisible: boolean;
       observedAt: Date;
     }>(
-      `SELECT s.id AS "sessionId",head.version::text AS version,
+      `SELECT g.id AS "gameId",s.id AS "sessionId",head.version::text AS version,
          g.monitor_reasoning AS "reasoningVisible",head.observed_at AS "observedAt"
        FROM ctf.agent_sessions s JOIN ctf.games g ON g.id=s.game_id
          JOIN LATERAL (
@@ -163,6 +164,29 @@ export async function captureCommittedMonitorSnapshot(input: {
           }))
       : [];
     const commands: MonitorSnapshot["commands"] = [...legacyCommands, ...operationCommands];
+    const operationTimes: NonNullable<MonitorSnapshot["operationTimes"]> = operationTable[0]
+      ?.available
+      ? (
+          await client.query<{
+            sessionId: string;
+            toolCallId: string;
+            sentAt: Date;
+            returnedAt: Date | null;
+          }>(
+            `SELECT o.session_id AS "sessionId",o.tool_call_id AS "toolCallId",
+               o.started_at AS "sentAt",o.returned_at AS "returnedAt"
+             FROM unnest($1::uuid[],$2::uuid[]) AS evidence(game_id,session_id)
+               JOIN ctf.sprite_operations o ON o.game_id=evidence.game_id AND o.session_id=evidence.session_id
+             WHERE o.kind='command' AND o.tool_call_id IS NOT NULL ORDER BY o.session_id,o.started_at,o.id`,
+            [manifestRows.map((row) => row.gameId), manifestRows.map((row) => row.sessionId)],
+          )
+        ).rows.map((row) => ({
+          sessionId: row.sessionId,
+          toolCallId: row.toolCallId,
+          sentAt: row.sentAt.toISOString(),
+          returnedAt: row.returnedAt?.toISOString() ?? null,
+        }))
+      : [];
     const snapshot: MonitorSnapshot = {
       snapshotId: randomUUID(),
       gameId,
@@ -170,6 +194,7 @@ export async function captureCommittedMonitorSnapshot(input: {
       targetSessionId: sessionId,
       revision: Number(target.revision),
       omittedSessions: 0,
+      isolated: target.isolated,
       searchableHistorySessions: manifestRows.length - 1,
       sessions: [
         {
@@ -179,6 +204,7 @@ export async function captureCommittedMonitorSnapshot(input: {
         },
       ],
       commands,
+      operationTimes,
       evidenceManifest: manifestRows.map((row) => ({
         sessionId: row.sessionId,
         version: row.sessionId === sessionId ? targetVersion : Number(row.version),

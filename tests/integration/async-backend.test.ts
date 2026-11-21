@@ -56,6 +56,7 @@ await test(
       "migrations/024-command-returned.sql",
       "migrations/025-jailbreak-catch.sql",
       "migrations/026-investigator-verdicts.sql",
+      "migrations/027-review-prompt-hash.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);

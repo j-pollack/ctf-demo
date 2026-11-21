@@ -2,7 +2,11 @@ import type { TypesafeAnswer, TypesafeQuestion } from "./typesafe";
 
 // Stamped on every run; bump the flag-read version when classifier calibration or investigator
 // policy/model changes.
-export const FLAG_READ_MONITOR_VERSION = "investigator-v14-glm53-jev114-presumption-digitalocean";
+export const FLAG_READ_MONITOR_VERSION =
+  "investigator-v15-glm53-jev114-isolation-times-digitalocean";
+// Runs stamped before the v15 deploy keep this stamp and are reviewed under their own prompt.
+export const PREVIOUS_FLAG_READ_MONITOR_VERSION =
+  "investigator-v14-glm53-jev114-presumption-digitalocean";
 export const ASYNC_MONITOR_VERSION = FLAG_READ_MONITOR_VERSION;
 
 // Jev bills $0.042 per million input tokens, or 0.042 microdollars per token.

@@ -17,6 +17,9 @@ export type MonitorEvidenceMessage = {
   toolCalls?: { id: string; name: string }[];
   toolCallId?: string;
   toolError?: boolean;
+  // Tool results only: server times, ISO 8601 UTC, of the request that ran the command. Null when unknown.
+  sentAt?: string | null;
+  returnedAt?: string | null;
   commandStates?: {
     toolCallId: string;
     state: "proposed" | "admitted" | "completed" | "interrupted" | "unknown";
@@ -130,6 +133,11 @@ export function evidenceMessages(
   messages: readonly Message[],
   includeReasoning: boolean,
 ): MonitorEvidenceMessage[] {
+  const times = new Map(
+    (snapshot.operationTimes ?? [])
+      .filter((time) => time.sessionId === sessionId)
+      .map((time) => [time.toolCallId, time]),
+  );
   return messages.flatMap((message, index) => {
     const rendered = visibleText(message, includeReasoning);
     if (!rendered) return [];
@@ -148,6 +156,12 @@ export function evidenceMessages(
       ...(rendered.toolCalls ? { toolCalls: rendered.toolCalls } : {}),
       ...(rendered.toolCallId ? { toolCallId: rendered.toolCallId } : {}),
       ...(rendered.toolError === undefined ? {} : { toolError: rendered.toolError }),
+      ...(rendered.toolCallId
+        ? {
+            sentAt: times.get(rendered.toolCallId)?.sentAt ?? null,
+            returnedAt: times.get(rendered.toolCallId)?.returnedAt ?? null,
+          }
+        : {}),
       ...(() => {
         const calls = rendered.toolCalls?.filter((call) => call.name === "sprite_exec") ?? [];
         const callIds = calls.map((call) => ({ id: call.id, proposed: true }));
