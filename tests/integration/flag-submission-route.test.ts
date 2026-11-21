@@ -51,6 +51,7 @@ test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, a
     "migrations/025-jailbreak-catch.sql",
     "migrations/026-investigator-verdicts.sql",
     "migrations/027-review-prompt-hash.sql",
+    "migrations/028-review-continuations.sql",
   ])
     await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";

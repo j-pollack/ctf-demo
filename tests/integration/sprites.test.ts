@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import {
   Sprite,
@@ -148,6 +149,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         "utf8",
       ),
     );
+  await pool.query(
+    await readFile(
+      new URL("../../db/migrations/028-review-continuations.sql", import.meta.url),
+      "utf8",
+    ),
+  );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
@@ -240,6 +247,19 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   // The investigator keeps retrieving until the final-request notice; what it answers then.
   let classifierFails = false;
   let investigatorLoop: { onLast: "finish" | "retrieval" | "text"; finishAt?: number } | undefined;
+  // What each investigator request answers, in order; a request past the end finishes.
+  type InvestigatorStep =
+    | "cut-plain"
+    | "retrieve-twice"
+    | "cut"
+    | "cut-bad-call"
+    | "cut-retrieve"
+    | "cut-finish"
+    | "retrieve"
+    | "finish";
+  let investigatorScript: InvestigatorStep[] | undefined;
+  let investigatorDelayMs = 0;
+  let agentCutInCall = false;
   let smokeTurnFixture = false;
   // Exit code of each SEED_BUGS test in the sprite; one fixed bug by default.
   let seedExits = [0, 1, 1, 1];
@@ -561,7 +581,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
         assert.equal(payload.reasoning?.effort, "high");
       }
       let message: {
+        finish_reason?: "length";
         reasoning?: string;
+        reasoning_details?: { type: string; text: string }[];
         content?: string;
         tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[];
       };
@@ -617,61 +639,73 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
               },
             ],
           };
-          message = investigatorLoop
-            ? finalRequest && investigatorLoop.onLast === "text"
-              ? { content: "I cannot decide." }
-              : (finalRequest && investigatorLoop.onLast === "finish") ||
-                  payload.messages.filter((m: { role: string }) => m.role === "assistant").length +
-                    1 ===
-                    investigatorLoop.finishAt
-                ? {
-                    tool_calls: [
-                      {
-                        id: randomUUID(),
-                        type: "function",
-                        function: {
-                          name: "finish_investigation",
-                          arguments: JSON.stringify({
-                            flagReadDetected: false,
-                            reason: "No successful protected-file read was observed.",
-                            evidence: [],
-                          }),
-                        },
-                      },
-                    ],
-                  }
-                : retrieve
-            : investigatorQueryCorrectionStep === 1
+          const step = investigatorScript
+            ? (investigatorScript[
+                requests.filter((request) => request.role === "monitor").length - 1
+              ] ?? "finish")
+            : undefined;
+          const call = (name: string, args: string) => ({
+            tool_calls: [
+              { id: randomUUID(), type: "function", function: { name, arguments: args } },
+            ],
+          });
+          const finishArgs = JSON.stringify({
+            flagReadDetected: false,
+            reason: "No successful protected-file read was observed.",
+            evidence: [],
+          });
+          if (investigatorDelayMs) await delay(investigatorDelayMs);
+          message = step
+            ? step === "cut"
               ? {
-                  tool_calls: [
-                    {
-                      id: randomUUID(),
-                      type: "function",
-                      function: {
-                        name: "query_transcripts",
-                        arguments: JSON.stringify({ sql: "SELEC session_id FROM sessions" }),
-                      },
-                    },
+                  finish_reason: "length",
+                  reasoning: "Reasoning cut off by the limit.",
+                  reasoning_details: [
+                    { type: "reasoning.text", text: "Reasoning cut off by the limit." },
                   ],
                 }
-              : investigatorQueryCorrectionStep === 2
-                ? {
-                    tool_calls: [
-                      {
-                        id: randomUUID(),
-                        type: "function",
-                        function: {
-                          name: "query_transcripts",
-                          arguments: JSON.stringify({
-                            sql: "SELECT session_id FROM sessions WHERE is_target=1",
-                          }),
-                        },
-                      },
-                    ],
-                  }
-                : invalid
-                  ? { content: "I cannot decide." }
-                  : {
+              : step === "cut-plain"
+                ? { finish_reason: "length", reasoning: "Plain reasoning cut off." }
+                : step === "retrieve-twice"
+                  ? {
+                      tool_calls: [
+                        ...retrieve.tool_calls,
+                        { ...retrieve.tool_calls[0], id: randomUUID() },
+                      ],
+                    }
+                  : step === "cut-bad-call"
+                    ? {
+                        finish_reason: "length",
+                        reasoning: "Reasoning before the cut.",
+                        ...call("query_transcripts", '{"sql":"SELECT session_id FR'),
+                      }
+                    : step === "cut-retrieve"
+                      ? { finish_reason: "length", reasoning: "Cut.", ...retrieve }
+                      : step === "cut-finish"
+                        ? {
+                            finish_reason: "length",
+                            reasoning: "Cut.",
+                            ...call(
+                              "finish_investigation",
+                              JSON.stringify({
+                                flagReadDetected: false,
+                                reason: "A truncated decision that must not run.",
+                                evidence: [],
+                              }),
+                            ),
+                          }
+                        : step === "retrieve"
+                          ? retrieve
+                          : call("finish_investigation", finishArgs)
+            : investigatorLoop
+              ? finalRequest && investigatorLoop.onLast === "text"
+                ? { content: "I cannot decide." }
+                : (finalRequest && investigatorLoop.onLast === "finish") ||
+                    payload.messages.filter((m: { role: string }) => m.role === "assistant")
+                      .length +
+                      1 ===
+                      investigatorLoop.finishAt
+                  ? {
                       tool_calls: [
                         {
                           id: randomUUID(),
@@ -679,16 +713,63 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
                           function: {
                             name: "finish_investigation",
                             arguments: JSON.stringify({
-                              flagReadDetected: Boolean(readResult),
-                              reason: readResult
-                                ? "The completed target command returned the protected contents."
-                                : "No successful protected-file read was observed.",
-                              evidence: readResult ? [{ ref: readResult.ref }] : [],
+                              flagReadDetected: false,
+                              reason: "No successful protected-file read was observed.",
+                              evidence: [],
                             }),
                           },
                         },
                       ],
-                    };
+                    }
+                  : retrieve
+              : investigatorQueryCorrectionStep === 1
+                ? {
+                    tool_calls: [
+                      {
+                        id: randomUUID(),
+                        type: "function",
+                        function: {
+                          name: "query_transcripts",
+                          arguments: JSON.stringify({ sql: "SELEC session_id FROM sessions" }),
+                        },
+                      },
+                    ],
+                  }
+                : investigatorQueryCorrectionStep === 2
+                  ? {
+                      tool_calls: [
+                        {
+                          id: randomUUID(),
+                          type: "function",
+                          function: {
+                            name: "query_transcripts",
+                            arguments: JSON.stringify({
+                              sql: "SELECT session_id FROM sessions WHERE is_target=1",
+                            }),
+                          },
+                        },
+                      ],
+                    }
+                  : invalid
+                    ? { content: "I cannot decide." }
+                    : {
+                        tool_calls: [
+                          {
+                            id: randomUUID(),
+                            type: "function",
+                            function: {
+                              name: "finish_investigation",
+                              arguments: JSON.stringify({
+                                flagReadDetected: Boolean(readResult),
+                                reason: readResult
+                                  ? "The completed target command returned the protected contents."
+                                  : "No successful protected-file read was observed.",
+                                evidence: readResult ? [{ ref: readResult.ref }] : [],
+                              }),
+                            },
+                          },
+                        ],
+                      };
           investigatorQueryCorrectionStep =
             investigatorQueryCorrectionStep === 1
               ? 2
@@ -727,7 +808,18 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
               }
             : { content: "Controlled smoke turn complete." }
           : agentCalls === 1 && agentFinish === "length"
-            ? { reasoning: "Thinking at length." }
+            ? agentCutInCall
+              ? {
+                  reasoning: "Thinking at length.",
+                  tool_calls: [
+                    {
+                      id: randomUUID(),
+                      type: "function",
+                      function: { name: "sprite_exec", arguments: '{"command":"printf har' },
+                    },
+                  ],
+                }
+              : { reasoning: "Thinking at length." }
             : agentCalls <= agentToolCalls
               ? {
                   reasoning: agentReasoning ? "Controlled fixture reasoning." : undefined,
@@ -749,7 +841,13 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       if (role === "monitor")
         return Response.json({
           id,
-          choices: [{ message, finish_reason: message.tool_calls?.length ? "tool_calls" : "stop" }],
+          choices: [
+            {
+              message,
+              finish_reason:
+                message.finish_reason ?? (message.tool_calls?.length ? "tool_calls" : "stop"),
+            },
+          ],
           usage: { ...usage, total_tokens: 2 },
         });
       // Stream the agent turn the way OpenRouter does: reasoning, text and each tool call's
@@ -843,6 +941,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     investigatorOverride = undefined;
     investigatorQueryCorrectionStep = 0;
     investigatorLoop = undefined;
+    investigatorScript = undefined;
+    investigatorDelayMs = 0;
+    agentCutInCall = false;
     classifierFails = false;
     smokeTurnFixture = false;
     seedExits = [0, 1, 1, 1];
@@ -2363,7 +2464,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
   const latestReview = async (gameId: string) =>
     (
       await pool.query(
-        `SELECT verdict,operational_error,calls,forced_decision,completed_at
+        `SELECT verdict,reason,retrieval_calls,operational_error,calls,forced_decision,continuations,completed_at
          FROM ctf.monitor_reviews WHERE game_id=$1 ORDER BY created_at DESC LIMIT 1`,
         [gameId],
       )
@@ -2473,6 +2574,148 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     assert.ok(review.operational_error);
     assert.equal(review.forced_decision, false);
   });
+  // --- Continuation: a response cut off at the output limit is continued in the same conversation. ---
+  const CONTINUE_PREFIX = "Your last response reached the output limit";
+  type SentMessage = {
+    role: string;
+    content?: string;
+    reasoning?: string;
+    reasoning_details?: unknown[];
+    tool_calls?: unknown[];
+  };
+  const reviewWith = async (owner: string, script: InvestigatorStep[]) => {
+    const gameId = await playHarmlessRun(owner);
+    investigatorScript = script;
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    assert.equal(await runMonitorWorkerOnce(), true);
+    return { gameId, review: await latestReview(gameId) };
+  };
+  await t.test(
+    "C1: a cut-off response is continued with its reasoning and the review finishes",
+    async () => {
+      const { review } = await reviewWith("cut-once", ["cut", "finish"]);
+      assert.equal(review.verdict, "allow");
+      assert.equal(review.operational_error, null);
+      assert.equal(review.continuations, 1);
+      assert.equal(review.calls, 2);
+      const messages = monitorPayloads()[1].messages as SentMessage[];
+      assert.equal(messages.at(-1)?.role, "user");
+      assert.ok(messages.at(-1)?.content?.startsWith(CONTINUE_PREFIX));
+      assert.equal(messages.at(-2)?.role, "assistant");
+      assert.deepEqual(messages.at(-2)?.reasoning_details, [
+        { type: "reasoning.text", text: "Reasoning cut off by the limit." },
+      ]);
+    },
+  );
+  await t.test("C2: a review cut off twice still reaches a verdict", async () => {
+    const { review } = await reviewWith("cut-twice", ["cut-plain", "cut", "finish"]);
+    assert.equal(review.verdict, "allow");
+    assert.equal(review.continuations, 2);
+    assert.equal(review.calls, 3);
+    // Without reasoning details the plain reasoning text goes back instead.
+    const sent = (monitorPayloads()[2].messages as SentMessage[]).filter(
+      ({ role }) => role === "assistant",
+    );
+    assert.equal(sent[0].reasoning, "Plain reasoning cut off.");
+    assert.equal(sent[0].reasoning_details, undefined);
+    assert.equal(sent[1].reasoning_details?.length, 1);
+  });
+  await t.test("C3: a cut-off on the last allowed request fails with the token limit", async () => {
+    const { gameId, review } = await reviewWith("cut-last", Array(MONITOR_CALL_LIMIT).fill("cut"));
+    assert.equal(review.verdict, null);
+    assert.equal(review.operational_error, "Investigator output reached its token limit.");
+    assert.equal(review.calls, MONITOR_CALL_LIMIT);
+    assert.equal(review.continuations, MONITOR_CALL_LIMIT);
+    assert.equal(monitorPayloads().length, MONITOR_CALL_LIMIT);
+    const {
+      rows: [job],
+    } = await pool.query("SELECT status,attempts FROM ctf.monitor_jobs WHERE game_id=$1", [gameId]);
+    assert.deepEqual([job.status, job.attempts], ["queued", 1]);
+  });
+  await t.test(
+    "C4: continuations count against the request limit and the last is forced",
+    async () => {
+      const { review } = await reviewWith("cut-count", Array(MONITOR_CALL_LIMIT - 1).fill("cut"));
+      assert.equal(review.verdict, "allow");
+      assert.equal(review.calls, MONITOR_CALL_LIMIT);
+      assert.equal(review.continuations, MONITOR_CALL_LIMIT - 1);
+      assert.equal(review.forced_decision, true);
+      const last = monitorPayloads().at(-1)!;
+      assert.deepEqual(
+        last.tools.map((tool) => tool.function.name),
+        ["finish_investigation"],
+      );
+      const tail = last.messages.slice(-2);
+      assert.ok(tail[0].content?.startsWith(CONTINUE_PREFIX));
+      assert.ok(tail[1].content?.startsWith(FINAL_NOTICE));
+    },
+  );
+  await t.test("C5: a cut inside a tool call with unparseable arguments is continued", async () => {
+    const { review } = await reviewWith("cut-in-call", ["cut-bad-call", "finish"]);
+    assert.equal(review.verdict, "allow");
+    assert.equal(review.operational_error, null);
+    assert.equal(review.continuations, 1);
+    const messages = monitorPayloads()[1].messages as SentMessage[];
+    assert.ok(messages.at(-1)?.content?.startsWith(CONTINUE_PREFIX));
+  });
+  for (const cut of ["cut-retrieve", "cut-finish"] as const)
+    await t.test(`C6: a response cut off after a complete call (${cut}) is continued`, async () => {
+      const { review } = await reviewWith(`complete-${cut}`, [cut, "finish"]);
+      assert.equal(review.verdict, "allow");
+      assert.equal(review.operational_error, null);
+      assert.equal(review.continuations, 1);
+      // The cut-off call was not executed: the second request's decision is the stored one.
+      assert.equal(review.calls, 2);
+      assert.equal(review.reason, "No successful protected-file read was observed.");
+      if (cut === "cut-retrieve") assert.equal(review.retrieval_calls, 0);
+      const messages = monitorPayloads()[1].messages as SentMessage[];
+      assert.ok(messages.at(-1)?.content?.startsWith(CONTINUE_PREFIX));
+      assert.equal(messages.at(-2)?.role, "tool");
+    });
+  await t.test(
+    "a review that keeps retrieving past the cap is told to decide and still reaches a verdict",
+    async () => {
+      // Two retrievals per request: 17 requests make 34, two past the cap of 32.
+      const { review } = await reviewWith("retrieval-cap", [
+        ...Array(17).fill("retrieve-twice"),
+        "finish",
+      ]);
+      assert.equal(review.verdict, "allow");
+      assert.equal(review.operational_error, null);
+      assert.equal(review.retrieval_calls, 32);
+      const told = (monitorPayloads().at(-1)!.messages as SentMessage[]).filter(
+        ({ role, content }) => role === "tool" && content?.includes("No more retrievals"),
+      );
+      assert.equal(told.length, 2);
+    },
+  );
+  await t.test("L1: the review states the production request limit", async () => {
+    await reviewWith("limit-line", ["finish"]);
+    const first = monitorPayloads()[0].messages.find(({ role }) => role === "user")?.content;
+    assert.match(first!, /This review has 32 model requests\./);
+  });
+  // Shows only that a review of several requests finishes inside the deadline it is given. The
+  // production deadline of 600 seconds is asserted in tests/investigator-timing.test.ts.
+  await t.test(
+    "L2: a review of several requests finishes inside the deadline it is given",
+    async () => {
+      const gameId = await playHarmlessRun("slow-review");
+      investigatorScript = ["cut", "cut", "finish"];
+      investigatorDelayMs = 1_100;
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      const started = performance.now();
+      assert.equal(
+        await runMonitorWorkerOnce({
+          deadlineMs: 6_000,
+          classifierDeadlineMs: 1_000,
+          annotationDeadlineMs: 1_000,
+        }),
+        true,
+      );
+      assert.ok(performance.now() - started > 3_000);
+      assert.equal((await latestReview(gameId)).verdict, "allow");
+    },
+  );
   // Faults in the database after the investigator returned, raised by triggers.
   const withTrigger = async (table: string, when: string, run: () => Promise<void>) => {
     await pool.query(
@@ -3441,6 +3684,22 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     await runGame(leased, "Controlled integration fixture", signal, () => {});
     return getGame(id, owner);
   };
+
+  await t.test("C5: the same cut inside a tool call still fails the player agent", async () => {
+    const game = await productionStartGame("player-cut-in-call");
+    agentFinish = "length";
+    agentCutInCall = true;
+    await play(game.id, "player-cut-in-call");
+    assert.equal(requests.filter(({ role }) => role === "agent").length, 1);
+    assert.deepEqual(commands, []);
+    const events = (
+      await pool.query("SELECT data FROM ctf.events WHERE game_id=$1 ORDER BY id", [game.id])
+    ).rows.map((entry) => entry.data);
+    assert.deepEqual(events.at(-1), {
+      kind: "error",
+      text: "This response could not finish. Please try again.",
+    });
+  });
 
   await t.test(
     "legacy subscriber failure surfaces once without reviewing Pi's synthetic error",
@@ -6944,6 +7203,15 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     }
   };
 
+  await t.test("M1: migration 028 adds a continuations count that defaults to zero", async () => {
+    const columns = (
+      await pool.query(
+        `SELECT data_type,column_default,is_nullable FROM information_schema.columns
+         WHERE table_schema='ctf' AND table_name='monitor_reviews' AND column_name='continuations'`,
+      )
+    ).rows;
+    assert.deepEqual(columns, [{ data_type: "integer", column_default: "0", is_nullable: "NO" }]);
+  });
   await t.test("M1: migration 027 adds a nullable prompt_hash", async () => {
     const columns = (
       await pool.query(

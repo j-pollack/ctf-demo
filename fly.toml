@@ -2,9 +2,9 @@
 # ctf-monitor-worker-preview (see .github/workflows/preview-worker.yml).
 app = "ctf-monitor-worker"
 primary_region = "sjc"
-# The worker finishes its current review on SIGTERM; a review's claim lasts 90 seconds.
+# The worker finishes its current review on SIGTERM; 300 seconds is Fly's maximum wait before it is killed.
 kill_signal = "SIGTERM"
-kill_timeout = "100s"
+kill_timeout = "300s"
 
 [build]
 dockerfile = "Dockerfile"

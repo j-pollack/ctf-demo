@@ -9,7 +9,12 @@ import {
 import { captureCommittedMonitorSnapshot } from "./monitor-snapshot";
 import { classifyMonitorTarget } from "./monitor-classifier";
 import { annotateToolCalls } from "./tool-annotations";
-import { INVESTIGATOR_MODEL, investigatorCallsOf, investigatorForcedOf } from "./monitor-review";
+import {
+  INVESTIGATOR_MODEL,
+  investigatorCallsOf,
+  investigatorContinuationsOf,
+  investigatorForcedOf,
+} from "./monitor-review";
 import { detectorToReviewDecision, runFlagReadInvestigation } from "./flag-read-investigator";
 import {
   completeMonitorReview,
@@ -43,7 +48,7 @@ import {
 async function recordFailedReview(
   reviewId: string,
   error: unknown,
-  returned: { calls: number | null; forced: boolean },
+  returned: { calls: number | null; forced: boolean; continuations: number },
 ) {
   try {
     await failMonitorReview(
@@ -51,6 +56,7 @@ async function recordFailedReview(
       diagnosticText(error instanceof Error ? error.message : error) ?? "Review failed.",
       investigatorCallsOf(error) ?? returned.calls,
       investigatorForcedOf(error) || returned.forced,
+      Math.max(investigatorContinuationsOf(error), returned.continuations),
     );
   } catch (recordError) {
     console.error(
@@ -104,7 +110,11 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     ],
   );
   // What the investigation reported once it returned, for a failure that comes after it.
-  const returned: { calls: number | null; forced: boolean } = { calls: null, forced: false };
+  const returned: { calls: number | null; forced: boolean; continuations: number } = {
+    calls: null,
+    forced: false,
+    continuations: 0,
+  };
   try {
     const signal = AbortSignal.timeout(Math.max(1, claim.claimUntil.getTime() - Date.now() - 1000));
     const executionGeneration = Number(game.execution_generation);
@@ -167,6 +177,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     );
     returned.calls = investigation.calls;
     returned.forced = investigation.forcedDecision;
+    returned.continuations = investigation.continuations;
     const result = detectorToReviewDecision(investigation);
     if (result.verdict === "block") {
       await catchAsyncRun(claim, reviewId, result, classifier.suspicion);

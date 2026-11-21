@@ -189,7 +189,7 @@ await test(
               "SELECT extract(epoch FROM (claim_until-updated_at))*1000 AS duration FROM ctf.monitor_jobs WHERE game_id=$1 AND status='reviewing'",
               [workspace.gameId],
             );
-            assert.equal(Number(claim.duration), 120_000);
+            assert.equal(Number(claim.duration), 660_000);
             const { rows: holds } = await pool.query(
               "SELECT cost_ceiling FROM ctf.inference WHERE model='typesafe/jev-1.14' AND settled_at IS NULL",
             );
@@ -493,12 +493,15 @@ await test(
     if (["deadline", "classifier-timeout"].includes(mode)) assert.ok(game.held > 0);
     else assert.equal(game.held, 0);
     if (mode === "overrun") assert.match(job.reason, /reserved|allowance/i);
+    if (mode === "deadline" && realTiming) assert.match(job.reason, /timeout/i);
     const expectedMs =
       mode === "slow-success"
         ? fastMonitorDelays.successMs
         : mode === "deadline"
           ? realTiming
-            ? 90_000
+            ? // A provider that hangs: the 90 second per-request timeout in infer fires before
+              // the 600 second review deadline, which this suite cannot reach.
+              90_000
             : fastMonitorTiming.deadlineMs
           : mode === "classifier-timeout"
             ? fastMonitorTiming.classifierDeadlineMs

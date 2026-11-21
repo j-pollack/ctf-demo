@@ -141,7 +141,7 @@ await test(
                     "SELECT extract(epoch FROM (claim_until-updated_at))*1000 AS duration FROM ctf.monitor_jobs WHERE status='reviewing'",
                   );
                   assert.equal(claims.length, 1);
-                  assert.equal(Number(claims[0].duration), 120_000);
+                  assert.equal(Number(claims[0].duration), 660_000);
                 }
                 if (mode === "classifier-timeout") {
                   assert.ok(init?.signal);
@@ -377,10 +377,10 @@ await test(
           });
           assert.ok(summary);
           assert.deepEqual(failures, []);
-          const { INVESTIGATOR_EFFORT, MONITOR_CALL_LIMIT } =
-            await import("../../lib/investigator-driver");
+          const { INVESTIGATOR_EFFORT } = await import("../../lib/investigator-driver");
           const schedule = JSON.parse(readFileSync(join(output, "schedule.json"), "utf8"));
-          assert.equal(schedule.execution.investigatorCallsPerCase, MONITOR_CALL_LIMIT);
+          // The frozen schedule keeps the limit it was measured under.
+          assert.equal(schedule.execution.investigatorCallsPerCase, 12);
           assert.equal(schedule.execution.investigatorOutputTokensPerCall, MONITOR_OUTPUT_TOKENS);
           assert.equal(schedule.execution.investigatorDeadlineMs, 90_000);
           assert.equal(schedule.policy.effort, INVESTIGATOR_EFFORT);

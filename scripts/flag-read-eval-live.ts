@@ -189,6 +189,7 @@ async function reviewCase(
   let retrievalCalls: number | undefined;
   let calls: number | undefined;
   let forcedDecision: boolean | undefined;
+  let continuations = 0;
   let monitorVersion = selectedPolicy.monitorVersion;
   let promptHash = selectedPolicy.promptHash;
   let policyId: FlagReadPolicyId = selectedPolicy.id;
@@ -266,6 +267,7 @@ async function reviewCase(
     retrievalCalls = result.retrievalCalls;
     calls = result.calls;
     forcedDecision = result.forcedDecision;
+    continuations = result.continuations;
     monitorVersion = result.monitorVersion;
     promptHash = result.promptHash;
     policyId = result.policyId;
@@ -283,10 +285,12 @@ async function reviewCase(
       modules.inference.diagnosticText(error instanceof Error ? error.message : String(error)) ??
       "Flag-read investigation failed.";
     calls = modules.review.investigatorCallsOf(error) ?? undefined;
+    continuations = modules.review.investigatorContinuationsOf(error);
     await modules.sessions.completeMonitorReview(reviewId, {
       operationalError,
       latencyMs: Date.now() - started,
       calls,
+      continuations,
     });
     await modules.jobs.finishMonitorJob(claim, { kind: "error", reason: operationalError });
     // This one-pass evaluator records the retryable error and keeps later cases independent.
@@ -347,6 +351,7 @@ async function reviewCase(
     retrievedReferences,
     retrievalCalls,
     calls,
+    continuations,
     ...(forcedDecision === undefined ? {} : { forcedDecision }),
     monitorVersion,
     promptHash,

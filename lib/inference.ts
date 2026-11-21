@@ -179,6 +179,8 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
     if (message.role === "user") return { role: "user", content: textOf(message) };
     const calls = message.content.filter((part) => part.type === "toolCall");
     const thinking = message.content.find((part) => part.type === "thinking");
+    // A cut-off turn whose only tool call was dropped has nothing to send; the provider rejects null.
+    const emptyCutOff = message.stopReason === "length" && !calls.length && !thinking;
     const switched = targetModel !== undefined && message.model !== targetModel;
     const details = thinking?.thinkingSignature ? JSON.parse(thinking.thinkingSignature) : [];
     return {
@@ -188,7 +190,7 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
           ? [`Previous model reasoning:\n${thinking.thinking}`, textOf(message)]
               .filter(Boolean)
               .join("\n\n")
-          : textOf(message) || null,
+          : textOf(message) || (emptyCutOff ? "" : null),
       ...(calls.length
         ? {
             tool_calls: calls.map((call) => ({
@@ -545,6 +547,8 @@ export async function infer(
       try {
         args = JSON.parse(call.function.arguments);
       } catch {
+        // A monitor response cut off inside a tool call is continued, so the call is dropped.
+        if (role === "monitor" && choice.finish_reason === "length") continue;
         throw new Error("The agent proposed an invalid tool call.");
       }
       content.push({

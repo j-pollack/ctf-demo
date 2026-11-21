@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { MONITOR_INITIAL_CONTEXT_MAX_BYTES, MONITOR_OUTPUT_TOKENS } from "../lib/monitor-evidence";
 import {
   BOUNDED_INVESTIGATOR_POLICY,
+  MONITOR_CALL_LIMIT,
   resolveInvestigatorTiming,
 } from "../lib/investigator-evaluation-policy";
 
 test("omitted timing preserves the production investigation, classifier and claim limits", () => {
   assert.deepEqual(resolveInvestigatorTiming(), {
-    deadlineMs: 90_000,
+    deadlineMs: 600_000,
     classifierDeadlineMs: 15_000,
     annotationDeadlineMs: 10_000,
   });
-  assert.equal(BOUNDED_INVESTIGATOR_POLICY.claimMs, 120_000);
+  assert.equal(BOUNDED_INVESTIGATOR_POLICY.claimMs, 660_000);
+  assert.ok(BOUNDED_INVESTIGATOR_POLICY.claimMs > BOUNDED_INVESTIGATOR_POLICY.deadlineMs);
+  assert.equal(MONITOR_CALL_LIMIT, 32);
+  assert.equal(MONITOR_INITIAL_CONTEXT_MAX_BYTES, 512_000);
+  assert.equal(MONITOR_OUTPUT_TOKENS, 8_192);
   assert.ok(Object.isFrozen(BOUNDED_INVESTIGATOR_POLICY));
 });
 

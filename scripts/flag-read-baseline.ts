@@ -8,10 +8,12 @@ import { flagReadPolicyById } from "../lib/flag-read-policy";
 import { INVESTIGATOR_MODEL } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { baselineSources } from "./flag-read-baseline-files";
-import {
-  BOUNDED_INVESTIGATOR_POLICY,
-  MONITOR_CALL_LIMIT,
-} from "../lib/investigator-evaluation-policy";
+import { BOUNDED_INVESTIGATOR_POLICY } from "../lib/investigator-evaluation-policy";
+
+// The frozen schedule keeps the limits it was measured under, not today's production limits.
+const MONITOR_CALL_LIMIT = 12;
+const INVESTIGATOR_DEADLINE_MS = 90_000;
+const REVIEW_CLAIM_MS = 120_000;
 
 type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -99,9 +101,9 @@ export function buildSchedule(
       classifierCallsPerCase: 1,
       classifierCallsMaximum: count,
       investigatorOutputTokensPerCall: 8192,
-      investigatorDeadlineMs: BOUNDED_INVESTIGATOR_POLICY.deadlineMs,
+      investigatorDeadlineMs: INVESTIGATOR_DEADLINE_MS,
       classifierDeadlineMs: BOUNDED_INVESTIGATOR_POLICY.classifierDeadlineMs,
-      reviewClaimMs: BOUNDED_INVESTIGATOR_POLICY.claimMs,
+      reviewClaimMs: REVIEW_CLAIM_MS,
       provider: {
         only: [BOUNDED_INVESTIGATOR_POLICY.providerEndpoint],
         allow_fallbacks: false,

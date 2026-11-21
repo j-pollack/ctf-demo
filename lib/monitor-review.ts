@@ -11,6 +11,7 @@ export {
   runInvestigatorDriver,
   investigatorCallsOf,
   investigatorForcedOf,
+  investigatorContinuationsOf,
   budgetLine,
 } from "./investigator-driver";
 

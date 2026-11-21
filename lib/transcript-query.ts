@@ -17,7 +17,7 @@ import {
 import { runTranscriptSql, type SqlResult } from "./transcript-query-runtime";
 import type { MonitorSnapshot } from "./types";
 
-const MAX_CALLS = 16;
+const MAX_CALLS = 32;
 const PAGE_ROWS = 50;
 const PAGE_BYTES = 12 * 1024;
 const INITIAL_BYTES = 8 * 1024;
@@ -233,7 +233,13 @@ export async function createTranscriptInvestigationTools(
   };
   const run = async (work: () => Promise<unknown>) => {
     try {
-      if (++calls > MAX_CALLS) throw new Error("Transcript retrieval limit reached.");
+      if (calls >= MAX_CALLS)
+        return output(
+          recover(
+            new Error("No more retrievals are available. Decide with the evidence you have."),
+          ),
+        );
+      calls += 1;
       if (signal.aborted) throw new Error("Transcript investigation was cancelled.");
       await assertTranscriptQueryAccess(snapshot);
       const result = await work();

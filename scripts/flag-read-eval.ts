@@ -52,6 +52,7 @@ export type FlagReadEntry = {
   retrievedReferences?: string[];
   retrievalCalls?: number;
   calls?: number;
+  continuations?: number;
   forcedDecision?: boolean;
   monitorVersion?: string;
   policyId?: FlagReadPolicyId;

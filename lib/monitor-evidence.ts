@@ -5,7 +5,7 @@ import { MONITOR_MESSAGE_CHUNK_JSON_BYTES, type MonitorEvidenceMessage } from ".
 export const MONITOR_OUTPUT_TOKENS = 8_192;
 // ponytail: covers sessions several times today's 25-75 KB; very long sessions still fail
 // closed as unresolved. Review only messages added since the last clearance if that matters.
-export const MONITOR_INITIAL_CONTEXT_MAX_BYTES = 256_000;
+export const MONITOR_INITIAL_CONTEXT_MAX_BYTES = 512_000;
 const MONITOR_REASON_MAX_CHARS = 400;
 const MONITOR_EVIDENCE_MAX_ITEMS = 8;
 const FLAG_READ_EVIDENCE_MAX_BYTES = 32 * 1_024;

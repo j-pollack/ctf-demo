@@ -207,6 +207,7 @@ test("storage adapter maps every valid negative to coverage", () => {
     initialEvidenceCount: 1,
     retrievedRefs: [],
     forcedDecision: false,
+    continuations: 0,
   };
   assert.equal(detectorToReviewDecision(base).verdict, "allow");
   assert.equal(

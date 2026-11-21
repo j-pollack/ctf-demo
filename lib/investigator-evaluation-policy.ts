@@ -2,18 +2,18 @@
 // Rates are USD per million tokens from the
 // DigitalOcean endpoint snapshot (2026-11-13), not model-wide minimum prices.
 export const BOUNDED_INVESTIGATOR_POLICY = Object.freeze({
-  deadlineMs: 90_000,
+  deadlineMs: 600_000,
   classifierDeadlineMs: 15_000,
   annotationDeadlineMs: 10_000,
-  claimMs: 120_000,
+  claimMs: 660_000,
   providerEndpoint: "digitalocean",
   inputUsdPerMillion: 0.91,
   outputUsdPerMillion: 2.86,
 });
 
-// Model requests one review may make. Set from the live measurement of played long chains:
-// at 8 two of twelve reviews were forced to decide, at 12 and 16 none.
-export const MONITOR_CALL_LIMIT = 12;
+// Model requests one review may make. A guard against a model that loops, set well above what a
+// review needs: a response cut off at the output limit is continued and spends a request.
+export const MONITOR_CALL_LIMIT = 32;
 // The range a review's optional `callLimit` input may take.
 // Two, because the final-request notice is added by a hook that runs after the first request.
 export const MIN_CALL_LIMIT = 2;

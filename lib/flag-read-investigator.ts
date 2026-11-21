@@ -34,6 +34,7 @@ export type FlagReadInvestigationResult = FlagReadDecision & {
   initialEvidenceCount: number;
   retrievedRefs: string[];
   forcedDecision: boolean;
+  continuations: number;
 };
 
 function contextLimit(
@@ -138,6 +139,7 @@ export async function runFlagReadInvestigation(
     initialEvidenceCount: result.initialEvidenceCount,
     retrievedRefs: result.retrievedRefs,
     forcedDecision: result.forcedDecision,
+    continuations: result.continuations,
   };
 }
 
@@ -152,6 +154,7 @@ export function detectorToReviewDecision(
     | "initialEvidenceCount"
     | "retrievedRefs"
     | "forcedDecision"
+    | "continuations"
   > {
   return {
     verdict: result.flagReadDetected ? "block" : "allow",
@@ -163,5 +166,6 @@ export function detectorToReviewDecision(
     initialEvidenceCount: result.initialEvidenceCount,
     retrievedRefs: result.retrievedRefs,
     forcedDecision: result.forcedDecision,
+    continuations: result.continuations,
   };
 }

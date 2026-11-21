@@ -5,7 +5,12 @@ import {
   type AssistantMessage,
   type Model,
 } from "@earendil-works/pi-ai";
-import { Agent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
+import {
+  Agent,
+  type AgentMessage,
+  type AgentTool,
+  type StreamFn,
+} from "@earendil-works/pi-agent-core";
 import { INVESTIGATOR_MODEL } from "./policy";
 import {
   agentStream,
@@ -27,7 +32,10 @@ export { MONITOR_CALL_LIMIT };
 export { INVESTIGATOR_MODEL } from "./policy";
 export const INVESTIGATOR_EFFORT = "high" as const;
 
-const failureFacts = new WeakMap<object, { calls: number; forced: boolean }>();
+const failureFacts = new WeakMap<
+  object,
+  { calls: number; forced: boolean; continuations: number }
+>();
 
 // The number of investigator requests a failed review made, or null when none could have been.
 export function investigatorCallsOf(error: unknown): number | null {
@@ -43,10 +51,21 @@ export function investigatorForcedOf(error: unknown): boolean {
     : false;
 }
 
-function withCalls(error: unknown, calls: number, forced: boolean) {
-  if (typeof error === "object" && error !== null) failureFacts.set(error, { calls, forced });
+// How many of a failed review's responses were cut off at the output limit.
+export function investigatorContinuationsOf(error: unknown): number {
+  return typeof error === "object" && error !== null
+    ? (failureFacts.get(error)?.continuations ?? 0)
+    : 0;
+}
+
+function withCalls(error: unknown, calls: number, forced: boolean, continuations: number) {
+  if (typeof error === "object" && error !== null)
+    failureFacts.set(error, { calls, forced, continuations });
   return error;
 }
+
+const CONTINUE_MESSAGE =
+  "Your last response reached the output limit and was cut off. Continue from where you stopped.";
 
 export function budgetLine(limit: number) {
   return `This review has ${limit} model request${limit === 1 ? "" : "s"}. Retrieval calls spend them. Decide on the last one.`;
@@ -161,6 +180,7 @@ export async function runInvestigatorDriver<T>(
   initialEvidenceCount: number;
   retrievedRefs: string[];
   forcedDecision: boolean;
+  continuations: number;
 }> {
   const limit = input.callLimit ?? MONITOR_CALL_LIMIT;
   if (!Number.isInteger(limit) || limit < MIN_CALL_LIMIT || limit > MAX_CALL_LIMIT)
@@ -202,6 +222,9 @@ export async function runInvestigatorDriver<T>(
   let setup: InvestigatorSetup | undefined;
   let calls = 0;
   let forcedDecision = false;
+  let continuations = 0;
+  // Tool calls in a cut-off response. The agent library reports each as a tool error unexecuted.
+  const cutOffCalls = new Set<string>();
   const recordFailure = (error: unknown) => {
     failure ??= error;
     investigator?.abort();
@@ -227,6 +250,7 @@ export async function runInvestigatorDriver<T>(
       initialEvidenceCount: setup.initialEvidenceCount,
       retrievedRefs: setup.retrievedRefs(),
       forcedDecision,
+      continuations,
     };
   };
   const disposeSignal = () => investigator?.abort();
@@ -274,18 +298,37 @@ export async function runInvestigatorDriver<T>(
       },
     });
     investigator = createInvestigatorAgent(model, setup.tools, streamFn, config.systemPrompt);
-    // The hook runs before every request after the first. When the next one is the last the
-    // limit allows, it adds the notice and offers only the finish tool.
-    investigator.prepareNextTurnWithContext = ({ context }) => {
+    // A response that ends at the output limit is continued, and the loop does not end on it.
+    investigator.finishTurn = ({ message }) =>
+      message.role === "assistant" &&
+      message.stopReason === "length" &&
+      !decision &&
+      !failure &&
+      calls < limit
+        ? { action: "continue" }
+        : undefined;
+    // The hook runs before every request after the first. It tells the model to continue after a
+    // cut-off response. When the next request is the last the limit allows, it then adds the
+    // notice and offers only the finish tool.
+    investigator.prepareNextTurnWithContext = ({ context, message }) => {
       // A valid finish does not end the loop by itself, so a settled review is left alone.
-      if (decision || failure || calls !== limit - 1) return undefined;
-      forcedDecision = true;
-      return {
-        context: { ...context, tools: [setup!.finishTool] },
-        messages: [
-          { role: "user", content: finalRequestNotice(config.finishName), timestamp: Date.now() },
-        ],
-      };
+      if (decision || failure) return undefined;
+      const cutOff = message.role === "assistant" && message.stopReason === "length";
+      const last = calls === limit - 1;
+      if (!cutOff && !last) return undefined;
+      const messages: AgentMessage[] = [];
+      if (cutOff) messages.push({ role: "user", content: CONTINUE_MESSAGE, timestamp: Date.now() });
+      if (last) {
+        forcedDecision = true;
+        messages.push({
+          role: "user",
+          content: finalRequestNotice(config.finishName),
+          timestamp: Date.now(),
+        });
+      }
+      return last
+        ? { context: { ...context, tools: [setup!.finishTool] }, messages }
+        : { messages };
     };
     investigator.subscribe((event) => {
       if (event.type === "message_end" && event.message.role === "assistant")
@@ -295,8 +338,13 @@ export async function runInvestigatorDriver<T>(
         event.type === "message_end" &&
         event.message.role === "assistant" &&
         event.message.stopReason === "length"
-      )
-        recordFailure(new Error("Investigator output reached its token limit."));
+      ) {
+        continuations += 1;
+        for (const part of event.message.content)
+          if (part.type === "toolCall") cutOffCalls.add(part.id);
+        if (calls >= limit)
+          recordFailure(new Error("Investigator output reached its token limit."));
+      }
       if (
         event.type === "tool_execution_end" &&
         config.observer &&
@@ -309,10 +357,12 @@ export async function runInvestigatorDriver<T>(
           isError: event.isError,
           content: event.result.content,
         });
+      // The id is forgotten once its tool result arrives, so a reused id is not skipped later.
+      const cutOff = event.type === "tool_execution_end" && cutOffCalls.delete(event.toolCallId);
       if (event.type === "tool_execution_end" && event.toolName === config.finishName) {
         const rawArgs = toolArguments.get(event.toolCallId);
         toolArguments.delete(event.toolCallId);
-        if (event.isError && !failure) {
+        if (event.isError && !failure && !cutOff) {
           const output = event.result as { content?: { type: string; text?: string }[] };
           const schemaRejected =
             rawArgs !== undefined &&
@@ -343,7 +393,7 @@ export async function runInvestigatorDriver<T>(
               part.type === "text" &&
               part.text?.startsWith(`Validation failed for tool "${event.toolName}":`),
           );
-        if (event.isError && !decision && !schemaRejected)
+        if (event.isError && !decision && !schemaRejected && !cutOff)
           recordFailure(new Error(`Investigator tool failed: ${event.toolName}.`));
       }
       if (event.type === "agent_end" && !decision && !failure)
@@ -365,20 +415,22 @@ export async function runInvestigatorDriver<T>(
     return result();
   } catch (error) {
     if (decision && !failure) return result();
-    if (failure) throw withCalls(failure, calls, forcedDecision);
+    if (failure) throw withCalls(failure, calls, forcedDecision, continuations);
     if (input.signal.aborted)
       throw withCalls(
         new Error("Investigator review was cancelled.", { cause: error }),
         calls,
         forcedDecision,
+        continuations,
       );
     if (deadlineSignal.aborted)
       throw withCalls(
         new Error("Investigator review deadline expired.", { cause: error }),
         calls,
         forcedDecision,
+        continuations,
       );
-    throw withCalls(error, calls, forcedDecision);
+    throw withCalls(error, calls, forcedDecision, continuations);
   } finally {
     signal.removeEventListener("abort", disposeSignal);
     await setup?.dispose?.();

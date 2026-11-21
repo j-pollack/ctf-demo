@@ -38,6 +38,7 @@ try {
     "025-jailbreak-catch.sql",
     "026-investigator-verdicts.sql",
     "027-review-prompt-hash.sql",
+    "028-review-continuations.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),
