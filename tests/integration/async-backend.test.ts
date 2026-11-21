@@ -2380,12 +2380,14 @@ await test(
       });
 
       await t.test(
-        "W7: the annotation pass and the classifier are admitted one microdollar under the allowance",
+        "W7: the annotation pass and the classifier are admitted under the allowance",
         async () => {
           reset();
           const id = await seedRun(three);
           await commit(id, transcript(three));
-          await seedMonitorSpend(id, 1_499_999);
+          // The two charge in either order, and the first to settle counts against the second. A
+          // margin wider than both keeps the order out of the result. The exact boundary is A3-4.
+          await seedMonitorSpend(id, 1_400_000);
           await work(id);
           assert.equal((await rows(id)).length, 3, "the annotation pass was admitted");
           assert.equal(
