@@ -144,4 +144,23 @@ await test("the admin-set game rules are stored, validated and authorised", asyn
       jailbreakCatch: true,
     });
   });
+
+  await t.test("W6: no admin read returns the idle worker's registration", async () => {
+    const { agentModelSetting, currentAgentModel } = await import("../../lib/agent-model");
+    const token = "worker-wake-token-that-must-not-leak";
+    await pool.query(`INSERT INTO ctf.settings(key,value) VALUES('worker_wake',$1)`, [
+      JSON.stringify({ url: "http://127.0.0.1:1/wake", instance: null, token }),
+    ]);
+    const reads = [
+      await gameRuleSettings(),
+      await currentGameRules(),
+      await agentModelSetting(),
+      await currentAgentModel(),
+    ];
+    for (const read of reads) {
+      assert.ok(!JSON.stringify(read ?? null).includes(token));
+      assert.ok(!JSON.stringify(read ?? null).includes("worker_wake"));
+    }
+    await pool.query("DELETE FROM ctf.settings WHERE key='worker_wake'");
+  });
 });

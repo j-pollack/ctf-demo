@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { transaction } from "./games";
 import { hasSecret } from "./policy";
+import { wakeWorker } from "./worker-wake";
 
 const digest = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
@@ -171,5 +172,6 @@ export async function promoteHttpSubmission(
     "INSERT INTO ctf.finalization_jobs(game_id) VALUES($1) ON CONFLICT (game_id) DO NOTHING",
     [gameId],
   );
+  void wakeWorker();
   return "promoted";
 }

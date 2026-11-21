@@ -6,6 +6,7 @@ import { GameError, hasSecret } from "./policy";
 import { diagnosticText } from "./inference";
 import { assertMonitorJobClaim, MAX_REQUEUES, type MonitorJobClaim } from "./monitor-jobs";
 import { persistTranscriptEvidence } from "./transcript-evidence";
+import { wakeWorker } from "./worker-wake";
 import { JAILBREAK_CATCH_TEXT, REFUSED_PLACEHOLDER_TEXT } from "./text-screen";
 import { UNVERIFIED_SUBMISSION_STATUS, type GameEvent } from "./types";
 
@@ -223,6 +224,7 @@ export async function beginAsyncSubmission(input: {
       [input.gameId, input.sessionId, input.value, correct],
     );
     await client.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [input.gameId]);
+    void wakeWorker();
     return { correct };
   });
 }

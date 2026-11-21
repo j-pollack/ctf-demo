@@ -107,6 +107,7 @@ jobs:
             xargs -r -n1 flyctl machine destroy --force --app "$FLY_APP"
           flyctl machine run "registry.fly.io/$FLY_APP:$SHA" --app "$FLY_APP" --region sjc \
             --vm-size shared-cpu-1x --vm-memory 1024 --restart on-failure \
+            --port 443:8080/tcp:http:tls \
             --metadata preview_branch="$BRANCH" --env DATABASE_URL_UNPOOLED="$DATABASE_URL_UNPOOLED" \
             --detach
 
