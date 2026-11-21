@@ -18,7 +18,7 @@ export type MonitorJobClaim = {
 const CLAIM_MS = 90_000;
 const RETRY_DELAYS_MS = [1_000, 5_000, 20_000] as const;
 // How long an unresolved job of a submitted run waits before each requeue.
-const REQUEUE_DELAYS_MINUTES = [15, 60, 240, 720] as const;
+const REQUEUE_DELAYS_MINUTES = [1, 5, 15, 40] as const;
 export const MAX_REQUEUES = REQUEUE_DELAYS_MINUTES.length;
 // A session is reviewed when its agent turn ends: a live lease means the turn is in progress.
 // A subquery, not a join, so FOR UPDATE SKIP LOCKED never locks or skips a runner's session row.

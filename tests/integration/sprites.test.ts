@@ -2594,7 +2594,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       [(await jobOf(gameId)).status, (await jobOf(gameId)).requeues],
       ["unresolved", 0],
     );
-    for (const [index, minutes] of [15, 60, 240, 720].entries()) {
+    for (const [index, minutes] of [1, 5, 15, 40].entries()) {
       await age(gameId, minutes - 1);
       await requeueUnresolvedMonitorJobs();
       assert.deepEqual(

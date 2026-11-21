@@ -62,7 +62,7 @@ When a review attempt throws after its `ctf.monitor_reviews` row was inserted, t
 
 Both steps below run in the worker's iteration, in `finalizeOneRun` next to `markExpiredFinalizationClaims`. The worker runs about once a second. `cleanup()` is not used for this: it runs from a daily cron, at run start and at the end of a response, so on a quiet day it would run once.
 
-**Requeue.** One conditional `UPDATE` requeues a monitor job that is `unresolved`, belongs to an async run in `finalizing`, has `requeues` below 4, and whose `updated_at` is older than the delay for its count: 15 minutes, 1 hour, 4 hours, 12 hours. `ctf.monitor_jobs.requeues integer NOT NULL DEFAULT 0`, migration 026. The update sets `status` to `queued`, `attempts` to 0, `next_attempt_at` and `updated_at` to now, and adds 1 to `requeues`. The run's `state_revision` is bumped. The statement locks the run row before the job row, the order `finishMonitorJob` uses. Two workers running it at once requeue a job once. Both paths into `unresolved` set `updated_at`, so the delay is measured from the last failure. Each requeue gives the job three more attempts.
+**Requeue.** One conditional `UPDATE` requeues a monitor job that is `unresolved`, belongs to an async run in `finalizing`, has `requeues` below 4, and whose `updated_at` is older than the delay for its count: 1 minute, 5 minutes, 15 minutes, 40 minutes. The user shortened the schedule from 15 minutes, 1 hour, 4 hours and 12 hours on 2026-11-21, because 17 hours was too long to leave a submitted run without a result. `ctf.monitor_jobs.requeues integer NOT NULL DEFAULT 0`, migration 026. The update sets `status` to `queued`, `attempts` to 0, `next_attempt_at` and `updated_at` to now, and adds 1 to `requeues`. The run's `state_revision` is bumped. The statement locks the run row before the job row, the order `finishMonitorJob` uses. Two workers running it at once requeue a job once. Both paths into `unresolved` set `updated_at`, so the delay is measured from the last failure. Each requeue gives the job three more attempts.
 
 **Resolution.** `resolveUnverifiedRun` in `lib/async-finalization.ts` ends a run that cannot get a verdict. It locks the run row and acts only if the run is async and in `finalizing` and one of these holds:
 
@@ -83,10 +83,10 @@ Bounds:
 
 - A requeued review is admitted while the run's settled spend is below its budget plus $1.00, because the run is in `finalizing`. See the section above. Past that, or at the daily cap, it is refused, the attempt fails, and the schedule continues to its end.
 - At most 15 attempts are made for one job after a submission: 3 at first and 3 after each of 4 requeues.
-- The last failed attempt comes about 17 hours and 15 minutes after the first. The run is resolved within a second of it.
+- The last failed attempt comes about 61 minutes after the first. The run is resolved within a second of it.
 - A requeued review that returns `allow` finalizes through the existing path, which still waits for `reserved_microdollars` to be 0, for open Sprite operations to finish and for leases to expire. A hold that never reconciles is released by the existing 24 hour rule. Those waits are outside this contract.
 
-The run already stuck on production has an `unresolved` job older than 15 minutes, a matching monitor version, nothing reserved and no open Sprite operation. The first worker iteration after deploy requeues it, and it is reviewed by the changed investigator.
+The run already stuck on production has an `unresolved` job older than 1 minute, a matching monitor version, nothing reserved and no open Sprite operation. The first worker iteration after deploy requeues it, and it is reviewed by the changed investigator.
 
 ## The final review has its own, higher budget ceiling
 
@@ -96,7 +96,7 @@ Today a review under a worker claim is admitted without the run budget only whil
 
 - A monitor request under a worker claim for a run in `finalizing` is admitted while the run's settled spend is below its budget plus `FINAL_REVIEW_OVERAGE_MICRODOLLARS`, a new constant of 1,000,000, which is $1.00. This covers every request that goes through `monitorRunBudgetExempt`: the classifier's pre-check, the investigator's requests and the tool-call annotations.
 - A review of an `active` run keeps the $0.25 ceiling.
-- The shared daily cap still applies to every request. A review refused for the daily cap is a failed attempt, and the retry schedule below covers it: its last two delays are 4 and 12 hours, and the cap resets at 00:00 UTC.
+- The shared daily cap still applies to every request. A review refused for the daily cap is a failed attempt. The cap resets at 00:00 UTC. A run submitted more than about an hour before the reset with the cap exhausted ends with no result.
 - The review's cost is still recorded on the run and in the daily total, as today.
 
 Why there is a ceiling. The first build of this section had none, and the code review found the consequence. A run has one monitor job per session, a run can have any number of sessions, and a wrong flag also puts a run in `finalizing`. With no ceiling a player could open many cheap sessions, submit, and have every session reviewed whatever it cost. About 120 sessions at the highest review cost measured, $0.084, would spend the whole shared daily cap. The user chose the $1.00 ceiling on 2026-11-20. It bounds one run's total spend at $1.50 plus requests in flight. A run that used its whole budget still gets about 12 final reviews at the highest cost measured, and the runs played so far have 1 to 3 sessions.
@@ -134,7 +134,7 @@ Integration tests use the real worker entry point `runMonitorWorkerOnce`, real P
 - D4. A last request that answers with a retrieval call fails the attempt with the tool failure text. One that answers with plain text fails with the no-decision text.
 - D5. `callLimit` outside 2 to 32 is rejected. A limit of 1 could never force a decision, because the hook runs only after the first request. With `callLimit` 3, the notice arrives on the third request.
 - F1. A failed attempt leaves a `ctf.monitor_reviews` row with `completed_at`, `operational_error` and the request count set. When the classifier fails first, the count is null. When the failure comes after the row was completed, the row keeps its first completion.
-- R1. With a run in `finalizing` and a job `unresolved`, an iteration before 15 minutes changes nothing. One after 15 minutes requeues it with `attempts` 0 and `requeues` 1, and the run's `state_revision` moves. The following requeues need 1 hour, 4 hours and 12 hours.
+- R1. With a run in `finalizing` and a job `unresolved`, an iteration before 1 minute changes nothing. One after 1 minute requeues it with `attempts` 0 and `requeues` 1, and the run's `state_revision` moves. The following requeues need 5 minutes, 15 minutes and 40 minutes.
 - R2. A job set `unresolved` by the stale-claim path is requeued the same way.
 - R3. Two worker iterations run at once requeue a job exactly once.
 - R4. A requeued review that returns `allow` lets the run finalize as today: `captured` for a correct flag with the bug requirement met. With a monitor hold still open the run stays in `finalizing` until the hold settles.
@@ -158,7 +158,7 @@ Integration tests use the real worker entry point `runMonitorWorkerOnce`, real P
 
 - A forced decision can be wrong. Told to decide, the investigator may report no read when one more request would have found it. That outcome is a win for the player, which is the user's ruling. It may also report a read on thin evidence. The decision schema still requires a cited reference in the target session for a positive finding.
 - The investigator's budget becomes something a player attacks on purpose. E2 sizes it against the chains played so far, which are six.
-- A provider outage longer than about 17 hours ends submitted runs with no result.
+- A provider outage longer than about an hour ends submitted runs with no result.
 - Review attempts on a submitted run cost money: up to 15 for each session's job. The $1.00 ceiling bounds the run, and the daily cap is the backstop.
 - The provider may reject the last request's changed tool list. E2 is the check.
 - A run's monitor status moves between `unresolved` and `reviewing` while retries are scheduled. `willRetry` keeps the text consistent.
