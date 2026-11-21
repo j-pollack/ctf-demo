@@ -33,7 +33,8 @@ const pool = new Pool({
 (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = pool;
 
 // ~45 s on a loaded host; 60 s left no headroom.
-await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 }, async (t) => {
+// The file runs for about 100 seconds on a developer machine and longer on a CI runner.
+await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 }, async (t) => {
   t.after(async () => {
     await pool.end();
   });
@@ -7074,7 +7075,6 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
       [sha("First instruction"), sha("Second instruction")].sort(),
     );
     // The same instruction again leaves one row, with the latest created_at and duration_ms.
-    const before = (await instructionRows()).find(({ ref }) => ref === sha("Second instruction"));
     const created = async () =>
       (
         await pool.query(
@@ -7087,7 +7087,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 120_000 
     await respond("Second instruction");
     const after = (await instructionRows()).filter(({ ref }) => ref === sha("Second instruction"));
     assert.equal(after.length, 1);
-    assert.ok(after[0].duration_ms >= 80 && after[0].duration_ms > before!.duration_ms);
+    // The delayed screen's own duration, not a comparison with the first: an undelayed screen
+    // can take longer than 80 ms on a loaded machine.
+    assert.ok(after[0].duration_ms >= 80);
     assert.ok((await created()) > firstCreated);
     assert.equal((await instructionRows()).length, 2);
   });
