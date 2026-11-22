@@ -1,7 +1,7 @@
 # A stopped command is confirmed dead and settled
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/monitor-routing`, branch `feature/monitor-routing`. Ships in pull request 37.
-- Status: verified by the plan verifier on 2026-11-22. Three blocking findings folded in.
+- Status: built, reviewed and checked live on the preview on 2026-11-22.
 
 ## Problem
 
@@ -92,3 +92,9 @@ On the preview: start a run, press Stop during `sleep 60`, wait for one worker p
 - Blocking, folded in: settling never re-ran promotion, so a receipt pending on the stopped command stayed stuck (design 5, S2). A dispatch-time cut-off was unsafe, because `started_at` is the dispatch transaction's time and the exec starts after it commits (design 2 and 3, S5). The settle's lock order could deadlock with `receiveFlagSubmission`, and one failing sprite could starve the others (design 2 and 4, S4, S6).
 - Non-blocking, folded in: the worker could sleep with work left (design 6, S13), the step must run before the finalization claim (design 1, S10), concurrent passes (S9), existing tests need a `listSessions` stub, a live check of the new boundary in `scripts/smoke.ts` (design 8), and the run view's exact wording.
 - Confirmed: the blocking paths, `interrupted` as the target status with no migration, that no late runner write can overwrite a settled operation, and that score and delete cannot overlap a settle.
+
+## Live check on the preview, 2026-11-22
+
+- Run `279ad878`: a command stopped before this change was settled at 23:11:29 UTC, on the worker's first pass after deploy. A second stopped command had sent `sleep 60` to the background with `disown`. It stayed `unknown` while Sprites listed its session and was settled at 23:13:27.8, when that `sleep` ended.
+- Run `31a71959`: Stop during a foreground `sleep 60` at 23:27:43. The command was `interrupted` within 12 seconds, and the run details showed "Reviewed, nothing found". A later `curl --data-binary @/tmp/flag.txt "$TARGET"` was accepted at 23:28:14.7 and promoted as correct at 23:28:15.9. The final review then caught the read.
+- The first upload attempt in `279ad878` failed for an unrelated reason: a preview run's upload address was the per-deployment host, and the sandbox only allows the host the run started with, so every push broke uploads for open preview runs. Fixed in `bc1979d`: a preview now uses its branch host.
