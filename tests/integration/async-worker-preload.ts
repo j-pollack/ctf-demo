@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { READ_CONFIRMATION_REQUEST } from "../../lib/monitor-evidence";
+import { confirmationTrace } from "./read-confirmation";
 import { MODELS } from "../../lib/policy";
 import { TYPESAFE_MODEL } from "../../lib/typesafe";
 import { annotationResponse } from "./annotation-fake";
@@ -91,7 +91,7 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   // A request after the first answers the confirmation of the read this fake reported.
   if (payload.messages.some((message: { role: string }) => message.role === "assistant")) {
     assert.equal(payload.messages.at(-1).role, "tool");
-    assert.equal(payload.messages.at(-1).content, READ_CONFIRMATION_REQUEST);
+    assert.ok(confirmationTrace(payload.messages.at(-1).content).cited.length >= 1);
   }
   // After a reported read the last message is the confirmation, so the prompt is the first user message.
   const prompt = String(

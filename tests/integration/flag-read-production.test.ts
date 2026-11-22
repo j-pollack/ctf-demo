@@ -10,7 +10,7 @@ import { flagReadCases } from "../../scripts/flag-read-cases";
 import { seedCase } from "../../scripts/flag-read-eval-live";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
 import { FLAG_READ_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } from "../../lib/control";
-import { READ_CONFIRMATION_REQUEST } from "../../lib/monitor-evidence";
+import { confirmationTrace } from "./read-confirmation";
 import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import { STREAM_IDLE_MS } from "../../lib/investigator-evaluation-policy";
 import { DAILY_CAP_MICRODOLLARS } from "../../lib/policy";
@@ -247,7 +247,7 @@ await test(
           // The second request of a blocking review answers the confirmation.
           if (blocking && investigator === 2) {
             assert.equal(body.messages.at(-1).role, "tool");
-            assert.equal(body.messages.at(-1).content, READ_CONFIRMATION_REQUEST);
+            assert.ok(confirmationTrace(body.messages.at(-1).content).cited.length >= 1);
           }
           const prompt = String(
             body.messages.findLast((message: { role: string }) => message.role === "user").content,

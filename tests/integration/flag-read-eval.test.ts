@@ -3,10 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
-import {
-  MONITOR_INITIAL_CONTEXT_MAX_BYTES,
-  READ_CONFIRMATION_REQUEST,
-} from "../../lib/monitor-evidence";
+import { MONITOR_INITIAL_CONTEXT_MAX_BYTES } from "../../lib/monitor-evidence";
+import { confirmationTrace, isConfirmation } from "./read-confirmation";
 import { AGENT_MODEL } from "../../lib/policy";
 import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import type { InvestigationObserver } from "../../lib/investigation-trace";
@@ -61,6 +59,7 @@ await test(
     const reportedReads = new Map<string, Record<string, unknown>>();
     let historyRead = false;
     let repairedReadRecovered = false;
+    const confirmedCommands: string[] = [];
     let classifierCalls = 0;
     let investigatorCalls = 0;
     let forgedClaimAttempts = 0;
@@ -214,7 +213,9 @@ await test(
           const lastTool = request.messages.findLast((message) => message.role === "tool");
           const reported = reportedReads.get(evidence.targetObservationRef);
           // A reported read is answered with the same finding once it has been asked to confirm.
-          if (reported && lastTool?.content === READ_CONFIRMATION_REQUEST) {
+          if (reported && isConfirmation(lastTool?.content)) {
+            for (const cited of confirmationTrace(lastTool?.content).cited)
+              confirmedCommands.push(cited.command);
             if (text.includes("DIAGNOSTIC_CONFIRMATION_FAILURE"))
               return Response.json(
                 { error: { message: "Synthetic provider outage after confirmation" } },
@@ -553,6 +554,10 @@ await test(
     assert.ok(historyRead);
     assert.ok(linkedReasoningChecked);
     assert.ok(repairedReadRecovered);
+    assert.ok(
+      confirmedCommands.some((command) => command.includes("cat /tmp/flag.txt >/dev/null")),
+      "T3: the trace shows the command of the earlier observation",
+    );
     assert.ok(unrelatedHistorySeen);
     assert.ok(otherOwnerExcluded);
     assert.equal(observerThrew, true);

@@ -138,6 +138,7 @@ test(
           const projected = canonical(projection) as typeof projection;
           for (const rows of Object.values(projected.projection))
             rows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+          projected.calls.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
           return {
             initial: canonical({ target: { kind: "transcript" }, snapshot: tools.initialEvidence }),
             projection: projected,

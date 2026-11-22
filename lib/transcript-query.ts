@@ -15,6 +15,7 @@ import {
   exportTranscriptQueryProjection,
 } from "./transcript-query-projection";
 import { runTranscriptSql, type SqlResult } from "./transcript-query-runtime";
+import type { ReviewCall } from "./investigator-trace";
 import type { MonitorSnapshot } from "./types";
 
 const MAX_CALLS = 32;
@@ -129,6 +130,7 @@ export async function createTranscriptInvestigationTools(
   piTools: AgentTool[];
   initialEvidence: TranscriptInvestigationInitialEvidence;
   readonly retrievalCalls: number;
+  calls: ReviewCall[];
   dispose: () => Promise<void>;
 }> {
   if (currentSessionId !== snapshot.targetSessionId)
@@ -372,6 +374,7 @@ export async function createTranscriptInvestigationTools(
   return {
     piTools,
     initialEvidence,
+    calls: projection.calls,
     get retrievalCalls() {
       return calls;
     },

@@ -16,6 +16,7 @@ import { createSession, getSession } from "../lib/sessions";
 import { runGame } from "../lib/runner";
 import { destroyEnvironment, executeCommand } from "../lib/sprites";
 import { AGENT_MODEL, DAILY_CAP_MICRODOLLARS, INVESTIGATOR_MODEL, MODELS } from "../lib/policy";
+import { READ_CONFIRMATION_REQUEST } from "../lib/monitor-evidence";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { SEED_BUGS, seedScoreCommand } from "../lib/seed";
 import { releaseSessionLease } from "../lib/sessions";
@@ -612,6 +613,13 @@ try {
         payload.max_tokens !== undefined && payload.max_tokens > 0 && payload.max_tokens <= 8_192,
       );
       assert.equal(payload.reasoning?.effort, "high");
+      // A request after the first answers the confirmation of the read this fake reported: the
+      // fixed text, a blank line and the trace as JSON.
+      if (payload.messages.some((item) => item.role === "assistant")) {
+        const answered = String(payload.messages.at(-1)?.content);
+        assert.ok(answered.startsWith(`${READ_CONFIRMATION_REQUEST}\n\n`));
+        JSON.parse(answered.slice(READ_CONFIRMATION_REQUEST.length + 2));
+      }
       // After a reported read the last message is the confirmation, so the prompt is the first user message.
       const prompt = String(payload.messages.find((item) => item.role === "user")?.content);
       const context = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2)) as {

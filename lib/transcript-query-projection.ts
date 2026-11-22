@@ -5,6 +5,7 @@ import { db } from "./db";
 import { monitorSessionAlias, visibleText } from "./monitor-tools";
 import type { MonitorSnapshot } from "./types";
 import type { SqlProjection } from "./transcript-query-runtime";
+import { callStatus, type ReviewCall } from "./investigator-trace";
 
 const MAX_OBSERVATIONS = 20_000;
 const MAX_CHANGED_MESSAGES = 20_000;
@@ -122,7 +123,7 @@ type Delta = {
 export async function exportTranscriptQueryProjection(
   snapshot: MonitorSnapshot,
   includeReasoning: boolean,
-): Promise<{ projection: SqlProjection; observationCount: number }> {
+): Promise<{ projection: SqlProjection; observationCount: number; calls: ReviewCall[] }> {
   const entries = manifest(snapshot);
   const declaredObservations = entries.reduce((sum, entry) => sum + entry.version, 0);
   if (
@@ -158,6 +159,9 @@ export async function exportTranscriptQueryProjection(
       (snapshot.operationTimes ?? []).map((time) => [`${time.sessionId}:${time.toolCallId}`, time]),
     );
     const previous = new Map<string, { version: number; count: number }>();
+    // sprite_exec calls from the raw messages, each kept from the latest observation holding it.
+    const proposed = new Map<string, Omit<ReviewCall, "result" | "isError" | "status">>();
+    const returned = new Map<string, { text: string; isError: boolean }>();
     for (const row of rows) {
       const version = Number(row.version);
       const prior = previous.get(row.sessionId);
@@ -179,6 +183,28 @@ export async function exportTranscriptQueryProjection(
         message_count: row.messageCount,
       });
       for (const [offset, source] of row.changedMessages.entries()) {
+        if (source.role === "assistant")
+          for (const part of source.content) {
+            if (part.type !== "toolCall" || part.name !== "sprite_exec") continue;
+            const command = part.arguments?.command;
+            const dispatched = times.get(`${row.sessionId}:${part.id}`);
+            proposed.set(`${sessionId}:${part.id}`, {
+              session: sessionId,
+              observation: observationRef,
+              index: row.changedStart + offset,
+              callId: part.id,
+              command: typeof command === "string" ? command : "",
+              sentAt: dispatched?.sentAt ?? null,
+              returnedAt: dispatched?.returnedAt ?? null,
+            });
+          }
+        if (source.role === "toolResult" && source.toolName === "sprite_exec")
+          returned.set(`${sessionId}:${source.toolCallId}`, {
+            text: source.content
+              .flatMap((part) => (part.type === "text" ? [part.text] : []))
+              .join("\n"),
+            isError: source.isError,
+          });
         const rendered = visibleText(
           source,
           includeReasoning && row.reasoningVisible && row.currentReasoningVisible,
@@ -210,6 +236,19 @@ export async function exportTranscriptQueryProjection(
     const projection = { sessions, observations, messages };
     if (Buffer.byteLength(JSON.stringify(projection), "utf8") > MAX_EXPORT_BYTES)
       throw new Error("Committed evidence exceeds the rendered query export limit.");
-    return { projection, observationCount };
+    const calls = [...proposed].map(([key, call]): ReviewCall => {
+      const result = returned.get(key);
+      return {
+        ...call,
+        result: result?.text ?? null,
+        isError: result?.isError ?? null,
+        status: callStatus({
+          hasResult: !!result,
+          sentAt: call.sentAt,
+          returnedAt: call.returnedAt,
+        }),
+      };
+    });
+    return { projection, observationCount, calls };
   });
 }

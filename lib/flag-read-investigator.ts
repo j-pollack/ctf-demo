@@ -19,6 +19,7 @@ import {
   validateReviewScope,
   type RunMonitorReviewInput,
 } from "./monitor-review";
+import { buildTrace, callsOfRow } from "./investigator-trace";
 import { createTranscriptInvestigationTools } from "./transcript-query";
 import { notifyInvestigationObserver, type InvestigationObserver } from "./investigation-trace";
 
@@ -108,15 +109,30 @@ export async function runFlagReadInvestigation(
         recordVisible(visible, retrieval.initialEvidence.currentTranscript);
         const initialEvidence = { target, snapshot: retrieval.initialEvidence };
         notifyInvestigationObserver(options?.observer, "onInitialEvidence", initialEvidence);
-        const finishTool = createFinishInvestigationTool(
+        const finishTool = createFinishInvestigationTool({
           visible,
-          retrieval.initialEvidence.targetSessionId,
+          targetSessionId: retrieval.initialEvidence.targetSessionId,
           finish,
-          recordFailure,
+          fail: recordFailure,
           onInvalid,
           requests,
-          (value) => (confirmation = value),
-        );
+          onConfirmation: (value) => (confirmation = value),
+          callsOfRow: (row) => callsOfRow(retrieval.calls, row),
+          trace: (cited) => {
+            const started = performance.now();
+            const { json } = buildTrace(retrieval.calls, cited);
+            console.warn(
+              JSON.stringify({
+                event: "investigator.trace",
+                timestamp: new Date().toISOString(),
+                reviewId: input.reviewId,
+                buildMs: Math.round(performance.now() - started),
+                bytes: Buffer.byteLength(json, "utf8"),
+              }),
+            );
+            return json;
+          },
+        });
         const tools = [...retrieval.piTools, finishTool];
         return {
           tools,

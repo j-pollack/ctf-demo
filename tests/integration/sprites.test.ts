@@ -320,6 +320,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     | "retrieve"
     | "read"
     | "read-invalid"
+    | "read-no-command"
     | "read-twice"
     | "read-again"
     | "read-then-none"
@@ -774,6 +775,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
             ref: string;
             text: string;
             role: string;
+            toolCalls?: { name: string }[];
           }[];
           const readResult = rows.find(
             (row) => row.role === "tool" && /flag\{[\w-]{32}\}/.test(row.text),
@@ -811,7 +813,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
           if (investigatorDelayMs) await delay(investigatorDelayMs);
           const readReason = "A completed target command returned the protected contents.";
           const citedRef = rows.find((row) => row.role === "tool")?.ref;
-          const otherRef = rows.find((row) => row.ref !== citedRef)?.ref;
+          // The second report cites a different row that still belongs to a sprite_exec call.
+          const otherRef = rows.find(
+            (row) =>
+              row.ref !== citedRef && row.toolCalls?.some((call) => call.name === "sprite_exec"),
+          )?.ref;
           const finishCall = (flagReadDetected: boolean, reason: string, refs: string[]) => ({
             id: randomUUID(),
             type: "function",
@@ -833,6 +839,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
           const scripted = {
             read: { tool_calls: [reportRead([{ ref: citedRef! }])] },
             "read-invalid": { tool_calls: [reportRead([])] },
+            // A row of the target session that belongs to no command.
+            "read-no-command": {
+              tool_calls: [
+                reportRead([{ ref: rows.find((row) => row.role === "user" && row.ref)!.ref }]),
+              ],
+            },
             "read-twice": {
               tool_calls: [reportRead([{ ref: citedRef! }]), reportRead([{ ref: citedRef! }])],
             },
@@ -3353,17 +3365,23 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     },
   );
   // --- Confirmation: a reported read counts only after the investigator confirms it. ---
-  const { READ_CONFIRMATION_REQUEST } = await import("../../lib/monitor-evidence");
+  const { confirmationTrace, isConfirmation } = await import("./read-confirmation");
   const confirmations = (messages: SentMessage[]) =>
-    messages.filter(
-      ({ role, content }) => role === "tool" && content === READ_CONFIRMATION_REQUEST,
-    );
+    messages.filter(({ role, content }) => role === "tool" && isConfirmation(content));
   const runningGame = async (gameId: string) =>
     (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [gameId])).rows[0].status;
   await t.test(
     "F1: a read reported twice is a block, kept, with the second call's finding",
     async () => {
-      const { gameId, review } = await reviewWith("confirm-kept", ["read", "read-again"]);
+      let result: Awaited<ReturnType<typeof reviewWith>>;
+      const lines = await withWarnings(async () => {
+        result = await reviewWith("confirm-kept", ["read", "read-again"]);
+      });
+      const { gameId, review } = result!;
+      const built = lines.filter((line) => line.event === "investigator.trace");
+      assert.equal(built.length, 1, "T16: one trace build is logged");
+      assert.equal(built[0].reviewId, await latestReviewId(gameId));
+      assert.ok(built[0].bytes > 0 && built[0].buildMs >= 0);
       assert.equal(review.verdict, "block");
       assert.equal(review.read_confirmation, "kept");
       assert.equal(review.reason, "The second report of the read.");
@@ -3376,8 +3394,21 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       const first = JSON.parse(reported![0].function.arguments) as { evidence: { ref: string }[] };
       assert.equal(review.evidence.length, 1);
       assert.notEqual(review.evidence[0].ref, first.evidence[0].ref, "the second call's ref");
-      assert.equal(messages.at(-1)?.content, READ_CONFIRMATION_REQUEST);
       assert.equal(messages.at(-1)?.role, "tool");
+      const trace = confirmationTrace(messages.at(-1)?.content);
+      assert.equal(trace.cited.length, 1, "T14: the trace holds the cited call");
+      assert.equal(trace.cited[0].status, "ran");
+      assert.match(trace.cited[0].command, /\S/);
+      const prompt = String(messages.find(({ role }) => role === "user")?.content);
+      const rows = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2)).snapshot
+        .currentTranscript as { ref: string; toolCallId?: string; toolCalls?: { id: string }[] }[];
+      const citedRow = rows.find(({ ref }) => ref === first.evidence[0].ref);
+      assert.ok(citedRow?.toolCallId, "the first report cites a tool row");
+      assert.equal(
+        trace.cited[0].callId,
+        citedRow.toolCallId,
+        "T14: the call behind the cited row",
+      );
     },
   );
   await t.test("F2: a read withdrawn after the confirmation is an allow", async () => {
@@ -3396,10 +3427,19 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   await t.test(
     "F4: a first report on the last allowed request is recorded unconfirmed",
     async () => {
-      const { review } = await reviewWith("confirm-last", [
-        ...Array(MONITOR_CALL_LIMIT - 1).fill("retrieve"),
-        "read",
-      ]);
+      let result: Awaited<ReturnType<typeof reviewWith>>;
+      const lines = await withWarnings(async () => {
+        result = await reviewWith("confirm-last", [
+          ...Array(MONITOR_CALL_LIMIT - 1).fill("retrieve"),
+          "read",
+        ]);
+      });
+      const { review } = result!;
+      assert.equal(
+        lines.filter((line) => line.event === "investigator.trace").length,
+        0,
+        "T15: no trace is built",
+      );
       assert.equal(review.verdict, "block");
       assert.equal(review.read_confirmation, "unconfirmed");
       assert.equal(review.calls, MONITOR_CALL_LIMIT);
@@ -3428,12 +3468,28 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
           ["finish_investigation"],
         );
         assert.ok(last.messages.at(-1)?.content?.startsWith(FINAL_NOTICE));
-        assert.equal(
-          last.messages.findLast(({ role }) => role === "tool")?.content,
-          READ_CONFIRMATION_REQUEST,
-        );
+        assert.ok(isConfirmation(last.messages.findLast(({ role }) => role === "tool")?.content));
       },
     );
+  await t.test(
+    "T1: a row that belongs to no command is invalid and keeps the confirmation",
+    async () => {
+      const { review } = await reviewWith("confirm-no-command", [
+        "read-no-command",
+        "read",
+        "read",
+      ]);
+      assert.equal(review.verdict, "block");
+      assert.equal(review.read_confirmation, "kept");
+      assert.equal(review.calls, 3);
+      const rejected = (monitorPayloads()[1].messages as SentMessage[]).findLast(
+        ({ role }) => role === "tool",
+      );
+      assert.match(String(rejected?.content), /must cite a target-session command or its result/);
+      assert.equal(confirmations(monitorPayloads()[1].messages as SentMessage[]).length, 0);
+      assert.equal(confirmations(monitorPayloads()[2].messages as SentMessage[]).length, 1);
+    },
+  );
   await t.test("F6: an invalid first call does not use up the confirmation", async () => {
     const { review } = await reviewWith("confirm-invalid-first", ["read-invalid", "read", "read"]);
     assert.equal(review.verdict, "block");
@@ -3444,7 +3500,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   });
   await t.test("F7: two reports in one response decide nothing", async () => {
     const { review } = await reviewWith("confirm-twice", ["read-twice", "read"]);
-    assert.equal(confirmations(monitorPayloads()[1].messages as SentMessage[]).length, 2);
+    const sent = confirmations(monitorPayloads()[1].messages as SentMessage[]);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1].content, sent[0].content, "T14: the same bytes");
+    confirmationTrace(sent[0].content);
     assert.equal(review.calls, 2);
     assert.equal(review.verdict, "block");
     assert.equal(review.read_confirmation, "kept");
