@@ -30,6 +30,15 @@ export type RunInspectorProps = {
 
 const DECISIONS_SHOWN = 8;
 
+// A caught run names what caught it: the investigator is one of three checks that end a run.
+export const CAUGHT_BY: Record<NonNullable<PublicGame["caughtCause"]>, string> = {
+  jailbreak: "Caught for a jailbreak",
+  flag_output: "Caught: the flag was in a command's output",
+  flag_read: "Caught: the investigator found a flag read",
+};
+export const RISK_NOTE =
+  "A separate classifier scores how suspicious each turn looks, from 0% to 100%. This is the highest score so far. The score never ends a run. A run ends when the investigator finds a flag read, when a command's output contains the flag, or when an instruction tries to override the agent's or the monitor's rules.";
+
 function Investigator({ game }: { game: PublicGame }) {
   if (game.monitorMode !== "async") return null;
   const monitor = game.monitor,
@@ -38,8 +47,14 @@ function Investigator({ game }: { game: PublicGame }) {
       : null;
   return (
     <section>
-      <h3>Investigator</h3>
-      <strong>{monitor ? monitorStatusLabel[monitor.status] : MONITOR_STATUS_LOADING}</strong>
+      <h3>Monitor</h3>
+      <strong>
+        {!monitor
+          ? MONITOR_STATUS_LOADING
+          : monitor.status === "caught" && game.caughtCause
+            ? CAUGHT_BY[game.caughtCause]
+            : monitorStatusLabel[monitor.status]}
+      </strong>
       {progress && <small>{progress}</small>}
       {monitor?.lastReviewedAt && (
         <small>Last review: {new Date(monitor.lastReviewedAt).toLocaleString()}</small>
@@ -135,10 +150,7 @@ export function RunInspector({
             {observed ? `Peak ${Math.round(peak * 100)}%` : "No risk data yet"}
           </strong>
         </div>
-        <p className="risk-note">
-          A separate classifier scores how suspicious each turn looks, from 0% to 100%. This is the
-          highest score so far. It cannot end a run. Only the investigator can.
-        </p>
+        <p className="risk-note">{RISK_NOTE}</p>
         <RunRiskChart series={riskSeries} />
       </section>
       <Decisions game={game} decisions={decisions} />

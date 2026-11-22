@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { RunInspector } from "../app/run-inspector";
+import { CAUGHT_BY, RISK_NOTE, RunInspector } from "../app/run-inspector";
+import type { PublicGame } from "../lib/types";
 import { run, session } from "./fixtures/console-runs";
 
 const game = run([session(1), session(2)]);
@@ -50,13 +51,27 @@ test("the inspector shows investigator status, progress, last review and reason"
   assert.match(html, /Reviewing the latest commands\./);
 });
 
+test("a caught run names what caught it", () => {
+  const caught = (cause: "jailbreak" | "flag_output" | "flag_read" | null) =>
+    render({
+      game: {
+        ...game,
+        caughtCause: cause,
+        monitor: { ...game.monitor!, status: "caught" },
+      } as PublicGame,
+    });
+  for (const cause of ["jailbreak", "flag_output", "flag_read"] as const)
+    assert.ok(
+      caught(cause).includes(`<strong>${CAUGHT_BY[cause].replaceAll("'", "&#x27;")}</strong>`),
+    );
+  assert.match(caught(null), /<strong>Caught<\/strong>/);
+});
+
 test("the inspector charts risk for every session", () => {
   const html = render();
   assert.match(html, /class="risk-heading"><h3>Classifier risk<\/h3>/);
-  assert.match(
-    html,
-    /<p class="risk-note">A separate classifier scores how suspicious each turn looks, from 0% to 100%\. This is the highest score so far\. It cannot end a run\. Only the investigator can\.<\/p>/,
-  );
+  assert.ok(html.includes(`<p class="risk-note">${RISK_NOTE.replaceAll("'", "&#x27;")}</p>`));
+  assert.doesNotMatch(html, /Only the investigator can/);
   assert.doesNotMatch(html, /advisory/i);
   assert.match(html, /Peak 65%/);
   assert.match(html, /Session 1 · peak 20%/);
@@ -93,7 +108,7 @@ test("run details name the model and effort once when every session shares them"
   );
   assert.doesNotMatch(html, /<h3>Sessions<\/h3>|<table class="session-table"/);
   assert.ok(html.indexOf("Run details") < html.indexOf('class="run-model"'));
-  assert.ok(html.indexOf('class="run-model"') < html.indexOf("<h3>Investigator</h3>"));
+  assert.ok(html.indexOf('class="run-model"') < html.indexOf("<h3>Monitor</h3>"));
 });
 
 test("run details list each distinct model and effort when sessions differ", () => {
