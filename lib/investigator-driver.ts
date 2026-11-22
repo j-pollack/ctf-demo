@@ -75,6 +75,19 @@ function finalRequestNotice(finishName: string) {
   return `This is the final request. Call ${finishName} now with the evidence already retrieved. Report a read only if that evidence establishes it.`;
 }
 
+// The investigator's model at the bounded policy's rates.
+export async function investigatorModel(signal: AbortSignal): Promise<Model<"openai-completions">> {
+  return {
+    ...(await getModel(INVESTIGATOR_MODEL, signal)),
+    cost: {
+      input: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
+      output: BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion,
+      cacheRead: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
+      cacheWrite: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
+    },
+  };
+}
+
 export function createInvestigatorAgent(
   model: Model<"openai-completions">,
   tools: AgentTool[],
@@ -198,16 +211,7 @@ export async function runInvestigatorDriver<T>(
   if (timeLeft <= 0) throw new Error("Investigator review deadline expired.");
   const deadlineSignal = AbortSignal.timeout(timeLeft);
   const signal = AbortSignal.any([input.signal, deadlineSignal]);
-  const catalogModel = await getModel(INVESTIGATOR_MODEL, signal);
-  const model = {
-    ...catalogModel,
-    cost: {
-      input: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
-      output: BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion,
-      cacheRead: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
-      cacheWrite: BOUNDED_INVESTIGATOR_POLICY.inputUsdPerMillion,
-    },
-  };
+  const model = await investigatorModel(signal);
   if (signal.aborted)
     throw new Error(
       input.signal.aborted

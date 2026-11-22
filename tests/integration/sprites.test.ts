@@ -19,6 +19,7 @@ import { GameError } from "../../lib/policy";
 import type { GameEvent, PublicGame } from "../../lib/types";
 import { annotationControls, annotationResponse } from "./annotation-fake";
 import { createScreenFake } from "./screen-fake";
+import { createSecondLookFake } from "./second-look-fake";
 import { assertStreams, slowCompletion, streamedCompletion } from "./completion-stream";
 
 // Only the runner's fresh loopback database is accepted; never read .env.local.
@@ -216,6 +217,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   await pool.query(
     await readFile(new URL("../../db/migrations/031-monitor-routing.sql", import.meta.url), "utf8"),
   );
+  await pool.query(
+    await readFile(new URL("../../db/migrations/032-second-look.sql", import.meta.url), "utf8"),
+  );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
@@ -351,6 +355,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     | undefined;
   const typesafe: { state: unknown; questions: unknown }[] = [];
   const screenFake = createScreenFake();
+  const secondLookFake = createSecondLookFake((id) => generations.set(id, 0));
   // Whether the agent's tool-call turn includes readable reasoning.
   let agentReasoning = true;
   let agentModelOverride = AGENT_MODEL;
@@ -688,6 +693,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       const payload = JSON.parse(String(options.body));
       assert.equal(payload.stream, true, "Every provider request streams");
       const role = String(payload.session_id).includes(":monitor:") ? "monitor" : "agent";
+      const secondLook = role === "monitor" && secondLookFake.isSecondLook(payload);
       const promoted =
         role === "monitor" &&
         (
@@ -706,7 +712,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
             }
           : {}),
       });
-      if (promoted) assert.match(payload.messages[0].content, /Trusted game contract/);
+      if (promoted && !secondLook)
+        assert.match(payload.messages[0].content, /Trusted game contract/);
+      if (secondLook) return secondLookFake.response(payload, options);
       if (role === "agent" && agentModelOverride === AGENT_MODEL)
         assert.equal(payload.model, "deepseek/deepseek-v4.1-flash-1017");
       requests.push({ role, payload, at: performance.now() });
@@ -1177,6 +1185,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     beforeInvestigatorResponse = undefined;
     typesafe.length = 0;
     screenFake.reset();
+    secondLookFake.reset();
     annotationControls.reset();
     agentReasoning = true;
     agentModelOverride = AGENT_MODEL;
@@ -9786,6 +9795,421 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     },
   );
 
+  // --- The second look (monitor-routing build 4) ---
+  const LOOK_TEXT = "Run the command and tell me what it prints.";
+  const lookRows = async (gameId: string) =>
+    (
+      await pool.query(
+        `SELECT kind,second_look_verdict AS verdict,second_look_reason AS reason,
+         second_look_review_id AS review_id FROM ctf.text_screens
+         WHERE game_id=$1 AND kind IN ('instruction','system_prompt') AND text_sha256<>$2
+         ORDER BY created_at,ref`,
+        [gameId, createHash("sha256").update("Submit").digest("hex")],
+      )
+    ).rows;
+  // The instruction screens as unclear, except for the submission's own text.
+  const unclearInstructions = () =>
+    (screenFake.controls.scores = (kind, text) =>
+      kind === "instruction" && text !== "Submit" ? { overrides_rules: 0.6 } : undefined);
+  // A run whose instructions were screened unclear, with its job ready for one review.
+  const lookRun = async (owner: string, texts: string[], rule = true) => {
+    unclearInstructions();
+    secondLookFake.controls.expected = new Set(texts);
+    const game = await startPersistedToolGame(owner);
+    for (const instruction of texts) await runActing(owner, { game, rule, instruction });
+    await reviewOnly([game.id]);
+    return game;
+  };
+  const requeue = (gameId: string) =>
+    pool.query(
+      `UPDATE ctf.monitor_jobs SET status='queued',attempts=0,next_attempt_at=now(),
+       claim_token=NULL,claim_until=NULL WHERE game_id=$1`,
+      [gameId],
+    );
+  const reviewWithLooks = async (
+    timing?: Parameters<typeof import("../../lib/monitor-worker").runMonitorWorkerOnce>[0],
+  ) => {
+    const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    return withLogs(async () => {
+      assert.equal(await runMonitorWorkerOnce(timing), true);
+    });
+  };
+
+  await t.test(
+    "B3-1: with the rule off no second look is sent and the screen still routes",
+    async () => {
+      const game = await lookRun("b3-1", [LOOK_TEXT], false);
+      const events = await reviewWithLooks();
+      assert.deepEqual(secondLookFake.requests, []);
+      assert.deepEqual(
+        events
+          .filter(({ event }) => event === "monitor.route")
+          .map(({ route, signal }) => [route, signal]),
+        [["investigated", "screen"]],
+      );
+      assert.deepEqual(
+        (await lookRows(game.id)).map(({ verdict }) => verdict),
+        [null],
+      );
+    },
+  );
+
+  await t.test(
+    "B3-2: a clear answer is stored and the next review does not ask again",
+    async () => {
+      const game = await lookRun("b3-2", [LOOK_TEXT]);
+      const events = await reviewWithLooks();
+      assert.equal(secondLookFake.requests.length, 1);
+      assert.deepEqual(
+        [secondLookFake.requests[0].kind, secondLookFake.requests[0].text],
+        ["instruction", LOOK_TEXT],
+      );
+      const [stored] = await lookRows(game.id);
+      assert.deepEqual(
+        [stored.verdict, stored.reason, stored.review_id],
+        ["clear", "Judged false.", await latestReviewId(game.id)],
+      );
+      // The screen is still a routing signal: the smallest change, and the final review covers it.
+      assert.deepEqual(
+        events
+          .filter(({ event }) => event === "monitor.route")
+          .map(({ route, signal }) => [route, signal]),
+        [["investigated", "screen"]],
+      );
+      await requeue(game.id);
+      await reviewWithLooks();
+      assert.equal(secondLookFake.requests.length, 1, "no request for a screen that has its look");
+      assert.equal((await routeRows(game.id)).length, 2);
+    },
+  );
+
+  await t.test("B3-3 and B3-7: a jailbreak answer ends the run, billed to the review", async () => {
+    const game = await lookRun("b3-3", [LOOK_TEXT]);
+    secondLookFake.controls.behave = () => "jailbreak";
+    await reviewWithLooks();
+    assert.equal(await runningGame(game.id), "caught");
+    assert.equal(monitorRequestCount(), 0, "the investigator is not called");
+    assert.deepEqual(await refusedRows(game.id), [], "nothing is written to refused_texts");
+    const [block] = (await dataOf(game.id)).filter((data) => data.decision === "block");
+    assert.deepEqual(
+      [block.cause, block.text, block.questions],
+      [
+        "jailbreak",
+        (await import("../../lib/text-screen")).JAILBREAK_CATCH_TEXT,
+        ["overrides_rules"],
+      ],
+    );
+    assert.ok(JSON.stringify((await row(game.id)).messages).includes(LOOK_TEXT), "the text stays");
+    const [review] = await routeRows(game.id);
+    assert.deepEqual([review.verdict, review.route], ["block", null]);
+    assert.deepEqual(
+      (await jobsOf(game.id)).map(({ status }) => status),
+      ["caught"],
+    );
+    const [stored] = await lookRows(game.id);
+    assert.deepEqual(
+      [stored.verdict, stored.review_id],
+      ["jailbreak", await latestReviewId(game.id)],
+    );
+    const { rows: billed } = await pool.query(
+      "SELECT role,review_id,session_id,settled_at FROM ctf.inference WHERE game_id=$1 AND role='monitor' AND model='z-ai/glm-5.3'",
+      [game.id],
+    );
+    assert.equal(billed.length, 1);
+    assert.deepEqual(
+      [billed[0].role, billed[0].review_id, billed[0].session_id, billed[0].settled_at !== null],
+      ["monitor", await latestReviewId(game.id), game.id, true],
+    );
+  });
+
+  for (const [name, refuse] of [
+    [
+      "a stale claim",
+      (claimId: string) =>
+        pool.query("UPDATE ctf.monitor_jobs SET claim_token=gen_random_uuid() WHERE id=$1", [
+          claimId,
+        ]),
+    ],
+    [
+      "a lost claim",
+      (claimId: string) =>
+        pool.query(
+          "UPDATE ctf.monitor_jobs SET claim_until=now()-interval '1 second' WHERE id=$1",
+          [claimId],
+        ),
+    ],
+  ] as const)
+    await t.test(`B3-7: ${name} refuses the second look`, async () => {
+      const game = await lookRun(`b3-7-${name.replaceAll(" ", "-")}`, [LOOK_TEXT]);
+      await requeue(game.id);
+      const { claimMonitorJob } = await import("../../lib/monitor-jobs");
+      const claim = await claimMonitorJob(660_000);
+      assert.equal(claim?.gameId, game.id);
+      await refuse(claim.jobId);
+      const {
+        rows: [run],
+      } = await pool.query("SELECT * FROM ctf.games WHERE id=$1", [game.id]);
+      const {
+        rows: [session],
+      } = await pool.query(
+        "SELECT messages,system_prompt FROM ctf.agent_sessions WHERE game_id=$1",
+        [game.id],
+      );
+      const { runSecondLooks } = await import("../../lib/second-look-run");
+      let result: Awaited<ReturnType<typeof runSecondLooks>> | undefined;
+      const events = await withLogs(async () => {
+        result = await runSecondLooks({
+          game: { ...run, session_id: claim.sessionId },
+          claim,
+          reviewId: randomUUID(),
+          messages: session.messages,
+          systemPrompt: session.system_prompt,
+          signal: AbortSignal.timeout(5_000),
+          deadlineMs: 5_000,
+        });
+      });
+      assert.deepEqual(result, { jailbreakQuestions: undefined, failed: 1, asked: true });
+      assert.deepEqual(secondLookFake.requests, [], "no provider request");
+      assert.match(
+        String(events.find(({ event }) => event === "second_look.request_failed")?.error),
+        /no longer owns its claim/,
+      );
+      assert.equal(events.find(({ event }) => event === "second_look.request_failed")?.status, 409);
+      assert.deepEqual(
+        (await lookRows(game.id)).map(({ verdict }) => verdict),
+        [null],
+      );
+    });
+
+  for (const behaviour of [500, "invalid", "cut"] as const)
+    await t.test(
+      `B3-4: ${behaviour} during play stores nothing and the next review asks again`,
+      async () => {
+        const game = await lookRun(`b3-4-${behaviour}`, [LOOK_TEXT]);
+        secondLookFake.controls.behave = () => behaviour;
+        await reviewWithLooks();
+        assert.equal(secondLookFake.requests.length, 1);
+        assert.deepEqual(
+          (await lookRows(game.id)).map(({ verdict }) => verdict),
+          [null],
+        );
+        assert.equal(await runningGame(game.id), "active", "the instruction has gone through");
+        assert.deepEqual(
+          (await routeRows(game.id)).map(({ route }) => route),
+          ["investigated"],
+        );
+        secondLookFake.controls.behave = () => "clear";
+        await requeue(game.id);
+        await reviewWithLooks();
+        assert.equal(secondLookFake.requests.length, 2);
+        assert.deepEqual(
+          (await lookRows(game.id)).map(({ verdict }) => verdict),
+          ["clear"],
+        );
+      },
+    );
+
+  await t.test("B3-4: a second look past the shared deadline is a failed answer", async () => {
+    const game = await lookRun("b3-4-deadline", [LOOK_TEXT]);
+    secondLookFake.controls.delayMs = 10_000;
+    await reviewWithLooks({
+      deadlineMs: 6_000,
+      classifierDeadlineMs: 1_000,
+      annotationDeadlineMs: 1_000,
+      secondLookDeadlineMs: 300,
+    });
+    assert.equal(secondLookFake.requests.length, 1);
+    assert.deepEqual(
+      (await lookRows(game.id)).map(({ verdict }) => verdict),
+      [null],
+    );
+    assert.equal(await runningGame(game.id), "active");
+  });
+
+  await t.test(
+    "B3-4: a second look the monitor's allowance refuses is a failed answer",
+    async () => {
+      const game = await lookRun("b3-4-allowance", [LOOK_TEXT]);
+      await pastTheCeiling(game.id);
+      await reviewWithLooks();
+      assert.deepEqual(secondLookFake.requests, [], "no provider request");
+      assert.deepEqual(
+        (await lookRows(game.id)).map(({ verdict }) => verdict),
+        [null],
+      );
+      assert.equal(await runningGame(game.id), "active");
+    },
+  );
+
+  await t.test(
+    "B3-5: a failed second look on a final claim ends the run with no result",
+    async () => {
+      const owner = "b3-5";
+      const game = await lookRun(owner, [LOOK_TEXT]);
+      await submitRun(owner, game);
+      secondLookFake.controls.behave = () => "invalid";
+      await endedByRetries(game.id);
+      assert.equal(await runningGame(game.id), "ended");
+      assert.ok(secondLookFake.requests.length > 1, "the review was retried");
+      assert.equal(monitorRequestCount(), 0, "the investigator never ran");
+      assert.deepEqual(
+        (await lookRows(game.id)).map(({ verdict }) => verdict),
+        [null],
+      );
+      assert.equal((await unverifiedEvents(game.id)).length, 1);
+    },
+  );
+
+  await t.test(
+    "B3-5: a final review whose second look fails is retried until it answers",
+    async () => {
+      const owner = "b3-5-retry";
+      const game = await lookRun(owner, [LOOK_TEXT]);
+      await submitRun(owner, game);
+      let asked = 0;
+      secondLookFake.controls.behave = () => (++asked === 1 ? 422 : "clear");
+      await workUntilSettled(game.id);
+      assert.equal(await runningGame(game.id), "captured");
+      assert.deepEqual(
+        (await lookRows(game.id)).map(({ verdict }) => verdict),
+        ["clear"],
+      );
+    },
+  );
+
+  await t.test("B3-3: a jailbreak on a final claim catches the finalizing run", async () => {
+    const owner = "b3-3-final";
+    const game = await lookRun(owner, [LOOK_TEXT]);
+    await submitRun(owner, game);
+    secondLookFake.controls.behave = () => "jailbreak";
+    await workUntilSettled(game.id);
+    assert.equal(await runningGame(game.id), "caught");
+    assert.equal(monitorRequestCount(), 0);
+    assert.deepEqual(await refusedRows(game.id), []);
+  });
+
+  await t.test("B3-6: five unclear texts are all judged, at once, on the final claim", async () => {
+    const owner = "b3-6";
+    const texts = [1, 2, 3, 4, 5].map((n) => `${LOOK_TEXT} ${n}`);
+    const game = await lookRun(owner, texts);
+    await submitRun(owner, game);
+    secondLookFake.controls.barrier = 5;
+    await workUntilSettled(game.id);
+    assert.equal(await runningGame(game.id), "captured");
+    assert.deepEqual(secondLookFake.requests.map(({ text }) => text).sort(), [...texts].sort());
+    assert.deepEqual(
+      (await lookRows(game.id)).map(({ verdict }) => verdict),
+      Array(5).fill("clear"),
+    );
+  });
+
+  await t.test(
+    "B3-6: during play a pass judges at most four, and the next pass the rest",
+    async () => {
+      const texts = [1, 2, 3, 4, 5].map((n) => `${LOOK_TEXT} ${n}`);
+      const game = await lookRun("b3-6-play", texts);
+      secondLookFake.controls.barrier = 4;
+      await reviewWithLooks();
+      assert.equal(secondLookFake.requests.length, 4);
+      assert.equal((await lookRows(game.id)).filter(({ verdict }) => verdict).length, 4);
+      secondLookFake.controls.barrier = 0;
+      await requeue(game.id);
+      await reviewWithLooks();
+      assert.equal(secondLookFake.requests.length, 5);
+      assert.equal((await lookRows(game.id)).filter(({ verdict }) => verdict).length, 5);
+    },
+  );
+
+  await t.test(
+    "B3-8: the second looks' time comes out of the investigator's deadline",
+    async () => {
+      const game = await lookRun("b3-8", [LOOK_TEXT]);
+      secondLookFake.controls.delayMs = 4_000;
+      monitorStream = "alive";
+      await reviewWithLooks({
+        deadlineMs: 10_000,
+        classifierDeadlineMs: 1_000,
+        annotationDeadlineMs: 1_000,
+      });
+      assert.equal(secondLookFake.requests.length, 1);
+      const arrived = requests.findLast(({ role }) => role === "monitor")!.at;
+      // Without the subtraction the investigator would hold its request for the full 10 seconds.
+      assert.ok(performance.now() - arrived < 7_000, "the investigator's deadline was shortened");
+      const [review] = await routeRows(game.id);
+      // The deadline reaches a request that has no response as an abort, as in S8.
+      assert.match(review.operational_error, /This operation was aborted/);
+      assert.doesNotMatch(review.operational_error, /ran out of time|stopped responding/);
+      for (const hold of (await monitorHolds(game.id)).filter(({ settled_at }) => !settled_at))
+        await settleByRecord(game.id, hold.id);
+    },
+  );
+
+  await t.test(
+    "B3-3: a stored jailbreak is caught again with no request, never captured",
+    async () => {
+      const owner = "b3-sticky-seeded";
+      const game = await lookRun(owner, [LOOK_TEXT]);
+      await pool.query(
+        "UPDATE ctf.text_screens SET second_look_verdict='jailbreak',second_look_reason='seeded' WHERE game_id=$1 AND text_sha256=$2",
+        [game.id, createHash("sha256").update(LOOK_TEXT).digest("hex")],
+      );
+      await submitRun(owner, game);
+      await workUntilSettled(game.id);
+      assert.equal(await runningGame(game.id), "caught");
+      assert.deepEqual(secondLookFake.requests, [], "no second look request");
+      assert.equal(monitorRequestCount(), 0);
+      assert.deepEqual(await refusedRows(game.id), []);
+    },
+  );
+
+  await t.test(
+    "B3-3: a jailbreak whose catch did not commit is caught after the requeue",
+    async () => {
+      const owner = "b3-sticky-lost-claim";
+      const game = await lookRun(owner, [LOOK_TEXT]);
+      await submitRun(owner, game);
+      secondLookFake.controls.behave = () => "jailbreak";
+      secondLookFake.controls.beforeAnswer = async () => {
+        await pool.query(
+          "UPDATE ctf.monitor_jobs SET claim_until=now()-interval '1 second' WHERE game_id=$1",
+          [game.id],
+        );
+      };
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      await runMonitorWorkerOnce();
+      assert.deepEqual(
+        (await lookRows(game.id)).map(({ verdict }) => verdict),
+        ["jailbreak"],
+      );
+      assert.equal(await runningGame(game.id), "finalizing", "the catch did not commit");
+      secondLookFake.controls.beforeAnswer = undefined;
+      await requeue(game.id);
+      await workUntilSettled(game.id);
+      assert.equal(await runningGame(game.id), "caught");
+      assert.equal(secondLookFake.requests.length, 1, "the retry sent no request");
+      assert.equal(monitorRequestCount(), 0);
+    },
+  );
+
+  for (const order of [
+    ["jailbreak", 422],
+    [422, "jailbreak"],
+  ] as const)
+    await t.test(
+      `B3-5: on a final claim a jailbreak wins over a failed look (${order.join(", ")})`,
+      async () => {
+        const owner = `b3-5-mixed-${order[0]}`;
+        const texts = [`${LOOK_TEXT} one`, `${LOOK_TEXT} two`];
+        const game = await lookRun(owner, texts);
+        await submitRun(owner, game);
+        secondLookFake.controls.behave = (text) => order[texts.indexOf(text)];
+        await workUntilSettled(game.id);
+        assert.equal(await runningGame(game.id), "caught");
+        assert.equal(secondLookFake.requests.length, 2);
+        assert.equal(monitorRequestCount(), 0);
+      },
+    );
+
   await t.test("M2: migration 031 applies twice and every list names it", async () => {
     const file = new URL("../../db/migrations/031-monitor-routing.sql", import.meta.url);
     await pool.query(await readFile(file, "utf8"));
@@ -9823,5 +10247,44 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         /031-monitor-routing/,
         list,
       );
+  });
+  await t.test("M3: migration 032 applies twice and every list names it", async () => {
+    const file = new URL("../../db/migrations/032-second-look.sql", import.meta.url);
+    await pool.query(await readFile(file, "utf8"));
+    await pool.query(await readFile(file, "utf8"));
+    const { rows: columns } = await pool.query(
+      `SELECT column_name,data_type FROM information_schema.columns
+       WHERE table_schema='ctf' AND table_name='text_screens' AND column_name LIKE 'second_look%'
+       ORDER BY column_name`,
+    );
+    assert.deepEqual(
+      columns.map((column) => [column.column_name, column.data_type]),
+      [
+        ["second_look_reason", "text"],
+        ["second_look_review_id", "uuid"],
+        ["second_look_verdict", "text"],
+      ],
+    );
+    const { rows: constraints } = await pool.query(
+      `SELECT conname,pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conname IN ('text_screens_second_look_check','text_screens_second_look_review_fk')
+       ORDER BY conname`,
+    );
+    assert.match(constraints[0].def, /jailbreak.*clear/s);
+    assert.match(
+      constraints[1].def,
+      /FOREIGN KEY \(game_id, second_look_review_id\) REFERENCES monitor_reviews\(game_id, id\)/,
+    );
+    for (const list of [
+      "../../scripts/setup.ts",
+      "../../scripts/monitor-investigate-eval-live.ts",
+      "./async-backend.test.ts",
+      "./flag-submission-route.test.ts",
+      "./flag-submission-runner.test.ts",
+      "./flag-submission.test.ts",
+      "./sprites.test.ts",
+      "../../README.md",
+    ])
+      assert.match(await readFile(new URL(list, import.meta.url), "utf8"), /032-second-look/, list);
   });
 });

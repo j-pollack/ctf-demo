@@ -108,3 +108,27 @@ test("run details list each distinct model and effort when sessions differ", () 
   assert.match(html, /glm-5\.3-flash · Low effort/);
   assert.match(html, /<p class="run-model" title="vendor\/model-b">model-b · High effort<\/p>/);
 });
+
+test("a jailbreak caught by the second look is not labelled refused", () => {
+  const decision = (extra: object) => [
+    {
+      ordinal: 1,
+      event: {
+        id: 5,
+        kind: "monitor" as const,
+        decision: "block" as const,
+        cause: "jailbreak" as const,
+        turn: 1,
+        text: "",
+        ...extra,
+      },
+    },
+  ];
+  assert.match(
+    render({ decisions: decision({ refusedKinds: ["instruction"] }) }),
+    /Jailbreak refused/,
+  );
+  const caught = render({ decisions: decision({}) });
+  assert.match(caught, /Jailbreak caught/);
+  assert.doesNotMatch(caught, /Jailbreak refused/);
+});

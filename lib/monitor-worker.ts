@@ -10,6 +10,9 @@ import {
 import { captureCommittedMonitorSnapshot } from "./monitor-snapshot";
 import { classifyMonitorTarget } from "./monitor-classifier";
 import { chooseRoute } from "./monitor-route";
+import { runSecondLooks } from "./second-look-run";
+import { SECOND_LOOK_DEADLINE_MS } from "./second-look";
+import { JAILBREAK_CATCH_TEXT } from "./text-screen";
 import { gatherRouteFacts } from "./monitor-route-facts";
 import { annotateToolCalls } from "./tool-annotations";
 import {
@@ -182,6 +185,36 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
         }),
       ],
     );
+    // Set only when second looks were sent, so their time comes out of the investigator's.
+    let lookStarted: number | undefined;
+    if (game.jailbreak_catch) {
+      const started = Date.now();
+      const looks = await runSecondLooks({
+        game: source,
+        claim,
+        reviewId,
+        messages: current.messages,
+        systemPrompt: current.systemPrompt,
+        signal,
+        deadlineMs: timing.secondLookDeadlineMs ?? SECOND_LOOK_DEADLINE_MS,
+        streamIdleMs: timing.streamIdleMs,
+      });
+      if (looks.asked) lookStarted = started;
+      if (looks.jailbreakQuestions) {
+        const decision = { verdict: "block" as const, reason: JAILBREAK_CATCH_TEXT };
+        await catchAsyncRun(claim, reviewId, decision, classifier.suspicion, {
+          cause: "jailbreak",
+          questions: looks.jailbreakQuestions,
+        });
+        await completeMonitorReview(reviewId, decision);
+        await finishMonitorJob(claim, { kind: "block", reason: decision.reason });
+        await deleteSpriteAfterEnd(game.sprite_name);
+        return;
+      }
+      // A text could tell the model not to answer, so a final review does not go on without one.
+      if (looks.failed && claim.final)
+        throw new Error("A second look gave no valid answer on a final review.");
+    }
     const { route, signal: routeSignal } = chooseRoute(
       await gatherRouteFacts({
         final: claim.final,
@@ -209,7 +242,8 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
         signal,
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
-        deadlineAt: Date.now() + timing.deadlineMs,
+        // The second looks' time comes out of the investigator's.
+        deadlineAt: (lookStarted ?? Date.now()) + timing.deadlineMs,
         streamIdleMs: timing.streamIdleMs,
       },
       policy,

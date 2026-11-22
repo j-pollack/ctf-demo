@@ -33,6 +33,8 @@ export async function catchAsyncRun(
   reviewId: string,
   decision: ReviewDecision,
   suspicion: number,
+  // Set for a catch that has a cause of its own, such as a second look's jailbreak.
+  cause?: { cause: "jailbreak"; questions: readonly string[] },
 ) {
   return transaction(async (client) => {
     const {
@@ -62,6 +64,7 @@ export async function catchAsyncRun(
           text: decision.reason ?? "The investigator blocked this run.",
           decision: "block",
           suspicion,
+          ...(cause && { cause: cause.cause, questions: [...cause.questions] }),
           turn: run.turns,
         }),
       ],

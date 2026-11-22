@@ -14,18 +14,18 @@ import type { MonitorSnapshot } from "./types";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
-// The hashes under which screens of the session's instructions and system prompts are stored.
-function screenRefs(messages: readonly Message[], systemPrompt: string | undefined) {
+// The texts of the session's instructions and system prompts, whose hashes are their screens' refs.
+export function screenSources(messages: readonly Message[], systemPrompt: string | undefined) {
   const users = messages.filter((message) => message.role === "user");
   const prompts = users.flatMap((message) => {
     const { systemPrompt: recorded } = message as { systemPrompt?: unknown };
     return typeof recorded === "string" ? [recorded] : [];
   });
   return {
-    instruction: users.map((message) => sha256(textOf(message))),
-    system_prompt: [...prompts, ...(systemPrompt ? [systemPrompt] : [])]
-      .filter((text) => text.trim() !== "")
-      .map(sha256),
+    instruction: users.map((message) => textOf(message)),
+    system_prompt: [...prompts, ...(systemPrompt ? [systemPrompt] : [])].filter(
+      (text) => text.trim() !== "",
+    ),
   };
 }
 
@@ -39,7 +39,11 @@ export async function gatherRouteFacts(input: {
 }): Promise<RouteFacts> {
   const { final, sessionId, messages, commands } = input;
   const labelled = await labelledCalls(sessionId);
-  const refs = screenRefs(messages, input.systemPrompt);
+  const sources = screenSources(messages, input.systemPrompt);
+  const refs = {
+    instruction: sources.instruction.map(sha256),
+    system_prompt: sources.system_prompt.map(sha256),
+  };
   const [stored, screens, missing] = await Promise.all([
     db.query<{ command_answers: Record<string, number>; outcome_answers: Record<string, number> }>(
       `SELECT command_answers,outcome_answers FROM ctf.tool_call_annotations

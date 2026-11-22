@@ -81,7 +81,9 @@ function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDe
                 {event.decision === "error"
                   ? "Investigation error"
                   : event.cause === "jailbreak"
-                    ? "Jailbreak refused"
+                    ? event.refusedKinds
+                      ? "Jailbreak refused"
+                      : "Jailbreak caught"
                     : event.cause === "flag_output"
                       ? "Flag in command output"
                       : game.monitorMode === "async"

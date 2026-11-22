@@ -72,6 +72,9 @@ test(
     );
     await pool.query(rules);
     await pool.query(rules);
+    await pool.query(
+      await readFile(new URL("../../db/migrations/023-text-screens.sql", import.meta.url), "utf8"),
+    );
     const returned = await readFile(
       new URL("../../db/migrations/024-command-returned.sql", import.meta.url),
       "utf8",
@@ -118,6 +121,9 @@ test(
         new URL("../../db/migrations/031-monitor-routing.sql", import.meta.url),
         "utf8",
       ),
+    );
+    await pool.query(
+      await readFile(new URL("../../db/migrations/032-second-look.sql", import.meta.url), "utf8"),
     );
     const legacy = (
       await pool.query(
