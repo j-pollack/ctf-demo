@@ -120,6 +120,29 @@ test("a persisted instruction replaces its optimistic entry in the same session"
   );
 });
 
+test("a refused instruction's placeholder replaces its optimistic entry, streamed or fetched", () => {
+  const placeholder: GameEvent = {
+    id: 2,
+    kind: "user",
+    text: "[A submission was refused by the jailbreak screen. Its text is withheld.]",
+    refused: true,
+  };
+  const state = {
+    alpha: {
+      ...createSessionUIState({ id: "alpha", events: [user(1)] }),
+      events: [user(1), { id: -1, kind: "user" as const, text: "typed text" }],
+    },
+  };
+  for (const merged of [
+    mergeSessionEvent(state, "alpha", placeholder),
+    applySessionSnapshot(state, "alpha", [user(1), placeholder], 2),
+  ])
+    assert.deepEqual(
+      merged.alpha.events.map((event) => event.id),
+      [1, 2],
+    );
+});
+
 test("selecting a session keeps aggregate run turns and finds starts in sibling transcripts", () => {
   const run = {
     id: "run",

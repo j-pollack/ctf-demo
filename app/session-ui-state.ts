@@ -174,16 +174,19 @@ export function setSessionBusy(
   return { ...state, [id]: { ...session, busy, stage, stopping: busy && session.stopping } };
 }
 
+// A persisted user event replaces the optimistic copy of the instruction it records. A refused
+// instruction is recorded as a placeholder with other text, so it replaces any optimistic copy.
+const replacesOptimistic = (held: GameEvent, event: GameEvent) =>
+  held.id < 0 &&
+  held.kind === "user" &&
+  event.kind === "user" &&
+  (event.refused || held.text === event.text);
+
 // Stream events are useful for immediate display, but only a fetched snapshot confirms a cursor.
 export function mergeSessionEvent(state: SessionUIMap, id: string, event: GameEvent): SessionUIMap {
   const session = state[id];
   if (!session) return state;
-  const heldEvents =
-    event.kind === "user"
-      ? session.events.filter(
-          (item) => !(item.id < 0 && item.kind === "user" && item.text === event.text),
-        )
-      : session.events;
+  const heldEvents = session.events.filter((item) => !replacesOptimistic(item, event));
   const events = heldEvents.some((item) => item.id === event.id)
     ? heldEvents.map((item) => (item.id === event.id ? event : item))
     : [...heldEvents, event].sort((left, right) => {
@@ -204,9 +207,7 @@ export function applySessionSnapshot(
   if (!session) return state;
   const events = new Map(session.events.map((event) => [event.id, event]));
   fetchedEvents.forEach((event) => {
-    if (event.kind === "user")
-      for (const [id, held] of events)
-        if (id < 0 && held.kind === "user" && held.text === event.text) events.delete(id);
+    for (const [id, held] of events) if (replacesOptimistic(held, event)) events.delete(id);
     events.set(event.id, event);
   });
   return {
