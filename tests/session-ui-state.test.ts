@@ -4,6 +4,7 @@ import {
   applyRunFinalizingState,
   applySessionSnapshot,
   createSessionUIState,
+  endLocalStream,
   isCurrentSessionCreateFence,
   isTerminalRunStatus,
   keepSelectedSessionProjection,
@@ -117,6 +118,35 @@ test("a persisted instruction replaces its optimistic entry in the same session"
   assert.deepEqual(
     merged.alpha.events.map((event) => event.id),
     [1, 2],
+  );
+});
+
+test("a stream the player stopped stays stopping until the server reports the session idle", () => {
+  const stopping = setSessionBusy(initial(), "alpha", true, "Agent thinking");
+  const pressed = { ...stopping, alpha: { ...stopping.alpha, stopping: true } };
+  const ended = endLocalStream(pressed, "alpha", true);
+  assert.equal(ended.alpha.busy, true);
+  assert.equal(ended.alpha.stopping, true, "Stop stays disabled while the server finishes");
+  const polledBusy = setSessionBusy(ended, "alpha", true, ended.alpha.stage);
+  assert.equal(polledBusy.alpha.stopping, true, "a poll that still sees it running keeps it");
+  const polledIdle = setSessionBusy(polledBusy, "alpha", false, "");
+  assert.equal(polledIdle.alpha.busy, false);
+  assert.equal(polledIdle.alpha.stopping, false);
+  const finished = endLocalStream(setSessionBusy(initial(), "alpha", true, "x"), "alpha", false);
+  assert.equal(finished.alpha.busy, false, "a stream that ended on its own is idle at once");
+});
+
+test("an instruction still waiting for the server stays last when a snapshot arrives", () => {
+  const state = {
+    alpha: {
+      ...createSessionUIState({ id: "alpha", events: [user(1)] }),
+      events: [user(1), { id: -1, kind: "user" as const, text: "go" }],
+    },
+  };
+  const fetched = applySessionSnapshot(state, "alpha", [user(1), user(2), user(3)], 3);
+  assert.deepEqual(
+    fetched.alpha.events.map((event) => event.id),
+    [1, 2, 3, -1],
   );
 });
 

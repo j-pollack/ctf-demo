@@ -58,6 +58,7 @@ import {
   runHasStarted,
   setSessionBusy,
   stopAllSessions,
+  endLocalStream,
   type SessionUIMap,
 } from "@/app/session-ui-state";
 
@@ -1465,7 +1466,11 @@ export default function GameUI({
         }));
     } finally {
       if (current()) {
-        updateSessionViews((currentViews) => setSessionBusy(currentViews, sessionId, false, ""));
+        // A run in async mode keeps going on the server until it sees the stop request.
+        const stoppedByPlayer = userStopped.current.has(sessionId) && game.monitorMode === "async";
+        updateSessionViews((currentViews) =>
+          endLocalStream(currentViews, sessionId, stoppedByPlayer),
+        );
         updateSession(sessionId, (current) => ({ ...current, live: undefined }));
         sessionControllers.current.delete(sessionId);
         refreshGame(

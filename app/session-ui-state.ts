@@ -182,6 +182,18 @@ const replacesOptimistic = (held: GameEvent, event: GameEvent) =>
   event.kind === "user" &&
   (event.refused || held.text === event.text);
 
+// A local stream has ended. If the player stopped it, the server may still be finishing the
+// response, so the session stays busy and stopping until a snapshot from the server says it is idle.
+export const endLocalStream = (state: SessionUIMap, id: string, stoppedByPlayer: boolean) =>
+  stoppedByPlayer
+    ? setSessionBusy(state, id, true, "Stopping")
+    : setSessionBusy(state, id, false, "");
+
+// Persisted events in id order. An instruction still waiting for the server (a negative id) is
+// the newest thing in the session, so it goes last.
+const byPosition = (left: GameEvent, right: GameEvent) =>
+  Number(left.id < 0) - Number(right.id < 0) || left.id - right.id;
+
 // Stream events are useful for immediate display, but only a fetched snapshot confirms a cursor.
 export function mergeSessionEvent(state: SessionUIMap, id: string, event: GameEvent): SessionUIMap {
   const session = state[id];
@@ -189,11 +201,7 @@ export function mergeSessionEvent(state: SessionUIMap, id: string, event: GameEv
   const heldEvents = session.events.filter((item) => !replacesOptimistic(item, event));
   const events = heldEvents.some((item) => item.id === event.id)
     ? heldEvents.map((item) => (item.id === event.id ? event : item))
-    : [...heldEvents, event].sort((left, right) => {
-        if (left.id < 0) return 1;
-        if (right.id < 0) return -1;
-        return left.id - right.id;
-      });
+    : [...heldEvents, event].sort(byPosition);
   return { ...state, [id]: { ...session, events } };
 }
 
@@ -214,7 +222,7 @@ export function applySessionSnapshot(
     ...state,
     [id]: {
       ...session,
-      events: [...events.values()].sort((left, right) => left.id - right.id),
+      events: [...events.values()].sort(byPosition),
       cursor: Math.max(session.cursor, confirmedCursor),
       fetched: true,
     },
