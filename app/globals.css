@@ -806,6 +806,22 @@ dialog::backdrop {
   border: 1px solid #b7c79d;
   border-left: 4px solid #537524;
 }
+/* An instruction the jailbreak screen refused: what the player sent, then the refusal. */
+.entry.user.refused {
+  border-left-color: var(--blocked);
+}
+.entry.user.refused .speaker {
+  background: var(--blocked);
+}
+.entry.user.refused pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.refused-note {
+  margin: 12px 0 0;
+  color: var(--blocked);
+  font-weight: 600;
+}
 .entry.agent {
   margin: 16px 0;
   padding: 18px 16px;

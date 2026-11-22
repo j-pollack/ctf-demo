@@ -128,7 +128,6 @@ function OutcomeStrip({
           caughtSessionId={game.caughtSessionId}
           caughtSessionOrdinal={game.caughtSessionOrdinal}
           caughtReason={game.caughtReason ?? events.findLast(isEndReview)?.text ?? null}
-          refusedTexts={game.refusedTexts}
           blockedCommand={events.some(
             (event) => event.kind === "monitor" && event.decision === "block" && !!event.command,
           )}
@@ -323,6 +322,7 @@ export function RunConsole(props: RunConsoleProps) {
                 submissionTransport={game.submissionTransport}
                 submissionUrl={game.submissionUrl}
                 rules={game.rules}
+                refusedTexts={game.refusedTexts}
                 showTurnModels={modelsVary}
                 disabled={props.busy}
                 streaming={props.streamingIds.includes(id)}

@@ -181,6 +181,7 @@ export function Entry({
   disabled = false,
   showModel = false,
   runStatus,
+  refusedTexts = [],
   onCopy,
 }: {
   event: GameEvent;
@@ -191,6 +192,8 @@ export function Entry({
   // Name the agent model on the turn. Wanted only when a run used more than one.
   showModel?: boolean;
   runStatus?: GameStatus;
+  // Texts the jailbreak screen refused, for the owner only. A refused placeholder shows its own.
+  refusedTexts?: NonNullable<PublicGame["refusedTexts"]>;
   onCopy?: () => void;
 }) {
   if (
@@ -226,6 +229,8 @@ export function Entry({
   // A time-limit stop is a normal, resumable pause — show it as info, not an error.
   const info = event.kind === "error" && event.resumable;
   const httpSubmission = event.kind === "submit" && event.submissionTransport === "http";
+  const refused = event.kind === "user" && event.refused ? refusedOf(event, refusedTexts) : [];
+  if (refused.length) return <RefusedEntry texts={refused} />;
   return (
     <article className={`entry ${event.kind}${info ? " info" : ""}`}>
       <header>
@@ -352,13 +357,39 @@ export function Entry({
   );
 }
 
+export const REFUSED_NOTE =
+  "Refused. The screen found an attempt to override the agent's or the monitor's rules. The agent never received this, and it ended the run.";
+
+// The refused texts a placeholder stands for, in the order it lists them.
+function refusedOf(event: GameEvent, texts: NonNullable<PublicGame["refusedTexts"]>) {
+  return (event.refusedTextIds ?? []).flatMap((id) => texts.filter((text) => text.id === id));
+}
+
+// What the player sent, as plain text, with the refusal under it. The stored transcript holds
+// only the placeholder, so the agent and the investigator never see this text.
+function RefusedEntry({ texts }: { texts: NonNullable<PublicGame["refusedTexts"]> }) {
+  return (
+    <article className="entry user refused">
+      <header>
+        <strong className="speaker">USER</strong>
+      </header>
+      {texts.map((text) => (
+        <div key={text.id} className="refused-text">
+          {text.kind === "system_prompt" && <p>System prompt</p>}
+          <pre>{text.text}</pre>
+        </div>
+      ))}
+      <p className="refused-note">{REFUSED_NOTE}</p>
+    </article>
+  );
+}
+
 export function BlockedNotice({
   status = "blocked",
   blockedCommand = false,
   caughtSessionId = null,
   caughtSessionOrdinal = null,
   caughtReason = null,
-  refusedTexts = [],
   multiSession = false,
   onShowSession,
 }: {
@@ -369,8 +400,6 @@ export function BlockedNotice({
   caughtSessionId?: string | null;
   caughtSessionOrdinal?: number | null;
   caughtReason?: string | null;
-  // Texts the jailbreak screen refused. Shown to the owner on this notice and nowhere else.
-  refusedTexts?: NonNullable<PublicGame["refusedTexts"]>;
   // A run with one session does not need to be told which session was caught.
   multiSession?: boolean;
   // Shows and focuses the session that caused the catch. Given only while that session is hidden.
@@ -385,16 +414,6 @@ export function BlockedNotice({
     <div className="terminal loss">
       <h2>{heading}</h2>
       <p>{body}</p>
-      {caught &&
-        refusedTexts.map((refused) => (
-          <div key={refused.id} className="refused-text">
-            <p>
-              Refused {refused.kind === "instruction" ? "instruction" : "system prompt"}
-              {refused.flagged ? " (flagged by the screen)" : ""}
-            </p>
-            <pre>{refused.text}</pre>
-          </div>
-        ))}
       {caught && multiSession && (caughtSessionOrdinal || caughtSessionId) && (
         <p>
           Session {caughtSessionOrdinal ?? caughtSessionId!.slice(0, 8)} caused the catch.{" "}

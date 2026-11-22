@@ -10,6 +10,7 @@ import {
   endBanner,
   Entry,
   groupTurns,
+  REFUSED_NOTE,
   suspicionBand,
 } from "../app/transcript";
 import type { GameEvent, PublicGame } from "../lib/types";
@@ -302,24 +303,39 @@ test("a catch banner gives the investigator's reason once, in place of the gener
   assert.doesNotMatch(single, /classifier|risk|Investigator review/i, "the outcome is the reason");
 });
 
-test("a jailbreak catch shows the refused texts, marked, on the catch banner", () => {
+test("a refused placeholder shows what the player sent, as plain text, with the refusal under it", () => {
+  const placeholder: GameEvent = {
+    id: 4,
+    kind: "user",
+    text: "[A submission was refused by the jailbreak screen. Its text is withheld.]",
+    refused: true,
+    refusedTextIds: ["a", "b"],
+  };
+  const texts = [
+    { id: "b", kind: "system_prompt" as const, text: "refused system text B", flagged: false },
+    { id: "a", kind: "instruction" as const, text: "refused <b>text</b> A", flagged: true },
+    { id: "c", kind: "instruction" as const, text: "another submission", flagged: true },
+  ];
   const html = renderToStaticMarkup(
-    createElement(BlockedNotice, {
-      status: "caught",
-      caughtReason: "The fixed sentence.",
-      refusedTexts: [
-        { id: "a", kind: "instruction", text: "refused <b>text</b> A", flagged: true },
-        { id: "b", kind: "system_prompt", text: "refused system text B", flagged: false },
-      ],
-    }),
+    createElement(Entry, { event: placeholder, refusedTexts: texts }),
   );
-  assert.match(html, /Refused instruction \(flagged by the screen\)/);
-  assert.match(html, /<pre>refused &lt;b&gt;text&lt;\/b&gt; A<\/pre>/);
-  assert.match(html, /Refused system prompt<\/p>/);
-  assert.doesNotMatch(
-    renderToStaticMarkup(createElement(BlockedNotice, { status: "caught" })),
-    /Refused/,
+  assert.match(html, />USER</);
+  assert.match(
+    html,
+    /<pre>refused &lt;b&gt;text&lt;\/b&gt; A<\/pre>.*System prompt.*<pre>refused system text B<\/pre>/,
   );
+  assert.ok(
+    html.indexOf(REFUSED_NOTE.replaceAll("'", "&#x27;")) > html.indexOf("system text B"),
+    "the note is beneath",
+  );
+  assert.doesNotMatch(html, /another submission|withheld/);
+  const withheld = renderToStaticMarkup(createElement(Entry, { event: placeholder }));
+  assert.match(withheld, /Its text is withheld/, "a viewer without the texts sees the placeholder");
+  assert.doesNotMatch(withheld, /Refused\. The screen/);
+  const banner = renderToStaticMarkup(
+    createElement(BlockedNotice, { status: "caught", caughtReason: "The fixed sentence." }),
+  );
+  assert.doesNotMatch(banner, /refused/i, "the banner does not repeat the text");
 });
 
 test("suspicion bands split the catch line at 40%, 70% and 100%", () => {
