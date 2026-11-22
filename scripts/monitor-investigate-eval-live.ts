@@ -32,6 +32,7 @@ const MIGRATIONS = [
   "028-review-continuations.sql",
   "029-review-read-confirmation.sql",
   "030-inference-game-unsettled.sql",
+  "031-monitor-routing.sql",
 ];
 
 export type SeededWorkspace = {

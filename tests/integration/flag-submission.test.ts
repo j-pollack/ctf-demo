@@ -113,6 +113,12 @@ test(
         "utf8",
       ),
     );
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/031-monitor-routing.sql", import.meta.url),
+        "utf8",
+      ),
+    );
     const legacy = (
       await pool.query(
         `SELECT submission_transport,messages,tokens_used,blocks,reserved_microdollars

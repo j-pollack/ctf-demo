@@ -4,7 +4,13 @@ import { randomUUID } from "node:crypto";
 import { transaction } from "./games";
 import { GameError, hasSecret } from "./policy";
 import { diagnosticText } from "./inference";
-import { assertMonitorJobClaim, MAX_REQUEUES, type MonitorJobClaim } from "./monitor-jobs";
+import {
+  assertMonitorJobClaim,
+  MAX_REQUEUES,
+  NEWEST_EPOCH,
+  queueFinalReviews,
+  type MonitorJobClaim,
+} from "./monitor-jobs";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { wakeWorker } from "./worker-wake";
 import { JAILBREAK_CATCH_TEXT, REFUSED_PLACEHOLDER_TEXT } from "./text-screen";
@@ -223,6 +229,7 @@ export async function beginAsyncSubmission(input: {
          (SELECT turns FROM ctf.games WHERE id=$1)))`,
       [input.gameId, input.sessionId, input.value, correct],
     );
+    await queueFinalReviews(client, input.gameId);
     await client.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [input.gameId]);
     void wakeWorker();
     return { correct };
@@ -240,7 +247,7 @@ export async function claimAsyncFinalization(): Promise<FinalizationClaim | null
        WHERE f.status='queued' AND g.status='finalizing'
          AND g.finalization_error IS NULL
          AND NOT EXISTS (SELECT 1 FROM ctf.monitor_jobs j WHERE j.game_id=f.game_id
-           AND (j.status<>'caught-up' OR j.covered_version<j.requested_version))
+           AND (j.status<>'caught-up' OR (${NEWEST_EPOCH} AND j.final_version<j.requested_version)))
          AND NOT EXISTS (SELECT 1 FROM ctf.agent_sessions s WHERE s.game_id=f.game_id
            AND s.lease_until>now())
          AND g.reserved_microdollars=0
@@ -262,8 +269,8 @@ export async function claimAsyncFinalization(): Promise<FinalizationClaim | null
     if (!gameLocked || gameLocked.status !== "finalizing" || gameLocked.finalization_error)
       return null;
     const { rowCount: pending } = await client.query(
-      `SELECT 1 FROM ctf.monitor_jobs WHERE game_id=$1
-       AND (status<>'caught-up' OR covered_version<requested_version) LIMIT 1`,
+      `SELECT 1 FROM ctf.monitor_jobs j WHERE j.game_id=$1
+       AND (j.status<>'caught-up' OR (${NEWEST_EPOCH} AND j.final_version<j.requested_version)) LIMIT 1`,
       [candidate.game_id],
     );
     if (pending) return null;
@@ -366,8 +373,8 @@ export async function finalizeAsyncRun(
     const {
       rows: [debt],
     } = await client.query<{ pending: boolean }>(
-      `SELECT EXISTS(SELECT 1 FROM ctf.monitor_jobs WHERE game_id=$1
-         AND (status <> 'caught-up' OR covered_version < requested_version)) AS pending`,
+      `SELECT EXISTS(SELECT 1 FROM ctf.monitor_jobs j WHERE j.game_id=$1
+         AND (j.status <> 'caught-up' OR (${NEWEST_EPOCH} AND j.final_version < j.requested_version))) AS pending`,
       [claim.gameId],
     );
     if (debt.pending) return false;

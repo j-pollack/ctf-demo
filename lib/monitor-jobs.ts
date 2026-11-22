@@ -12,7 +12,13 @@ export type MonitorJobClaim = {
   targetVersion: number;
   claimToken: string;
   claimUntil: Date;
+  // The run was finalizing when the job was claimed: this review is the session's final one.
+  final: boolean;
 };
+
+// Whether the job `j` is its session's newest epoch: older epochs hold a prefix a rewrite replaced.
+export const NEWEST_EPOCH = `j.epoch=(SELECT max(o.epoch) FROM ctf.monitor_jobs o
+  WHERE o.game_id=j.game_id AND o.session_id=j.session_id)`;
 
 const CLAIM_MS = 90_000;
 const RETRY_DELAYS_MS = [1_000, 5_000, 20_000] as const;
@@ -61,6 +67,16 @@ export async function enqueueMonitorJob(
   void wakeWorker();
 }
 
+// When a run enters `finalizing`: each session's newest-epoch job that is not caught and not
+// being reviewed is queued for its final review. Older epochs hold a prefix a rewrite replaced.
+export async function queueFinalReviews(client: PoolClient, gameId: string) {
+  await client.query(
+    `UPDATE ctf.monitor_jobs j SET status='queued',attempts=0,next_attempt_at=now(),updated_at=now()
+     WHERE j.game_id=$1 AND j.status NOT IN ('caught','reviewing') AND ${NEWEST_EPOCH}`,
+    [gameId],
+  );
+}
+
 // Whether a worker has anything it must act on without a new enqueue. A queued finalization job
 // of a run that is not finalizing, or that failed scoring, is not pending: nothing will move it.
 export async function hasPendingWork() {
@@ -96,6 +112,27 @@ export async function requeueUnresolvedMonitorJobs() {
      UPDATE ctf.games SET state_revision=state_revision+1
      WHERE id IN (SELECT game_id FROM requeued)`,
     [REQUEUE_DELAYS_MINUTES, MAX_REQUEUES],
+  );
+}
+
+// A run that was finalizing before final reviews existed has caught-up jobs with no final allow,
+// and nothing else queues them. Same lock order as the requeue above: run row first.
+export async function requeueUnfinalReviews() {
+  await db.query(
+    `WITH due AS (
+       SELECT g.id FROM ctf.games g
+       WHERE g.status='finalizing' AND g.monitor_mode='async' AND EXISTS (
+         SELECT 1 FROM ctf.monitor_jobs j WHERE j.game_id=g.id AND j.status='caught-up'
+           AND j.final_version<j.requested_version AND ${NEWEST_EPOCH})
+       FOR UPDATE OF g SKIP LOCKED
+     ), requeued AS (
+       UPDATE ctf.monitor_jobs j SET status='queued',attempts=0,next_attempt_at=now(),updated_at=now()
+       FROM due WHERE j.game_id=due.id AND j.status='caught-up'
+         AND j.final_version<j.requested_version AND ${NEWEST_EPOCH}
+       RETURNING j.game_id
+     )
+     UPDATE ctf.games SET state_revision=state_revision+1
+     WHERE id IN (SELECT game_id FROM requeued)`,
   );
 }
 
@@ -137,11 +174,13 @@ export async function claimMonitorJob(claimMs = CLAIM_MS): Promise<MonitorJobCla
        ORDER BY coalesce(last_reviewed_at,created_at),created_at,id LIMIT 10`,
     );
     for (const candidate of candidates) {
-      const { rowCount } = await client.query(
-        "SELECT 1 FROM ctf.games WHERE id=$1 FOR UPDATE SKIP LOCKED",
+      const {
+        rows: [run],
+      } = await client.query<{ status: string }>(
+        "SELECT status FROM ctf.games WHERE id=$1 FOR UPDATE SKIP LOCKED",
         [candidate.game_id],
       );
-      if (!rowCount) continue;
+      if (!run) continue;
       const {
         rows: [job],
       } = await client.query<{
@@ -193,6 +232,7 @@ export async function claimMonitorJob(claimMs = CLAIM_MS): Promise<MonitorJobCla
         targetVersion: Number(job.requested_version),
         claimToken,
         claimUntil: claimed.claim_until,
+        final: run.status === "finalizing",
       };
     }
     await client.query("COMMIT");
@@ -220,13 +260,20 @@ export async function finishMonitorJob(
       "SELECT attempts,requested_version FROM ctf.monitor_jobs WHERE id=$1",
       [claim.jobId],
     );
+    const {
+      rows: [run],
+    } = await client.query<{ status: string }>("SELECT status FROM ctf.games WHERE id=$1", [
+      claim.gameId,
+    ]);
     const newer = Number(job.requested_version) > claim.targetVersion;
+    // An allow that was not final waits for the final review once the run is submitted.
+    const awaitsFinal = !claim.final && run.status === "finalizing";
     const retry = outcome.kind === "error" && !newer && job.attempts < RETRY_DELAYS_MS.length;
     const status =
       outcome.kind === "block"
         ? "caught"
         : outcome.kind === "allow"
-          ? newer
+          ? newer || awaitsFinal
             ? "queued"
             : "caught-up"
           : newer
@@ -238,6 +285,8 @@ export async function finishMonitorJob(
     await client.query(
       `UPDATE ctf.monitor_jobs SET status=$2,
        covered_version=CASE WHEN $3='allow' THEN greatest(covered_version,$4) ELSE covered_version END,
+       final_version=CASE WHEN $3='allow' AND $8::boolean
+         THEN greatest(final_version,$4) ELSE final_version END,
        reviewed_version=CASE WHEN $3 IN ('allow','block','unknown')
          THEN greatest(reviewed_version,$4) ELSE reviewed_version END,
        claim_token=NULL,claim_until=NULL,target_version=NULL,reason=$5,
@@ -252,6 +301,7 @@ export async function finishMonitorJob(
         outcome.reason ?? null,
         delay,
         newer,
+        claim.final,
       ],
     );
     await client.query("UPDATE ctf.games SET state_revision=state_revision+1 WHERE id=$1", [

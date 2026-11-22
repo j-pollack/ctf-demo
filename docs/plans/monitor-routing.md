@@ -2,7 +2,7 @@
 
 - Worktree: `/Users/jonathan/Code/ctf/.worktrees/monitor-routing`
 - Branch: `feature/monitor-routing`, stacked on `feature/investigator-stream`
-- Status: builds 1 and 2 of 4 built and reviewed, gates pass. Builds 3 and 4 not built
+- Status: builds 1 to 3 of 4 built and reviewed, gates pass. Build 4, the second look, not built
 - Ships in pull request 37.
 
 ## Problem
@@ -112,7 +112,7 @@ In `reviewClaim`, after the annotation pass, the classifier and, once build 4 ad
   - `unannotated(sessionId, annotatableCalls(...))` is not empty after this pass.
 - **Deferred.** Otherwise. The investigator does not run. The review row is completed with verdict `allow` and `route = 'deferred'`, and the job finishes as an allow.
 
-`ctf.monitor_reviews.route text` records `final`, `investigated` or `deferred`, with a check constraint. Migration 031.
+`ctf.monitor_reviews.route text` records `final`, `investigated` or `deferred`, with a check constraint. Migration 031. The worker logs one line for each review, `monitor.route`, with the review's id, the route and the name of the signal that fired, and no transcript content.
 
 ### B2. The final review
 
@@ -122,6 +122,7 @@ In `reviewClaim`, after the annotation pass, the classifier and, once build 4 ad
 - An allow from a claim that was not final, on a run that is now `finalizing`, leaves the job `queued`.
 - `claimAsyncFinalization` and `finalizeAsyncRun` require `final_version >= requested_version` for each session's newest-epoch job, in place of the `covered_version` condition they have today. A final allow implies covered. `resolveUnverifiedRun` checks job statuses only and does not change.
 - The player's monitor status counts a session as pending while its newest job has `final_version < requested_version` and the run is `finalizing`.
+- A run that is already `finalizing` when this deploys has jobs that are caught up with no final review, because every existing job starts with `final_version` 0, and an older worker can still finish a job that way during the deploy. In the pass that requeues unresolved jobs, the worker also requeues each newest-epoch job that is caught up with `final_version < requested_version` on a `finalizing` run. It cannot repeat: once this code runs, a newest job that is caught up on a `finalizing` run has its final review.
 - The retries and requeues of step 4a apply to final reviews unchanged.
 - No code is needed for these, and they are stated so that nobody builds them:
   - A final review targets the whole session. The snapshot already reconstructs the transcript up to the target version.
@@ -214,6 +215,7 @@ Integration tests use the real worker, the real runner and real Postgres. Only O
 - B2-8. A draining worker finishes the final review it has claimed and claims no new job.
 - B2-9. A final review whose read confirmation fails after it was asked is retried.
 - B2-10. The player's monitor status shows queued, not caught up, while final reviews wait.
+- B2-11. A run that is already `finalizing`, with a caught-up job at `final_version` 0 and nothing queued, reaches its final review and finalizes.
 - M2. Migration 031 applies twice. It adds `monitor_reviews.route` with its check and `monitor_jobs.final_version NOT NULL DEFAULT 0`. The lists of A3-10 include it.
 
 ### Build 4: B3
@@ -270,3 +272,12 @@ Integration tests use the real worker, the real runner and real Postgres. Only O
   - An error inside the catch left the run alive and stored the error's text in place of the output. A NUL byte in the output caused that error at will. Both are fixed as A1 says.
   - A refusal for a lost lease stored the flag where the session's next response would send it to the model. Lead decision 9 removes that refusal.
   - The reviewer checked the lock order against every other writer of the run row, that an existing receipt does not stop the catch and stays unpromoted, both orders of the race with the worker, that each outcome completes the command once, the counts and the event of a caught run, what `hasSecret` matches, the `tool-v2` wording against this contract character for character, and that the changed tests still test what they tested.
+- Build 3, 2026-11-22. The lead ran the gates on the tree rebased onto the pull request's head at `4d394c3`: check 440 passed, integration 470 passed, build passed, coverage 440 passed. The pure route decision is `lib/monitor-route.ts`, and `lib/monitor-route-facts.ts` gathers its facts. Many existing tests had sessions with no signal and would have been deferred. Their shared command became one that names `flag.txt`, and a few seed an unclear instruction screen, so they still test an investigation. `scripts/smoke.ts` was changed by reading and not run.
+- Code review of build 3, 2026-11-22. Verdict: approve with fixes. The reviewer found no path to `captured` that skips a final allow: `finalizeAsyncRun` is the only writer of that status and checks the gate under the run row lock, `final_version` has one writer, and a claim's `final` flag is read under the same lock a submission takes.
+  - Runs already `finalizing` at deploy would have stuck for good, keeping their Sprite and an environment slot. B2 now heals them in the worker, with B2-11.
+  - The live smoke script's test for pending work became always true for an active run. It is corrected.
+  - The integration cases for B1-1 could not tell which signal fired. The worker now logs the signal and each case asserts it. The case for a call with no annotation no longer fails the whole pass.
+  - B2-1 now covers a job that is unresolved, one in the middle of its retries, and one whose claim has expired.
+  - The reviewer walked these orders of events and each holds the gate: a message appended after a final review started or finished, a new epoch after submission, a job being reviewed at submission, an unresolved or retrying job at submission, two submissions at once, a claim between the status change and the requeue, a deferred allow racing a submission, a drain, a read confirmation that fails after it was asked, and a final review refused for the allowance.
+  - It also described a session that reads the flag and is deferred during play: a script written from base64 and run with its output encoded, so that no command names `flag.txt`, the exact check misses the output, and only `runs_unseen_code` answers high. Its final review at submission is what covers it.
+  - Noted and not changed: a deferred session shows as caught up at once, which tells a player that its commands carried no signal.

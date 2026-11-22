@@ -58,13 +58,15 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
   await pool.query(await sql("migrations/017-settings.sql"));
   process.env.OPENROUTER_API_KEY = "synthetic-idle-key";
 
-  const { hasPendingWork } = await import("../../lib/monitor-jobs");
+  const { claimMonitorJob, finishMonitorJob, hasPendingWork } =
+    await import("../../lib/monitor-jobs");
   const { startWakeEndpoint } = await import("../../lib/monitor-wake-server");
   const { wakeWorker, WAKE_KEY } = await import("../../lib/worker-wake");
   const { persistReviewedSessionMessages, releaseSessionLease } =
     await import("../../lib/sessions");
   const { completeAsyncCommand } = await import("../../lib/monitor-commands");
   const { receiveFlagSubmission, hashSubmissionToken } = await import("../../lib/flag-submissions");
+  const { beginAsyncSubmission } = await import("../../lib/async-finalization");
   const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
   const { createWorkerLoops, realClock } = await import("../../lib/monitor-worker-loop");
   const { FLAG_READ_MONITOR_VERSION } = await import("../../lib/control");
@@ -511,6 +513,295 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
           Array(4).fill("fulfilled"),
         );
       }
+    },
+  );
+
+  // Earlier scenarios leave reviews that reference their jobs, so these start from no runs at all.
+  const resetRuns = async () => {
+    await clearRow();
+    await pool.query("TRUNCATE ctf.games CASCADE");
+    logged.length = 0;
+  };
+  // A second session of a game, with its jobs given as [epoch, status, state] triples. A queued
+  // job in the middle of its retries is `retrying`; a reviewing job's claim can be `expired`.
+  const sessionWithJobs = async (
+    gameId: string,
+    ordinal: number,
+    jobs: [number, string, ("retrying" | "expired")?][],
+  ) => {
+    const id = randomUUID();
+    await pool.query(
+      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
+       VALUES($1,$2,$3,'synthetic-agent','medium','')`,
+      [id, gameId, ordinal],
+    );
+    for (const [epoch, status, state] of jobs)
+      await pool.query(
+        `INSERT INTO ctf.monitor_jobs(id,game_id,session_id,epoch,start_version,requested_version,
+           covered_version,attempts,status,claim_token,claim_until,next_attempt_at)
+         VALUES($1,$2,$3,$4,1,1,CASE WHEN $5='queued' THEN 0 ELSE 1 END,2,$5,
+           CASE WHEN $5='reviewing' THEN gen_random_uuid() END,
+           CASE WHEN $5='reviewing' THEN now()+CASE WHEN $6='expired'
+             THEN interval '-1 minute' ELSE interval '1 hour' END END,
+           CASE WHEN $6='retrying' THEN now()+interval '1 hour' ELSE now() END)`,
+        [randomUUID(), gameId, id, epoch, status, state ?? null],
+      );
+    return id;
+  };
+  const jobsBySession = async (gameId: string) =>
+    (
+      await pool.query(
+        `SELECT session_id,epoch,status,attempts,(next_attempt_at<=now()) AS due
+         FROM ctf.monitor_jobs WHERE game_id=$1 ORDER BY session_id,epoch`,
+        [gameId],
+      )
+    ).rows.map((job) => ({ ...job, epoch: Number(job.epoch) }));
+
+  await t.test(
+    "B2-1: submission queues each session's newest final review and wakes the worker",
+    async () => {
+      await resetRuns();
+      const target = await listen();
+      const token = randomBytes(32).toString("hex");
+      await setRow({ url: `http://127.0.0.1:${target.port}/wake`, instance: null, token });
+      for (const http of [false, true]) {
+        const game = await seedGame({ http });
+        const mixed = await sessionWithJobs(game.id, 2, [
+          [1, "caught-up"],
+          [2, "caught-up"],
+        ]);
+        const caught = await sessionWithJobs(game.id, 3, [[1, "caught"]]);
+        const reviewing = await sessionWithJobs(game.id, 4, [[1, "reviewing"]]);
+        const unresolved = await sessionWithJobs(game.id, 5, [[1, "unresolved"]]);
+        const retrying = await sessionWithJobs(game.id, 6, [[1, "queued", "retrying"]]);
+        const expired = await sessionWithJobs(game.id, 7, [[1, "reviewing", "expired"]]);
+        const submitter = http
+          ? undefined
+          : await pool.query(
+              `INSERT INTO ctf.monitor_jobs(id,game_id,session_id,epoch,start_version,requested_version,
+                 covered_version,attempts,status)
+               VALUES($1,$2,$2,1,1,1,1,2,'caught-up')`,
+              [randomUUID(), game.id],
+            );
+        const before = target.received.length;
+        if (http) {
+          const call = randomUUID();
+          const dispatch = randomUUID();
+          const submission = randomBytes(32).toString("base64url");
+          const assistant = {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: call, name: "sprite_exec", arguments: { command: "x" } },
+            ],
+            timestamp: 1,
+          };
+          await pool.query("UPDATE ctf.agent_sessions SET messages=$2 WHERE id=$1", [
+            game.id,
+            JSON.stringify([assistant]),
+          ]);
+          await pool.query(
+            `INSERT INTO ctf.sprite_operations
+             (id,sprite_name,game_id,session_id,tool_call_id,kind,command,execution_generation,
+              submission_token_hash,originating_lease)
+             VALUES($1,$2,$3,$3,$4,'command','x',0,$5,$6)`,
+            [
+              dispatch,
+              `ctf-${game.id}`,
+              game.id,
+              call,
+              hashSubmissionToken(submission),
+              game.lease,
+            ],
+          );
+          assert.equal(await receiveFlagSubmission({ token: submission, value: FLAG }), "accepted");
+          await completeAsyncCommand({
+            dispatchId: dispatch,
+            gameId: game.id,
+            sessionId: game.id,
+            messages: [
+              assistant,
+              {
+                role: "toolResult",
+                toolCallId: call,
+                toolName: "sprite_exec",
+                content: [{ type: "text", text: "out" }],
+                isError: false,
+                timestamp: 2,
+              },
+            ] as never,
+            outcome: "completed",
+            output: "out",
+          });
+        } else {
+          assert.ok(submitter);
+          await beginAsyncSubmission({
+            gameId: game.id,
+            sessionId: game.id,
+            lease: game.lease,
+            value: "incorrect flag",
+          });
+        }
+        assert.equal(
+          (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [game.id])).rows[0].status,
+          "finalizing",
+        );
+        const jobs = await jobsBySession(game.id);
+        const of = (session: string) => jobs.filter((job) => job.session_id === session);
+        assert.deepEqual(
+          of(mixed).map(({ epoch, status, attempts }) => [epoch, status, attempts]),
+          [
+            [1, "caught-up", 2],
+            [2, "queued", 0],
+          ],
+          "only the newest epoch is queued, and an older one is left alone",
+        );
+        assert.equal(of(mixed)[1].due, true);
+        assert.deepEqual(
+          of(caught).map(({ status }) => status),
+          ["caught"],
+        );
+        assert.deepEqual(
+          of(reviewing).map(({ status }) => status),
+          ["reviewing"],
+        );
+        for (const session of [unresolved, retrying])
+          assert.deepEqual(
+            of(session).map(({ status, attempts, due }) => [status, attempts, due]),
+            [["queued", 0, true]],
+            "an unresolved job and a job in its retries are due now",
+          );
+        assert.deepEqual(
+          of(expired).map(({ status }) => status),
+          ["reviewing"],
+          "a claim that has expired is left for the next claim",
+        );
+        const claims = [];
+        for (let claim = await claimMonitorJob(); claim; claim = await claimMonitorJob()) {
+          claims.push(claim);
+          await finishMonitorJob(claim, { kind: "allow" });
+        }
+        assert.equal(
+          claims.find((claim) => claim.sessionId === expired)?.final,
+          true,
+          "the expired claim is reclaimed as a final claim",
+        );
+        if (!http)
+          assert.deepEqual(
+            of(game.id).map(({ status, attempts }) => [status, attempts]),
+            [["queued", 0]],
+          );
+        await until(() => target.received.length > before, "a wake after the submission");
+        assert.ok(await hasPendingWork());
+      }
+    },
+  );
+
+  await t.test(
+    "B2-7: a worker idle past the wake linger claims a queued final review",
+    async () => {
+      await resetRuns();
+      const loops = createWorkerLoops({
+        pass: () => runMonitorWorkerOnce(fastMonitorTiming),
+        hasPending: hasPendingWork,
+        clock: realClock,
+        durations: {
+          startWindowMs: 400,
+          wakeLingerMs: 300,
+          progressLimitMs: 1_500,
+          safetyIntervalMs: 600_000,
+          idlePollMs: 50,
+        },
+      });
+      const endpoint = await startWakeEndpoint(loops.wake, loops.stop);
+      const running = loops.run(4);
+      try {
+        const game = await seedGame();
+        await saveMessage(game);
+        await releaseSessionLease(game.id, game.id, game.lease);
+        const routes = async () =>
+          (
+            await pool.query(
+              "SELECT route FROM ctf.monitor_reviews WHERE game_id=$1 AND completed_at IS NOT NULL ORDER BY created_at",
+              [game.id],
+            )
+          ).rows.map(({ route }) => route);
+        await until(async () => (await routes()).length === 1, "the first review");
+        assert.deepEqual(await routes(), ["deferred"]);
+        await until(async () => !(await hasPendingWork()), "the loops to go idle");
+        await delay(1_000);
+        await pool.query(
+          "UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()+interval '1 minute' WHERE id=$1",
+          [game.id, game.lease],
+        );
+        await beginAsyncSubmission({
+          gameId: game.id,
+          sessionId: game.id,
+          lease: game.lease,
+          value: "incorrect flag",
+        });
+        assert.ok(await hasPendingWork(), "the queued final review is pending work");
+        await releaseSessionLease(game.id, game.id, game.lease);
+        await until(
+          async () =>
+            (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [game.id])).rows[0]
+              .status === "ended",
+          "the run to finalize",
+        );
+        assert.deepEqual(await routes(), ["deferred", "final"]);
+        const [job] = (
+          await pool.query(
+            "SELECT final_version,requested_version FROM ctf.monitor_jobs WHERE game_id=$1",
+            [game.id],
+          )
+        ).rows;
+        assert.equal(Number(job.final_version), Number(job.requested_version));
+      } finally {
+        loops.stop();
+        const results = await running;
+        await endpoint.stop();
+        assert.deepEqual(
+          results.map((result) => result.status),
+          Array(4).fill("fulfilled"),
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "a run already finalizing with a caught-up job and no final allow reaches its final review",
+    async () => {
+      await resetRuns();
+      const game = await seedGame();
+      await saveMessage(game);
+      await releaseSessionLease(game.id, game.id, game.lease);
+      assert.equal(await runMonitorWorkerOnce(fastMonitorTiming), true);
+      // The state an older worker leaves: submitted, every job caught up, nothing queued.
+      await pool.query(
+        `UPDATE ctf.games SET status='finalizing',submitted_flag_correct=false,
+         submitted_session_id=$1 WHERE id=$1`,
+        [game.id],
+      );
+      await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [game.id]);
+      const jobs = () =>
+        pool.query(
+          "SELECT status,final_version,requested_version FROM ctf.monitor_jobs WHERE game_id=$1",
+          [game.id],
+        );
+      const [before] = (await jobs()).rows;
+      assert.deepEqual([before.status, Number(before.final_version)], ["caught-up", 0]);
+      assert.ok(await hasPendingWork(), "an idle worker finds the run");
+      for (let pass = 0; pass < 6; pass++) {
+        await runMonitorWorkerOnce(fastMonitorTiming);
+        const status = (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [game.id]))
+          .rows[0].status;
+        if (status !== "finalizing") break;
+      }
+      assert.equal(
+        (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [game.id])).rows[0].status,
+        "ended",
+      );
+      const [after] = (await jobs()).rows;
+      assert.equal(Number(after.final_version), Number(after.requested_version));
     },
   );
 

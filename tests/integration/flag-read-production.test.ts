@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -129,6 +129,26 @@ await test(
       version,
     );
     const sessionId = workspace.sessionIds.get(item.targetSessionId)!;
+    // The seeded operations carry no command text, so the review's signal is an unclear screen of
+    // the session's first instruction, stored as the player's screen would have stored it.
+    const {
+      rows: [stored],
+    } = await pool.query("SELECT messages FROM ctf.agent_sessions WHERE id=$1", [sessionId]);
+    const { textOf } = await import("../../lib/inference");
+    const instruction = textOf(
+      stored.messages.find((message: { role: string }) => message.role === "user"),
+    );
+    await pool.query(
+      `INSERT INTO ctf.text_screens
+       (game_id,session_id,kind,ref,text_sha256,question_set,answers,model,input_tokens,duration_ms)
+       VALUES($1,$2,'instruction',$3,$3,'player-v2',$4,'typesafe/jev-1.14',0,0)`,
+      [
+        workspace.gameId,
+        sessionId,
+        createHash("sha256").update(instruction).digest("hex"),
+        JSON.stringify({ overrides_rules: 0.6 }),
+      ],
+    );
     const { enqueueMonitorJob } = await import("../../lib/monitor-jobs");
     const {
       rows: [head],
@@ -556,6 +576,11 @@ await test(
         [workspace.gameId, sessionId],
       );
       await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [workspace.gameId]);
+      // Submission queues the session's final review. One pass runs it and the next finalizes.
+      const { queueFinalReviews } = await import("../../lib/monitor-jobs");
+      const { transaction } = await import("../../lib/games");
+      await transaction((client) => queueFinalReviews(client, workspace.gameId));
+      assert.equal(await runMonitorWorkerOnce(timing), true);
       assert.equal(await runMonitorWorkerOnce(timing), true);
       const {
         rows: [finalized],

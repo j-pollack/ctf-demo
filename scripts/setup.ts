@@ -41,6 +41,7 @@ try {
     "028-review-continuations.sql",
     "029-review-read-confirmation.sql",
     "030-inference-game-unsettled.sql",
+    "031-monitor-routing.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

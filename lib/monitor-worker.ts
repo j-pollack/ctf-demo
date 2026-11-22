@@ -3,11 +3,14 @@ import { db } from "./db";
 import {
   claimMonitorJob,
   finishMonitorJob,
+  requeueUnfinalReviews,
   requeueUnresolvedMonitorJobs,
   type MonitorJobClaim,
 } from "./monitor-jobs";
 import { captureCommittedMonitorSnapshot } from "./monitor-snapshot";
 import { classifyMonitorTarget } from "./monitor-classifier";
+import { chooseRoute } from "./monitor-route";
+import { gatherRouteFacts } from "./monitor-route-facts";
 import { annotateToolCalls } from "./tool-annotations";
 import {
   INVESTIGATOR_MODEL,
@@ -49,6 +52,8 @@ import {
   resolveInvestigatorTiming,
   type InvestigatorTiming,
 } from "./investigator-evaluation-policy";
+
+const DEFERRED_REASON = "No signal in this session. The final review at submission covers it.";
 
 async function recordFailedReview(
   reviewId: string,
@@ -177,6 +182,22 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
         }),
       ],
     );
+    const { route, signal: routeSignal } = chooseRoute(
+      await gatherRouteFacts({
+        final: claim.final,
+        sessionId: claim.sessionId,
+        messages: current.messages,
+        systemPrompt: current.systemPrompt,
+        commands: snapshot.commands,
+      }),
+    );
+    await db.query("UPDATE ctf.monitor_reviews SET route=$2 WHERE id=$1", [reviewId, route]);
+    console.error(JSON.stringify({ event: "monitor.route", reviewId, route, signal: routeSignal }));
+    if (route === "deferred") {
+      await completeMonitorReview(reviewId, { verdict: "allow", reason: DEFERRED_REASON });
+      await finishMonitorJob(claim, { kind: "allow", reason: DEFERRED_REASON });
+      return;
+    }
     const investigation = await runFlagReadInvestigation(
       {
         game: source,
@@ -244,6 +265,7 @@ async function finalizeOneRun() {
   await markExpiredFinalizationClaims();
   try {
     await requeueUnresolvedMonitorJobs();
+    await requeueUnfinalReviews();
   } catch (error) {
     console.error(
       JSON.stringify({

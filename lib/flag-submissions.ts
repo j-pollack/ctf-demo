@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { transaction } from "./games";
+import { queueFinalReviews } from "./monitor-jobs";
 import { hasSecret } from "./policy";
 import { wakeWorker } from "./worker-wake";
 
@@ -168,6 +169,7 @@ export async function promoteHttpSubmission(
        'submissionTransport','http','turn',(SELECT turns FROM ctf.games WHERE id=$1)))`,
     [gameId, receipt.session_id],
   );
+  await queueFinalReviews(client, gameId);
   await client.query(
     "INSERT INTO ctf.finalization_jobs(game_id) VALUES($1) ON CONFLICT (game_id) DO NOTHING",
     [gameId],

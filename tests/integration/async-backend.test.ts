@@ -76,6 +76,7 @@ await test(
       "migrations/028-review-continuations.sql",
       "migrations/029-review-read-confirmation.sql",
       "migrations/030-inference-game-unsettled.sql",
+      "migrations/031-monitor-routing.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
@@ -87,6 +88,15 @@ await test(
     const { catchAsyncRun, claimAsyncFinalization, finalizeAsyncRun } =
       await import("../../lib/async-finalization");
 
+    // The review the run's submission queues: the final claim of the run's one session.
+    const finalReview = async (id: string) => {
+      const { queueFinalReviews } = await import("../../lib/monitor-jobs");
+      await transaction((client) => queueFinalReviews(client, id));
+      const claim = await claimMonitorJob();
+      assert.equal(claim?.gameId, id);
+      assert.equal(claim.final, true);
+      await finishMonitorJob(claim, { kind: "allow" });
+    };
     const seed = async (owner: string) => {
       const id = randomUUID();
       await pool.query(
@@ -1129,6 +1139,7 @@ await test(
           [id],
         );
         await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [id]);
+        await finalReview(id);
         await pool.query(
           "UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()+interval '1 minute' WHERE id=$1",
           [id, randomUUID()],
@@ -1148,6 +1159,60 @@ await test(
           (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [id])).rows[0].status,
           "ended",
         );
+      },
+    );
+    await t.test(
+      "B2-6: finalization claims only once each session's newest job has a final allow",
+      async () => {
+        const id = await seed(`final-gate-${randomUUID()}`);
+        await write(id, ["submitted evidence"]);
+        const review = await claimMonitorJob();
+        assert.equal(review?.gameId, id);
+        assert.equal(review.final, false);
+        await finishMonitorJob(review, { kind: "allow" });
+        // An older epoch that never had a final review does not hold the run back.
+        await pool.query(
+          `INSERT INTO ctf.monitor_jobs(id,game_id,session_id,epoch,start_version,requested_version,
+             covered_version,status)
+           SELECT gen_random_uuid(),game_id,session_id,epoch+1,start_version,requested_version,
+             requested_version,'caught-up' FROM ctf.monitor_jobs WHERE game_id=$1`,
+          [id],
+        );
+        await pool.query(
+          `UPDATE ctf.games SET status='finalizing',submitted_flag_correct=false,
+           submitted_session_id=$1 WHERE id=$1`,
+          [id],
+        );
+        await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [id]);
+        const finalVersions = async () =>
+          (
+            await pool.query(
+              "SELECT epoch,final_version FROM ctf.monitor_jobs WHERE game_id=$1 ORDER BY epoch",
+              [id],
+            )
+          ).rows.map((job) => [Number(job.epoch), Number(job.final_version)]);
+        assert.deepEqual(await finalVersions(), [
+          [1, 0],
+          [2, 0],
+        ]);
+        assert.equal(await claimAsyncFinalization(), null, "no final allow yet");
+        await pool.query(
+          "UPDATE ctf.monitor_jobs SET final_version=requested_version WHERE game_id=$1 AND epoch=2",
+          [id],
+        );
+        const claim = await claimAsyncFinalization();
+        assert.equal(claim?.gameId, id, "the newest epoch's final allow is enough");
+        await pool.query("UPDATE ctf.monitor_jobs SET final_version=0 WHERE game_id=$1", [id]);
+        assert.equal(
+          await finalizeAsyncRun(claim!, "ended", 0),
+          false,
+          "and finalizing re-checks it",
+        );
+        await pool.query(
+          "UPDATE ctf.monitor_jobs SET final_version=requested_version WHERE game_id=$1 AND epoch=2",
+          [id],
+        );
+        assert.equal(await finalizeAsyncRun(claim!, "ended", 0), true);
       },
     );
     for (const scenario of [
@@ -1171,6 +1236,7 @@ await test(
           [id, scenario.correct, scenario.required],
         );
         await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [id]);
+        await finalReview(id);
         const claim = await claimAsyncFinalization();
         assert.equal(claim?.gameId, id);
         const status = async () =>

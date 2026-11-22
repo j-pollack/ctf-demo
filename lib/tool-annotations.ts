@@ -245,7 +245,7 @@ async function dispatchAll(
 }
 
 // Tool calls of the session whose stored screen flagged the result.
-async function labelledCalls(sessionId: string) {
+export async function labelledCalls(sessionId: string) {
   const { rows } = await db.query<{ ref: string; answers: Record<string, number> }>(
     "SELECT ref,answers FROM ctf.text_screens WHERE session_id=$1 AND kind='tool_output' AND question_set=$2",
     [sessionId, OUTPUT_QUESTION_SET],
@@ -253,7 +253,7 @@ async function labelledCalls(sessionId: string) {
   return new Set(rows.filter(({ answers }) => injectionVerdict(answers)).map(({ ref }) => ref));
 }
 
-async function unannotated(sessionId: string, calls: AnnotatableCall[]) {
+export async function unannotated(sessionId: string, calls: AnnotatableCall[]) {
   const { rows } = await db.query<{
     tool_call_id: string;
     command_sha256: string;

@@ -531,7 +531,7 @@ try {
   // jobs queued by the turns above are marked reviewed; its controlled model boundary serves only
   // the async runs.
   await db.query(
-    "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version WHERE game_id=ANY($1::uuid[])",
+    "UPDATE ctf.monitor_jobs SET status='caught-up',covered_version=requested_version,final_version=requested_version WHERE game_id=ANY($1::uuid[])",
     [[one.id, two.id, multi.id]],
   );
   // The deployment path uses durable jobs while inference stays within this controlled process.
@@ -699,7 +699,10 @@ try {
           await db.query<{ status: string; monitor_status: string }>(
             `SELECT g.status,
             CASE WHEN EXISTS(SELECT 1 FROM ctf.monitor_jobs j WHERE j.game_id=g.id
-              AND (j.status<>'caught-up' OR j.covered_version<j.requested_version))
+              AND (j.status<>'caught-up' OR j.covered_version<j.requested_version
+                OR (g.status='finalizing' AND j.final_version<j.requested_version
+                  AND j.epoch=(SELECT max(o.epoch) FROM ctf.monitor_jobs o
+                    WHERE o.game_id=j.game_id AND o.session_id=j.session_id))))
               THEN 'pending' ELSE 'caught-up' END AS monitor_status
            FROM ctf.games g WHERE g.id=$1`,
             [id],

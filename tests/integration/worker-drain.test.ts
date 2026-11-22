@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
@@ -141,20 +141,21 @@ await test("the worker drain", { timeout: 180_000 }, async (t) => {
     };
   };
 
-  const seedReview = async () => {
+  const seedReview = async (options: { finalizing?: boolean } = {}) => {
     const id = randomUUID();
     const lease = randomUUID();
     await pool.query(
       `INSERT INTO ctf.games
        (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
         token_budget,status,agent_effort,system_prompt,monitor_mode,submission_transport)
-       VALUES($1,$2,$3,$4,'synthetic-agent','synthetic-monitor',$5,1000,'active','medium','','async','tool')`,
+       VALUES($1,$2,$3,$4,'synthetic-agent','synthetic-monitor',$5,1000,$6,'medium','','async','tool')`,
       [
         id,
         `drain-${id}`,
         `ctf-${id}`,
         hashSecret(`flag{${"c".repeat(32)}}`),
         FLAG_READ_MONITOR_VERSION,
+        "active",
       ],
     );
     await pool.query(
@@ -163,14 +164,32 @@ await test("the worker drain", { timeout: 180_000 }, async (t) => {
        VALUES($1,$1,1,'synthetic-agent','medium','',$2,now()+interval '1 minute')`,
       [id, lease],
     );
+    const instruction = `instruction ${randomUUID()}`;
+    // The instruction's stored screen is unclear: the signal that has the worker investigate it.
+    const ref = createHash("sha256").update(instruction).digest("hex");
+    await pool.query(
+      `INSERT INTO ctf.text_screens
+       (game_id,session_id,kind,ref,text_sha256,question_set,answers,model,input_tokens,duration_ms)
+       VALUES($1,$1,'instruction',$2,$2,'player-v2',$3,'synthetic-screen',0,0)`,
+      [id, ref, JSON.stringify({ overrides_rules: 0.6 })],
+    );
     await persistReviewedSessionMessages(
       id,
       id,
       lease,
-      [{ role: "user", content: `instruction ${randomUUID()}`, timestamp: Date.now() }] as never,
+      [{ role: "user", content: instruction, timestamp: Date.now() }] as never,
       1,
       0,
     );
+    // The run submits while its last response still holds the session, so the job is claimed as final.
+    if (options.finalizing) {
+      await pool.query(
+        `UPDATE ctf.games SET status='finalizing',submitted_flag_correct=false,
+         submitted_session_id=$1 WHERE id=$1`,
+        [id],
+      );
+      await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [id]);
+    }
     await releaseSessionLease(id, id, lease);
     return id;
   };
@@ -216,6 +235,39 @@ await test("the worker drain", { timeout: 180_000 }, async (t) => {
     await delay(2_500);
     assert.equal(await jobStatus(second), "queued", "still unclaimed after the release");
     assert.equal(worker.child.exitCode, null, worker.output());
+    worker.child.kill("SIGTERM");
+    await worker.exited;
+  });
+
+  await t.test("B2-8: a drain lets a claimed final review finish and claims no other", async () => {
+    const worker = await startWorker();
+    const first = await seedReview({ finalizing: true });
+    await until(async () => (await jobStatus(first)) === "reviewing", "the final review to start");
+    const routeOf = async (game: string) =>
+      (await pool.query("SELECT route FROM ctf.monitor_reviews WHERE game_id=$1", [game])).rows.map(
+        (row) => row.route,
+      );
+    await until(async () => (await routeOf(first)).includes("final"), "the review's route");
+    assert.equal((await worker.drain()).status, 204);
+    await delay(1_500);
+    const second = await seedReview({ finalizing: true });
+    await delay(2_500);
+    assert.equal(await jobStatus(second), "queued", "no new final review starts while draining");
+    assert.equal(await jobStatus(first), "reviewing");
+
+    await worker.release();
+    await until(async () => (await readValue()) === undefined, "the row to be removed");
+    const [job] = (
+      await pool.query(
+        "SELECT status,final_version,requested_version FROM ctf.monitor_jobs WHERE game_id=$1",
+        [first],
+      )
+    ).rows;
+    assert.equal(job.status, "caught-up");
+    assert.equal(Number(job.final_version), Number(job.requested_version));
+    assert.deepEqual(await routeOf(first), ["final"]);
+    await delay(2_500);
+    assert.equal(await jobStatus(second), "queued", "still unclaimed after the release");
     worker.child.kill("SIGTERM");
     await worker.exited;
   });

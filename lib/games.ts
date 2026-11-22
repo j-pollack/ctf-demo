@@ -31,7 +31,12 @@ import {
 import { createEnvironment } from "./sprites";
 import { configuredFlagEndpoint, flagEndpointUrl } from "./flag-submission-protocol";
 import { persistTranscriptEvidence } from "./transcript-evidence";
-import { assertMonitorJobClaim, MAX_REQUEUES, type MonitorJobClaim } from "./monitor-jobs";
+import {
+  assertMonitorJobClaim,
+  MAX_REQUEUES,
+  NEWEST_EPOCH,
+  type MonitorJobClaim,
+} from "./monitor-jobs";
 import { listSessionSummaries, claimSession } from "./sessions";
 
 export type GameRow = {
@@ -239,7 +244,8 @@ export async function publicGame(
         WHERE o.game_id=g.id AND o.kind='command' AND
         (o.status='unknown' OR (o.status='running' AND
           (s.lease_until IS NULL OR s.lease_until<=now())))) AS uncertain_command,
-      count(DISTINCT j.session_id) FILTER (WHERE j.covered_version<j.requested_version)::text AS pending_sessions,
+      count(DISTINCT j.session_id) FILTER (WHERE j.covered_version<j.requested_version
+        OR (g.status='finalizing' AND j.final_version<j.requested_version AND ${NEWEST_EPOCH}))::text AS pending_sessions,
       coalesce(sum(CASE WHEN j.reviewed_version>=j.start_version
         THEN j.reviewed_version-j.start_version+1 ELSE 0 END),0)::text AS reviewed_updates,
       coalesce(sum(j.requested_version-j.start_version+1),0)::text AS total_updates,
