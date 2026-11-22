@@ -171,7 +171,11 @@ export function setSessionBusy(
 ): SessionUIMap {
   const session = state[id];
   if (!session) return state;
-  return { ...state, [id]: { ...session, busy, stage, stopping: busy && session.stopping } };
+  // An idle session has no stage. Callers that refresh busy pass the old stage back.
+  return {
+    ...state,
+    [id]: { ...session, busy, stage: busy ? stage : "", stopping: busy && session.stopping },
+  };
 }
 
 // A persisted user event replaces the optimistic copy of the instruction it records. A refused

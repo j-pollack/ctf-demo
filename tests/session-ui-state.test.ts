@@ -129,9 +129,14 @@ test("a stream the player stopped stays stopping until the server reports the se
   assert.equal(ended.alpha.stopping, true, "Stop stays disabled while the server finishes");
   const polledBusy = setSessionBusy(ended, "alpha", true, ended.alpha.stage);
   assert.equal(polledBusy.alpha.stopping, true, "a poll that still sees it running keeps it");
-  const polledIdle = setSessionBusy(polledBusy, "alpha", false, "");
+  const polledIdle = setSessionBusy(polledBusy, "alpha", false, polledBusy.alpha.stage);
   assert.equal(polledIdle.alpha.busy, false);
   assert.equal(polledIdle.alpha.stopping, false);
+  assert.equal(
+    polledIdle.alpha.stage,
+    "",
+    "an idle session shows no stage, even when a poll passes the old one",
+  );
   const finished = endLocalStream(setSessionBusy(initial(), "alpha", true, "x"), "alpha", false);
   assert.equal(finished.alpha.busy, false, "a stream that ended on its own is idle at once");
 });
