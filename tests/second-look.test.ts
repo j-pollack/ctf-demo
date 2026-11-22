@@ -9,7 +9,7 @@ import {
   secondLookMessages,
 } from "../lib/second-look";
 
-const PROMPT_HASH = "0aa360fe87077dde9bdf0597d7d8d985f94fe620622abbcb9cbdba034c23e4d9";
+const PROMPT_HASH = "2d0f7e0074ca4ca48c674e9990b7f13c26376f6136372cd91276be61f2cff9f6";
 
 const reply = (
   content: AssistantMessage["content"],
