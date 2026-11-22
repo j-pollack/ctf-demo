@@ -4,7 +4,13 @@ import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { Client, Pool } from "pg";
-import { Sprite, SpritesClient, type ExecOptions, type HTTPExecOptions } from "@fly/sprites";
+import {
+  Sprite,
+  SpritesClient,
+  type ExecOptions,
+  type HTTPExecOptions,
+  type Session,
+} from "@fly/sprites";
 import type { Message } from "@earendil-works/pi-ai";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
 import { annotationResponse } from "./annotation-fake";
@@ -47,12 +53,15 @@ await test(
       await readFile(new URL("../../db/migrations/017-settings.sql", import.meta.url), "utf8"),
     );
 
-    const { startGame, claimGameSession, reserveInference } = await import("../../lib/games");
+    const { startGame, claimGameSession, reserveInference, getGame, publicGame } =
+      await import("../../lib/games");
     const { runGame } = await import("../../lib/runner");
     const { claimSession, createSession, requestSessionStop } = await import("../../lib/sessions");
-    const { dispatchAsyncCommand } = await import("../../lib/monitor-commands");
+    const { dispatchAsyncCommand, settleStoppedCommands } =
+      await import("../../lib/monitor-commands");
     const { receiveFlagSubmission } = await import("../../lib/flag-submissions");
     const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+    const { hasPendingWork } = await import("../../lib/monitor-jobs");
     const { AGENT_MODEL, INVESTIGATOR_MODEL, MODELS } = await import("../../lib/policy");
     const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
     const TARGET = "https://flags.integration.test/v1/end";
@@ -68,6 +77,9 @@ await test(
       signal?: AbortSignal;
     }) => Promise<ExecResult>;
     let execHandlers = new Map<string, ExecHandler>();
+    // What a sprite's session list answers. A sprite with no entry fails the call as unexpected.
+    let sessionLists = new Map<string, () => Promise<Session[]>>();
+    const listedSprites: string[] = [];
     type AgentReply = { commands: string[] } | { text: string };
     let agentScript: AgentReply[] = [];
     let agentRequests = 0;
@@ -167,6 +179,14 @@ await test(
         })();
       },
     );
+    t.mock.method(Sprite.prototype, "listSessions", async function (this: Sprite) {
+      return strict(async () => {
+        const list = sessionLists.get(this.name);
+        assert.ok(list, `Unexpected session list for ${this.name}`);
+        listedSprites.push(this.name);
+        return list();
+      })();
+    });
     t.mock.method(
       SpritesClient.prototype,
       "deleteSprite",
@@ -339,6 +359,8 @@ await test(
       environments.clear();
       deleted.length = 0;
       execHandlers = new Map();
+      sessionLists = new Map();
+      listedSprites.length = 0;
       agentScript = [];
       agentRequests = 0;
       screenFake.reset();
@@ -410,6 +432,15 @@ await test(
     const receive = (env: Record<string, string> | undefined, value: string) =>
       receiveFlagSubmission({ token: env?.TARGET.slice(`${TARGET}/`.length) ?? "", value });
 
+    const session = (isActive: boolean): Session => ({
+      id: randomUUID(),
+      command: "sleep 60",
+      workdir: "/workspace",
+      created: new Date(),
+      bytesPerSecond: 0,
+      isActive,
+      tty: false,
+    });
     // Contract item 7: whatever interrupts the uploader after its receipt, the outcome is persisted as
     // not completed, the receipt stays unpromoted, and the run admits no further play.
     const assertInterruptedUpload = async (input: {
@@ -450,6 +481,8 @@ await test(
       };
       assert.deepEqual(await run(input.gameId), pending);
       // The worker's recovery path also leaves an unknown uploader unpromoted, through a full review.
+      // A session still listed on the Sprite means the command may be running, so nothing is settled.
+      sessionLists.set(`ctf-${input.gameId}`, async () => [session(true)]);
       for (let attempt = 0; attempt < 4; attempt++) await runMonitorWorkerOnce();
       assert.deepEqual(await run(input.gameId), pending);
       assert.equal(
@@ -1001,5 +1034,384 @@ await test(
         }
       },
     );
+
+    // docs/plans/stopped-command-settle.md: the worker settles a stopped command once its Sprite
+    // lists no exec session, then promotes the receipts that were waiting on it.
+    const spriteOf = (gameId: string) => `ctf-${gameId}`;
+    const seedUnknown = async (gameId: string, startedAgo = "0 seconds") => {
+      const id = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,
+           command,status,output,started_at)
+         VALUES($1,$2,$3,$3,$4,'command','sleep 60','unknown','Stopped.',now()-$5::interval)`,
+        [id, spriteOf(gameId), gameId, randomUUID(), startedAgo],
+      );
+      return id;
+    };
+    const opState = async (id: string) =>
+      (
+        await pool.query<{ status: string; settled: boolean; output: string | null }>(
+          "SELECT status,completed_at IS NOT NULL AS settled,output FROM ctf.sprite_operations WHERE id=$1",
+          [id],
+        )
+      ).rows[0];
+    const revision = async (gameId: string) =>
+      Number(
+        (await pool.query("SELECT state_revision FROM ctf.games WHERE id=$1", [gameId])).rows[0]
+          .state_revision,
+      );
+    const emptySessions = (gameId: string) => sessionLists.set(spriteOf(gameId), async () => []);
+    // A command the player stops: it records as unknown, and the run stays open.
+    const stopDuringCommand = async (
+      owner: string,
+      gameId: string,
+      command: string,
+      seen?: (env: Record<string, string> | undefined) => void,
+    ) => {
+      agentScript = [{ commands: [command] }];
+      execHandlers.set(command, async ({ env, signal }) => {
+        seen?.(env);
+        await requestSessionStop(gameId, gameId, owner);
+        return untilAborted(signal);
+      });
+      await (
+        await respond(gameId, gameId, owner, "Run it")
+      ).done;
+      const [stopped] = await operation(gameId, command);
+      assert.equal(stopped.status, "unknown");
+      return stopped.id;
+    };
+    const uploadAndReturn = async (owner: string, gameId: string, secret: string) => {
+      agentScript = [{ commands: [uploadCommand] }];
+      let accepted: string | undefined;
+      execHandlers.set(uploadCommand, async ({ env }) => {
+        accepted = await receive(env, secret);
+        return output("uploaded");
+      });
+      await (
+        await respond(gameId, gameId, owner, "Upload the flag")
+      ).done;
+      assert.equal(accepted, "accepted");
+    };
+    // A later pass, past the backoff a sprite earns when its last check failed or showed a session.
+    const BACKOFF_PASS_MS = 11_000;
+    const laterPass = (passes: number, onFailure = (_sprite: string, _error: unknown) => {}) =>
+      settleStoppedCommands(onFailure, Date.now() + passes * BACKOFF_PASS_MS);
+    const settleLogs = (own: { mock: typeof t.mock }) => {
+      const spy = own.mock.method(console, "error");
+      return () =>
+        spy.mock.calls
+          .map(({ arguments: [line] }) => String(line))
+          .filter((line) => line.includes("monitor.settle.failed"))
+          .map((line) => JSON.parse(line) as { event: string; spriteName: string });
+    };
+
+    await t.test(
+      "S1: a stopped command on a Sprite with no session is settled, and a later upload is promoted",
+      async () => {
+        const owner = `settle-s1-${randomUUID()}`;
+        const { id, secret } = await startRun(owner);
+        const stopped = await stopDuringCommand(owner, id, "sleep 60");
+        emptySessions(id);
+        const before = await revision(id);
+        await runMonitorWorkerOnce();
+        assert.deepEqual(listedSprites, [spriteOf(id)]);
+        const { output: kept, ...settled } = await opState(stopped);
+        assert.deepEqual(settled, { status: "interrupted", settled: true });
+        assert.ok(kept, "the runner's output is kept");
+        assert.ok((await revision(id)) > before, "open pages refresh");
+        await uploadAndReturn(owner, id, secret);
+        assert.equal((await run(id)).status, "finalizing");
+        assert.ok((await run(id)).promoted_at);
+      },
+    );
+
+    await t.test(
+      "S2: a receipt waiting only on a stopped command is promoted by its settle",
+      async () => {
+        const owner = `settle-s2-${randomUUID()}`;
+        const { id, secret } = await startRun(owner);
+        const stopped = await stopDuringCommand(owner, id, "sleep 60");
+        await uploadAndReturn(owner, id, secret);
+        const pending = await run(id);
+        assert.equal(pending.status, "active");
+        assert.equal(pending.promoted_at, null);
+        assert.equal((await opState(stopped)).status, "unknown");
+        emptySessions(id);
+        await runMonitorWorkerOnce();
+        assert.equal((await opState(stopped)).status, "interrupted");
+        const promoted = await run(id);
+        assert.ok(promoted.promoted_at);
+        assert.equal(promoted.status, "finalizing");
+        assert.equal(promoted.generation, 1);
+        assert.equal(promoted.submits, 1);
+      },
+    );
+
+    await t.test("S3: a listed session blocks the settle, active or not", async () => {
+      const { id } = await startRun(`settle-s3-${randomUUID()}`);
+      const stopped = await seedUnknown(id);
+      for (const [pass, isActive] of [true, false].entries()) {
+        sessionLists.set(spriteOf(id), async () => [session(isActive)]);
+        await laterPass(pass);
+        assert.equal((await opState(stopped)).status, "unknown", `isActive ${isActive}`);
+      }
+      emptySessions(id);
+      await laterPass(2);
+      assert.equal((await opState(stopped)).status, "interrupted");
+      assert.equal(listedSprites.length, 3);
+    });
+
+    await t.test(
+      "S4 and S14: a failing list settles nothing there, logs, spares another Sprite, and is not retried inside the backoff",
+      async (own) => {
+        const failing = await startRun(`settle-s4-${randomUUID()}`);
+        const healthy = await startRun(`settle-s4-${randomUUID()}`);
+        const failed = await seedUnknown(failing.id, "2 minutes");
+        const settled = await seedUnknown(healthy.id, "1 minute");
+        sessionLists.set(spriteOf(failing.id), async () => {
+          throw new TypeError("fetch failed");
+        });
+        emptySessions(healthy.id);
+        const logs = settleLogs(own);
+        await runMonitorWorkerOnce();
+        assert.equal((await opState(failed)).status, "unknown");
+        assert.equal((await opState(settled)).status, "interrupted");
+        assert.deepEqual(
+          logs().map(({ event, spriteName }) => ({ event, spriteName })),
+          [{ event: "monitor.settle.failed", spriteName: spriteOf(failing.id) }],
+        );
+        // The failed Sprite is left alone for the backoff window, then checked again.
+        await runMonitorWorkerOnce();
+        assert.deepEqual(listedSprites.filter((name) => name === spriteOf(failing.id)).length, 1);
+        emptySessions(failing.id);
+        await laterPass(1);
+        assert.equal((await opState(failed)).status, "interrupted");
+        assert.equal(listedSprites.filter((name) => name === spriteOf(failing.id)).length, 2);
+      },
+    );
+
+    await t.test(
+      "S5: an operation that turns unknown during the list call is left alone",
+      async () => {
+        const { id } = await startRun(`settle-s5-${randomUUID()}`);
+        const first = await seedUnknown(id);
+        let late = "";
+        sessionLists.set(spriteOf(id), async () => {
+          late = await seedUnknown(id);
+          return [];
+        });
+        await runMonitorWorkerOnce();
+        assert.equal((await opState(first)).status, "interrupted");
+        assert.equal((await opState(late)).status, "unknown");
+        emptySessions(id);
+        await runMonitorWorkerOnce();
+        assert.equal((await opState(late)).status, "interrupted");
+      },
+    );
+
+    await t.test(
+      "S6: a resolved operation, a deleted sandbox and an open delete are left alone",
+      async () => {
+        const resolved = await startRun(`settle-s6-${randomUUID()}`);
+        const deletedRun = await startRun(`settle-s6-${randomUUID()}`);
+        const deleting = await startRun(`settle-s6-${randomUUID()}`);
+        const done = await seedUnknown(resolved.id);
+        const gone = await seedUnknown(deletedRun.id);
+        const held = await seedUnknown(deleting.id);
+        await pool.query("UPDATE ctf.games SET sprite_deleted_at=now() WHERE id=$1", [
+          deletedRun.id,
+        ]);
+        await pool.query(
+          `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,kind,status)
+         VALUES($1,$2,$3,'delete','running')`,
+          [randomUUID(), spriteOf(deleting.id), deleting.id],
+        );
+        sessionLists.set(spriteOf(resolved.id), async () => {
+          await pool.query(
+            "UPDATE ctf.sprite_operations SET status='completed',completed_at=now() WHERE id=$1",
+            [done],
+          );
+          return [];
+        });
+        await runMonitorWorkerOnce();
+        assert.equal((await opState(done)).status, "completed");
+        assert.equal((await opState(gone)).status, "unknown");
+        assert.equal((await opState(held)).status, "unknown");
+        assert.deepEqual(listedSprites, [spriteOf(resolved.id)]);
+      },
+    );
+
+    await t.test(
+      "S7: a settled command's receipt stays unpromoted, and its token is refused when it had none",
+      async () => {
+        const owner = `settle-s7-${randomUUID()}`;
+        const withReceipt = await startRun(owner);
+        const command = uploadCommand;
+        agentScript = [{ commands: [command] }];
+        let accepted: string | undefined;
+        execHandlers.set(command, async ({ env, signal }) => {
+          accepted = await receive(env, withReceipt.secret);
+          await requestSessionStop(withReceipt.id, withReceipt.id, owner);
+          return untilAborted(signal);
+        });
+        await (
+          await respond(withReceipt.id, withReceipt.id, owner, "Upload the flag")
+        ).done;
+        assert.equal(accepted, "accepted");
+        emptySessions(withReceipt.id);
+        await runMonitorWorkerOnce();
+        const [uploader] = await operation(withReceipt.id, command);
+        assert.equal(uploader.status, "interrupted");
+        const after = await run(withReceipt.id);
+        assert.equal(after.status, "active");
+        assert.equal(after.promoted_at, null);
+        assert.equal(after.jobs, 0);
+        // Nothing the settled command's receipt could do: the run stays unscored.
+        await runMonitorWorkerOnce();
+        assert.equal((await run(withReceipt.id)).status, "active");
+
+        const owner2 = `settle-s7b-${randomUUID()}`;
+        const bare = await startRun(owner2);
+        let target: Record<string, string> | undefined;
+        await stopDuringCommand(owner2, bare.id, "sleep 60", (env) => (target = env));
+        emptySessions(bare.id);
+        await runMonitorWorkerOnce();
+        assert.equal(await receive(target, bare.secret), "stale");
+        assert.equal((await run(bare.id)).correct, null);
+      },
+    );
+
+    await t.test("S8: two runs on one Sprite are both bumped and promoted", async () => {
+      const owner = `settle-s8-${randomUUID()}`;
+      const first = await startRun(owner);
+      const stopped = await stopDuringCommand(owner, first.id, "sleep 60");
+      await uploadAndReturn(owner, first.id, first.secret);
+      // A second run on the same Sprite, with its own stopped command and its own pending receipt.
+      const secondId = randomUUID();
+      await pool.query(
+        `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,
+           monitor_version,token_budget,status,monitor_mode,submission_transport,bug_fix_required)
+         SELECT $2,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+           token_budget,'active','async','http',false FROM ctf.games WHERE id=$1`,
+        [first.id, secondId],
+      );
+      await pool.query(
+        `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
+         SELECT $2,$2,1,agent_model,agent_effort,system_prompt FROM ctf.agent_sessions WHERE id=$1`,
+        [first.id, secondId],
+      );
+      const secondStopped = randomUUID();
+      const secondUploader = randomUUID();
+      for (const [opId, command, status] of [
+        [secondStopped, "sleep 60", "unknown"],
+        [secondUploader, "upload", "completed"],
+      ])
+        await pool.query(
+          `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,
+             command,status,output)
+           VALUES($1,$2,$3,$3,$4,'command',$5,$6,'uploaded')`,
+          [opId, spriteOf(first.id), secondId, randomUUID(), command, status],
+        );
+      await pool.query(
+        "INSERT INTO ctf.flag_submissions(game_id,operation_id,body_hash,correct) VALUES($1,$2,$3,true)",
+        [secondId, secondUploader, "a".repeat(64)],
+      );
+      const before = [await revision(first.id), await revision(secondId)];
+      sessionLists.set(spriteOf(first.id), async () => []);
+      await runMonitorWorkerOnce();
+      for (const op of [stopped, secondStopped])
+        assert.equal((await opState(op)).status, "interrupted");
+      assert.ok((await revision(first.id)) > before[0]);
+      assert.ok((await revision(secondId)) > before[1]);
+      for (const gameId of [first.id, secondId]) {
+        assert.ok((await run(gameId)).promoted_at, gameId);
+        assert.equal((await run(gameId)).generation, 1, gameId);
+      }
+    });
+
+    await t.test("S9: two passes at once settle each operation once", async () => {
+      const { id } = await startRun(`settle-s9-${randomUUID()}`);
+      const stopped = await seedUnknown(id);
+      emptySessions(id);
+      const before = await revision(id);
+      await Promise.all([runMonitorWorkerOnce(), runMonitorWorkerOnce()]);
+      assert.equal((await opState(stopped)).status, "interrupted");
+      assert.equal(await revision(id), before + 1);
+    });
+
+    await t.test(
+      "S10: a finalizing run behind a stopped command is claimed in the same pass",
+      async () => {
+        const { id } = await startRun(`settle-s10-${randomUUID()}`);
+        await pool.query(
+          `UPDATE ctf.games SET status='finalizing',submitted_flag_correct=false,
+           submitted_session_id=$1,monitor_mode='async',submission_transport='tool' WHERE id=$1`,
+          [id],
+        );
+        await pool.query("INSERT INTO ctf.finalization_jobs(game_id) VALUES($1)", [id]);
+        const stopped = await seedUnknown(id);
+        emptySessions(id);
+        assert.equal(await runMonitorWorkerOnce(), true);
+        assert.equal((await opState(stopped)).status, "interrupted");
+        assert.equal((await run(id)).status, "ended");
+      },
+    );
+
+    await t.test(
+      "S11: the run view stops reporting an unconfirmed monitor once settled",
+      async () => {
+        const owner = `settle-s11-${randomUUID()}`;
+        const { id } = await startRun(owner);
+        const view = async () => (await publicGame(await getGame(id, owner))).monitor?.status;
+        await seedUnknown(id);
+        assert.equal(await view(), "unresolved");
+        emptySessions(id);
+        await runMonitorWorkerOnce();
+        assert.equal(await view(), "caught-up");
+      },
+    );
+
+    await t.test(
+      "S12: every candidate Sprite is checked in one pass, and a failing one blocks no other",
+      async () => {
+        const runs = [];
+        for (const age of ["4 minutes", "3 minutes", "2 minutes", "1 minute"]) {
+          const { id } = await startRun(`settle-s12-${randomUUID()}`);
+          runs.push({ id, op: await seedUnknown(id, age) });
+        }
+        sessionLists.set(spriteOf(runs[0].id), async () => {
+          throw new TypeError("fetch failed");
+        });
+        for (const { id } of runs.slice(1)) emptySessions(id);
+        await runMonitorWorkerOnce();
+        assert.deepEqual([...listedSprites].sort(), runs.map(({ id }) => spriteOf(id)).sort());
+        assert.equal((await opState(runs[0].op)).status, "unknown");
+        for (const { op } of runs.slice(1)) assert.equal((await opState(op)).status, "interrupted");
+      },
+    );
+
+    await t.test("S13: pending work includes a stopped command until it is settled", async () => {
+      const { id } = await startRun(`settle-s13-${randomUUID()}`);
+      assert.equal(await hasPendingWork(), false);
+      const stopped = await seedUnknown(id);
+      assert.equal(await hasPendingWork(), true);
+      emptySessions(id);
+      await runMonitorWorkerOnce();
+      assert.equal((await opState(stopped)).status, "interrupted");
+      assert.equal(await hasPendingWork(), false);
+      await seedUnknown(id);
+      await pool.query("UPDATE ctf.games SET sprite_deleted_at=now() WHERE id=$1", [id]);
+      assert.equal(await hasPendingWork(), false, "a deleted sandbox has nothing to settle");
+      const { id: deleting } = await startRun(`settle-s13-${randomUUID()}`);
+      await seedUnknown(deleting);
+      assert.equal(await hasPendingWork(), true);
+      await pool.query(
+        `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,kind,status)
+         VALUES($1,$2,$3,'delete','running')`,
+        [randomUUID(), spriteOf(deleting), deleting],
+      );
+      assert.equal(await hasPendingWork(), false, "an open delete leaves nothing to settle");
+    });
   },
 );

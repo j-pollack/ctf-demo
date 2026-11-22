@@ -78,6 +78,10 @@ export async function executeCommand(
     throw new Error("The command could not finish in this run’s environment.");
   }
 }
+// The exec sessions a sprite holds, live or lingering after a disconnect.
+export async function listSessions(name: string) {
+  return client().sprite(name).listSessions();
+}
 export async function destroyEnvironment(name: string) {
   try {
     await client().deleteSprite(name);

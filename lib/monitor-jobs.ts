@@ -77,8 +77,17 @@ export async function queueFinalReviews(client: PoolClient, gameId: string) {
   );
 }
 
+// A stopped command the worker can settle: its sandbox is live and no delete is in flight.
+// Aliased `o`; the settle selection and hasPendingWork share it so they cannot drift apart.
+export const SETTLEABLE_COMMAND = `o.kind='command' AND o.status='unknown'
+  AND EXISTS (SELECT 1 FROM ctf.games g WHERE g.sprite_name=o.sprite_name
+    AND g.sprite_deleted_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM ctf.sprite_operations d WHERE d.sprite_name=o.sprite_name
+    AND d.kind='delete' AND d.status IN ('running','unknown'))`;
+
 // Whether a worker has anything it must act on without a new enqueue. A queued finalization job
 // of a run that is not finalizing, or that failed scoring, is not pending: nothing will move it.
+// A stopped command on a live sprite is pending: the worker settles it once the sprite is idle.
 export async function hasPendingWork() {
   const {
     rows: [row],
@@ -87,6 +96,7 @@ export async function hasPendingWork() {
       OR EXISTS(SELECT 1 FROM ctf.finalization_jobs f JOIN ctf.games g ON g.id=f.game_id
         WHERE f.status='scoring'
           OR (f.status='queued' AND g.status='finalizing' AND g.finalization_error IS NULL))
+      OR EXISTS(SELECT 1 FROM ctf.sprite_operations o WHERE ${SETTLEABLE_COMMAND})
       AS pending`,
   );
   return row.pending;

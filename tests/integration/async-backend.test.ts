@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Pool } from "pg";
+import { Sprite } from "@fly/sprites";
 import { closePool } from "./postgres";
 import { streamedCompletion } from "./completion-stream";
 
@@ -1787,6 +1788,37 @@ await test(
       const { fastMonitorTiming } = await import("./monitor-timing");
       const { isDeepStrictEqual } = await import("node:util");
       const FLAG = `flag{${"a".repeat(32)}}`;
+      // Earlier subtests leave stopped commands on live sprites, and every worker pass lists their
+      // sessions. A listed session leaves them alone; any other Sprite call is a violation.
+      const stoppedSprites = new Set(
+        (
+          await pool.query<{ sprite_name: string }>(
+            "SELECT DISTINCT sprite_name FROM ctf.sprite_operations WHERE kind='command' AND status='unknown'",
+          )
+        ).rows.map(({ sprite_name }) => sprite_name),
+      );
+      const unexpectedLists: string[] = [];
+      const lists = t.mock.method(Sprite.prototype, "listSessions", async function (this: Sprite) {
+        if (!stoppedSprites.has(this.name)) unexpectedLists.push(this.name);
+        return [
+          {
+            id: "synthetic-session",
+            command: "sleep 60",
+            workdir: "/workspace",
+            created: new Date(),
+            bytesPerSecond: 0,
+            isActive: true,
+            tty: false,
+          },
+        ];
+      });
+      t.after(() => {
+        assert.deepEqual(unexpectedLists, [], "no unexpected session lists");
+        assert.ok(
+          stoppedSprites.size === 0 || lists.mock.callCount() > 0,
+          "the settle listed them",
+        );
+      });
       const oldKey = process.env.OPENROUTER_API_KEY;
       process.env.OPENROUTER_API_KEY = "synthetic-annotation-key";
       t.after(() => {

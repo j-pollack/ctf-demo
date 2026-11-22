@@ -4,10 +4,10 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { transaction } from "./games";
-import { enqueueMonitorJob } from "./monitor-jobs";
+import { enqueueMonitorJob, SETTLEABLE_COMMAND } from "./monitor-jobs";
 import { GameError } from "./policy";
 import { persistTranscriptEvidence } from "./transcript-evidence";
-import { destroyEnvironment } from "./sprites";
+import { destroyEnvironment, listSessions } from "./sprites";
 import { FLAG_OUTPUT_CATCH_TEXT, type GameEvent } from "./types";
 import { hashSubmissionToken, promoteHttpSubmission } from "./flag-submissions";
 
@@ -401,4 +401,66 @@ export async function deleteSpriteIfEligible(spriteName: string) {
     );
   });
   return true;
+}
+
+// How long a sprite whose last check failed or showed a session is left alone.
+const SETTLE_BACKOFF_MS = 10_000;
+// ponytail: per-process memory, shared by the loops of one worker process. A restart only costs
+// one early re-check; move it to the database if several worker processes hammer one sprite.
+const recentlyChecked = new Map<string, number>();
+
+// A command the runner could not see finish is `unknown`. Once its sprite holds no exec session,
+// the command is dead: the abort killed its process group and `timeout` bounds any other. The ids
+// are recorded before the list call, so a command that turns unknown during it waits for a later pass.
+// Every candidate sprite is checked at once, so one slow or failing sprite blocks no other.
+export async function settleStoppedCommands(
+  onFailure: (spriteName: string, error: unknown) => void,
+  now = Date.now(),
+) {
+  for (const [name, at] of recentlyChecked)
+    if (now - at >= SETTLE_BACKOFF_MS) recentlyChecked.delete(name);
+  const { rows: sprites } = await db.query<{ sprite_name: string; ids: string[] }>(
+    `SELECT o.sprite_name,array_agg(o.id) AS ids FROM ctf.sprite_operations o
+     WHERE ${SETTLEABLE_COMMAND} GROUP BY o.sprite_name`,
+  );
+  await Promise.all(
+    sprites
+      .filter(({ sprite_name }) => !recentlyChecked.has(sprite_name))
+      .map(async ({ sprite_name, ids }) => {
+        try {
+          if (!(await listSessions(sprite_name)).length) {
+            await settleOperations(sprite_name, ids);
+            return;
+          }
+        } catch (error) {
+          onFailure(sprite_name, error);
+        }
+        recentlyChecked.set(sprite_name, now);
+      }),
+  );
+}
+
+// The lock order of deleteSpriteIfEligible: sprite, then runs by id, then operations.
+async function settleOperations(spriteName: string, ids: string[]) {
+  await transaction(async (client) => {
+    await lockSprite(client, spriteName);
+    await client.query(
+      `SELECT id FROM ctf.games WHERE id IN
+         (SELECT game_id FROM ctf.sprite_operations WHERE id=ANY($1::uuid[]))
+       ORDER BY id FOR UPDATE`,
+      [ids],
+    );
+    const { rows: settled } = await client.query<{ game_id: string }>(
+      `UPDATE ctf.sprite_operations SET status='interrupted',completed_at=now()
+       WHERE id=ANY($1::uuid[]) AND status='unknown' RETURNING game_id`,
+      [ids],
+    );
+    if (!settled.length) return;
+    const gameIds = [...new Set(settled.map(({ game_id }) => game_id))].sort();
+    await client.query(
+      "UPDATE ctf.games SET state_revision=state_revision+1 WHERE id=ANY($1::uuid[])",
+      [gameIds],
+    );
+    for (const gameId of gameIds) await promoteHttpSubmission(client, gameId);
+  });
 }

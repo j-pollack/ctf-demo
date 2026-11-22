@@ -43,6 +43,7 @@ import {
   beginExclusiveSpriteOperation,
   completeExclusiveSpriteOperation,
   deleteSpriteIfEligible,
+  settleStoppedCommands,
 } from "./monitor-commands";
 import { executeCommand } from "./sprites";
 import { SEED_BUGS, seedScoreCommand } from "./seed";
@@ -295,6 +296,16 @@ async function deleteSpriteAfterEnd(spriteName: string) {
   }
 }
 
+function logSettleFailure(error: unknown, spriteName?: string) {
+  console.error(
+    JSON.stringify({
+      event: "monitor.settle.failed",
+      spriteName,
+      error: diagnosticText(error instanceof Error ? error.message : error),
+    }),
+  );
+}
+
 async function finalizeOneRun() {
   await markExpiredFinalizationClaims();
   try {
@@ -325,6 +336,11 @@ async function finalizeOneRun() {
         error: diagnosticText(error instanceof Error ? error.message : error),
       }),
     );
+  }
+  try {
+    await settleStoppedCommands((spriteName, error) => logSettleFailure(error, spriteName));
+  } catch (error) {
+    logSettleFailure(error);
   }
   const claim = await claimAsyncFinalization();
   if (!claim) return false;

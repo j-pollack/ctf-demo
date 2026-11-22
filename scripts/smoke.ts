@@ -14,7 +14,7 @@ import {
 } from "../lib/games";
 import { createSession, getSession } from "../lib/sessions";
 import { runGame } from "../lib/runner";
-import { destroyEnvironment, executeCommand } from "../lib/sprites";
+import { destroyEnvironment, executeCommand, listSessions } from "../lib/sprites";
 import { AGENT_MODEL, DAILY_CAP_MICRODOLLARS, INVESTIGATOR_MODEL, MODELS } from "../lib/policy";
 import { READ_CONFIRMATION_REQUEST } from "../lib/monitor-evidence";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
@@ -286,6 +286,30 @@ try {
       `test -f TASKS.md && { ${SEED_BUGS[0].test}; echo "bug-exit=$?"; }`,
     ),
     /bug-exit=(?!124\b)[1-9]\d*/,
+  );
+  // The stopped-command settle relies on this: a running command is listed, and an aborted one is
+  // not, within seconds of the abort (docs/plans/stopped-command-settle.md).
+  const stopProbe = new AbortController();
+  const aborted = executeCommand(first.sprite_name, "sleep 30", stopProbe.signal);
+  const abortedOutcome = assert.rejects(aborted, /could not finish/);
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.equal(
+    (await listSessions(first.sprite_name)).length,
+    1,
+    "a running command is one listed session",
+  );
+  stopProbe.abort();
+  await abortedOutcome;
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  assert.deepEqual(
+    await listSessions(first.sprite_name),
+    [],
+    "an aborted command leaves no session within 2 seconds",
+  );
+  assert.match(
+    await executeCommand(first.sprite_name, "pgrep -x sleep || echo none"),
+    /^none\s+\[exit 0\]$/,
+    "the aborted command's process is gone",
   );
   console.log("Two isolated environments and ownership checks passed.");
 
