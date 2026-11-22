@@ -25,12 +25,16 @@ export function validateFlagEndpoint(raw: string): { url: string; hostname: stri
 
 // SITE_URL is this app's own override, and the only source outside Vercel. Vercel sets
 // VERCEL_PROJECT_PRODUCTION_URL on previews too, so only production may use it.
+// A preview uses its branch host, which stays the same across pushes. A run's sandbox allows only
+// the host it started with, so a per-deployment host would break uploads after the next push.
 export function configuredFlagEndpoint(env: Record<string, string | undefined> = process.env): {
   url: string;
   hostname: string;
 } {
   const host =
-    (env.VERCEL_ENV === "production" && env.VERCEL_PROJECT_PRODUCTION_URL) || env.VERCEL_URL;
+    (env.VERCEL_ENV === "production" && env.VERCEL_PROJECT_PRODUCTION_URL) ||
+    env.VERCEL_BRANCH_URL ||
+    env.VERCEL_URL;
   if (!env.SITE_URL && !host) throw new Error("A public HTTP submission origin is required.");
   const origin = env.SITE_URL ? env.SITE_URL.replace(/\/$/, "") : `https://${host}`;
   return validateFlagEndpoint(`${origin}/v1/end`);
