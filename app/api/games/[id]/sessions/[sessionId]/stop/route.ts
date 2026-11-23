@@ -16,7 +16,7 @@ export async function POST(
     await getSession(id, sessionId, user.id);
     if (game.monitor_mode !== "async")
       throw new GameError(
-        "This run can only be stopped from the page that sent the instruction.",
+        "This response can only be stopped from the page that sent the instruction.",
         409,
       );
     return Response.json(

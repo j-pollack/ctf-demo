@@ -1277,7 +1277,11 @@ await test(
       const run = (await pool.query("SELECT * FROM ctf.games WHERE id=$1", [id])).rows[0];
       const projected = await publicGame(run);
       assert.equal(projected.monitor?.status, "unresolved");
-      assert.ok(projected.monitor?.reason);
+      assert.equal(
+        projected.monitor?.reason,
+        "A review failed. The session will be reviewed again, at the latest when the flag is uploaded.",
+        "during play a failed review says it will be reviewed again",
+      );
       assert.doesNotMatch(projected.monitor.reason!, /secret_worker_table|credential|SQL/i);
       await pool.query("UPDATE ctf.games SET finalization_error=$2 WHERE id=$1", [
         id,
@@ -1286,6 +1290,10 @@ await test(
       const failed = await publicGame(run);
       assert.equal(failed.monitor?.status, "unresolved");
       assert.doesNotMatch(failed.monitor.reason!, /internal_stack_trace|scoring error/i);
+      assert.equal(
+        failed.monitor.reason,
+        "Scoring could not be completed. The result remains unconfirmed.",
+      );
     });
     await t.test(
       "public progress distinguishes mixed pending and settled unresolved reviews",
@@ -1604,8 +1612,14 @@ await test(
         const run = (await pool.query("SELECT * FROM ctf.games WHERE id=$1", [id])).rows[0];
         const publicRun = await publicGame(run);
         assert.equal(publicRun.status, "finalizing");
-        assert.equal(publicRun.monitor?.status, "unresolved");
-        assert.ok(publicRun.monitor?.reason);
+        // A stopped command that is being settled is not a failed review; an orphan is.
+        assert.equal(publicRun.monitor?.status, status === "unknown" ? "settling" : "unresolved");
+        assert.equal(
+          publicRun.monitor?.reason,
+          status === "unknown"
+            ? "A stopped command is being checked. This takes a few seconds."
+            : "A command lost contact with its response, so this run cannot be graded.",
+        );
         await pool.query("UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE id=$1", [
           id,
         ]);
@@ -1733,7 +1747,7 @@ await test(
       await beginAsyncSubmission({ gameId: id, sessionId: id, lease, value: "incorrect flag" });
       const run = () =>
         pool.query("SELECT * FROM ctf.games WHERE id=$1", [id]).then((r) => r.rows[0]);
-      assert.equal((await publicGame(await run())).monitor?.status, "unresolved");
+      assert.equal((await publicGame(await run())).monitor?.status, "settling");
       const { completeAsyncCommand } = await import("../../lib/monitor-commands");
       await completeAsyncCommand({
         dispatchId,
@@ -1780,7 +1794,12 @@ await test(
           "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
           [id],
         );
-        assert.equal((await publicGame(await run())).monitor?.status, "unresolved");
+        const orphaned = (await publicGame(await run())).monitor;
+        assert.equal(orphaned?.status, "unresolved");
+        assert.equal(
+          orphaned?.reason,
+          "A command lost contact with its response, so this run cannot be graded.",
+        );
         assert.equal(await claimAsyncFinalization(), null);
       },
     );

@@ -56,6 +56,7 @@ Every command also runs under `timeout -k 2 15`, so its process group is killed 
 ## Out of scope
 
 - Telling the player on the page that a command was stopped. The tool output already says "The command could not finish in this run's environment."
+  - Superseded text: a stopped command now records "The command was stopped." and the page says "A stopped command is being checked. This takes a few seconds." while it settles.
 - `unknown` operations of kind `score` or `delete`. They have their own handling.
 - A command operation left `running` because its runner process died. It blocks the same paths. The same check could settle it once its session's lease has expired, in a later change.
 

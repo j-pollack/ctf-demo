@@ -17,12 +17,12 @@ const COPY = {
   "sign-in": {
     unavailable: "Email sign-in is temporarily unavailable. Try again in a few minutes.",
     tooMany: "Too many sign-in emails were requested. Wait a minute, then try again.",
-    failed: "Could not send your sign-in link. Please try again.",
+    failed: "Could not send your sign-in link. Try again.",
   },
   confirmation: {
     unavailable: "Email is temporarily unavailable. Try again in a few minutes.",
     tooMany: "Too many emails were requested. Wait a minute, then try again.",
-    failed: "Could not send your confirmation link. Please try again.",
+    failed: "Could not send your confirmation link. Try again.",
   },
 } as const;
 

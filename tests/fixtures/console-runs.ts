@@ -27,6 +27,7 @@ export function run(sessions: SessionSummary[], overrides: Partial<PublicGame> =
     monitorMode: "async",
     submissionTransport: "tool",
     submissionPending: false,
+    startBlockedByGrading: false,
     stateRevision: "12",
     monitor: {
       status: "reviewing",

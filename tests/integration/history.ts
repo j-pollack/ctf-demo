@@ -225,6 +225,32 @@ export async function runHistoryTests(t: TestContext, pool: Pool) {
         [ids[2]],
       );
     }
+    {
+      // How an ended run ended: the flag it held and, for no result, the cause. Other runs carry
+      // neither field, even if a stale value is stored.
+      const [wrong, allowance, plain, activeRun] = [ids[3], ids[7], ids[11], ids[4]];
+      await pool.query("UPDATE ctf.games SET submitted_flag_correct=false WHERE id=$1", [wrong]);
+      await pool.query("UPDATE ctf.games SET submitted_flag_correct=true WHERE id=$1", [allowance]);
+      await pool.query("UPDATE ctf.games SET submitted_flag_correct=true WHERE id=$1", [activeRun]);
+      for (const gameId of [allowance, activeRun])
+        await pool.query("INSERT INTO ctf.events(game_id,data,session_id) VALUES($1,$2,$1)", [
+          gameId,
+          JSON.stringify({ kind: "monitor", decision: "unverified", cause: "allowance", text: "" }),
+        ]);
+      const listed = new Map<string, Record<string, unknown>>(
+        (await (await GET(request("?limit=50"))).json()).runs.map(
+          (run: { id: string }) => [run.id, run] as const,
+        ),
+      );
+      assert.equal(listed.get(wrong)!.submissionCorrect, false);
+      assert.equal("endReason" in listed.get(wrong)!, false);
+      assert.equal(listed.get(allowance)!.submissionCorrect, true);
+      assert.equal(listed.get(allowance)!.endReason, "unverified-allowance");
+      for (const run of [listed.get(plain)!, listed.get(activeRun)!, listed.get(ids[1])!]) {
+        assert.equal("submissionCorrect" in run, false);
+        assert.equal("endReason" in run, false);
+      }
+    }
     assert.equal((await GET(request("?limit=51"))).status, 400);
     assert.equal((await GET(request("?limit=1&limit=2"))).status, 400);
     assert.equal((await GET(request("?cursor=bad"))).status, 400);

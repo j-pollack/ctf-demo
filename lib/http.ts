@@ -52,7 +52,7 @@ export function errorResponse(error: unknown) {
       error:
         error instanceof GameError
           ? error.message
-          : "The service could not complete this request. Please try again.",
+          : "The service could not complete this request. Try again.",
     },
     { status: error instanceof GameError ? error.status : 503 },
   );

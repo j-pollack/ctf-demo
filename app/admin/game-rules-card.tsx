@@ -17,7 +17,8 @@ const RULES: { key: GameRuleKey; label: string; detail: string; on: keyof GameRu
   {
     key: "jailbreak_catch",
     label: "Jailbreak catch",
-    detail: "On: an instruction or system prompt that Jev is certain is a jailbreak ends the run.",
+    detail:
+      "On: an instruction or system prompt that Jev is certain is a jailbreak is refused and ends the run. One Jev is unsure of is let through and judged again by the investigator’s model, which can end the run later.",
     on: "jailbreakCatch",
   },
 ];

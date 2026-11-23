@@ -1,7 +1,7 @@
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import { db } from "./db";
 import { randomUUID } from "node:crypto";
-import { transaction } from "./games";
+import { monitorAllowance, runSpend, transaction } from "./games";
 import { GameError, hasSecret } from "./policy";
 import { diagnosticText } from "./inference";
 import {
@@ -414,6 +414,8 @@ const UNVERIFIED_TEXT = {
   review:
     "The review could not be completed after repeated attempts. This run ended with no result.",
   scoring: "Scoring could not be completed. This run ended with no result.",
+  allowance:
+    "The monitor’s budget for this run ran out before every session was reviewed. This run ended with no result.",
 } as const;
 
 // Ends a submitted run that cannot get a verdict. Returns its Sprite name when it did.
@@ -439,7 +441,12 @@ export async function resolveUnverifiedRun(gameId: string): Promise<string | nul
        ORDER BY s.ordinal LIMIT 1`,
       [gameId, MAX_REQUEUES],
     );
-    let cause: "review" | "scoring" = "review";
+    // A review that cannot finish once the monitor has spent its allowance was refused for it,
+    // whatever error the last attempt left behind. Any other review failure is a plain "review".
+    let cause: "review" | "scoring" | "allowance" =
+      unresolved && (await runSpend(client, gameId)).monitorSpent >= monitorAllowance("finalizing")
+        ? "allowance"
+        : "review";
     let sessionId = unresolved?.session_id;
     if (!sessionId) {
       const {

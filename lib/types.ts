@@ -46,8 +46,9 @@ export type GameEvent = {
   refusedTextIds?: string[];
   // Monitor block events: "jailbreak" for the screen, "flag_output" for a command that printed the
   // flag. Absent on investigator catches.
-  // Monitor unverified events: "review" or "scoring", whichever could not be completed.
-  cause?: "jailbreak" | "flag_output" | "review" | "scoring";
+  // Monitor unverified events: "review" or "scoring", whichever could not be completed, or
+  // "allowance" when the monitor's budget for the run ran out before every session was reviewed.
+  cause?: "jailbreak" | "flag_output" | "review" | "scoring" | "allowance";
   toolCallId?: string;
   questions?: string[];
   refusedKinds?: ("instruction" | "system_prompt")[];
@@ -156,10 +157,13 @@ export type PublicGame = {
   submissionTransport: "tool" | "http";
   submissionUrl?: string;
   submissionPending: boolean;
+  // An upload is waiting to be graded and a new run would be refused until it is.
+  startBlockedByGrading: boolean;
   submissionCorrect?: boolean;
   stateRevision: string;
   monitor?: {
-    status: "queued" | "reviewing" | "caught-up" | "unresolved" | "caught";
+    // "settling": a stopped command is being checked, which is not a failed review.
+    status: "queued" | "reviewing" | "settling" | "caught-up" | "unresolved" | "caught";
     pendingSessions: number;
     reviewedUpdates: number;
     totalUpdates: number;
@@ -170,7 +174,7 @@ export type PublicGame = {
     willRetry?: boolean;
   };
   // Set on a run that ended because its review or scoring could not be completed.
-  endReason?: "unverified-review" | "unverified-scoring";
+  endReason?: "unverified-review" | "unverified-scoring" | "unverified-allowance";
   agentModel: string;
   agentEffort: AgentEffort;
   monitorDifficulty: MonitorDifficulty;
@@ -222,7 +226,16 @@ export type GameSummary = Omit<
 > & {
   agentModel: string | null;
   createdAt: string;
+  // What an ended run was, as the run page tells it: set only when the run has ended.
+  submissionCorrect?: boolean;
+  endReason?: PublicGame["endReason"];
 };
+// The cause stored on a run's unverified event, as the endReason the run page shows.
+export function endReasonOf(cause: string | null | undefined): PublicGame["endReason"] {
+  if (cause === "scoring") return "unverified-scoring";
+  if (cause === "allowance") return "unverified-allowance";
+  return cause === "review" ? "unverified-review" : undefined;
+}
 // Rules a run is played under. Recorded on the run when it starts.
 export type GameRules = {
   monitorIsolation: boolean;

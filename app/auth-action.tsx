@@ -15,15 +15,14 @@ function SignedIn({ current, onSignedOut }: { current?: string | null; onSignedO
     setError("");
     try {
       const result = await authClient.signOut();
-      if (result.error)
-        throw new Error(result.error.message ?? "Could not sign out. Please retry.");
+      if (result.error) throw new Error(result.error.message ?? "Could not sign out. Try again.");
       const destination = signOutDestination(pathname);
       if (destination) return router.replace(destination);
       onSignedOut();
       // Server-rendered parts of the page were rendered for the signed-in account.
       router.refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not sign out. Please retry.");
+      setError(cause instanceof Error ? cause.message : "Could not sign out. Try again.");
     }
   }
   return (

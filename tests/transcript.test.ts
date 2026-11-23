@@ -1,3 +1,4 @@
+import { REFUSED_PLACEHOLDER_TEXT } from "../lib/text-screen";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -534,10 +535,16 @@ test("U5: a run ended with no result says so, even for a correct submission", ()
     scoring.detail,
     "Scoring could not be completed, so this run ended with no result. Start a new run to try again.",
   );
+  const allowance = endBanner("ended", { correct: true }, "unverified-allowance");
+  assert.equal(allowance.heading, "No result");
+  assert.equal(
+    allowance.detail,
+    "The monitor’s budget for this run ran out before every session was reviewed, so this run ended with no result. Start a new run to try again.",
+  );
   assert.equal(endBanner("ended", { correct: true }).heading, "Right flag, but no bug fixed");
 });
 
-test("U5: an unverified event renders under REVIEW INCOMPLETE", () => {
+test("U5: an unverified event renders under NO RESULT", () => {
   const html = renderToStaticMarkup(
     createElement(Entry, {
       event: {
@@ -549,6 +556,32 @@ test("U5: an unverified event renders under REVIEW INCOMPLETE", () => {
       },
     }),
   );
-  assert.match(html, /REVIEW INCOMPLETE/);
+  assert.match(html, /NO RESULT/);
+  assert.doesNotMatch(html, /REVIEW INCOMPLETE/);
   assert.doesNotMatch(html, /INVESTIGATION ERROR/);
+});
+
+test("M15: the refusal note names the classifier and says sending the text ended the run", () => {
+  assert.equal(
+    REFUSED_NOTE,
+    "Refused. The classifier found an attempt to override the agent’s or the monitor’s rules. The agent never received this text. Sending it ended the run.",
+  );
+});
+
+test("M15: a refused placeholder renders by its flag, so stored old text and new text both read well", () => {
+  const OLD = "[A submission was refused by the jailbreak screen. Its text is withheld.]";
+  assert.notEqual(REFUSED_PLACEHOLDER_TEXT, OLD);
+  assert.match(REFUSED_PLACEHOLDER_TEXT, /^\[An instruction was refused by the jailbreak check\./);
+  for (const text of [OLD, REFUSED_PLACEHOLDER_TEXT]) {
+    const event: GameEvent = { id: 4, kind: "user", text, refused: true, refusedTextIds: ["a"] };
+    const owner = renderToStaticMarkup(
+      createElement(Entry, {
+        event,
+        refusedTexts: [{ id: "a", kind: "instruction", text: "sent text", flagged: true }],
+      }),
+    );
+    assert.match(owner, /<pre>sent text<\/pre>/);
+    assert.ok(!owner.includes("withheld"));
+    assert.match(renderToStaticMarkup(createElement(Entry, { event })), /Its text is withheld/);
+  }
 });

@@ -11,6 +11,7 @@ import {
   MODELS,
   DAILY_CAP_MICRODOLLARS,
   FINAL_REVIEW_ALLOWANCE_MICRODOLLARS,
+  MONITOR_ALLOWANCE_USED_UP_TEXT,
   MONITOR_RUN_ALLOWANCE_MICRODOLLARS,
   GameError,
   makeSecret,
@@ -22,6 +23,7 @@ import {
   RUN_BUDGET_MICRODOLLARS,
   RUNS_PER_DAY,
   UNVERIFIED_SUBMISSION_STATUS,
+  endReasonOf,
   type AgentEffort,
   type GameEvent,
   type GameStatus,
@@ -176,13 +178,26 @@ export async function runSpend(
     agentSpent: Number(row.agent_spent),
   };
 }
+// A command left running by a runner whose lease has expired. Nothing settles it, so it holds back
+// a run's grade for good and the run may be replaced. Written for a games row aliased `g`.
+const ORPHAN_COMMAND = `EXISTS(SELECT 1 FROM ctf.sprite_operations o
+  LEFT JOIN ctf.agent_sessions s ON s.game_id=o.game_id AND s.id=o.session_id
+  WHERE o.game_id=g.id AND o.kind='command' AND o.status='running'
+    AND (s.lease_until IS NULL OR s.lease_until<=now()))`;
+// Nothing settles such a command. Starting a new run replaces an open run, but not one under review.
+const ORPHAN_COMMAND_TEXT = {
+  active:
+    "A command lost contact with its response, so this run cannot be graded. Start a new run to replace it.",
+  ended: "A command lost contact with its response, so this run cannot be graded.",
+};
+const SETTLING_COMMAND_TEXT = "A stopped command is being checked. This takes a few seconds.";
+export const monitorAllowance = (status: GameStatus) =>
+  MONITOR_RUN_ALLOWANCE_MICRODOLLARS +
+  (status === "finalizing" ? FINAL_REVIEW_ALLOWANCE_MICRODOLLARS : 0);
 // A monitor request is admitted in full while the monitor's settled spend is below its allowance.
 export function assertMonitorAllowance(monitorSpent: number, status: GameStatus) {
-  const allowance =
-    MONITOR_RUN_ALLOWANCE_MICRODOLLARS +
-    (status === "finalizing" ? FINAL_REVIEW_ALLOWANCE_MICRODOLLARS : 0);
-  if (monitorSpent >= allowance)
-    throw new GameError("The monitor’s budget for this run is used up.", 402);
+  if (monitorSpent >= monitorAllowance(status))
+    throw new GameError(MONITOR_ALLOWANCE_USED_UP_TEXT, 402);
 }
 // One read of a run's money, shared by publicGame and the runner's live `billing` frames.
 export async function gameBilling(gameId: string) {
@@ -230,7 +245,9 @@ export async function publicGame(
     reviewing: boolean;
     unresolved: boolean;
     has_pending_review: boolean;
-    uncertain_command: boolean;
+    settling_command: boolean;
+    orphan_command: boolean;
+    start_blocked_by_grading: boolean;
     will_retry: boolean;
     last_reviewed_at: Date | null;
     finalization_error: string | null;
@@ -240,10 +257,10 @@ export async function publicGame(
     `SELECT g.status,g.monitor_mode,g.state_revision::text,g.finalization_error,g.submitted_flag_correct,
       EXISTS(SELECT 1 FROM ctf.flag_submissions r WHERE r.game_id=g.id AND r.promoted_at IS NULL) AS submission_pending,
       EXISTS(SELECT 1 FROM ctf.sprite_operations o
-        LEFT JOIN ctf.agent_sessions s ON s.game_id=o.game_id AND s.id=o.session_id
-        WHERE o.game_id=g.id AND o.kind='command' AND
-        (o.status='unknown' OR (o.status='running' AND
-          (s.lease_until IS NULL OR s.lease_until<=now())))) AS uncertain_command,
+        WHERE o.game_id=g.id AND o.kind='command' AND o.status='unknown') AS settling_command,
+      ${ORPHAN_COMMAND} AS orphan_command,
+      (g.status='active' AND EXISTS(SELECT 1 FROM ctf.flag_submissions r WHERE r.game_id=g.id)
+        AND NOT ${ORPHAN_COMMAND}) AS start_blocked_by_grading,
       count(DISTINCT j.session_id) FILTER (WHERE j.covered_version<j.requested_version
         OR (g.status='finalizing' AND j.final_version<j.requested_version AND ${NEWEST_EPOCH}))::text AS pending_sessions,
       coalesce(sum(CASE WHEN j.reviewed_version>=j.start_version
@@ -259,34 +276,40 @@ export async function publicGame(
     [game.id, MAX_REQUEUES],
   );
   if (!monitorState) throw new GameError("Run not found.", 404);
+  const failed =
+    monitorState.unresolved || monitorState.finalization_error || monitorState.orphan_command;
   const monitor =
     monitorState.monitor_mode === "async"
       ? {
           status:
             monitorState.status === "caught"
               ? ("caught" as const)
-              : monitorState.unresolved ||
-                  monitorState.finalization_error ||
-                  monitorState.uncertain_command
+              : failed
                 ? ("unresolved" as const)
-                : monitorState.reviewing
-                  ? ("reviewing" as const)
-                  : Number(monitorState.pending_sessions) > 0
-                    ? ("queued" as const)
-                    : ("caught-up" as const),
+                : monitorState.settling_command
+                  ? ("settling" as const)
+                  : monitorState.reviewing
+                    ? ("reviewing" as const)
+                    : Number(monitorState.pending_sessions) > 0
+                      ? ("queued" as const)
+                      : ("caught-up" as const),
           pendingSessions: Number(monitorState.pending_sessions),
           reviewedUpdates: Number(monitorState.reviewed_updates),
           totalUpdates: Number(monitorState.total_updates),
           lastReviewedAt: monitorState.last_reviewed_at?.toISOString() ?? null,
           hasPendingReview: monitorState.has_pending_review,
           willRetry: monitorState.will_retry,
-          ...((monitorState.unresolved ||
-            monitorState.finalization_error ||
-            monitorState.uncertain_command) &&
-            monitorState.status !== "caught" && {
+          ...(monitorState.status !== "caught" &&
+            (failed || monitorState.settling_command) && {
               reason: monitorState.finalization_error
                 ? "Scoring could not be completed. The result remains unconfirmed."
-                : "Review could not be completed. The result remains unconfirmed.",
+                : monitorState.unresolved && monitorState.status === "active"
+                  ? "A review failed. The session will be reviewed again, at the latest when the flag is uploaded."
+                  : monitorState.orphan_command && !monitorState.unresolved
+                    ? ORPHAN_COMMAND_TEXT[monitorState.status === "active" ? "active" : "ended"]
+                    : failed
+                      ? "Review could not be completed. The result remains unconfirmed."
+                      : SETTLING_COMMAND_TEXT,
             }),
         }
       : undefined;
@@ -336,6 +359,7 @@ export async function publicGame(
     monitorMode: monitorState.monitor_mode,
     submissionTransport: game.submission_transport,
     submissionPending: monitorState.submission_pending,
+    startBlockedByGrading: monitorState.start_blocked_by_grading,
     ...((monitorState.status === "captured" || monitorState.status === "ended") &&
       monitorState.submitted_flag_correct !== null && {
         submissionCorrect: monitorState.submitted_flag_correct,
@@ -346,10 +370,7 @@ export async function publicGame(
     stateRevision: monitorState.state_revision,
     ...(monitor && { monitor }),
     ...(unverified && {
-      endReason:
-        unverified.cause === "scoring"
-          ? ("unverified-scoring" as const)
-          : ("unverified-review" as const),
+      endReason: endReasonOf(unverified.cause) ?? "unverified-review",
     }),
     agentModel: selected.agentModel,
     agentEffort: selected.agentEffort,
@@ -595,15 +616,14 @@ export async function startGame(
     // left running with no live lease keeps the grade back for good, so that run is replaced.
     const graded = await client.query(
       `SELECT 1 FROM ctf.flag_submissions r JOIN ctf.games g ON g.id=r.game_id
-      WHERE g.owner_id=$1 AND g.status='active' AND NOT EXISTS(
-        SELECT 1 FROM ctf.sprite_operations o
-        LEFT JOIN ctf.agent_sessions s ON s.game_id=o.game_id AND s.id=o.session_id
-        WHERE o.game_id=g.id AND o.kind='command' AND o.status='running'
-          AND (s.lease_until IS NULL OR s.lease_until<=now())) LIMIT 1`,
+      WHERE g.owner_id=$1 AND g.status='active' AND NOT ${ORPHAN_COMMAND} LIMIT 1`,
       [ownerId],
     );
     if (graded.rowCount)
-      throw new GameError("Your last run is being graded. Start a new run in a minute.", 409);
+      throw new GameError(
+        "Your current run’s upload is waiting to be graded. You can start a new run once grading begins.",
+        409,
+      );
     const count = await client.query(
       `SELECT count(DISTINCT sprite_name)::int AS total FROM ctf.games
        WHERE status IN ('creating','active','finalizing')
@@ -623,13 +643,16 @@ export async function startGame(
         [ownerId],
       );
       if (!isAdmin(owner.rows[0]))
-        throw new GameError("You’ve reached your daily limit of new runs.", 429);
+        throw new GameError(
+          `You have started ${RUNS_PER_DAY} new runs in the last 24 hours. Try again later.`,
+          429,
+        );
     }
     const totalStarts = await client.query(
       "SELECT count(*)::int AS total FROM ctf.games WHERE new_run AND created_at>now()-interval '24 hours'",
     );
     if (totalStarts.rows[0].total >= 100)
-      throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
+      throw new GameError("No more new runs can start right now. Try again later.", 429);
     await client.query(
       "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL,state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE owner_id=$1 AND status IN ('creating','active')",
       [ownerId],
