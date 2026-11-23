@@ -451,6 +451,8 @@ await test("display names and account changes", { timeout: 120_000 }, async (t) 
   await t.test("I9: an email change needs a verified inbox, then the new one", async (s) => {
     const logs: string[] = [];
     s.mock.method(console, "error", (line: unknown) => logs.push(String(line)));
+    const info: string[] = [];
+    s.mock.method(console, "info", (line: unknown) => info.push(String(line)));
     let address = 0;
     const change = (cookie: string, newEmail: string, ip = `203.0.113.${++address}`) =>
       auth.handler(
@@ -529,6 +531,17 @@ await test("display names and account changes", { timeout: 120_000 }, async (t) 
     assert.equal(await collision.text(), answer, "a taken address looks the same");
     await settle();
     assert.deepEqual(fake.mail, [], "and sends nothing");
+    // Only the server log tells a taken address from a new one, and a sent email from none.
+    assert.deepEqual(
+      events(info, "auth.change_email.requested").map((event) => event.newAddressTaken),
+      [false, true],
+    );
+    assert.deepEqual(
+      events(info, "auth.email.sent")
+        .filter((event) => event.purpose === "confirmation")
+        .map((event) => event.subject),
+      ["Confirm your Capture the flag email change", "Verify your new Capture the flag email"],
+    );
     fake.controls.mailStatus = 500;
     const failed = await change(newcomer.cookie, "elsewhere@example.invalid");
     assert.equal(failed.status, requested.status);

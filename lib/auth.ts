@@ -35,6 +35,9 @@ async function sendEmail(
     // A plain Error becomes an empty 500; APIError carries the message to the player.
     throw new APIError(status, { message });
   }
+  // A success leaves a line too: email-change sends run after the response, so the log is the only
+  // place that shows whether one went out. The subject says which email; no address is logged.
+  console.info(JSON.stringify({ event: "auth.email.sent", purpose, subject }));
 }
 const IGNORE = "If you didn't request it, ignore this email.";
 // Both email-change links carry the caller's callback; each step reports its own outcome instead.
@@ -137,6 +140,23 @@ export const auth = betterAuth({
         const session = await getSessionFromCtx(ctx);
         if (session && (session.user.isAnonymous || session.user.emailVerified !== true))
           throw new APIError("FORBIDDEN", { message: CHANGE_REFUSED });
+        // Better Auth answers a taken address exactly like a new one and sends nothing, so the
+        // player sees no difference. The server log records which it was, for support.
+        if (session && typeof ctx.body?.newEmail === "string") {
+          const {
+            rows: [taken],
+          } = await db.query<{ taken: boolean }>(
+            `SELECT EXISTS(SELECT 1 FROM ctf."user" WHERE lower(email)=lower($1)) AS taken`,
+            [canonicalEmail(ctx.body.newEmail)],
+          );
+          console.info(
+            JSON.stringify({
+              event: "auth.change_email.requested",
+              userId: session.user.id,
+              newAddressTaken: taken.taken,
+            }),
+          );
+        }
       }
       const field = EMAIL_FIELDS[ctx.path];
       if (!field || typeof ctx.body?.[field] !== "string") return;
