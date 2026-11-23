@@ -8,7 +8,14 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { setTimeout as sleep } from "node:timers/promises";
-import { assertLease, reserveInference, settleInference, transaction, type GameRow } from "./games";
+import {
+  assertLease,
+  reserveInference,
+  settleAbortedInference,
+  settleInference,
+  transaction,
+  type GameRow,
+} from "./games";
 import { db } from "./db";
 import { GameError, inputCeiling, MODELS, PLAYER_AGENT_EFFORT } from "./policy";
 import type { AgentEffort } from "./types";
@@ -470,6 +477,7 @@ export async function infer(
   // A reservation is still refundable until the provider transport is entered. Any failure in
   // local authorization or cancellation before that point must release the hold.
   let knownUnbilled = true;
+  let generationKnown = false;
   let response: Response | undefined,
     providerError: ReturnType<typeof providerErrorDetails> | undefined;
   // An agent call may use whatever the response's lease has left while it keeps making progress.
@@ -575,8 +583,13 @@ export async function infer(
     const data = await collectStream(
       response.body,
       onDelta ?? (() => {}),
-      (id) =>
-        db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [reservation.id, id]),
+      (id) => {
+        generationKnown = true;
+        return db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [
+          reservation.id,
+          id,
+        ]);
+      },
       idleMs,
       stallMessage,
     );
@@ -709,6 +722,18 @@ export async function infer(
     throw error;
   } finally {
     if (!settled && knownUnbilled) await settleInference(reservation.id, { tokens: 0, cost: 0 });
+    else if (!settled && role === "agent" && !generationKnown && requestSignal.aborted) {
+      // No generation id means reconcileInference can never find this request, so the hold would
+      // keep a finalizing run waiting a day. Charge the ceiling now rather than undercount.
+      await settleAbortedInference(reservation.id);
+      console.error(
+        JSON.stringify({
+          event: "inference.aborted_before_generation",
+          timestamp: new Date().toISOString(),
+          ...context,
+        }),
+      );
+    }
   }
 }
 

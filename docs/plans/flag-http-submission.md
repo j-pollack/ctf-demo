@@ -1,6 +1,7 @@
 # Direct HTTP flag submission
 
 The receipt, authorization and lifecycle contract below is current. Its dedicated-ingress and network-isolation sections are superseded: the receiver is `POST /v1/end` in the app, as recorded in [flag-site-target.md](flag-site-target.md).
+Superseded on 2026-11-22 by [any-upload-ends-run.md](any-upload-ends-run.md): a receipt is accepted for any upload of an active run, whatever became of the command that held the token. Creation authority (the paragraph that begins "The ingress authorizes receipt creation", which requires a running command, a current generation and an unexpired lease), the "Drain, then promote once" rule that waits for a known completed uploader, FH-02 (stale-lease and completed-command refusals) and FH-05 (no scoring while completion is unknown) no longer hold as written. The run is graded once no command on its sprite is running or unknown.
 
 ## Status and working agreement
 

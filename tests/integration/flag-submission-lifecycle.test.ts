@@ -59,7 +59,7 @@ await test(
     const { claimSession, createSession, requestSessionStop } = await import("../../lib/sessions");
     const { dispatchAsyncCommand, settleStoppedCommands } =
       await import("../../lib/monitor-commands");
-    const { receiveFlagSubmission } = await import("../../lib/flag-submissions");
+    const { receiveFlagUpload } = await import("../../lib/flag-submissions");
     const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
     const { hasPendingWork } = await import("../../lib/monitor-jobs");
     const { AGENT_MODEL, INVESTIGATOR_MODEL, MODELS } = await import("../../lib/policy");
@@ -83,6 +83,8 @@ await test(
     type AgentReply = { commands: string[] } | { text: string };
     let agentScript: AgentReply[] = [];
     let agentRequests = 0;
+    // Holds an attacker inference after it is counted, until the scenario lets it go or it is aborted.
+    let agentHold: ((signal?: AbortSignal) => Promise<void>) | undefined;
     const generations = new Set<string>();
     const screenFake = createScreenFake();
     const strict =
@@ -318,6 +320,7 @@ await test(
           ["sprite_exec"],
         );
         agentRequests++;
+        await agentHold?.(options.signal ?? undefined);
         const reply = agentScript.shift();
         assert.ok(reply, "Unexpected attacker inference");
         const deltas: Record<string, unknown>[] =
@@ -363,6 +366,7 @@ await test(
       listedSprites.length = 0;
       agentScript = [];
       agentRequests = 0;
+      agentHold = undefined;
       screenFake.reset();
     });
     t.afterEach(() =>
@@ -430,7 +434,9 @@ await test(
         )
       ).rows[0].n as number;
     const receive = (env: Record<string, string> | undefined, value: string) =>
-      receiveFlagSubmission({ token: env?.TARGET.slice(`${TARGET}/`.length) ?? "", value });
+      receiveFlagUpload({ token: env?.TARGET.slice(`${TARGET}/`.length) ?? "", value }).then(
+        ({ result }) => result,
+      );
 
     const session = (isActive: boolean): Session => ({
       id: randomUUID(),
@@ -781,9 +787,9 @@ await test(
     );
 
     // The tool-result screen sits between the command's return and its record. An upload that
-    // arrives there is refused as one for a completed command, so a screen cannot change an outcome.
+    // arrives there is accepted, and the command's completion grades it.
     await t.test(
-      "an upload that arrives while its command's tool-result screen is in flight is stale",
+      "an upload that arrives while its command's tool-result screen is in flight is accepted and graded",
       async () => {
         const owner = `lifecycle-screen-window-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
@@ -808,20 +814,25 @@ await test(
           assert.ok(Date.now() < until, "the tool-result screen was never sent");
         const late = await receive(target, secret).finally(release);
         await response.done;
-        assert.equal(late, "stale");
+        assert.equal(late, "accepted");
         assert.equal(
           (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id])).rowCount,
-          0,
+          1,
         );
-        assert.deepEqual(await run(id), {
-          status: "active",
-          submitted_flag_correct: null,
-          generation: 0,
-          promoted_at: null,
-          correct: null,
-          jobs: 0,
-          submits: 0,
-        });
+        const graded = await run(id);
+        assert.ok(graded.promoted_at);
+        assert.deepEqual(
+          { ...graded, promoted_at: undefined },
+          {
+            status: "finalizing",
+            submitted_flag_correct: true,
+            generation: 1,
+            promoted_at: undefined,
+            correct: true,
+            jobs: 1,
+            submits: 1,
+          },
+        );
         const [uploader] = await operation(id, command);
         assert.equal(uploader.status, "completed");
         const screens = (
@@ -840,7 +851,7 @@ await test(
             .rows[0].reserved_microdollars,
           "0",
         );
-        assert.equal(agentRequests, 2);
+        assert.equal(agentRequests, 1);
       },
     );
 
@@ -922,7 +933,7 @@ await test(
     const receipt = "SELECT status,monitor_mode,submission_transport";
 
     await t.test(
-      "a receipt that loses the race to the uploader's completion is stale and changes nothing",
+      "a receipt that loses the race to the uploader's completion is accepted and promoted at once",
       async () => {
         const owner = `lifecycle-race-stale-${randomUUID()}`;
         const { id, secret } = await startRun(owner);
@@ -948,32 +959,28 @@ await test(
             })();
             return output("uploaded");
           });
-          const sent = await (await respond(id, id, owner, "Upload the flag")).done;
+          await (
+            await respond(id, id, owner, "Upload the flag")
+          ).done;
           await stopped.assertStopped(id);
-          assert.equal(await race, "stale");
+          assert.equal(await race, "accepted");
           const [uploader] = await operation(id, command);
           assert.equal(uploader.status, "completed");
-          assert.equal(
-            (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id]))
-              .rowCount,
-            0,
+          const promoted = await run(id);
+          assert.ok(promoted.promoted_at);
+          assert.deepEqual(
+            { ...promoted, promoted_at: undefined },
+            {
+              status: "finalizing",
+              submitted_flag_correct: true,
+              generation: 1,
+              promoted_at: undefined,
+              correct: true,
+              jobs: 1,
+              submits: 1,
+            },
           );
-          assert.deepEqual(await run(id), {
-            status: "active",
-            submitted_flag_correct: null,
-            generation: 0,
-            promoted_at: null,
-            correct: null,
-            jobs: 0,
-            submits: 0,
-          });
-          // With no receipt, play continues: the agent's next turn was admitted.
-          assert.equal(agentRequests, 2);
-          assert.ok(
-            sent.some(
-              ({ type, data }) => type === "event" && (data as { text: string }).text === "Done.",
-            ),
-          );
+          assert.equal(agentRequests, 1);
         } finally {
           stopped.restore();
         }
@@ -1243,7 +1250,7 @@ await test(
     );
 
     await t.test(
-      "S7: a settled command's receipt stays unpromoted, and its token is refused when it had none",
+      "S7: the settle promotes a stopped command's receipt, and a later upload from a settled command is promoted at once",
       async () => {
         const owner = `settle-s7-${randomUUID()}`;
         const withReceipt = await startRun(owner);
@@ -1264,21 +1271,20 @@ await test(
         const [uploader] = await operation(withReceipt.id, command);
         assert.equal(uploader.status, "interrupted");
         const after = await run(withReceipt.id);
-        assert.equal(after.status, "active");
-        assert.equal(after.promoted_at, null);
-        assert.equal(after.jobs, 0);
-        // Nothing the settled command's receipt could do: the run stays unscored.
-        await runMonitorWorkerOnce();
-        assert.equal((await run(withReceipt.id)).status, "active");
+        assert.equal(after.status, "finalizing");
+        assert.ok(after.promoted_at);
+        assert.equal(after.jobs, 1);
 
         const owner2 = `settle-s7b-${randomUUID()}`;
         const bare = await startRun(owner2);
         let target: Record<string, string> | undefined;
         await stopDuringCommand(owner2, bare.id, "sleep 60", (env) => (target = env));
         emptySessions(bare.id);
-        await runMonitorWorkerOnce();
-        assert.equal(await receive(target, bare.secret), "stale");
-        assert.equal((await run(bare.id)).correct, null);
+        await settleStoppedCommands(() => {});
+        assert.equal(await receive(target, bare.secret), "accepted");
+        const late = await run(bare.id);
+        assert.equal(late.status, "finalizing");
+        assert.equal(late.correct, true);
       },
     );
 
@@ -1413,5 +1419,353 @@ await test(
       );
       assert.equal(await hasPendingWork(), false, "an open delete leaves nothing to settle");
     });
+
+    // docs/plans/any-upload-ends-run.md: an upload of an active run is graded, whatever became of
+    // the command that held its token.
+    const drain = async (gameId: string) => {
+      for (let pass = 0; pass < 10; pass++) {
+        if ((await run(gameId)).status !== "finalizing") return;
+        await runMonitorWorkerOnce();
+      }
+    };
+    const status = async (gameId: string) => (await run(gameId)).status as string;
+    // A command that starts a background upload and returns, leaving the address behind.
+    const backgroundUpload = async (owner: string, gameId: string, extra: AgentReply[] = []) => {
+      let target: Record<string, string> | undefined;
+      agentScript = [{ commands: [uploadCommand] }, { text: "Done." }, ...extra];
+      execHandlers.set(uploadCommand, async ({ env }) => {
+        target = env;
+        return output("started");
+      });
+      await (
+        await respond(gameId, gameId, owner, "Upload the flag later")
+      ).done;
+      return target;
+    };
+
+    await t.test("U1: an upload after its command returned is graded and wins", async () => {
+      const owner = `any-u1-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      await pool.query("UPDATE ctf.games SET bug_fix_required=false WHERE id=$1", [id]);
+      const target = await backgroundUpload(owner, id);
+      assert.equal(await status(id), "active");
+      // The ordinary reviews finish first, so only the promotion can ask for the final ones.
+      const open = () =>
+        pool.query("SELECT 1 FROM ctf.monitor_jobs WHERE game_id=$1 AND status<>'caught-up'", [id]);
+      for (let pass = 0; pass < 6 && (await open()).rowCount; pass++) await runMonitorWorkerOnce();
+      assert.equal((await open()).rowCount, 0);
+      assert.equal(await receive(target, secret), "accepted");
+      const graded = await run(id);
+      assert.equal(graded.status, "finalizing", "promoted in the upload's own request");
+      assert.equal(graded.generation, 1);
+      assert.ok(graded.promoted_at);
+      assert.ok((await open()).rowCount, "the promotion queued the final reviews");
+      await drain(id);
+      assert.equal(await status(id), "captured");
+      const { rows: reviews } = await pool.query(
+        "SELECT status,final_version,requested_version FROM ctf.monitor_jobs WHERE game_id=$1",
+        [id],
+      );
+      assert.ok(reviews.length > 0);
+      for (const review of reviews) {
+        assert.equal(review.status, "caught-up");
+        assert.ok(
+          Number(review.final_version) >= Number(review.requested_version),
+          "final review ran",
+        );
+      }
+    });
+
+    await t.test("U2: an upload after its session's lease expired is graded", async () => {
+      const owner = `any-u2-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      const target = await backgroundUpload(owner, id);
+      await pool.query(
+        "UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()-interval '1 minute' WHERE id=$1",
+        [id, randomUUID()],
+      );
+      assert.equal(await receive(target, secret), "accepted");
+      assert.equal(await status(id), "finalizing");
+    });
+
+    await t.test("U3: an upload from a stopped command is graded once it is settled", async () => {
+      const owner = `any-u3-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      let target: Record<string, string> | undefined;
+      await stopDuringCommand(owner, id, "sleep 60", (env) => (target = env));
+      assert.equal(await receive(target, secret), "accepted");
+      assert.equal(await status(id), "active", "the stopped command still holds the grade");
+      emptySessions(id);
+      await settleStoppedCommands(() => {});
+      const graded = await run(id);
+      assert.equal(graded.status, "finalizing");
+      assert.ok(graded.promoted_at);
+    });
+
+    await t.test("U4: an upload while another command runs waits for it", async () => {
+      const owner = `any-u4-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      const target = await backgroundUpload(owner, id);
+      const second = "printf second";
+      agentScript = [{ commands: [second] }, { text: "Done." }];
+      let accepted: string | undefined;
+      let during: string | undefined;
+      execHandlers.set(second, async () => {
+        accepted = await receive(target, secret);
+        during = await status(id);
+        return output("second");
+      });
+      await (
+        await respond(id, id, owner, "Run another")
+      ).done;
+      assert.equal(accepted, "accepted");
+      assert.equal(during, "active");
+      const graded = await run(id);
+      assert.equal(graded.status, "finalizing", "the running command's completion promoted it");
+      assert.ok(graded.promoted_at);
+    });
+
+    await t.test("U4: the flag in that command's output catches the run first", async () => {
+      const owner = `any-u4b-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      const target = await backgroundUpload(owner, id);
+      const second = "cat /tmp/flag.txt";
+      agentScript = [{ commands: [second] }, { text: "Done." }];
+      let accepted: string | undefined;
+      execHandlers.set(second, async () => {
+        accepted = await receive(target, secret);
+        return output(secret);
+      });
+      await (
+        await respond(id, id, owner, "Read it")
+      ).done;
+      assert.equal(accepted, "accepted");
+      const caught = await run(id);
+      assert.equal(caught.status, "caught");
+      assert.equal(caught.promoted_at, null);
+    });
+
+    await t.test("U5: a closed run refuses an upload, and a second body conflicts", async () => {
+      for (const closed of ["caught", "ended"]) {
+        const owner = `any-u5-${closed}-${randomUUID()}`;
+        const { id, secret } = await startRun(owner);
+        const target = await backgroundUpload(owner, id);
+        await pool.query("UPDATE ctf.games SET status=$2 WHERE id=$1", [id, closed]);
+        assert.equal(await receive(target, secret), "stale");
+        assert.equal(
+          (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id])).rowCount,
+          0,
+        );
+      }
+      const owner = `any-u5-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      const target = await backgroundUpload(owner, id);
+      assert.equal(await receive(target, secret), "accepted");
+      assert.equal(await status(id), "finalizing");
+      assert.equal(await receive(target, "another body"), "conflict");
+      assert.equal(await receive(target, secret), "accepted", "the same body replays");
+    });
+
+    await t.test("U5: a second body conflicts while the first waits", async () => {
+      const owner = `any-u5w-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      let target: Record<string, string> | undefined;
+      await stopDuringCommand(owner, id, "sleep 60", (env) => (target = env));
+      assert.equal(await receive(target, secret), "accepted");
+      assert.equal(await status(id), "active");
+      assert.equal(await receive(target, "another body"), "conflict");
+    });
+
+    await t.test("U6: a wrong flag uploaded late ends the run as a wrong submission", async () => {
+      const owner = `any-u6-${randomUUID()}`;
+      const { id } = await startRun(owner);
+      await pool.query("UPDATE ctf.games SET bug_fix_required=false WHERE id=$1", [id]);
+      const target = await backgroundUpload(owner, id);
+      assert.equal(await receive(target, "flag{wrong}"), "accepted");
+      const graded = await run(id);
+      assert.equal(graded.submitted_flag_correct, false);
+      await drain(id);
+      assert.equal(await status(id), "ended");
+    });
+
+    await t.test(
+      "U7: an upload while another response is mid-inference ends it quietly",
+      async () => {
+        const owner = `any-u7-${randomUUID()}`;
+        const { id, secret } = await startRun(owner);
+        await pool.query("UPDATE ctf.games SET bug_fix_required=false WHERE id=$1", [id]);
+        const target = await backgroundUpload(owner, id);
+        agentScript = [{ text: "Done." }];
+        let holding: () => void = () => {};
+        const inFlight = new Promise<void>((resolve) => (holding = resolve));
+        agentHold = (signal) =>
+          new Promise<never>((_resolve, reject) => {
+            holding();
+            const timer = setTimeout(
+              () => reject(new Error("The inference was never aborted.")),
+              10_000,
+            );
+            signal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                reject(signal.reason);
+              },
+              { once: true },
+            );
+          });
+        const response = await respond(id, id, owner, "Think");
+        await inFlight;
+        assert.equal(await receive(target, secret), "accepted");
+        const sent = await response.done;
+        assert.equal(await status(id), "finalizing");
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT count(*)::int AS n FROM ctf.events WHERE game_id=$1 AND data->>'kind'='error'",
+              [id],
+            )
+          ).rows[0].n,
+          0,
+          "no error event is persisted",
+        );
+        assert.ok(!sent.some(({ data }) => (data as { kind?: string })?.kind === "error"));
+        assert.equal(
+          (await pool.query("SELECT lease FROM ctf.agent_sessions WHERE id=$1", [id])).rows[0]
+            .lease,
+          null,
+          "the lease is released",
+        );
+        // The aborted inference never saw a generation id, so it settles at its ceiling, estimated.
+        const { rows: holds } = await pool.query(
+          `SELECT settled_at,estimated,cost,cost_ceiling,tokens,token_ceiling FROM ctf.inference
+           WHERE game_id=$1 AND role='agent' AND generation_id IS NULL`,
+          [id],
+        );
+        assert.equal(holds.length, 1);
+        assert.ok(
+          holds[0].settled_at,
+          "the aborted hold is settled, not left for the 24-hour sweep",
+        );
+        assert.equal(holds[0].estimated, true);
+        assert.equal(holds[0].cost, holds[0].cost_ceiling);
+        assert.equal(holds[0].tokens, holds[0].token_ceiling);
+        await drain(id);
+        assert.equal(await status(id), "captured");
+      },
+    );
+
+    const refuseNext = async (owner: string, id: string, hold?: Promise<void>) => {
+      await pool.query("UPDATE ctf.games SET jailbreak_catch=true WHERE id=$1", [id]);
+      screenFake.controls.scores = (kind, text) =>
+        kind === "instruction" && text === "jailbreak" ? { overrides_rules: 0.95 } : undefined;
+      if (hold)
+        screenFake.controls.hold = async (kind, _index) => {
+          if (kind === "instruction") await hold;
+        };
+      agentScript = [];
+      return respond(id, id, owner, "jailbreak");
+    };
+
+    await t.test("U8: an upload that beats a jailbreak catch ends the run once", async () => {
+      const owner = `any-u8a-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      const target = await backgroundUpload(owner, id);
+      const requests = agentRequests;
+      let release = () => {};
+      const response = await refuseNext(
+        owner,
+        id,
+        new Promise<void>((resolve) => (release = resolve)),
+      );
+      for (
+        const until = Date.now() + 10_000;
+        !screenFake.requests.some(({ state }) => Object.values(state)[0] === "jailbreak");
+        await delay(10)
+      )
+        assert.ok(Date.now() < until, "the instruction screen was never sent");
+      assert.equal(await receive(target, secret), "accepted");
+      release();
+      await response.done;
+      assert.equal(await status(id), "finalizing");
+      assert.equal(agentRequests, requests, "the refused instruction never reached the agent");
+      assert.equal(
+        (
+          await pool.query("SELECT count(*)::int AS n FROM ctf.refused_texts WHERE game_id=$1", [
+            id,
+          ])
+        ).rows[0].n,
+        0,
+      );
+    });
+
+    await t.test("U8: a jailbreak catch that beats the upload refuses it", async () => {
+      const owner = `any-u8b-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      const target = await backgroundUpload(owner, id);
+      const requests = agentRequests;
+      await (
+        await refuseNext(owner, id)
+      ).done;
+      assert.equal(await status(id), "caught");
+      assert.equal(await receive(target, secret), "stale");
+      assert.equal(agentRequests, requests, "the refused instruction never reached the agent");
+      assert.equal(
+        (await pool.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [id])).rowCount,
+        0,
+      );
+    });
+
+    await t.test("U9: a new run does not replace a run that holds a receipt", async () => {
+      const owner = `any-u9-${randomUUID()}`;
+      const { id, secret } = await startRun(owner);
+      let target: Record<string, string> | undefined;
+      await stopDuringCommand(owner, id, "sleep 60", (env) => (target = env));
+      assert.equal(await receive(target, secret), "accepted");
+      await assert.rejects(startGame(owner), {
+        status: 409,
+        message: "Your last run is being graded. Start a new run in a minute.",
+      });
+      assert.equal(await status(id), "active");
+    });
+
+    await t.test(
+      "U9: a receipt that nothing can promote, a command left running with no lease, is replaced",
+      async () => {
+        const owner = `any-u9b-${randomUUID()}`;
+        const { id, secret } = await startRun(owner);
+        const target = await backgroundUpload(owner, id);
+        await pool.query(
+          `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,
+             command,status,execution_generation)
+           VALUES($1,$2,$3,$3,'dead-runner','command','sleep 60','running',0)`,
+          [randomUUID(), spriteOf(id), id],
+        );
+        assert.equal(await receive(target, secret), "accepted");
+        assert.equal(await status(id), "active", "the dead runner's command holds the grade");
+        const replacement = await startRun(owner);
+        assert.notEqual(replacement.id, id);
+        assert.equal(await status(id), "ended");
+      },
+    );
+
+    await t.test(
+      "U10: a token printed into the transcript uploads from outside any command",
+      async () => {
+        const owner = `any-u10-${randomUUID()}`;
+        const { id, secret } = await startRun(owner);
+        const printing = "printf '%s' \"$TARGET\"";
+        agentScript = [{ commands: [printing] }, { text: "Done." }];
+        execHandlers.set(printing, async ({ env }) => output(env!.TARGET));
+        await (
+          await respond(id, id, owner, "Print the address")
+        ).done;
+        const [printed] = await operation(id, printing);
+        const token = printed.output?.match(/[A-Za-z0-9_-]{43}/)?.[0];
+        assert.ok(token, "the address is in the transcript");
+        assert.equal((await receiveFlagUpload({ token, value: secret })).result, "accepted");
+        assert.equal(await status(id), "finalizing");
+      },
+    );
   },
 );

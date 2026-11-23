@@ -13,54 +13,37 @@ export function hashSubmissionToken(token: string): string {
 
 type ReceiptResult = "accepted" | "conflict" | "unauthorized" | "stale";
 
-export async function receiveFlagSubmission(input: {
-  token: string;
-  value: string;
-}): Promise<ReceiptResult> {
-  if (!/^[A-Za-z0-9_-]{8,256}$/.test(input.token)) return "unauthorized";
+type Receipt = { result: ReceiptResult; promoted: boolean };
+
+/** Accepts an upload while the run is active, whatever became of the command that held the token. */
+export async function receiveFlagUpload(input: { token: string; value: string }): Promise<Receipt> {
+  if (!/^[A-Za-z0-9_-]{8,256}$/.test(input.token))
+    return { result: "unauthorized", promoted: false };
   const tokenHash = hashSubmissionToken(input.token);
   const bodyHash = digest(input.value);
   return transaction(async (client) => {
-    // The token alone names the run. This read takes no lock; everything is rechecked below
-    // after the games row, then the session and operation rows, are locked in that order.
+    // The token alone names the run. This read takes no lock; the run is rechecked after it is locked.
     const {
-      rows: [found],
-    } = await client.query<{ game_id: string; arrived_at: number }>(
-      // The arrival time is the database clock, as epoch seconds so no precision is lost in transit.
-      `SELECT game_id,extract(epoch FROM clock_timestamp())::float8 AS arrived_at
-       FROM ctf.sprite_operations WHERE submission_token_hash=$1 AND kind='command'`,
+      rows: [operation],
+    } = await client.query<{ id: string; game_id: string }>(
+      "SELECT id,game_id FROM ctf.sprite_operations WHERE submission_token_hash=$1 AND kind='command'",
       [tokenHash],
     );
-    if (!found) return "unauthorized";
-    const gameId = found.game_id;
+    if (!operation) return { result: "unauthorized", promoted: false };
+    const gameId = operation.game_id;
     const {
       rows: [run],
     } = await client.query<{
       status: string;
       monitor_mode: string;
       submission_transport: string;
-      execution_generation: string;
       secret_hash: string;
     }>(
-      `SELECT status,monitor_mode,submission_transport,execution_generation,secret_hash
+      `SELECT status,monitor_mode,submission_transport,secret_hash
        FROM ctf.games WHERE id=$1 FOR UPDATE`,
       [gameId],
     );
-    if (!run) return "unauthorized";
-    const {
-      rows: [operation],
-    } = await client.query<{
-      id: string;
-      session_id: string;
-      status: string;
-      execution_generation: string;
-      originating_lease: string | null;
-    }>(
-      `SELECT id,session_id,status,execution_generation,originating_lease
-       FROM ctf.sprite_operations WHERE game_id=$1 AND submission_token_hash=$2 AND kind='command'`,
-      [gameId, tokenHash],
-    );
-    if (!operation) return "unauthorized";
+    if (!run) return { result: "unauthorized", promoted: false };
     const {
       rows: [receipt],
     } = await client.query<{ operation_id: string; body_hash: string }>(
@@ -68,57 +51,39 @@ export async function receiveFlagSubmission(input: {
       [gameId],
     );
     if (receipt)
-      return receipt.operation_id === operation.id && receipt.body_hash === bodyHash
-        ? "accepted"
-        : "conflict";
-    // Sprite deletion updates operations before terminal runs, so do not lock them after one.
+      return {
+        result:
+          receipt.operation_id === operation.id && receipt.body_hash === bodyHash
+            ? "accepted"
+            : "conflict",
+        promoted: false,
+      };
     if (
       run.status !== "active" ||
       run.monitor_mode !== "async" ||
       run.submission_transport !== "http"
     )
-      return "stale";
-    const {
-      rows: [session],
-    } = await client.query<{
-      lease: string | null;
-      lease_until: Date | null;
-      stop_requested_at: Date | null;
-    }>(
-      "SELECT lease,lease_until,stop_requested_at FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE",
-      [gameId, operation.session_id],
-    );
-    const {
-      rows: [lockedOperation],
-    } = await client.query<{ status: string; open: boolean }>(
-      // Open until the command returned, judged by when this upload arrived, not when it got its locks.
-      `SELECT status,(returned_at IS NULL OR $2::float8 < extract(epoch FROM returned_at)) AS open
-       FROM ctf.sprite_operations WHERE id=$1 FOR UPDATE`,
-      [operation.id, found.arrived_at],
-    );
-    if (
-      Number(run.execution_generation) !== Number(operation.execution_generation) ||
-      lockedOperation?.status !== "running" ||
-      !lockedOperation.open ||
-      !operation.originating_lease ||
-      session?.lease !== operation.originating_lease ||
-      !session?.lease_until ||
-      session.lease_until <= new Date() ||
-      session.stop_requested_at
-    )
-      return "stale";
+      return { result: "stale", promoted: false };
     await client.query(
       `INSERT INTO ctf.flag_submissions(game_id,operation_id,body_hash,correct)
        VALUES($1,$2,$3,$4)`,
       [gameId, operation.id, bodyHash, hasSecret(input.value, run.secret_hash)],
     );
-    return "accepted";
+    return {
+      result: "accepted",
+      promoted: (await promoteHttpSubmission(client, gameId)) === "promoted",
+    };
   });
 }
 
 type PromotionResult = "promoted" | "pending" | "none";
 
-/** Call after command evidence and operation outcome are committed in the same transaction. */
+/**
+ * Grades the run's receipt once no command on its sprite is running or unknown, so a running
+ * command's output still gets its flag check first. A receipt's command is on that sprite, so
+ * then it has completed or been interrupted. Call after an upload, or after a command's outcome,
+ * in the same transaction.
+ */
 export async function promoteHttpSubmission(
   client: PoolClient,
   gameId: string,
@@ -137,17 +102,14 @@ export async function promoteHttpSubmission(
     correct: boolean;
     promoted_at: Date | null;
     session_id: string;
-    status: string;
-    output: string | null;
   }>(
-    `SELECT r.operation_id,r.correct,r.promoted_at,o.session_id,o.status,o.output
+    `SELECT r.operation_id,r.correct,r.promoted_at,o.session_id
      FROM ctf.flag_submissions r JOIN ctf.sprite_operations o ON o.id=r.operation_id
      WHERE r.game_id=$1 FOR UPDATE OF r`,
     [gameId],
   );
   if (!receipt || receipt.promoted_at) return "none";
-  if (run.status !== "active" || receipt.status !== "completed" || receipt.output === null)
-    return "pending";
+  if (run.status !== "active") return "pending";
   const { rowCount: busy } = await client.query(
     `SELECT 1 FROM ctf.sprite_operations WHERE sprite_name=$1
      AND status IN ('running','unknown') LIMIT 1`,

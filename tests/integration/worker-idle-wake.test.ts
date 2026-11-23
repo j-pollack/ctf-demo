@@ -65,7 +65,7 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
   const { persistReviewedSessionMessages, releaseSessionLease } =
     await import("../../lib/sessions");
   const { completeAsyncCommand } = await import("../../lib/monitor-commands");
-  const { receiveFlagSubmission, hashSubmissionToken } = await import("../../lib/flag-submissions");
+  const { receiveFlagUpload, hashSubmissionToken } = await import("../../lib/flag-submissions");
   const { beginAsyncSubmission } = await import("../../lib/async-finalization");
   const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
   const { createWorkerLoops, realClock } = await import("../../lib/monitor-worker-loop");
@@ -353,7 +353,8 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
             game.lease,
           ],
         );
-        if (http) assert.equal(await receiveFlagSubmission({ token, value: FLAG }), "accepted");
+        if (http)
+          assert.equal((await receiveFlagUpload({ token, value: FLAG })).result, "accepted");
         const before = target.received.length;
         await completeAsyncCommand({
           dispatchId: dispatch,
@@ -613,7 +614,10 @@ await test("the idle monitor worker", { timeout: 120_000 }, async (t) => {
               game.lease,
             ],
           );
-          assert.equal(await receiveFlagSubmission({ token: submission, value: FLAG }), "accepted");
+          assert.equal(
+            (await receiveFlagUpload({ token: submission, value: FLAG })).result,
+            "accepted",
+          );
           await completeAsyncCommand({
             dispatchId: dispatch,
             gameId: game.id,

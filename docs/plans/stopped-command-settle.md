@@ -39,7 +39,7 @@ Every command also runs under `timeout -k 2 15`, so its process group is killed 
 5. In the same transaction it calls `promoteHttpSubmission(client, gameId)` for each affected run. A receipt that was waiting only on the stopped command is promoted and scored, as it would have been had the command finished.
 6. `hasPendingWork` in `lib/monitor-jobs.ts` also counts the same operations the settle selects (`unknown` command operations on sprites that are not deleted and have no open `delete`), so the worker stays awake until they are settled.
 7. Nothing else changes about an interrupted command. Its output was never observed, so:
-   - an upload it made stays unscored, because `promoteHttpSubmission` scores only a receipt from a `completed` command with output, and `receiveFlagSubmission` refuses any later upload from an operation that is not `running`;
+   - an upload it made is graded once the settle has run, because `promoteHttpSubmission` waits only while a command on the sprite is `running` or `unknown`, and `receiveFlagSubmission` accepts a later upload from it while the run is active (`docs/plans/any-upload-ends-run.md`);
    - the investigator still reviews its command text, with the output the runner recorded.
 8. `scripts/smoke.ts` gains a `listSessions` check on its live sandbox: one session while a command runs, none after it is aborted. It pairs the new fake with the real service. It is run live only with the user's go-ahead.
 
@@ -51,7 +51,7 @@ Every command also runs under `timeout -k 2 15`, so its process group is killed 
 
 ## Open question for the user
 
-- A receipt from a command that is then stopped stays unscored, and the run allows one receipt (`ctf.flag_submissions` is keyed by run). Such a run can never be scored or end on its own. It needs an upload accepted while the command runs and then a Stop before the command returns. This contract leaves it as it is.
+- Resolved by `docs/plans/any-upload-ends-run.md`: a receipt from a command that is then stopped is graded once the settle has run.
 
 ## Out of scope
 

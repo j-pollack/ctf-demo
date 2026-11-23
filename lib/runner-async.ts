@@ -155,12 +155,10 @@ export async function runAsyncGame(
   };
   const heartbeat = setInterval(() => void checkHeartbeat(), HEARTBEAT_MS);
 
-  // A command's upload authority ends when it returns, before its result is screened. If that cannot
-  // be recorded the result is not screened, so a screen never lengthens the window.
+  // The investigator reads a command's return time as evidence. A failed stamp loses that evidence only.
   const stampReturned = async (operationId: string) => {
     try {
       await markCommandReturned(operationId);
-      return true;
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -171,7 +169,6 @@ export async function runAsyncGame(
           error: diagnosticText(error instanceof Error ? error.message : error),
         }),
       );
-      return false;
     }
   };
   const emitBilling = async () => {
@@ -378,14 +375,14 @@ export async function runAsyncGame(
             ? { TARGET: `${submissionUrl}/${dispatch.submissionToken}` }
             : undefined,
         );
-        const stamped = await stampReturned(dispatch.id);
+        await stampReturned(dispatch.id);
         // The flag in a command's output ends the run before the agent or a screen sees the output.
         if (hasSecret(output, game.secret_hash))
           return await catchFlagOutputOf(id, dispatch.id, output);
-        const screened = stamped
-          ? await screenTexts(screenContext, [{ kind: "tool_output", ref: id, text: output }])
-          : undefined;
-        // A flagged result reaches the agent labelled as data. An unscreened one is not labelled.
+        const screened = await screenTexts(screenContext, [
+          { kind: "tool_output", ref: id, text: output },
+        ]);
+        // A flagged result reaches the agent labelled as data.
         const text = injectionVerdict(screened?.tool_output) ? wrapFlagged(output) : output;
         return { content: [{ type: "text" as const, text }], details: {} };
       },

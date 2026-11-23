@@ -591,6 +591,19 @@ export async function startGame(
     );
     if (busyOwned.rowCount)
       throw new GameError("Wait for your current run to finish starting or responding.", 409);
+    // An upload that ended the run must be graded, so the run it ended is not replaced. A command
+    // left running with no live lease keeps the grade back for good, so that run is replaced.
+    const graded = await client.query(
+      `SELECT 1 FROM ctf.flag_submissions r JOIN ctf.games g ON g.id=r.game_id
+      WHERE g.owner_id=$1 AND g.status='active' AND NOT EXISTS(
+        SELECT 1 FROM ctf.sprite_operations o
+        LEFT JOIN ctf.agent_sessions s ON s.game_id=o.game_id AND s.id=o.session_id
+        WHERE o.game_id=g.id AND o.kind='command' AND o.status='running'
+          AND (s.lease_until IS NULL OR s.lease_until<=now())) LIMIT 1`,
+      [ownerId],
+    );
+    if (graded.rowCount)
+      throw new GameError("Your last run is being graded. Start a new run in a minute.", 409);
     const count = await client.query(
       `SELECT count(DISTINCT sprite_name)::int AS total FROM ctf.games
        WHERE status IN ('creating','active','finalizing')
@@ -909,12 +922,12 @@ export async function settleInference(
     );
   });
 }
-// A hold the provider's record never settles (no generation id, or a record that never becomes
-// usable) is released after a day at its ceiling: never undercount spend, never hold forever.
-export async function expireUnverifiableHolds() {
+// Settles unsettled holds at their ceiling, estimated: never undercount spend, never hold forever.
+async function settleHoldsAtCeiling(condition: string, params: unknown[]) {
   await transaction(async (client) => {
     const { rows } = await client.query(
-      "UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE settled_at IS NULL AND created_at<now()-interval '24 hours' RETURNING game_id,day,token_ceiling,cost_ceiling",
+      `UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE settled_at IS NULL AND ${condition} RETURNING game_id,day,token_ceiling,cost_ceiling`,
+      params,
     );
     for (const call of rows) {
       await client.query(
@@ -928,6 +941,12 @@ export async function expireUnverifiableHolds() {
     }
   });
 }
+// A hold the provider's record never settles (no generation id, or a record that never becomes
+// usable) is released after a day at its ceiling.
+export const expireUnverifiableHolds = () =>
+  settleHoldsAtCeiling("created_at<now()-interval '24 hours'", []);
+// A request aborted before the provider gave a generation id has no record to reconcile.
+export const settleAbortedInference = (id: string) => settleHoldsAtCeiling("id=$1", [id]);
 export async function reconcileInference(gameId?: string) {
   if (!process.env.OPENROUTER_API_KEY) return;
   const pending = await db.query(

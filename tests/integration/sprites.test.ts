@@ -1377,7 +1377,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     const sibling = await createSession(game.id, owner);
     const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
     const { claimGameSession } = await import("../../lib/games");
-    const { receiveFlagSubmission } = await import("../../lib/flag-submissions");
+    const { receiveFlagUpload } = await import("../../lib/flag-submissions");
     const ready = Promise.withResolvers<void>();
     let started = 0;
     let accepted = false;
@@ -1393,7 +1393,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       if (command === uploadCommand) {
         submissionToken = env?.TARGET.split("/").at(-1);
         assert.equal(
-          await receiveFlagSubmission({ token: submissionToken ?? "", value: secret }),
+          (await receiveFlagUpload({ token: submissionToken ?? "", value: secret })).result,
           "accepted",
         );
         accepted = true;
@@ -1545,10 +1545,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
           assert.equal(
             await (
               await import("../../lib/flag-submissions")
-            ).receiveFlagSubmission({
-              token: submissionToken ?? "",
-              value: privateBody,
-            }),
+            )
+              .receiveFlagUpload({
+                token: submissionToken ?? "",
+                value: privateBody,
+              })
+              .then(({ result }) => result),
             "accepted",
           );
           received = true;
@@ -6974,7 +6976,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     },
   );
   await t.test(
-    "abort during retry fetch retains ambiguous hold and never dispatches a third attempt",
+    "abort during retry fetch settles the hold at its ceiling and never dispatches a third attempt",
     async () => {
       const game = await productionStartGame("abort-fetch");
       responses = { agent: [{ status: 429 }] };
@@ -6995,7 +6997,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.equal(stopped.status, "active");
       assert.equal(requests.filter((request) => request.role === "agent").length, 2);
       assert.equal(commands.length, 0);
-      assert.ok(Number((await row(game.id)).reserved_microdollars) > 0);
+      // No generation id was ever seen, so reconciliation cannot find the request: it is charged at
+      // its ceiling, estimated, instead of holding a finalizing run for a day.
+      assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+      const { rows: held } = await pool.query(
+        "SELECT estimated,cost,cost_ceiling FROM ctf.inference WHERE game_id=$1 AND role='agent' AND generation_id IS NULL AND settled_at IS NOT NULL",
+        [game.id],
+      );
+      assert.ok(held.some((call) => call.estimated && call.cost === call.cost_ceiling));
     },
   );
   await t.test(
@@ -7716,13 +7725,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     const owner = `screen-r4-upload-${randomUUID()}`;
     const game = await productionStartGame(owner);
     const secret = environments.get((await row(game.id)).sprite_name)!.secret!;
-    const { receiveFlagSubmission } = await import("../../lib/flag-submissions");
+    const { receiveFlagUpload } = await import("../../lib/flag-submissions");
     const uploadCommand = `curl --fail --silent --show-error --data-binary @/tmp/flag.txt "$TARGET"`;
     expectedCommands = new Set([uploadCommand]);
     proposed = [uploadCommand];
     onCommandExecute = async (_name, _command, env) => {
       assert.equal(
-        await receiveFlagSubmission({ token: env?.TARGET.split("/").at(-1) ?? "", value: secret }),
+        (await receiveFlagUpload({ token: env?.TARGET.split("/").at(-1) ?? "", value: secret }))
+          .result,
         "accepted",
       );
     };
@@ -9313,13 +9323,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       const owner = "a1-3-owner";
       const game = await productionStartGame(owner);
       const secret = await secretOf(game.id);
-      const { receiveFlagSubmission } = await import("../../lib/flag-submissions");
+      const { receiveFlagUpload } = await import("../../lib/flag-submissions");
       const uploadCommand = `curl --fail --silent --show-error --data-binary @/tmp/flag.txt "$TARGET"`;
       expectedCommands = new Set([uploadCommand]);
       commandResult = { stdout: secret, stderr: "", exitCode: 0 };
       onCommandExecute = async (_name, _command, env) => {
         assert.equal(
-          await receiveFlagSubmission({ token: env!.TARGET.split("/").at(-1)!, value: secret }),
+          (await receiveFlagUpload({ token: env!.TARGET.split("/").at(-1)!, value: secret }))
+            .result,
           "accepted",
         );
       };

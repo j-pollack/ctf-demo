@@ -13,7 +13,7 @@ const adminUrl = new URL(base);
 adminUrl.pathname = "/postgres";
 
 test(
-  "HTTP receipts bind to a live dispatch and promote only after durable completion",
+  "HTTP receipts accept any upload of an active run and promote once no command is running",
   { timeout: 90_000 },
   async (t) => {
     const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
@@ -158,7 +158,7 @@ test(
     assert.equal(owner?.user.isAnonymous, false);
 
     const { hashSecret } = await import("../../lib/policy");
-    const { hashSubmissionToken, receiveFlagSubmission, promoteHttpSubmission } =
+    const { hashSubmissionToken, receiveFlagUpload, promoteHttpSubmission } =
       await import("../../lib/flag-submissions");
     const { transaction } = await import("../../lib/games");
     const { POST } = await import("../../app/v1/end/[[...token]]/route");
@@ -223,39 +223,14 @@ test(
       (await pool.query("SELECT count(*)::int AS n FROM ctf.flag_submissions")).rows[0].n,
       0,
     );
+    // Neither the lease, a stop request nor the generation limits an upload of an active run.
     await pool.query(
-      "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
-      [sessionId],
+      `UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()-interval '1 second',
+       stop_requested_at=now() WHERE id=$1`,
+      [sessionId, randomUUID()],
     );
-    assert.equal((await post(flag)).status, 409);
-    const replacementLease = randomUUID();
-    await pool.query(
-      "UPDATE ctf.agent_sessions SET lease=$2,lease_until=now()+interval '1 minute' WHERE id=$1",
-      [sessionId, replacementLease],
-    );
-    assert.equal((await post(flag)).status, 409);
-    await pool.query("UPDATE ctf.agent_sessions SET lease=$2,stop_requested_at=now() WHERE id=$1", [
-      sessionId,
-      lease,
-    ]);
-    assert.equal((await post(flag)).status, 409);
-    await pool.query("UPDATE ctf.agent_sessions SET stop_requested_at=NULL WHERE id=$1", [
-      sessionId,
-    ]);
-    await pool.query("UPDATE ctf.sprite_operations SET status='completed' WHERE id=$1", [
-      operationId,
-    ]);
-    assert.equal((await post(flag)).status, 409);
-    await pool.query("UPDATE ctf.sprite_operations SET status='running' WHERE id=$1", [
-      operationId,
-    ]);
     await pool.query(
       "UPDATE ctf.games SET execution_generation=execution_generation+1 WHERE id=$1",
-      [gameId],
-    );
-    assert.equal((await post(flag)).status, 409);
-    await pool.query(
-      "UPDATE ctf.games SET execution_generation=execution_generation-1 WHERE id=$1",
       [gameId],
     );
     const [first, simultaneous] = await Promise.all([post(flag), post(flag)]);
@@ -353,7 +328,7 @@ test(
       ).rows[0].n,
       1,
     );
-    assert.equal(await receiveFlagSubmission({ token, value: flag }), "accepted");
+    assert.equal((await receiveFlagUpload({ token, value: flag })).result, "accepted");
     await pool.query("UPDATE ctf.games SET status='caught' WHERE id=$1", [gameId]);
     assert.equal((await post(flag)).status, 202);
     assert.equal((await post("changed")).status, 409);
