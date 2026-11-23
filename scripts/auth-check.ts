@@ -140,7 +140,7 @@ try {
     if (spend > 0) await agentRow(gameId, spend, true);
     if (reserved > 0) await agentRow(gameId, reserved, false);
   }
-  const operator = `Operator ${createHash("sha256").update(member.id).digest("hex").slice(0, 6)}`;
+  const operator = `Player ${createHash("sha256").update(member.id).digest("hex").slice(0, 6)}`;
   const ranked = await (await leaderboard(new Request(`${origin}/api/leaderboard`))).json();
   assert.equal(
     ranked.entries.find((entry: { name: string }) => entry.name === operator)?.turns,
