@@ -13,13 +13,30 @@ const CONFIGURATION = new Set([
   "monthly_quota_exceeded",
 ]);
 
+const COPY = {
+  "sign-in": {
+    unavailable: "Email sign-in is temporarily unavailable. Try again in a few minutes.",
+    tooMany: "Too many sign-in emails were requested. Wait a minute, then try again.",
+    failed: "Could not send your sign-in link. Please try again.",
+  },
+  confirmation: {
+    unavailable: "Email is temporarily unavailable. Try again in a few minutes.",
+    tooMany: "Too many emails were requested. Wait a minute, then try again.",
+    failed: "Could not send your confirmation link. Please try again.",
+  },
+} as const;
+
 // Turns a Resend send failure into a player-facing status and message, and logs the provider's reason for
 // operators. Never logs the API key or the recipient address.
-export function signInEmailError(error: {
-  name?: string | null;
-  statusCode?: number | null;
-  message?: string | null;
-}) {
+export function signInEmailError(
+  error: {
+    name?: string | null;
+    statusCode?: number | null;
+    message?: string | null;
+  },
+  purpose: keyof typeof COPY = "sign-in",
+) {
+  const copy = COPY[purpose];
   console.error(
     JSON.stringify({
       event: "auth.email.failed",
@@ -33,17 +50,17 @@ export function signInEmailError(error: {
   if (CONFIGURATION.has(error.name ?? "") || error.statusCode === 401 || error.statusCode === 403)
     return {
       status: "SERVICE_UNAVAILABLE",
-      message: "Email sign-in is temporarily unavailable. Try again in a few minutes.",
+      message: copy.unavailable,
     } as const;
   // Quota names also arrive as 429, so they are matched above.
   if (error.name === "rate_limit_exceeded" || error.statusCode === 429)
     return {
       status: "TOO_MANY_REQUESTS",
-      message: "Too many sign-in emails were requested. Wait a minute, then try again.",
+      message: copy.tooMany,
     } as const;
   return {
     status: "BAD_GATEWAY",
-    message: "Could not send your sign-in link. Please try again.",
+    message: copy.failed,
   } as const;
 }
 

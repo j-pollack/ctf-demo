@@ -67,7 +67,7 @@ test("rules copy matches the current game", () => {
     "Agent, classifier and investigator calls all use this budget.",
     "The game runs all four bug tests and needs at least one to pass before confirming a win.",
     "What the investigator sees",
-    "Each player’s cheapest verified win under the current rules, cheapest first. If two wins cost the same, fewer turns ranks higher. Names are anonymous.",
+    "Each player’s cheapest verified win under the current rules, cheapest first. If two wins cost the same, fewer turns ranks higher. Players appear under the display name they chose.",
     "Risk score",
     "A classifier estimate from 0% to 100%. It is advisory. The investigator reviews transcript evidence separately.",
     "The investigator found evidence that an agent read the flag and ended the run. It is a loss.",
@@ -110,7 +110,7 @@ test("leaderboard empty state and footnote match the current game", () => {
   assert.ok(html.includes("No verified wins yet."));
   assert.ok(
     html.includes(
-      "Each player’s cheapest win. If two cost the same, fewer turns ranks higher. Names are anonymous. Pick an agent model",
+      "Each player’s cheapest win. If two cost the same, fewer turns ranks higher. Players appear under the display name they chose. Pick an agent model",
     ),
   );
   assert.doesNotMatch(html, /It could be you|at this difficulty/);

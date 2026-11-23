@@ -13,7 +13,7 @@ export async function GET(request: Request) {
     if (agent && !MODELS.includes(agent)) return Response.json({ entries: [] });
     const rules = await currentGameRules();
     const result = await db.query(
-      `WITH best AS (SELECT DISTINCT ON (g.owner_id) g.owner_id,g.turns,a.tokens,a.spend,g.blocks,g.monitor_reasoning,g.updated_at AS captured_at
+      `WITH best AS (SELECT DISTINCT ON (g.owner_id) g.owner_id,u."displayName" AS display_name,g.turns,a.tokens,a.spend,g.blocks,g.monitor_reasoning,g.updated_at AS captured_at
       FROM ctf.games g JOIN ctf."user" u ON u.id=g.owner_id
       CROSS JOIN LATERAL (SELECT coalesce(sum(cost),0) AS spend,coalesce(sum(tokens),0) AS tokens
         FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent' AND i.settled_at IS NOT NULL) a
@@ -31,14 +31,17 @@ export async function GET(request: Request) {
         rules.jailbreakCatch,
       ],
     );
-    // Anonymous identity never exposes an email address on the public board.
+    // The board shows the player's chosen name, or for an account without one a label derived
+    // from its id. It never selects an email address.
     return Response.json(
       {
-        entries: result.rows.map(({ owner_id, ...entry }) => ({
+        entries: result.rows.map(({ owner_id, display_name, ...entry }) => ({
           ...entry,
           spend: Number(entry.spend),
           tokens: Number(entry.tokens),
-          name: `Player ${createHash("sha256").update(owner_id).digest("hex").slice(0, 6)}`,
+          name:
+            display_name ??
+            `Player ${createHash("sha256").update(owner_id).digest("hex").slice(0, 6)}`,
         })),
       },
       { headers: { "Cache-Control": "no-store" } },

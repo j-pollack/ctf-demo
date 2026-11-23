@@ -4,7 +4,7 @@ export async function player(request: Request) {
   const session = await auth.api.getSession({ headers: request.headers });
   // Members only: guest sessions from before sign-in became required can't play.
   if (!session || session.user.isAnonymous) throw new GameError("Sign in to play.", 401);
-  return { id: session.user.id };
+  return { id: session.user.id, displayName: session.user.displayName ?? null };
 }
 export function checkOrigin(request: Request) {
   const origin = request.headers.get("origin");

@@ -4929,11 +4929,16 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   ).runMigrations();
   const origin = "http://localhost";
   // A real Better Auth session. The anonymous endpoint is closed to HTTP but still callable
-  // server-side, so a session starts anonymous; `member` then makes it a signed-in account.
-  const session = async (asMember: boolean) => {
+  // server-side, so a session starts anonymous; `member` then makes it a signed-in account with a
+  // display name, which a run needs. `nameless` is a member from before names were required.
+  const session = async (asMember: boolean, named = asMember) => {
     const { headers, response } = await auth.api.signInAnonymous({ returnHeaders: true });
     const id = response!.user.id;
-    if (asMember) await pool.query(`UPDATE ctf."user" SET "isAnonymous"=false WHERE id=$1`, [id]);
+    if (asMember)
+      await pool.query(`UPDATE ctf."user" SET "isAnonymous"=false,"displayName"=$2 WHERE id=$1`, [
+        id,
+        named ? `p_${id.slice(0, 20)}` : null,
+      ]);
     const cookie = headers
       .getSetCookie()
       .map((value) => value.split(";")[0])
@@ -5014,14 +5019,31 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       games,
       "no run was created",
     );
-    const started2 = await POST(
+    // A member without a display name is sent to choose one, and nothing is created.
+    const nameless = await session(true, false);
+    const refused = await POST(
       new Request(`${origin}/api/games`, {
         method: "POST",
-        headers: { origin, cookie: (await member()).cookie, "Content-Type": "application/json" },
+        headers: { origin, cookie: nameless.cookie, "Content-Type": "application/json" },
         body: "{}",
       }),
     );
-    assert.equal(started2.status, 200);
+    assert.equal(refused.status, 403);
+    assert.match((await refused.json()).error, /Choose a display name/);
+    assert.equal(
+      (await pool.query("SELECT count(*)::int AS n FROM ctf.games")).rows[0].n,
+      games,
+      "no run was created for a nameless member",
+    );
+    await pool.query(`UPDATE ctf."user" SET "displayName"='late_namer' WHERE id=$1`, [nameless.id]);
+    const started2 = await POST(
+      new Request(`${origin}/api/games`, {
+        method: "POST",
+        headers: { origin, cookie: nameless.cookie, "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
+    assert.equal(started2.status, 200, "the same member starts a run once named");
     assert.equal((await started2.json()).budgetMicrodollars, 500_000);
   });
 
