@@ -8013,13 +8013,14 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         )
       ).rows[0].created_at as Date;
     const firstCreated = await created();
-    screenFake.controls.delayMs = 80;
+    screenFake.controls.delayMs = 120;
     await respond("Second instruction");
     const after = (await instructionRows()).filter(({ ref }) => ref === sha("Second instruction"));
     assert.equal(after.length, 1);
     // The delayed screen's own duration, not a comparison with the first: an undelayed screen
-    // can take longer than 80 ms on a loaded machine.
-    assert.ok(after[0].duration_ms >= 80);
+    // can take longer than 80 ms on a loaded machine. The margin below the 120 ms delay covers a
+    // timer that fires a little early against the clock that measures the duration.
+    assert.ok(after[0].duration_ms >= 80, `duration ${after[0].duration_ms} ms`);
     assert.ok((await created()) > firstCreated);
     assert.equal((await instructionRows()).length, 2);
   });
