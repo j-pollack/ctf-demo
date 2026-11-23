@@ -135,5 +135,5 @@ Integration tests use real Postgres and the real worker code, with provider fake
 - Live check on pull request 37's preview, 2026-11-21.
   - E3. The deploy for `e51aede` was the first run of the changed workflow. Its drain step met a worker from before this change, logged `worker.drain.failed` with reason `status 404`, and the deploy went on. The new worker registered, and through Fly `POST /drain` with no token answered 401.
   - E2. The deploy for `c9c19af` drained that worker. The script logged `worker.drain.sent` at 05:36:54.95 UTC and `worker.drain.drained` at 05:36:57.04, on its first poll. The step took 4 seconds and the machine was replaced 10 seconds later.
-  - E1, a deploy while a review is in flight, has not been run.
+  - E1, first attempt, 2026-11-23 on the deploy for `f771209`. A command that names the flag file completed at 07:38:21.7 UTC and queued an investigated review. The drain ran from 07:38:24.0 to 07:38:27.1 and found no review in flight: the worker had not claimed the job yet. The replaced worker reviewed it at 07:38:57.8, one attempt, verdict allow. No review was lost, but no review was in flight during the drain either.
 - CI on `e51aede` failed once on a test from the tool annotation step that raced two passes, and passed on a rerun. `c9c19af` makes that test deterministic, and CI is green on it.
