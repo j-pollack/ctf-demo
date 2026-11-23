@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
+import { ErrorAction } from "@/app/error-action";
 import { HowToWin } from "@/app/flag-instructions";
 import { systemPromptChange } from "@/app/session-pane";
 import { RunConsole, type PaneHandlers } from "@/app/run-console";
@@ -14,7 +15,7 @@ import {
   RunSetupNotes,
 } from "@/app/run-dialog";
 import { SignInPanel } from "@/app/sign-in-panel";
-import { safeNextPath, signInPath } from "@/app/sign-in-path";
+import { accountPath, safeNextPath, signInPath } from "@/app/sign-in-path";
 import {
   deckLayout,
   focusRecent,
@@ -602,11 +603,13 @@ export default function GameUI({
     };
   }, [modal, member?.user.id]);
   // Sign-in is a page. Signed out, /play and the legacy ?signin=1 go there; a member leaves it
-  // for its validated next. Every target passes through safeNextPath (via signInPath).
+  // for its validated next. A member without a display name is sent from /play to choose one.
+  // Every target passes through safeNextPath (via signInPath or accountPath).
+  const nameless = !!member && !member.user.displayName;
   useEffect(() => {
     if (account.isPending) return;
     const search = new URLSearchParams(window.location.search);
-    const from = `${pathname}?${search.toString()}|${member ? "member" : "guest"}`;
+    const from = `${pathname}?${search.toString()}|${member ? "member" : "guest"}|${nameless}`;
     if (authRedirectFrom.current === from) return;
     let target: string | null = null;
     if (pathname === "/signin") target = member ? safeNextPath(search.get("next")) : null;
@@ -615,13 +618,14 @@ export default function GameUI({
       const query = search.toString();
       target = signInPath(`${pathname}${query ? `?${query}` : ""}`);
     } else if (pathname === "/play" && !member) target = signInPath("/play");
+    else if (pathname === "/play" && nameless) target = accountPath("/play");
     if (!target) {
       authRedirectFrom.current = null;
       return;
     }
     authRedirectFrom.current = from;
     router.replace(target);
-  }, [account.isPending, member?.user.id, pathname]);
+  }, [account.isPending, member?.user.id, nameless, pathname]);
   // A different run resets the difficulty draft to its stored setting.
   useEffect(() => {
     if (!game) return;
@@ -1639,6 +1643,7 @@ export default function GameUI({
         {error && panel !== "signin" && (
           <div role="alert" className="error">
             {error}
+            <ErrorAction message={error} />
             <button className="link" aria-label="Dismiss error" onClick={() => setError("")}>
               ×
             </button>
@@ -2007,8 +2012,8 @@ export function RulesPanel({
           <h3>The leaderboard</h3>
           <p>
             Each player’s cheapest verified win under the current rules. Ranked by what the agent
-            spent, cheapest first. If two wins cost the same, fewer turns ranks higher. Names are
-            anonymous.
+            spent, cheapest first. If two wins cost the same, fewer turns ranks higher. Players
+            appear under the display name they chose.
           </p>
         </section>
         <section>
@@ -2138,9 +2143,10 @@ export function LeaderboardPanel({
       )}
       <small>
         Ranked by what the agent spent, cheapest first. Each player’s cheapest win counts. If two
-        cost the same, fewer turns ranks higher. Names are anonymous. Only wins against the current
-        monitor and under the current rules count. A new win appears once its billing settles. Pick
-        an agent model to see only wins that used that model the whole way through.
+        cost the same, fewer turns ranks higher. Players appear under the display name they chose.
+        Only wins against the current monitor and under the current rules count. A new win appears
+        once its billing settles. Pick an agent model to see only wins that used that model the
+        whole way through.
       </small>
     </main>
   );

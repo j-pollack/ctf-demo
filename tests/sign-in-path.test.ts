@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { safeNextPath, signInPath } from "../app/sign-in-path";
+import {
+  safeNextPath,
+  signInPath,
+  accountPath,
+  accountSignInPath,
+  signOutDestination,
+} from "../app/sign-in-path";
 
 test("next falls back to /play unless it is a plain path on this site", () => {
   for (const value of [
@@ -60,4 +66,33 @@ test("the sign-in link names a validated next and never nests itself", () => {
   assert.equal(signInPath("/runs/abc?session=1"), "/signin?next=%2Fruns%2Fabc%3Fsession%3D1");
   assert.equal(signInPath("/signin?next=/rank"), "/signin?next=%2Fplay");
   assert.equal(signInPath("//evil.example"), "/signin?next=%2Fplay");
+});
+
+test("the account link names a validated next, so a new player returns where they were going", () => {
+  assert.equal(accountPath("/play"), "/account?next=%2Fplay");
+  assert.equal(accountPath("/runs/abc?session=1"), "/account?next=%2Fruns%2Fabc%3Fsession%3D1");
+  assert.equal(accountPath("//evil.example"), "/account?next=%2Fplay");
+});
+
+test("a signed-out visit to the account page keeps its link outcome through sign-in", () => {
+  assert.equal(accountSignInPath({}), "/signin?next=%2Faccount");
+  assert.equal(
+    accountSignInPath({ email: "confirmed" }),
+    "/signin?next=%2Faccount%3Femail%3Dconfirmed",
+  );
+  assert.equal(
+    accountSignInPath({ next: "/play", email: "changed", error: "TOKEN_EXPIRED", other: "x" }),
+    "/signin?next=%2Faccount%3Fnext%3D%252Fplay%26email%3Dchanged%26error%3DTOKEN_EXPIRED",
+  );
+  assert.equal(accountSignInPath({ email: ["a", "b"] }), "/signin?next=%2Faccount");
+  assert.equal(
+    accountSignInPath({ next: "//evil.example" }),
+    "/signin?next=%2Faccount%3Fnext%3D%252F%252Fevil.example",
+  );
+});
+
+test("signing out on the account page leaves it for sign-in; elsewhere the page stays", () => {
+  assert.equal(signOutDestination("/account"), "/signin?next=%2Faccount");
+  for (const path of ["/rank", "/play", "/runs/abc", "/accounts", "/"])
+    assert.equal(signOutDestination(path), null, path);
 });

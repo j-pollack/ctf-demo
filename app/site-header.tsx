@@ -50,7 +50,7 @@ export default function SiteHeader({
           </Link>
         )}
         <span className="auth-nav">
-          <AuthAction onSignIn={onSignIn} />
+          <AuthAction current={current} onSignIn={onSignIn} />
         </span>
       </nav>
     </header>

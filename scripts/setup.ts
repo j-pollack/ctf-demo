@@ -57,13 +57,11 @@ try {
     [ADMIN_EMAILS],
   );
   for (const { email } of admins.rows) console.log(`Granted admin to ${email}.`);
-  // Adjusts a Better Auth table, so it must run after Better Auth's migrations.
-  await db.query(
-    await readFile(
-      new URL("../db/migrations/004-rate-limit-timestamp.sql", import.meta.url),
-      "utf8",
-    ),
-  );
+  // These adjust Better Auth tables, so they must run after Better Auth's migrations.
+  for (const migration of ["004-rate-limit-timestamp.sql", "033-display-name.sql"])
+    await db.query(
+      await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),
+    );
   console.log("Tripwire game and authentication tables are ready.");
 } finally {
   await db.end();
