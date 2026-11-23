@@ -75,7 +75,15 @@ export async function executeCommand(
   } catch (error) {
     if (error instanceof ExecError)
       return commandOutput(error.stdout ?? "", error.stderr ?? "", error.exitCode);
-    throw new Error("The command could not finish in this run’s environment.");
+    // A stop aborts the signal, which is why the exec failed: that is not an environment fault.
+    // A deadline also aborts a signal, and that one is not a stop.
+    const stopped =
+      signal?.aborted && (signal.reason as { name?: string } | undefined)?.name !== "TimeoutError";
+    throw new Error(
+      stopped
+        ? "The command was stopped."
+        : "The command could not finish in this run’s environment.",
+    );
   }
 }
 // The exec sessions a sprite holds, live or lingering after a disconnect.

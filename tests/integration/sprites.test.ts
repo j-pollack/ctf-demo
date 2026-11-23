@@ -3130,7 +3130,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     assert.equal(await runMonitorWorkerOnce(), true);
     const review = await latestReview(gameId);
     assert.equal(review.verdict, null);
-    assert.match(review.operational_error, /Inference service returned an error/);
+    assert.match(review.operational_error, /The AI service returned an error/);
     assert.deepEqual(await streamJob(gameId), { status: "queued", attempts: 1 });
     // An error after the stream started is not known to be unbilled: the hold stays with its id.
     const [hold] = await monitorHolds(gameId);
@@ -3189,7 +3189,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         [1000, 2000, 4000, 8000],
       );
       const review = await latestReview(gameId);
-      assert.match(review.operational_error, /Inference service returned 429/);
+      assert.match(review.operational_error, /The AI service returned 429/);
       const holds = await monitorHolds(gameId);
       assert.equal(holds.length, 1);
       assert.ok(holds[0].settled_at);
@@ -3302,10 +3302,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
     monitorStream = "no-usage";
     assert.equal(await runMonitorWorkerOnce(), true);
-    assert.match(
-      (await latestReview(gameId)).operational_error,
-      /Inference usage could not be verified/,
-    );
+    assert.match((await latestReview(gameId)).operational_error, /usage could not be verified/);
     const [hold] = await monitorHolds(gameId);
     assert.ok(generations.has(hold.generation_id));
     assert.equal(hold.settled_at, null);
@@ -4105,8 +4102,37 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.equal((await unverifiedEvents(gameId)).length, 1);
       assert.equal(
         (await projectGame(await getPublicGameRow(gameId, "verdict-ceiling-at"))).endReason,
-        "unverified-review",
+        "unverified-allowance",
       );
+      assert.equal((await unverifiedEvents(gameId))[0].data.cause, "allowance");
+    },
+  );
+  await t.test(
+    "B5: the cause is the allowance whatever error the last attempt left, and not otherwise",
+    async () => {
+      const { MONITOR_RUN_ALLOWANCE_MICRODOLLARS, FINAL_REVIEW_ALLOWANCE_MICRODOLLARS } =
+        await import("../../lib/policy");
+      const finalAllowance =
+        MONITOR_RUN_ALLOWANCE_MICRODOLLARS + FINAL_REVIEW_ALLOWANCE_MICRODOLLARS;
+      const { resolveUnverifiedRuns } = await import("../../lib/async-finalization");
+      for (const [spent, expected] of [
+        [finalAllowance, "unverified-allowance"],
+        [0, "unverified-review"],
+      ] as const) {
+        const gameId = await unresolvedRun(`verdict-cause-${spent}`);
+        await seedSettledSpend(gameId, "monitor", spent);
+        // What a second look refused on a final review, or a deadline, leaves behind.
+        await pool.query("UPDATE ctf.monitor_jobs SET requeues=4,reason=$2 WHERE game_id=$1", [
+          gameId,
+          "A second look gave no valid answer on a final review.",
+        ]);
+        await resolveUnverifiedRuns();
+        assert.equal((await row(gameId)).status, "ended");
+        assert.equal(
+          (await projectGame(await getPublicGameRow(gameId, `verdict-cause-${spent}`))).endReason,
+          expected,
+        );
+      }
     },
   );
   await t.test(
@@ -4829,7 +4855,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     ).rows.map((entry) => entry.data);
     assert.deepEqual(events.at(-1), {
       kind: "error",
-      text: "This response could not finish. Please try again.",
+      text: "This response could not finish. Try again.",
     });
   });
 
@@ -5364,7 +5390,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       const refused = await stopRoute(legacy, old.id, old.id);
       assert.equal(refused.status, 409);
       assert.deepEqual(await refused.json(), {
-        error: "This run can only be stopped from the page that sent the instruction.",
+        error: "This response can only be stopped from the page that sent the instruction.",
       });
     },
   );
@@ -6029,7 +6055,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     const kept = await productionStartGame(who.id);
     const fresh = await productionStartGame(who.id);
     const third = await productionStartGame(who.id);
-    await assert.rejects(() => productionStartGame(who.id), /daily limit of new runs/);
+    await assert.rejects(() => productionStartGame(who.id), /new runs in the last 24 hours/);
     assert.equal((await row(third.id)).status, "active", "a refused start ends nothing");
     await pool.query(
       `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
@@ -6143,8 +6169,8 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
           assert.equal(await runsLeft(who), 0, "a revoked admin is counted like any member");
           const revoked = await startRoute(who, { isAdmin: true });
           assert.equal(revoked.status, 429, "same cookie must not retain revoked quota privileges");
-          assert.match((await revoked.json()).error, /daily limit of new runs/);
-        } else assert.match((await fourth.json()).error, /daily limit of new runs/);
+          assert.match((await revoked.json()).error, /new runs in the last 24 hours/);
+        } else assert.match((await fourth.json()).error, /new runs in the last 24 hours/);
         assert.equal(
           (await row(currentId)).status,
           "active",
@@ -6175,7 +6201,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       for (const ownerId of [guest.id, `missing-${randomUUID()}`]) {
         let currentId = "";
         for (let i = 0; i < 3; i++) currentId = (await productionStartGame(ownerId)).id;
-        await assert.rejects(() => productionStartGame(ownerId), /daily limit of new runs/);
+        await assert.rejects(() => productionStartGame(ownerId), /new runs in the last 24 hours/);
         assert.equal((await row(currentId)).status, "active");
         assert.equal(
           (
@@ -7233,8 +7259,23 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       commandFailure = undefined;
       await assert.rejects(
         () => executeCommand(stored.sprite_name, "printf harmless", AbortSignal.abort()),
-        /could not finish/,
+        { message: "The command was stopped." },
       );
+      // A deadline that aborts the signal is not a stop.
+      await assert.rejects(
+        () =>
+          executeCommand(
+            stored.sprite_name,
+            "printf harmless",
+            AbortSignal.abort(new DOMException("The operation timed out.", "TimeoutError")),
+          ),
+        { message: "The command could not finish in this run’s environment." },
+      );
+      commandFailure = new Error("fixture infrastructure failure");
+      await assert.rejects(() => executeCommand(stored.sprite_name, "printf harmless"), {
+        message: "The command could not finish in this run’s environment.",
+      });
+      commandFailure = undefined;
       assert.equal(environments.size, 1);
     },
   );
@@ -8921,7 +8962,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       await assertNothingRefused(game.id);
       assert.deepEqual(
         eventFrames(sent, "error").map(({ text }) => text),
-        ["This response could not finish. Please try again."],
+        ["This response could not finish. Try again."],
       );
       assert.equal((await row(game.id)).lease, null);
     } finally {
@@ -10097,6 +10138,34 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
         [null],
       );
       assert.equal((await unverifiedEvents(game.id)).length, 1);
+    },
+  );
+
+  await t.test(
+    "B3-5: a second look the allowance refuses on a final claim ends the run as out of allowance",
+    async () => {
+      const { MONITOR_RUN_ALLOWANCE_MICRODOLLARS, FINAL_REVIEW_ALLOWANCE_MICRODOLLARS } =
+        await import("../../lib/policy");
+      const owner = "b3-5-allowance";
+      const game = await lookRun(owner, [LOOK_TEXT]);
+      await submitRun(owner, game);
+      // The classifier is admitted below the ceiling and its own cost then reaches it, so the
+      // second look is the request the allowance refuses.
+      await seedSettledSpend(
+        game.id,
+        "monitor",
+        MONITOR_RUN_ALLOWANCE_MICRODOLLARS + FINAL_REVIEW_ALLOWANCE_MICRODOLLARS - 1,
+      );
+      await endedByRetries(game.id);
+      assert.equal(await runningGame(game.id), "ended");
+      assert.deepEqual(secondLookFake.requests, [], "no provider request for the look");
+      assert.equal(monitorRequestCount(), 0, "the investigator never ran");
+      const [event] = await unverifiedEvents(game.id);
+      assert.equal(event.data.cause, "allowance");
+      assert.equal(
+        (await projectGame(await getPublicGameRow(game.id, owner))).endReason,
+        "unverified-allowance",
+      );
     },
   );
 

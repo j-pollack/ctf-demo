@@ -405,7 +405,7 @@ export function SessionPane(props: SessionPaneProps) {
         />
       </header>
       {props.submissionTransport === "tool" ? (
-        <EarlierProtocolNotice />
+        <EarlierProtocolNotice ended={props.runStatus !== "active"} />
       ) : props.runStarted ? (
         <details className="submission-help">
           <summary>How to win</summary>

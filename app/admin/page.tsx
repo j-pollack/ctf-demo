@@ -24,7 +24,7 @@ import {
 } from "./charts";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Admin — Capture the flag", robots: { index: false } };
+export const metadata = { title: "Admin · Capture the flag", robots: { index: false } };
 
 const RUNS = "var(--series-1)",
   SPEND = "var(--series-2)",

@@ -620,7 +620,7 @@ export async function runAsyncGame(
             ? "The agent ran out of time for this response. Try again or ask for a shorter answer."
             : signal.aborted
               ? "Response stopped. Your run is still open."
-              : "This response could not finish. Please try again.";
+              : "This response could not finish. Try again.";
       await emit({
         kind: "error",
         text,

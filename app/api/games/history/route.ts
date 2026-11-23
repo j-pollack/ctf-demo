@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { errorResponse, player } from "@/lib/http";
-import type { GameSummary } from "@/lib/types";
+import { endReasonOf, type GameSummary } from "@/lib/types";
 
 export const runtime = "nodejs";
 const pageSize = (value: string | null) => {
@@ -63,6 +63,9 @@ export async function GET(request: Request) {
         END
         FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent') AS agent_model,
         g.turns,g.blocks,g.budget_microdollars,p.spent AS spent_microdollars,p.held AS reserved_microdollars,
+        g.submitted_flag_correct,
+        CASE WHEN g.status='ended' THEN (SELECT e.data->>'cause' FROM ctf.events e
+          WHERE e.game_id=g.id AND e.data->>'decision'='unverified' ORDER BY e.id DESC LIMIT 1) END AS unverified_cause,
         g.monitor_difficulty,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
       FROM ctf.games g
       CROSS JOIN LATERAL (
@@ -97,6 +100,12 @@ export async function GET(request: Request) {
       spentMicrodollars: Number(row.spent_microdollars),
       reservedMicrodollars: Number(row.reserved_microdollars),
       createdAt: row.created_at,
+      ...(row.status === "ended" && {
+        ...(row.submitted_flag_correct !== null && {
+          submissionCorrect: row.submitted_flag_correct,
+        }),
+        ...(row.unverified_cause && { endReason: endReasonOf(row.unverified_cause) }),
+      }),
     }));
     return Response.json({ runs, nextCursor }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

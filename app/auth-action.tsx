@@ -13,10 +13,9 @@ export default function AuthAction({ onSignIn }: { onSignIn?: () => void }) {
     setError("");
     try {
       const result = await authClient.signOut();
-      if (result.error)
-        throw new Error(result.error.message ?? "Could not sign out. Please retry.");
+      if (result.error) throw new Error(result.error.message ?? "Could not sign out. Try again.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not sign out. Please retry.");
+      setError(cause instanceof Error ? cause.message : "Could not sign out. Try again.");
     } finally {
       setPending(false);
     }

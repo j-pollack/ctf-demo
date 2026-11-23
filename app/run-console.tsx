@@ -5,7 +5,8 @@ import { runHasStarted, type SessionUIMap } from "@/app/session-ui-state";
 import { PENDING_SESSION, runModelsVary, type InspectorMode } from "@/app/session-layout";
 import { hasRiskObservations, runPeakRisk, runRiskSeries } from "@/app/run-risk";
 import { money, REVIEW_WILL_RETRY_TEXT } from "@/app/run-format";
-import { BlockedNotice, endBanner, isEndReview } from "@/app/transcript";
+import { endBanner } from "@/app/run-end";
+import { BlockedNotice, isEndReview } from "@/app/transcript";
 import { RunBar } from "@/app/run-bar";
 import { RunInspector, type SessionDecision } from "@/app/run-inspector";
 import { SessionChips } from "@/app/session-chips";
@@ -66,7 +67,6 @@ export type RunConsoleProps = {
 };
 
 const FINALIZING_COPY = {
-  unresolved: "Play has ended. The review could not be completed, so the result is unconfirmed.",
   pending:
     "Play has ended. The investigator is reviewing this run, and the result will appear here.",
   legacy: "Submission is under investigator review…",
@@ -140,7 +140,7 @@ function OutcomeStrip({
           <h2>{banner.heading}</h2>
           <p>
             {banner.win
-              ? `The agent ${game.rules.bugFixRequired ? "fixed a bug and got" : "got"} the flag through the investigator review. ${money(game.spentMicrodollars)} spent over ${game.turns} turns.`
+              ? `The agent ${game.rules.bugFixRequired ? "fixed a bug and got" : "got"} the flag through the investigator review. ${money(game.agentSpendMicrodollars)} of agent spend over ${game.turns} turns.`
               : banner.detail}
           </p>
         </div>
@@ -153,21 +153,24 @@ function OutcomeStrip({
             game.monitor.willRetry ? (
               REVIEW_WILL_RETRY_TEXT
             ) : (
-              FINALIZING_COPY.unresolved
+              `Play has ended. ${game.monitor.reason ?? ""}`.trim()
             )
           ) : (
             <>
               <i aria-hidden="true" />
-              {FINALIZING_COPY.pending}
+              {game.monitor?.status === "settling" && game.monitor.reason
+                ? game.monitor.reason
+                : FINALIZING_COPY.pending}
             </>
           )}
         </div>
       )}
       {game.submissionPending && !finalizing && !ended && !caught && (
         <div role="status" className="stage">
-          {game.monitor?.status === "unresolved"
-            ? "Play has ended. The upload command could not be verified, so the result is unconfirmed."
-            : "Submission received. Waiting for active command results before final review."}
+          Flag upload received. Play has ended.{" "}
+          {game.startBlockedByGrading
+            ? "Grading starts when the commands still running have finished."
+            : "A command lost contact with its response, so this run cannot be graded. Start a new run to replace it."}
         </div>
       )}
       {outcome.stage && (

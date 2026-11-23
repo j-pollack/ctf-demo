@@ -74,7 +74,7 @@ test("a finished run shows its outcome instead of risk", () => {
   for (const [status, text, band] of [
     ["caught", "Caught", "caught"],
     ["blocked", "Blocked", "caught"],
-    ["captured", "Captured", "low"],
+    ["captured", "Won", "low"],
     ["finalizing", "Final review", undefined],
     ["exhausted", "Out of budget", undefined],
     ["ended", "Ended", undefined],

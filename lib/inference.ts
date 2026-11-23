@@ -22,7 +22,7 @@ import type { AgentEffort } from "./types";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 import { STREAM_IDLE_MS } from "./investigator-evaluation-policy";
 
-const AGENT_STALL_MESSAGE = "The agent stopped responding. Please try again.";
+const AGENT_STALL_MESSAGE = "The agent stopped responding. Try again.";
 // One wait between attempts of a monitor request, whatever the provider's `retry-after` says.
 const MONITOR_RETRY_CAP_MS = 30_000;
 const INVESTIGATOR_STALL_MESSAGE = "The investigator's model stopped responding.";
@@ -549,7 +549,7 @@ export async function infer(
       requestSignal.throwIfAborted();
       if (response.status !== 429 || attempt === attempts)
         throw new GameError(
-          `Inference service returned ${response.status}. The command was not executed.`,
+          `The AI service returned ${response.status}. Nothing was run. Try again.`,
           503,
         );
       const wanted = Math.max(
@@ -596,10 +596,7 @@ export async function infer(
     requestSignal.throwIfAborted();
     if (data.error) {
       providerError = providerErrorDetails(response, data);
-      throw new GameError(
-        "Inference service returned an error. The command was not executed.",
-        503,
-      );
+      throw new GameError("The AI service returned an error. Nothing was run. Try again.", 503);
     }
     const usage = data.usage;
     if (
@@ -610,7 +607,7 @@ export async function infer(
       usage.cost < 0
     )
       throw new GameError(
-        "Inference usage could not be verified; the command was not executed.",
+        "The AI service’s usage could not be verified. Nothing was run. Try again.",
         503,
       );
     await settleInference(reservation.id, {

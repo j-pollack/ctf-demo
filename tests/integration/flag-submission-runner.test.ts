@@ -270,7 +270,8 @@ await test(
     await releaseSessionLease(unknownId, unknownId, unknownLease);
     await assert.rejects(startGame(owner), {
       status: 409,
-      message: "Your last run is being graded. Start a new run in a minute.",
+      message:
+        "Your current run’s upload is waiting to be graded. You can start a new run once grading begins.",
     });
     assert.deepEqual(created, []);
     assert.deepEqual(await unknownRun(), stillActive);

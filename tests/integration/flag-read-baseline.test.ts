@@ -604,7 +604,7 @@ await test(
             assert.equal(totals.settled, 8, "only the two classifier charges remain");
             assert.equal(totals.held, 0);
             for (const entry of entries) {
-              assert.match(entry.operationalError ?? "", /Inference service returned 404/);
+              assert.match(entry.operationalError ?? "", /The AI service returned 404/);
               assert.equal(entry.investigationComplete, null);
             }
             const { rows } = await inspection.query(

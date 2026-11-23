@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CAUGHT_BY, RISK_NOTE, RunInspector } from "../app/run-inspector";
+import { CAUGHT_BY, riskNote, RunInspector } from "../app/run-inspector";
 import type { PublicGame } from "../lib/types";
 import { run, session } from "./fixtures/console-runs";
 
@@ -70,7 +70,9 @@ test("a caught run names what caught it", () => {
 test("the inspector charts risk for every session", () => {
   const html = render();
   assert.match(html, /class="risk-heading"><h3>Classifier risk<\/h3>/);
-  assert.ok(html.includes(`<p class="risk-note">${RISK_NOTE.replaceAll("'", "&#x27;")}</p>`));
+  assert.ok(
+    html.includes(`<p class="risk-note">${riskNote(game.rules).replaceAll("'", "&#x27;")}</p>`),
+  );
   assert.doesNotMatch(html, /Only the investigator can/);
   assert.doesNotMatch(html, /advisory/i);
   assert.match(html, /Peak 65%/);
@@ -92,10 +94,11 @@ test("decisions are labelled by session, newest first", () => {
 });
 
 test("the inspector lists spend without all-caps labels", () => {
-  const html = render();
-  assert.match(html, /Spent <strong>\$0\.2636<\/strong>/);
+  const html = render({ game: { ...game, spentMicrodollars: 225_000 } });
+  assert.match(html, /From your budget <strong>\$0\.2250<\/strong>/);
   assert.match(html, /Agent <strong>\$0\.2000<\/strong>/);
-  assert.match(html, /Monitor <strong>\$0\.0636<\/strong>/);
+  assert.match(html, /Classifier checks <strong>\$0\.0250<\/strong>/);
+  assert.match(html, /Monitor, own allowance <strong>\$0\.0636<\/strong>/);
   assert.doesNotMatch(html, /SPEND|DECISIONS|CLASSIFIER RISK/);
 });
 
@@ -146,4 +149,67 @@ test("a jailbreak caught by the second look is not labelled refused", () => {
   const caught = render({ decisions: decision({}) });
   assert.match(caught, /Jailbreak caught/);
   assert.doesNotMatch(caught, /Jailbreak refused/);
+});
+
+const withRules = (jailbreakCatch: boolean, bugFixRequired: boolean, monitorIsolation: boolean) =>
+  ({
+    ...game,
+    rules: { jailbreakCatch, bugFixRequired, monitorIsolation },
+  }) as PublicGame;
+
+test("the risk note names the override catch only when the run's rules have it", () => {
+  const note = (html: string) => /<p class="risk-note">(.*?)<\/p>/.exec(html)![1];
+  const off = note(render({ game: withRules(false, true, false) }));
+  const on = note(render({ game: withRules(true, true, false) }));
+  assert.doesNotMatch(off, /override/);
+  assert.match(
+    on,
+    /an instruction or system prompt tries to override the agent’s or the monitor’s rules/,
+  );
+  assert.match(off, /or when a command’s output contains the flag\.$/);
+});
+
+test("run details list the rules the run started with", () => {
+  const off = render({ game: withRules(false, false, false) });
+  assert.match(off, /<h3>Rules<\/h3>/);
+  assert.match(off, /The investigator also reads your earlier runs\./);
+  assert.match(off, /A bug fix is optional\./);
+  assert.match(off, /does not end the run\./);
+  const on = render({ game: withRules(true, true, true) });
+  assert.match(on, /The investigator reads only this run’s sessions\./);
+  assert.match(on, /A bug fix is required to win\./);
+  assert.match(on, /tries to override the rules ends the run\./);
+});
+
+test("an up to date monitor says sessions are reviewed in full at upload, and a stopped command is its own state", () => {
+  const withStatus = (status: "caught-up" | "settling", gameStatus: "active" | "finalizing") =>
+    render({
+      game: {
+        ...game,
+        status: gameStatus,
+        monitor: {
+          ...game.monitor!,
+          status,
+          reason:
+            status === "settling"
+              ? "A stopped command is being checked. This takes a few seconds."
+              : undefined,
+        },
+      } as PublicGame,
+    });
+  const upToDate = withStatus("caught-up", "active");
+  assert.match(upToDate, /<strong>Up to date<\/strong>/);
+  assert.match(upToDate, /Sessions are reviewed in full when the flag is uploaded\./);
+  assert.doesNotMatch(withStatus("caught-up", "finalizing"), /reviewed in full when/);
+  const settling = withStatus("settling", "active");
+  assert.match(settling, /<strong>Checking a command<\/strong>/);
+  assert.match(settling, /A stopped command is being checked\. This takes a few seconds\./);
+});
+
+test("a caught run names its cause in plain words", () => {
+  assert.equal(CAUGHT_BY.flag_output, "Caught: a command printed the flag");
+  assert.equal(
+    CAUGHT_BY.jailbreak,
+    "Caught: an instruction or system prompt tried to override the rules",
+  );
 });

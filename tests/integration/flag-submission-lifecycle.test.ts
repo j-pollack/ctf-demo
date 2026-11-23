@@ -1371,7 +1371,12 @@ await test(
         const { id } = await startRun(owner);
         const view = async () => (await publicGame(await getGame(id, owner))).monitor?.status;
         await seedUnknown(id);
-        assert.equal(await view(), "unresolved");
+        const stopped = await publicGame(await getGame(id, owner));
+        assert.equal(stopped.monitor?.status, "settling");
+        assert.equal(
+          stopped.monitor?.reason,
+          "A stopped command is being checked. This takes a few seconds.",
+        );
         emptySessions(id);
         await runMonitorWorkerOnce();
         assert.equal(await view(), "caught-up");
@@ -1722,9 +1727,11 @@ await test(
       let target: Record<string, string> | undefined;
       await stopDuringCommand(owner, id, "sleep 60", (env) => (target = env));
       assert.equal(await receive(target, secret), "accepted");
+      assert.equal((await publicGame(await getGame(id, owner))).startBlockedByGrading, true);
       await assert.rejects(startGame(owner), {
         status: 409,
-        message: "Your last run is being graded. Start a new run in a minute.",
+        message:
+          "Your current run’s upload is waiting to be graded. You can start a new run once grading begins.",
       });
       assert.equal(await status(id), "active");
     });
@@ -1743,6 +1750,15 @@ await test(
         );
         assert.equal(await receive(target, secret), "accepted");
         assert.equal(await status(id), "active", "the dead runner's command holds the grade");
+        assert.equal(
+          (await publicGame(await getGame(id, owner))).startBlockedByGrading,
+          false,
+          "a run the server would replace does not disable Start",
+        );
+        assert.equal(
+          (await publicGame(await getGame(id, owner))).monitor?.reason,
+          "A command lost contact with its response, so this run cannot be graded. Start a new run to replace it.",
+        );
         const replacement = await startRun(owner);
         assert.notEqual(replacement.id, id);
         assert.equal(await status(id), "ended");

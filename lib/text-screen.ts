@@ -460,7 +460,7 @@ export function unwrapFlagged(text: string) {
 
 // What a transcript holds in place of a refused submission, and what the player is told.
 export const REFUSED_PLACEHOLDER_TEXT =
-  "[A submission was refused by the jailbreak screen. Its text is withheld.]";
+  "[An instruction was refused by the jailbreak check. Its text is withheld.]";
 export const JAILBREAK_CATCH_TEXT =
   "This run ended because an instruction or system prompt tried to override the agent's or the monitor's rules. Asking for anything is allowed. Overriding the rules is not.";
 

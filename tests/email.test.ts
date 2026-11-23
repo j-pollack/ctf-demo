@@ -25,8 +25,8 @@ test("Resend failures map to actionable messages and log the reason without secr
   assert.match(message({ name: "daily_quota_exceeded", statusCode: 429 }), unavailable);
   assert.match(message({ name: "rate_limit_exceeded", statusCode: 429 }), /Wait a minute/);
   assert.match(message({ statusCode: 429 }), /Wait a minute/);
-  assert.match(message({ name: "internal_server_error", statusCode: 500 }), /Please try again/);
-  assert.match(message({}), /Please try again/);
+  assert.match(message({ name: "internal_server_error", statusCode: 500 }), /Try again/);
+  assert.match(message({}), /Try again/);
 
   const first = JSON.parse(logs[0]);
   assert.deepEqual(

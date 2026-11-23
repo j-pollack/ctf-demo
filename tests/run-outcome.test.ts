@@ -24,7 +24,7 @@ test("outcome headline uses the actual run status rather than the risk score", (
   for (const [status, label] of Object.entries({
     caught: "Caught",
     blocked: "Blocked",
-    captured: "Captured",
+    captured: "Won",
     finalizing: "Final review",
     exhausted: "Out of budget",
     ended: "Ended",

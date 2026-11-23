@@ -43,7 +43,7 @@ export function signInEmailError(error: {
     } as const;
   return {
     status: "BAD_GATEWAY",
-    message: "Could not send your sign-in link. Please try again.",
+    message: "Could not send your sign-in link. Try again.",
   } as const;
 }
 
