@@ -14,6 +14,7 @@ import {
   runSpend,
   reserveInference,
   settleInference,
+  settleUnidentifiedInference,
   transaction,
   type GameRow,
 } from "./games";
@@ -96,17 +97,33 @@ export async function classifyMonitorTarget(input: {
       },
     );
     let dispatched = false;
+    let settled = false;
     try {
       input.signal.throwIfAborted();
       dispatched = true;
       const result = await evaluate(state, questions, input.signal);
       const cost = Math.round(result.inputTokens * MONITOR_TOKEN_MICRODOLLARS);
       await settleInference(reservation.id, { tokens: result.inputTokens, costMicrodollars: cost });
+      settled = true;
       if (cost > reservation.cost)
         throw new Error("Classifier usage exceeded its reserved allowance.");
       return result;
     } finally {
       if (!dispatched) await settleInference(reservation.id, { tokens: 0, cost: 0 });
+      // Typesafe gives no generation id, so nothing could reconcile this hold later.
+      // A failed settle must not replace the original error; the 24 hour expiry still covers it.
+      else if (!settled)
+        await settleUnidentifiedInference(reservation.id).catch((error) =>
+          console.error(
+            JSON.stringify({
+              event: "inference.settle_failed",
+              timestamp: new Date().toISOString(),
+              gameId: input.game.id,
+              reviewId: input.reviewId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          ),
+        );
     }
   };
   const contextCall = await evaluateClassifierContext(

@@ -361,15 +361,19 @@ await test(
               const expectedCost = scenario === "retry-success" ? 84 : 0;
               const charges = (
                 await pool.query(
-                  "SELECT tokens,cost,cost_ceiling,settled_at FROM ctf.inference WHERE game_id=$1 AND review_id=$2",
+                  "SELECT tokens,cost,cost_ceiling,estimated,settled_at FROM ctf.inference WHERE game_id=$1 AND review_id=$2",
                   [id, reviewId],
                 )
               ).rows;
-              const settled = charges.filter((charge) => charge.settled_at !== null);
-              const held = charges.filter((charge) => charge.settled_at === null);
+              const settled = charges.filter((charge) => !charge.estimated);
+              const atCeiling = charges.filter((charge) => charge.estimated);
               assert.equal(charges.length, documents.length);
+              assert.ok(charges.every((charge) => charge.settled_at !== null));
               assert.equal(settled.length, scenario === "retry-success" ? 1 : 0);
-              assert.equal(held.length, documents.length - (scenario === "retry-success" ? 1 : 0));
+              assert.equal(
+                atCeiling.length,
+                documents.length - (scenario === "retry-success" ? 1 : 0),
+              );
               assert.equal(
                 settled.reduce((sum, charge) => sum + Number(charge.tokens), 0),
                 expectedTokens,
@@ -378,12 +382,17 @@ await test(
                 settled.reduce((sum, charge) => sum + Number(charge.cost), 0),
                 expectedCost,
               );
-              const heldCost = held.reduce((sum, charge) => sum + Number(charge.cost_ceiling), 0);
-              assert.ok(heldCost > 0, "dispatched rejections retain unknown usage holds");
+              const ceilingCost = atCeiling.reduce((sum, charge) => sum + Number(charge.cost), 0);
+              assert.equal(
+                ceilingCost,
+                atCeiling.reduce((sum, charge) => sum + Number(charge.cost_ceiling), 0),
+                "dispatched rejections are charged their ceiling",
+              );
+              if (atCeiling.length) assert.ok(ceilingCost > 0);
               const balances = (
                 await pool.query("SELECT reserved_microdollars FROM ctf.games WHERE id=$1", [id])
               ).rows[0];
-              assert.equal(Number(balances.reserved_microdollars), heldCost);
+              assert.equal(Number(balances.reserved_microdollars), 0);
               const dayReserved = (
                 await pool.query(
                   "SELECT coalesce(sum(reserved),0) AS reserved FROM ctf.daily_spend",
@@ -400,8 +409,8 @@ await test(
                   (await pool.query("SELECT spent_microdollars FROM ctf.games WHERE id=$1", [id]))
                     .rows[0].spent_microdollars,
                 ),
-                expectedCost + (scenario === "budget-denied" ? 1_500_000 : 0),
-                "the seeded monitor spend is the only addition",
+                expectedCost + ceilingCost + (scenario === "budget-denied" ? 1_500_000 : 0),
+                "only the seeded monitor spend and the ceiling charges are added",
               );
               assert.equal(
                 Number(
@@ -411,7 +420,7 @@ await test(
                     )
                   ).rows[0].charged,
                 ) - before,
-                expectedCost,
+                expectedCost + ceilingCost,
               );
             });
           }
@@ -2513,7 +2522,9 @@ await test(
         await work(id);
         assert.deepEqual(await outcome(id), expected);
         assert.equal((await rows(id)).length, 3);
-        const settled = (await annotationInference(id)).filter((row) => row.settled_at !== null);
+        const settled = (await annotationInference(id)).filter(
+          (row) => row.settled_at !== null && !row.estimated,
+        );
         assert.equal(settled.length, 1);
         assert.equal(Number(settled[0].tokens), 3 * 24);
       });

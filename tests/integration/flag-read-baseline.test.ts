@@ -134,8 +134,8 @@ await test(
                 );
                 assert.equal(
                   rows.length,
-                  mode.startsWith("classifier") ? classifier : 1,
-                  "classifier reserves before HTTP dispatch",
+                  1,
+                  "classifier reserves before HTTP dispatch and an earlier failed request is already settled",
                 );
                 assert.ok(Number(rows[0].cost_ceiling) > 0);
                 if (longScenario) {
@@ -513,14 +513,24 @@ await test(
             assert.equal(entry.investigationComplete, null);
             assert.match(entry.operationalError ?? "", /abort|time|deadline/i);
             assert.equal(entry.jobStatus, "queued");
-            assert.equal(totals.settled, mode === "classifier-timeout" ? 0 : 4);
-            assert.ok(totals.held > 0);
-            const { rows: unresolved } = await inspection.query(
-              "SELECT model FROM ctf.inference WHERE settled_at IS NULL",
+            assert.equal(totals.held, 0);
+            const { rows: atCeiling } = await inspection.query(
+              "SELECT model,cost::int AS cost,cost=cost_ceiling AS at_ceiling FROM ctf.inference WHERE estimated AND settled_at IS NOT NULL AND model <> 'eval-budget-seed'",
             );
-            assert.deepEqual(unresolved, [
-              { model: mode === "classifier-timeout" ? "typesafe/jev-1.14" : INVESTIGATOR_MODEL },
-            ]);
+            assert.deepEqual(
+              atCeiling.map(({ model, at_ceiling }) => ({ model, at_ceiling })),
+              [
+                {
+                  model: mode === "classifier-timeout" ? "typesafe/jev-1.14" : INVESTIGATOR_MODEL,
+                  at_ceiling: true,
+                },
+              ],
+            );
+            assert.equal(
+              totals.settled,
+              (mode === "classifier-timeout" ? 0 : 4) +
+                atCeiling.reduce((sum, row) => sum + row.cost, 0),
+            );
           }
         } else if (
           mode === "success" ||
@@ -581,7 +591,12 @@ await test(
           assert.ok(entries.every((e) => e.investigationComplete !== true));
           if (mode.startsWith("classifier")) {
             assert.equal(investigator, 0);
-            assert.ok(totals.held > 0);
+            assert.equal(totals.held, 0, "a failed classifier request is settled at its ceiling");
+            const { rows: charged } = await inspection.query(
+              "SELECT coalesce(sum(cost),0)::int AS cost FROM ctf.inference WHERE estimated AND settled_at IS NOT NULL AND model <> 'eval-budget-seed'",
+            );
+            assert.equal(totals.settled, charged[0].cost);
+            assert.ok(totals.settled > 0);
           }
           if (mode === "unavailable-provider") {
             assert.equal(classifier, 2);
@@ -611,19 +626,33 @@ await test(
             assert.deepEqual(daily, [{ reserved: 0 }]);
           }
           if (mode === "missing-usage" || mode === "timeout") {
-            assert.ok(totals.held > 0);
+            assert.ok(mode === "timeout" ? totals.held === 0 : totals.held > 0);
             // The monitor has its own allowance, so the next case is admitted although this one's
-            // hold is retained, and it ends with a retained hold of its own. The evaluation's
-            // budget is then spent, so the third case is skipped before any admission.
+            // charge stays open (missing usage) or is taken at its ceiling (timeout before any
+            // generation id), and it ends the same way. The evaluation's budget is then spent, so
+            // the third case is skipped before any admission.
             assert.equal(investigator, 2);
-            assert.deepEqual(
-              entries.slice(0, 2).map((entry) => entry.heldMicrodollars),
-              [44_528, 44_919],
-              "each case leaves exactly its investigator request's ceiling held",
-            );
+            const ceilings = [44_528, 44_919];
+            if (mode === "timeout") {
+              const { rows: atCeiling } = await inspection.query(
+                "SELECT cost::int AS cost,cost_ceiling::int AS ceiling FROM ctf.inference WHERE model=$1 AND estimated AND settled_at IS NOT NULL ORDER BY created_at",
+                [INVESTIGATOR_MODEL],
+              );
+              assert.deepEqual(
+                atCeiling,
+                ceilings.map((ceiling) => ({ cost: ceiling, ceiling })),
+                "each case's investigator request is charged its ceiling",
+              );
+            } else
+              assert.deepEqual(
+                entries.slice(0, 2).map((entry) => entry.heldMicrodollars),
+                ceilings,
+                "each case leaves exactly its investigator request's ceiling held",
+              );
             const admitted = entries.filter((entry) => !entry.skipped);
             assert.equal(admitted.length, 2);
-            assert.ok(admitted.every((entry) => entry.heldMicrodollars > 0));
+            if (mode === "missing-usage")
+              assert.ok(admitted.every((entry) => entry.heldMicrodollars > 0));
             assert.ok(
               entries
                 .slice(2)

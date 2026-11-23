@@ -33,7 +33,9 @@ A receipt that is accepted is scored only by `promoteHttpSubmission`, and only w
 5. Promotion moves the run to `finalizing` and bumps its generation, which ends any response still running. Every session then gets its final review.
 6. `startGame` does not end a run that has a receipt. It refuses the new run with "Your last run is being graded. Start a new run in a minute." (HTTP 409) until that run leaves `active`. A receipt that waits only on a stopped command is settled by the worker within seconds.
    6a. A new run is also not refused for a receipt that nothing can promote: when a command is left `running` with no live session lease, `startGame` replaces the run as before, so the owner is not locked out until the 24-hour sweep.
-   6b. An agent or screen inference aborted before the provider gave a generation id is settled at its ceiling, estimated, at once, with one `inference.aborted_before_generation` log line. `reconcileInference` can only find a hold that has an id, so without this the promoted run would wait for the 24-hour expiry. A request that has an id keeps the reconcile path.
+   6b. An inference that ends before the provider gave a generation id is settled at its ceiling, estimated, at once, with one `inference.settled_without_generation` log line. `reconcileInference` can only find a hold that has an id, so without this the promoted run would wait for the 24-hour expiry. A request that has an id keeps the reconcile path.
+   6c. The rule in 6b covers every role and every error: a monitor request that stalls before headers or fails before any generation id is charged its ceiling the same way, and so is a Jev classifier request that fails after dispatch (`lib/monitor-classifier.ts`, which has no generation id at all). The only other outcome for such a hold is the same ceiling charge after 24 hours, and until then it blocks `claimAsyncFinalization`. User decision, 2026-11-23: a hold that can never be reconciled is charged at once rather than left open for the expiry.
+   6d. Consequences of 6c. Failed monitor requests now count against the monitor's allowances at once; before, they stayed invisible until the expiry. The classifier charges every failure after dispatch, including Typesafe 400 and 429 responses, by the user's every-error decision. The charge is skipped if the settle itself fails: the original error is kept, `inference.settle_failed` is logged, and the hold falls back to the 24-hour expiry.
 7. `markCommandReturned` stays, because the investigator reads `returned_at` as evidence. The rule in the runner that skips the output screen when that stamp fails had no purpose but the upload window and is removed.
 8. Comments and plans that state the old window are updated: `lib/flag-submissions.ts` (the doc comment of `promoteHttpSubmission`), `lib/runner-async.ts` (the note on upload authority), `lib/monitor-commands.ts`, `docs/plans/stopped-command-settle.md` (design 7 and its open question) and `docs/plans/text-screening.md` (R6a).
 
@@ -53,6 +55,10 @@ A receipt that is accepted is scored only by `promoteHttpSubmission`, and only w
 ## Open question for the user
 
 - Uploads from outside the sandbox. With the window gone, a printed upload address works from anywhere until the run ends. The lead recommends accepting this, as the ruling says "anything": the flag's value is the secret, and every session's final review still decides the run. Limiting uploads to the sandbox has no reliable signal, because Sprites' outbound address is not fixed and the address can be re-encoded to dodge redaction. `docs/plans/flag-vercel-rollout.md` describes the token as bound to the command's lease, which stops being true.
+
+## Open follow-up
+
+A worker or runner process that dies mid-request never runs its `finally`, so a hold without a generation id still waits for the 24-hour expiry. A sweep of such holds older than the longest request could close it.
 
 ## Out of scope
 

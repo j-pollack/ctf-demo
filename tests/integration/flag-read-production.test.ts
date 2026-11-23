@@ -525,17 +525,27 @@ await test(
       rows: [spriteRow],
     } = await pool.query("SELECT sprite_deleted_at FROM ctf.games WHERE id=$1", [workspace.gameId]);
     assert.equal(spriteRow.sprite_deleted_at !== null, blocking);
+    // A request that failed before any generation id is charged its ceiling at once.
+    const {
+      rows: [ceilingCharged],
+    } = await pool.query(
+      "SELECT coalesce(sum(cost),0)::int AS cost,count(*)::int AS requests FROM ctf.inference WHERE estimated AND settled_at IS NOT NULL AND generation_id IS NULL",
+    );
+    const unidentified = ["deadline", "classifier-timeout"].includes(mode);
+    assert.equal(ceilingCharged.requests, unidentified ? 1 : 0);
     assert.equal(
       game.spent,
       mode === "overrun"
         ? 1_000_004
         : mode === "classifier-timeout"
-          ? 0
-          : ["deadline", "unavailable"].includes(mode)
-            ? 4
-            : blocking
-              ? 24
-              : 14,
+          ? ceilingCharged.cost
+          : mode === "deadline"
+            ? 4 + ceilingCharged.cost
+            : mode === "unavailable"
+              ? 4
+              : blocking
+                ? 24
+                : 14,
     );
     const {
       rows: [accounting],
@@ -543,16 +553,16 @@ await test(
       "SELECT coalesce(sum(cost) FILTER(WHERE settled_at IS NOT NULL),0)::int AS spent,coalesce(sum(cost_ceiling) FILTER(WHERE settled_at IS NULL),0)::int AS held FROM ctf.inference",
     );
     assert.deepEqual(accounting, { spent: game.spent, held: game.held });
-    if (["deadline", "classifier-timeout"].includes(mode)) assert.ok(game.held > 0);
-    else assert.equal(game.held, 0);
+    assert.equal(game.held, 0);
+    if (unidentified) assert.ok(ceilingCharged.cost > 0);
     if (mode === "overrun") assert.match(job.reason, /reserved|allowance/i);
     if (mode === "deadline" && realTiming) {
-      // No headers ever arrived, so the request has no generation id and its hold stays open.
+      // No headers ever arrived, so the request has no generation id and is charged its ceiling.
       assert.match(job.reason, /The investigator's model stopped responding\./);
-      const { rows: unidentified } = await pool.query(
-        "SELECT 1 FROM ctf.inference WHERE model='z-ai/glm-5.3' AND settled_at IS NULL AND generation_id IS NULL",
+      const { rows: charged } = await pool.query(
+        "SELECT cost=cost_ceiling AS at_ceiling FROM ctf.inference WHERE model='z-ai/glm-5.3' AND estimated AND settled_at IS NOT NULL AND generation_id IS NULL",
       );
-      assert.equal(unidentified.length, 1);
+      assert.deepEqual(charged, [{ at_ceiling: true }]);
     }
     const expectedMs =
       mode === "slow-success"

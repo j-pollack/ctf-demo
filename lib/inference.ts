@@ -11,7 +11,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   assertLease,
   reserveInference,
-  settleAbortedInference,
+  settleUnidentifiedInference,
   settleInference,
   transaction,
   type GameRow,
@@ -583,12 +583,12 @@ export async function infer(
     const data = await collectStream(
       response.body,
       onDelta ?? (() => {}),
-      (id) => {
-        generationKnown = true;
-        return db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [
+      async (id) => {
+        await db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [
           reservation.id,
           id,
         ]);
+        generationKnown = true;
       },
       idleMs,
       stallMessage,
@@ -610,7 +610,7 @@ export async function infer(
       usage.cost < 0
     )
       throw new GameError(
-        "Inference usage could not be verified. Billing is pending; the command was not executed.",
+        "Inference usage could not be verified; the command was not executed.",
         503,
       );
     await settleInference(reservation.id, {
@@ -722,16 +722,29 @@ export async function infer(
     throw error;
   } finally {
     if (!settled && knownUnbilled) await settleInference(reservation.id, { tokens: 0, cost: 0 });
-    else if (!settled && role === "agent" && !generationKnown && requestSignal.aborted) {
-      // No generation id means reconcileInference can never find this request, so the hold would
-      // keep a finalizing run waiting a day. Charge the ceiling now rather than undercount.
-      await settleAbortedInference(reservation.id);
-      console.error(
-        JSON.stringify({
-          event: "inference.aborted_before_generation",
-          timestamp: new Date().toISOString(),
-          ...context,
-        }),
+    else if (!settled && !generationKnown) {
+      // No generation id means reconcileInference can never find this request, so its only other
+      // outcome is this same ceiling charge after 24 hours, which would keep a finalizing run
+      // waiting. Charge it now, whatever the role or the error.
+      // A failed settle must not replace the original error; the 24 hour expiry still covers it.
+      await settleUnidentifiedInference(reservation.id).then(
+        () =>
+          console.error(
+            JSON.stringify({
+              event: "inference.settled_without_generation",
+              timestamp: new Date().toISOString(),
+              ...context,
+            }),
+          ),
+        (error) =>
+          console.error(
+            JSON.stringify({
+              event: "inference.settle_failed",
+              timestamp: new Date().toISOString(),
+              ...context,
+              error: diagnosticText(error instanceof Error ? error.message : error),
+            }),
+          ),
       );
     }
   }

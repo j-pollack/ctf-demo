@@ -945,8 +945,8 @@ async function settleHoldsAtCeiling(condition: string, params: unknown[]) {
 // usable) is released after a day at its ceiling.
 export const expireUnverifiableHolds = () =>
   settleHoldsAtCeiling("created_at<now()-interval '24 hours'", []);
-// A request aborted before the provider gave a generation id has no record to reconcile.
-export const settleAbortedInference = (id: string) => settleHoldsAtCeiling("id=$1", [id]);
+// A request that never got a provider generation id has no record to reconcile.
+export const settleUnidentifiedInference = (id: string) => settleHoldsAtCeiling("id=$1", [id]);
 export async function reconcileInference(gameId?: string) {
   if (!process.env.OPENROUTER_API_KEY) return;
   const pending = await db.query(

@@ -3096,18 +3096,33 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     assert.match((await latestReview(gameId)).operational_error, STALL);
     const [hold] = await monitorHolds(gameId);
     assert.equal(hold.generation_id, null);
-    assert.equal(hold.settled_at, null);
-    assert.equal(await heldMicrodollars(gameId), hold.cost_ceiling);
-    // Without an id only the day-old expiry can release it.
-    await pool.query("UPDATE ctf.inference SET created_at=now()-interval '25 hours' WHERE id=$1", [
-      hold.id,
-    ]);
-    const { expireUnverifiableHolds } = await import("../../lib/games");
-    await expireUnverifiableHolds();
-    const [expired] = await monitorHolds(gameId);
-    assert.deepEqual([expired.estimated, expired.cost], [true, hold.cost_ceiling]);
+    // Without an id nothing could reconcile it, so it is charged its ceiling at once.
+    assert.ok(hold.settled_at);
+    assert.deepEqual([hold.estimated, hold.cost], [true, hold.cost_ceiling]);
     assert.equal(await heldMicrodollars(gameId), 0);
   });
+  await t.test(
+    "S5b: a final review stalled before headers does not hold the run for a day",
+    async () => {
+      const gameId = await streamSubmitted("s5b");
+      const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
+      const { claimAsyncFinalization } = await import("../../lib/async-finalization");
+      monitorStream = "no-headers";
+      assert.equal(await runMonitorWorkerOnce(streamTiming(1000)), true);
+      assert.match((await latestReview(gameId)).operational_error, STALL);
+      const [hold] = await monitorHolds(gameId);
+      assert.equal(hold.generation_id, null);
+      assert.deepEqual([hold.estimated, hold.cost], [true, hold.cost_ceiling]);
+      assert.equal(await heldMicrodollars(gameId), 0);
+      // The retried review completes, and the next pass finalizes with no manual settle.
+      monitorStream = undefined;
+      await retryNow(gameId);
+      assert.equal(await runMonitorWorkerOnce(), true);
+      assert.equal((await streamJob(gameId)).status, "caught-up");
+      const claim = await claimAsyncFinalization();
+      assert.equal(claim?.gameId, gameId);
+    },
+  );
   await t.test("S6: a streamed error event fails the review as a provider error does", async () => {
     const gameId = await playHarmlessRun("s6-event");
     const { runMonitorWorkerOnce } = await import("../../lib/monitor-worker");
@@ -3261,14 +3276,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.equal(monitorPayloads().length, 2);
       assert.match((await latestReview(gameId)).operational_error, STALL);
       const [hold] = await monitorHolds(gameId);
-      assert.equal(hold.settled_at, null);
-      // Only the day-old expiry can release a hold without a generation id.
-      await pool.query(
-        "UPDATE ctf.inference SET created_at=now()-interval '25 hours' WHERE id=$1",
-        [hold.id],
-      );
-      const { expireUnverifiableHolds } = await import("../../lib/games");
-      await expireUnverifiableHolds();
+      // A hold without a generation id is charged its ceiling at once.
+      assert.ok(hold.settled_at);
+      assert.deepEqual([hold.estimated, hold.cost], [true, hold.cost_ceiling]);
       assert.equal(await heldMicrodollars(gameId), 0);
     },
   );
@@ -6894,29 +6904,28 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     },
   );
   await t.test(
-    "non-429 failure does not retry; ambiguous failure after 429 retains hold",
+    "non-429 failure does not retry; failure before any generation id settles at the ceiling",
     async () => {
       const direct = await productionStartGame("direct-500");
       responses = { agent: [{ status: 500 }] };
       await play(direct.id, "direct-500");
       assert.equal(requests.filter((request) => request.role === "agent").length, 1);
-      assert.ok(Number((await row(direct.id)).reserved_microdollars) > 0);
+      assert.equal(Number((await row(direct.id)).reserved_microdollars), 0);
       const later = await productionStartGame("later-500");
       requests.length = 0;
       responses = { agent: [{ status: 429 }, { status: 500 }] };
       await play(later.id, "later-500");
       assert.equal(requests.filter((request) => request.role === "agent").length, 2);
       assert.equal(commands.length, 0);
-      assert.ok(Number((await row(later.id)).reserved_microdollars) > 0);
-      assert.equal(
-        (
-          await pool.query(
-            "SELECT settled_at FROM ctf.inference WHERE game_id=$1 AND role='agent'",
-            [later.id],
-          )
-        ).rows[0].settled_at,
-        null,
-      );
+      assert.equal(Number((await row(later.id)).reserved_microdollars), 0);
+      const charged = (
+        await pool.query(
+          "SELECT estimated,cost=cost_ceiling AS at_ceiling,settled_at FROM ctf.inference WHERE game_id=$1 AND role='agent'",
+          [later.id],
+        )
+      ).rows[0];
+      assert.ok(charged.settled_at);
+      assert.deepEqual([charged.estimated, charged.at_ceiling], [true, true]);
     },
   );
   await t.test(
@@ -7088,29 +7097,37 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       "an expired response records no attacker turn or executed command",
     );
   });
-  await t.test("network and missing-usage failures after 429 retain pending billing", async () => {
-    for (const [owner, status] of [
-      ["network", -1],
-      ["missing-usage", 299],
-    ] as const) {
-      const game = await productionStartGame(owner);
-      requests.length = 0;
-      responses = { agent: [{ status: 429 }, { status }] };
-      await play(game.id, owner);
-      assert.equal(requests.filter((request) => request.role === "agent").length, 2);
-      assert.equal(commands.length, 0);
-      assert.ok(Number((await row(game.id)).reserved_microdollars) > 0);
-      assert.equal(
-        (
+  await t.test(
+    "a network failure after 429 settles at the ceiling; missing usage stays pending",
+    async () => {
+      for (const [owner, status] of [
+        ["network", -1],
+        ["missing-usage", 299],
+      ] as const) {
+        const game = await productionStartGame(owner);
+        requests.length = 0;
+        responses = { agent: [{ status: 429 }, { status }] };
+        await play(game.id, owner);
+        assert.equal(requests.filter((request) => request.role === "agent").length, 2);
+        assert.equal(commands.length, 0);
+        const charge = (
           await pool.query(
-            "SELECT settled_at FROM ctf.inference WHERE game_id=$1 AND role='agent'",
+            "SELECT estimated,generation_id,settled_at FROM ctf.inference WHERE game_id=$1 AND role='agent'",
             [game.id],
           )
-        ).rows[0].settled_at,
-        null,
-      );
-    }
-  });
+        ).rows[0];
+        if (status === -1) {
+          // No generation id ever arrived, so nothing could reconcile it.
+          assert.equal(Number((await row(game.id)).reserved_microdollars), 0);
+          assert.deepEqual([charge.estimated, charge.generation_id !== null], [true, false]);
+          assert.ok(charge.settled_at);
+        } else {
+          assert.ok(Number((await row(game.id)).reserved_microdollars) > 0);
+          assert.equal(charge.settled_at, null);
+        }
+      }
+    },
+  );
   await t.test("cleanup settles day-old unverifiable holds at their ceiling", async () => {
     const spend = async () =>
       (
@@ -7121,15 +7138,26 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     const holds = [];
     for (const owner of ["expired-hold", "fresh-hold"]) {
       const game = await productionStartGame(owner);
-      responses = { agent: [{ status: -1 }] };
-      await play(game.id, owner);
+      // A failed request is settled at once now, so the hold is reserved directly.
+      const leased = await claimGame(game.id, owner);
+      await reserveInference(
+        game.id,
+        leased.lease!,
+        "screen",
+        TYPESAFE_MODEL,
+        100,
+        64,
+        0.000001,
+        0.000001,
+        { sessionId: game.id, executionGeneration: Number(leased.execution_generation) },
+      );
       const hold = (
         await pool.query(
-          "SELECT id,token_ceiling,cost_ceiling,generation_id FROM ctf.inference WHERE game_id=$1 AND role='agent'",
+          "SELECT id,token_ceiling,cost_ceiling,generation_id FROM ctf.inference WHERE game_id=$1 AND role='screen'",
           [game.id],
         )
       ).rows[0];
-      assert.equal(hold.generation_id, null, "a failed request leaves no generation id");
+      assert.equal(hold.generation_id, null, "the hold has no generation id");
       holds.push({ game, hold, before: await row(game.id) });
     }
     const [expired, fresh] = holds;
