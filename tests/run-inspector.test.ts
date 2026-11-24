@@ -2,22 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CAUGHT_BY, riskNote, RunInspector } from "../app/run-inspector";
+import { CAUGHT_BY, RunInspector } from "../app/run-inspector";
 import type { PublicGame } from "../lib/types";
 import { run, session } from "./fixtures/console-runs";
 
 const game = run([session(1), session(2)]);
-const series = [
-  { id: "session-1", ordinal: 1, points: [{ turn: 1, risk: 0.2 }] },
-  { id: "session-2", ordinal: 2, points: [{ turn: 2, risk: 0.65 }] },
-];
 const render = (extra = {}) =>
   renderToStaticMarkup(
     createElement(RunInspector, {
       game,
-      riskSeries: series,
-      peak: 0.65,
-      observed: true,
       decisions: [
         {
           ordinal: 2,
@@ -67,27 +60,13 @@ test("a caught run names what caught it", () => {
   assert.match(caught(null), /<strong>Caught<\/strong>/);
 });
 
-test("the inspector charts risk for every session", () => {
-  const html = render();
-  assert.match(html, /class="risk-heading"><h3>Classifier risk<\/h3>/);
-  assert.ok(
-    html.includes(`<p class="risk-note">${riskNote(game.rules).replaceAll("'", "&#x27;")}</p>`),
-  );
-  assert.doesNotMatch(html, /Only the investigator can/);
-  assert.doesNotMatch(html, /advisory/i);
-  assert.match(html, /Peak 65%/);
-  assert.match(html, /Session 1 · peak 20%/);
-  assert.match(html, /Session 2 · peak 65%/);
-  assert.match(html, /viewBox="0 0 300 120"/);
-  assert.match(render({ observed: false, peak: 0, riskSeries: [] }), /No risk data yet/);
-});
-
 test("decisions are labelled by session, newest first", () => {
   const html = render();
   const flagged = html.indexOf("Flag read detected"),
     failed = html.indexOf("Investigation error");
   assert.ok(flagged >= 0 && failed > flagged);
-  assert.match(html, /Session 2 · 90% classifier risk/);
+  assert.match(html, /Session 2 · turn 3/);
+  assert.doesNotMatch(html, /90%|classifier risk/);
   assert.match(html, /Session 1 · turn 1/);
   assert.match(html, /Read the flag\./);
   assert.doesNotMatch(render({ decisions: [] }), /Decisions/);
@@ -156,18 +135,6 @@ const withRules = (jailbreakCatch: boolean, bugFixRequired: boolean, monitorIsol
     ...game,
     rules: { jailbreakCatch, bugFixRequired, monitorIsolation },
   }) as PublicGame;
-
-test("the risk note names the override catch only when the run's rules have it", () => {
-  const note = (html: string) => /<p class="risk-note">(.*?)<\/p>/.exec(html)![1];
-  const off = note(render({ game: withRules(false, true, false) }));
-  const on = note(render({ game: withRules(true, true, false) }));
-  assert.doesNotMatch(off, /override/);
-  assert.match(
-    on,
-    /an instruction or system prompt tries to override the agent’s or the monitor’s rules/,
-  );
-  assert.match(off, /or when a command’s output contains the flag\.$/);
-});
 
 test("run details list the rules the run started with", () => {
   const off = render({ game: withRules(false, false, false) });

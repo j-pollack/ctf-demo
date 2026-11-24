@@ -10,12 +10,9 @@ const render = (game: PublicGame, extra: Partial<RunBarProps> = {}) =>
   renderToStaticMarkup(
     createElement(RunBar, {
       game,
-      peak: 0.17,
-      observed: true,
       inspectorOpen: false,
       newRunDisabled: false,
       onToggleDetails: () => {},
-      onShowRisk: () => {},
       onNewRun: () => {},
       ...extra,
     }),
@@ -50,24 +47,14 @@ test("the run id sits next to the budget", () => {
   );
 });
 
-test("an active run names the classifier's risk as a control and the investigator's review status", () => {
+test("an active run names the investigator's review status and no risk score", () => {
   const html = render(active);
-  // A button, so a tap opens the explanation in run details. Hover text never shows on a phone.
-  assert.match(
-    html,
-    /<button type="button" class="run-risk" data-band="low">Classifier risk 17%<\/button>/,
-  );
-  assert.doesNotMatch(html, /class="run-risk"[^>]*title=/);
+  assert.doesNotMatch(html, /run-risk|classifier risk/i);
   // Marked active so narrow screens can drop it; the inspector also shows it.
   assert.match(
     html,
     /<span class="run-status" role="status" data-active="true">Under review<\/span>/,
   );
-  assert.match(
-    render(active, { observed: false, peak: 0 }),
-    /<button type="button" class="run-risk">No classifier risk yet<\/button>/,
-  );
-  assert.match(render(active, { peak: 0.75 }), /data-band="high"/);
 });
 
 test("a finished run shows its outcome instead of risk", () => {

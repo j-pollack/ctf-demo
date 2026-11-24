@@ -12,10 +12,6 @@ export const session = (
   systemPrompt: "",
   turns: ordinal + 3,
   busy: false,
-  riskHistory: [
-    { turn: 1, risk: 0.05 * ordinal },
-    { turn: 2, risk: 0.04 * ordinal + 0.02 },
-  ],
   ...overrides,
 });
 

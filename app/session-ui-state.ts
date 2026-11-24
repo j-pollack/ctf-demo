@@ -1,4 +1,10 @@
-import type { AgentEffort, GameEvent, PublicGame, SessionSummary } from "@/lib/types";
+import {
+  runHasEnded,
+  type AgentEffort,
+  type GameEvent,
+  type PublicGame,
+  type SessionSummary,
+} from "@/lib/types";
 import type { LiveTurn } from "@/app/transcript";
 
 export type SessionUIState = {
@@ -45,9 +51,7 @@ export function isCurrentSessionCreateFence(
   );
 }
 
-export function isTerminalRunStatus(status: PublicGame["status"]): boolean {
-  return ["caught", "captured", "exhausted", "ended", "blocked"].includes(status);
-}
+export const isTerminalRunStatus = runHasEnded;
 
 export function preserveTerminalRunState(current: PublicGame, next: PublicGame): PublicGame {
   if (!isTerminalRunStatus(current.status) || isTerminalRunStatus(next.status)) return next;

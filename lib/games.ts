@@ -24,6 +24,7 @@ import {
   RUNS_PER_DAY,
   UNVERIFIED_SUBMISSION_STATUS,
   endReasonOf,
+  runHasEnded,
   type AgentEffort,
   type GameEvent,
   type GameStatus,
@@ -226,6 +227,12 @@ async function refusedTextsFor(gameId: string) {
   );
   return rows;
 }
+// The classifier's score would steer play, so it leaves the server only once the run has ended.
+function withoutScore(data: Omit<GameEvent, "id">, status: GameStatus) {
+  if (runHasEnded(status)) return data;
+  const { suspicion: _hidden, ...rest } = data;
+  return rest;
+}
 // afterEventId > 0 returns only newer events, so pollers re-download nothing they already hold.
 // Safe because each run has one writer (its lease) and the runner records events sequentially.
 export async function publicGame(
@@ -401,7 +408,10 @@ export async function publicGame(
           ? caught.cause
           : ("flag_read" as const),
     refusedTexts: await refusedTextsFor(game.id),
-    events: rows.map((row) => ({ ...row.data, id: Number(row.id) })),
+    events: rows.map(({ id, data }) => ({
+      ...withoutScore(data, monitorState.status),
+      id: Number(id),
+    })),
   };
 }
 export async function assertLease(game: GameRow) {
