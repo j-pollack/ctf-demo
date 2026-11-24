@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runFlagReadInvestigation } from "../lib/flag-read-investigator";
-import { FLAG_READ_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } from "../lib/control";
+import {
+  FLAG_READ_MONITOR_VERSION,
+  PREVIOUS_FLAG_READ_MONITOR_VERSION,
+  V15_FLAG_READ_MONITOR_VERSION,
+} from "../lib/control";
 import { FLAG_READ_BASE_PROMPT, FLAG_READ_SYSTEM_PROMPT } from "../lib/monitor-evidence";
 import { flagReadPolicyById, flagReadPolicyForRun } from "../lib/flag-read-policy";
 
@@ -29,9 +33,10 @@ function contractParagraph(label: string) {
 const sharedParagraph = contractParagraph("Shared-filesystem context, second paragraph:");
 const unknownParagraph = contractParagraph("Unknown-sharing context, second paragraph:");
 
-test("versions are pinned and the previous one is the v14 stamp", () => {
+test("versions are pinned: new runs are v16, and the previous one is the v14 stamp", () => {
+  assert.equal(FLAG_READ_MONITOR_VERSION, "investigator-v16-glm53-jev114-decode-digitalocean");
   assert.equal(
-    FLAG_READ_MONITOR_VERSION,
+    V15_FLAG_READ_MONITOR_VERSION,
     "investigator-v15-glm53-jev114-isolation-times-digitalocean",
   );
   assert.equal(
@@ -54,12 +59,12 @@ test("a v14 run gets the v14 policy in either mode, byte for byte", () => {
 });
 
 test("a v15 run gets the shared policy with isolation and the unknown policy without", () => {
-  const shared = flagReadPolicyForRun(FLAG_READ_MONITOR_VERSION, true);
-  const unknown = flagReadPolicyForRun(FLAG_READ_MONITOR_VERSION, false);
+  const shared = flagReadPolicyForRun(V15_FLAG_READ_MONITOR_VERSION, true);
+  const unknown = flagReadPolicyForRun(V15_FLAG_READ_MONITOR_VERSION, false);
   assert.equal(shared.id, "v15-shared");
   assert.equal(unknown.id, "v15-unknown");
   for (const policy of [shared, unknown]) {
-    assert.equal(policy.monitorVersion, FLAG_READ_MONITOR_VERSION);
+    assert.equal(policy.monitorVersion, V15_FLAG_READ_MONITOR_VERSION);
     assert.equal(digest(policy.systemPrompt), policy.promptHash);
     assert.ok(Object.isFrozen(policy));
   }
@@ -147,13 +152,12 @@ test("P6: no production code selects a policy by name, and an investigation need
   void (() => runFlagReadInvestigation({} as never));
 });
 
-test("A15: a v16 run gets the v16 policies, and new runs are still stamped v15", async () => {
-  const { ASYNC_MONITOR_VERSION, V15_FLAG_READ_MONITOR_VERSION, V16_FLAG_READ_MONITOR_VERSION } =
-    await import("../lib/control");
+test("A15: a v16 run gets the v16 policies, and new runs are stamped v16", async () => {
+  const { ASYNC_MONITOR_VERSION, V16_FLAG_READ_MONITOR_VERSION } = await import("../lib/control");
   const { FLAG_READ_V16_BASE_PROMPT } = await import("../lib/monitor-evidence");
   assert.equal(V16_FLAG_READ_MONITOR_VERSION, "investigator-v16-glm53-jev114-decode-digitalocean");
-  assert.equal(V15_FLAG_READ_MONITOR_VERSION, FLAG_READ_MONITOR_VERSION);
-  assert.equal(ASYNC_MONITOR_VERSION, V15_FLAG_READ_MONITOR_VERSION);
+  assert.equal(V16_FLAG_READ_MONITOR_VERSION, FLAG_READ_MONITOR_VERSION);
+  assert.equal(ASYNC_MONITOR_VERSION, V16_FLAG_READ_MONITOR_VERSION);
   const shared = flagReadPolicyForRun(V16_FLAG_READ_MONITOR_VERSION, true);
   const unknown = flagReadPolicyForRun(V16_FLAG_READ_MONITOR_VERSION, false);
   assert.equal(shared.id, "v16-shared");

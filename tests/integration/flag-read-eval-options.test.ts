@@ -193,8 +193,8 @@ await test("E1: the evaluator's isolation and policy options reach the seeded ru
   };
   const prompts = {
     v14: flagReadPolicyById("v14").systemPrompt,
-    shared: flagReadPolicyById("v15-shared").systemPrompt,
-    unknown: flagReadPolicyById("v15-unknown").systemPrompt,
+    shared: flagReadPolicyById("v16-shared").systemPrompt,
+    unknown: flagReadPolicyById("v16-unknown").systemPrompt,
   };
   // The runs of the case a review belongs to: its own and any other run of the same owner.
   const runsOf = async (inspect: Pool, reviewId: string) =>
@@ -307,15 +307,15 @@ await test("E1: the evaluator's isolation and policy options reach the seeded ru
   );
   assert.equal(corpusRuns[0].sessions + corpusRuns[1].sessions, twoSprites.sessions.length);
   assert.equal(corpusCase.system, prompts.shared);
-  assert.equal(corpusCase.entry.policyId, "v15-shared");
+  assert.equal(corpusCase.entry.policyId, "v16-shared");
   const { rows: reviews } = await inspect.query(
     "SELECT prompt_version,prompt_hash FROM ctf.monitor_reviews WHERE id=$1",
     [corpusCase.entry.reviewId],
   );
   assert.deepEqual(reviews, [
     {
-      prompt_version: flagReadPolicyById("v15-shared").monitorVersion,
-      prompt_hash: flagReadPolicyById("v15-shared").promptHash,
+      prompt_version: flagReadPolicyById("v16-shared").monitorVersion,
+      prompt_hash: flagReadPolicyById("v16-shared").promptHash,
     },
   ]);
 
@@ -337,8 +337,8 @@ await test("E1: the evaluator's isolation and policy options reach the seeded ru
   const report = buildFlagReadReport(entries, 500_000);
   assert.equal(report.policy, null);
   assert.deepEqual(report.policies.map((policy) => policy.policyId).sort(), [
-    "v15-shared",
-    "v15-unknown",
+    "v16-shared",
+    "v16-unknown",
   ]);
 
   // Operations seeded from the file, derived from message times, or empty.

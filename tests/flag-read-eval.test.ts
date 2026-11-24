@@ -308,8 +308,8 @@ test("E1: a case's own isolated flag is read, and --policy names the prompt, not
   assert.equal(plain.isolated, undefined);
   assert.equal(own.isolated, true);
   assert.throws(() => casesFromExport([exported({ isolated: "yes" })]), /isolated/);
-  assert.equal(policyForCase(plain).id, "v15-unknown");
-  assert.equal(policyForCase(own).id, "v15-shared");
+  assert.equal(policyForCase(plain).id, "v16-unknown");
+  assert.equal(policyForCase(own).id, "v16-shared");
   assert.equal(policyForCase(own, "v14").id, "v14");
   const dry = buildDryRunReport([plain, own], "v15-unknown");
   assert.deepEqual(

@@ -286,8 +286,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   const { runGame } = await import("../../lib/runner");
   const { AGENT_MODEL, AGENT_PROMPT, MODELS, agentPrompt, hasSecret } =
     await import("../../lib/policy");
-  const { ASYNC_MONITOR_VERSION, FLAG_READ_MONITOR_VERSION, questionsFor } =
-    await import("../../lib/control");
+  const {
+    ASYNC_MONITOR_VERSION,
+    FLAG_READ_MONITOR_VERSION,
+    V16_FLAG_READ_MONITOR_VERSION,
+    questionsFor,
+  } = await import("../../lib/control");
   const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
   const { SEED_BUGS, seedScoreCommand } = await import("../../lib/seed");
 
@@ -1325,10 +1329,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     const game = await productionStartGame("async-default");
     assert.equal((await row(game.id)).monitor_mode, "async");
     assert.equal((await row(game.id)).submission_transport, "http");
-    assert.equal(
-      (await row(game.id)).monitor_version,
-      "investigator-v15-glm53-jev114-isolation-times-digitalocean",
-    );
+    assert.equal((await row(game.id)).monitor_version, V16_FLAG_READ_MONITOR_VERSION);
     assert.equal(FLAG_READ_MONITOR_VERSION, (await row(game.id)).monitor_version);
   });
   for (const input of [

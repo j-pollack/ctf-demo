@@ -175,12 +175,12 @@ await test(
           )?.content;
           assert.equal(
             dispatchedPrompt,
-            flagReadPolicyById("v15-unknown").systemPrompt,
+            flagReadPolicyById("v16-unknown").systemPrompt,
             "default investigator policy leads the provider request",
           );
           assert.equal(
             createHash("sha256").update(dispatchedPrompt!).digest("hex"),
-            flagReadPolicyById("v15-unknown").promptHash,
+            flagReadPolicyById("v16-unknown").promptHash,
           );
           modelVisiblePayloads.push(JSON.stringify(request.messages));
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
@@ -584,7 +584,7 @@ await test(
       entries
         .filter((entry) => entry.investigationComplete)
         .every(
-          (entry) => entry.monitorVersion === flagReadPolicyById("v15-unknown").monitorVersion,
+          (entry) => entry.monitorVersion === flagReadPolicyById("v16-unknown").monitorVersion,
         ),
     );
     assert.ok(
@@ -724,7 +724,7 @@ await test(
         [entries.map((entry) => entry.reviewId)],
       );
       assert.deepEqual(reviewModels.rows, [
-        { model: "z-ai/glm-5.3", prompt_version: flagReadPolicyById("v15-unknown").monitorVersion },
+        { model: "z-ai/glm-5.3", prompt_version: flagReadPolicyById("v16-unknown").monitorVersion },
       ]);
       const rawIds = await persisted.query<{ id: string }>(
         "SELECT id FROM ctf.games UNION SELECT id FROM ctf.agent_sessions",
