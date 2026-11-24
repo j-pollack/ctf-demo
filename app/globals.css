@@ -191,6 +191,59 @@ strong {
   background: var(--paper);
   overflow-wrap: anywhere;
 }
+/* The account menu: the header's type and rules, opened under its trigger. */
+.account-trigger {
+  gap: 6px;
+}
+.account-trigger::after {
+  content: "";
+  border-inline: 4px solid transparent;
+  border-top: 4px solid currentColor;
+  transition: transform 120ms;
+}
+.account-trigger[data-open]::after {
+  transform: rotate(180deg);
+}
+.top nav .account-trigger[data-current] {
+  text-decoration: underline;
+  text-underline-offset: 5px;
+}
+.account-menu {
+  min-width: 11rem;
+  margin: 0;
+  padding: 4px 0;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 12px 32px #13200a1f;
+}
+.account-menu [data-slot="menu-item"] {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+.account-menu [data-slot="menu-item"][data-highlighted] {
+  background: var(--panel);
+}
+.account-menu [data-slot="menu-item"]:focus-visible {
+  outline: 2px solid #557b1d;
+  outline-offset: -2px;
+}
+.account-menu [data-slot="menu-item"][aria-current="page"] {
+  font-weight: 600;
+}
+.account-menu [data-pending] {
+  opacity: 0.6;
+}
+@media (prefers-reduced-motion: reduce) {
+  .account-trigger::after {
+    transition: none;
+  }
+}
 .eyebrow {
   font-size: 10px;
   letter-spacing: 1.4px;
@@ -450,27 +503,6 @@ form label {
     opacity: 0.2;
   }
 }
-.risk-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 12px;
-}
-.risk-heading > * {
-  white-space: nowrap;
-}
-.risk-note {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-.risk-heading strong {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--band-ink, var(--band));
-}
 .spend-breakdown {
   display: flex;
   flex-wrap: wrap;
@@ -484,7 +516,124 @@ form label {
 .spend-breakdown p + p {
   margin-top: 0;
 }
-/* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 orange, caught red. */
+/* What the monitor saw: each session's reviews as a numbered timeline, then what crossed a
+   threshold. The caught review's marker takes the blocked colour. */
+.saw-note,
+.saw-footer {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.saw-footer {
+  font-size: 11px;
+}
+.monitor-saw h4 {
+  margin: 18px 0 8px;
+  font-size: 12px;
+}
+.monitor-saw h5 {
+  margin: 12px 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.route-legend {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 10px;
+  margin: 10px 0 0;
+  font-size: 11px;
+}
+.route-legend dt {
+  font-weight: 600;
+}
+.route-legend dd {
+  margin: 0;
+  color: var(--muted);
+}
+.review-timeline {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.review-timeline::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 14px;
+  left: 9px;
+  width: 1px;
+  background: var(--line);
+}
+.review-timeline li {
+  position: relative;
+  padding: 0 0 12px 30px;
+  font-size: 11px;
+}
+.review-number {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.review-timeline li[data-verdict="block"] .review-number {
+  border-color: var(--blocked);
+  background: var(--blocked);
+  color: var(--paper);
+}
+.review-timeline header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 8px;
+}
+.review-timeline time {
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.review-timeline p {
+  margin: 2px 0 0;
+}
+.review-score[data-band] {
+  color: var(--band-ink, var(--band));
+}
+.review-timeline .review-reason {
+  color: var(--muted);
+}
+.saw-item {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+.saw-item pre {
+  max-height: 7.5em;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  overflow: auto;
+  background: var(--panel);
+}
+.saw-item pre:first-child {
+  margin-top: 0;
+}
+.saw-item p {
+  margin: 4px 0 0;
+}
+.saw-item .saw-kind {
+  margin: 0;
+}
+.saw-item .saw-signals {
+  color: var(--muted);
+}
+/* Bands: a risk score under 40% green, under 70% yellow, then orange. Red marks a caught run. */
 /* Text uses a darker ink of each band, at least 4.5:1 on both the panel and the paper. */
 [data-band="low"] {
   --band: #4d7c0f;
@@ -501,7 +650,7 @@ form label {
 [data-band="caught"] {
   --band: #c62828;
 }
-/* Shared turn axis for the session risk traces. */
+/* Shared review axis for the session risk score lines. */
 .run-risk-chart svg {
   display: block;
   width: 100%;
@@ -796,6 +945,76 @@ dialog::backdrop {
 .sign-in > .error {
   margin-top: 18px;
 }
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+.sign-in-form .hint {
+  margin: 14px 0 0;
+}
+/* The account page: the sign-in column, one ruled section per setting. */
+.account > :not(h2) {
+  max-width: 28rem;
+}
+.account section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.account h3 {
+  margin: 0 0 14px;
+  font-size: 15px;
+}
+.account-form label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+.account-form > p:not([class]) {
+  margin-bottom: 16px;
+}
+.account-form .hint {
+  margin-top: 2px;
+}
+.account-form input {
+  display: block;
+  width: 100%;
+  margin: 8px 0 6px;
+  padding: 13px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+.account-form input[aria-invalid="true"] {
+  border-color: var(--blocked);
+}
+.field-error {
+  min-height: 1.6em;
+  margin-bottom: 8px;
+  color: var(--blocked);
+  font-size: 12px;
+}
+.account-form button {
+  width: 100%;
+}
+.account .saved {
+  margin-top: 12px;
+  color: #426f30;
+}
+.account .saved:empty {
+  margin: 0;
+}
+.account .notice {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+}
+.account .notice.error {
+  display: block;
+  max-height: none;
+  border-left-color: var(--blocked);
+  background: #efe3d9;
+}
 .workspace > .error[role="alert"] {
   padding-inline: var(--gutter);
 }
@@ -805,6 +1024,22 @@ dialog::backdrop {
   background: #e1ebd3;
   border: 1px solid #b7c79d;
   border-left: 4px solid #537524;
+}
+/* An instruction the jailbreak screen refused: what the player sent, then the refusal. */
+.entry.user.refused {
+  border-left-color: var(--blocked);
+}
+.entry.user.refused .speaker {
+  background: var(--blocked);
+}
+.entry.user.refused pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.refused-note {
+  margin: 12px 0 0;
+  color: var(--blocked);
+  font-weight: 600;
 }
 .entry.agent {
   margin: 16px 0;
@@ -1171,6 +1406,50 @@ dialog::backdrop {
 .card > header span {
   color: var(--muted);
 }
+.rule {
+  display: flex;
+  gap: 12px;
+  margin-block: 12px;
+}
+.rule > div {
+  display: flex;
+  flex-direction: column;
+}
+.rule small {
+  color: var(--muted);
+}
+.rule button[role="switch"] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.rule button[role="switch"] span {
+  position: relative;
+  display: block;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--line);
+}
+.rule button[role="switch"] span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--card);
+}
+.rule button[role="switch"][aria-checked="true"] span {
+  background: var(--series-1);
+}
+.rule button[role="switch"][aria-checked="true"] span::after {
+  left: 19px;
+}
 .chart {
   display: block;
   width: 100%;
@@ -1326,23 +1605,9 @@ dialog::backdrop {
 .run-total {
   color: var(--muted);
 }
-.run-risk[data-band],
 .run-status[data-band] {
   color: var(--band-ink, var(--band));
   font-weight: 600;
-}
-/* Reads as text in the stats line; the dotted underline says it opens something. */
-.run-bar .run-risk {
-  min-height: 24px;
-  padding: 0;
-  border: 0;
-  background: none;
-  text-decoration: underline dotted;
-  text-underline-offset: 4px;
-}
-.run-bar .run-risk:hover:not(:disabled) {
-  background: none;
-  text-decoration-style: solid;
 }
 .run-sessions {
   grid-area: sessions;
@@ -1780,11 +2045,7 @@ dialog::backdrop {
   .run-pending {
     display: none;
   }
-  /* Keeps the two stats lines no taller than the buttons beside them. */
-  .run-bar .run-risk {
-    min-height: 22px;
-  }
-  /* Run id and budget left share a line beside the actions; risk wraps under them. */
+  /* Run id and budget left share a line beside the actions. */
   .run-stats {
     column-gap: 8px;
   }
@@ -1821,41 +2082,6 @@ dialog::backdrop {
     min-width: 44px;
     min-height: 44px;
   }
-}
-
-/* Monitor suspicion shown in the corner of each reviewed command, out of the text flow. */
-.call {
-  position: relative;
-}
-.call > pre:first-child {
-  padding-right: 80px;
-}
-.suspicion {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  width: 64px;
-  height: 18px;
-  flex: none;
-  border: 1px solid var(--line, #cfd3c6);
-  background: #eef1ea;
-  font-size: 11px;
-  overflow: hidden;
-}
-.suspicion-bar {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: color-mix(in srgb, var(--band) 30%, transparent);
-}
-.suspicion-num {
-  position: relative;
-  padding-right: 5px;
-  color: var(--band-ink, var(--band));
-  font-variant-numeric: tabular-nums;
 }
 
 .submit-conditions {

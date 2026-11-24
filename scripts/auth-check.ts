@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { db } from "../lib/db";
 import { auth } from "../lib/auth";
-import { MONITOR_VERSION } from "../lib/control";
+import { ASYNC_MONITOR_VERSION } from "../lib/control";
 import { makeSecret, AGENT_MODEL, MODELS } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { player } from "../lib/http";
@@ -54,8 +54,8 @@ try {
     /Sign in to play/,
   );
   await db.query(
-    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at)
-    VALUES($1,$2,$3,$4,$5,$6,$7,100000,'active',now())`,
+    `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,monitor_mode)
+    VALUES($1,$2,$3,$4,$5,$6,$7,100000,'active',now(),'async')`,
     [
       id,
       guest.user.id,
@@ -63,7 +63,7 @@ try {
       makeSecret().hash,
       AGENT_MODEL,
       TYPESAFE_MODEL,
-      MONITOR_VERSION,
+      ASYNC_MONITOR_VERSION,
     ],
   );
   const sent = await auth.handler(
@@ -86,6 +86,25 @@ try {
     "UPDATE ctf.games SET status='captured',turns=2,tokens_used=100,blocks=1,spent_microdollars=2000 WHERE id=$1",
     [id],
   );
+  // The leaderboard ranks by the agent's settled rows, so each run's spend is an inference row.
+  await db.query(
+    "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+  );
+  const agentRow = (gameId: string, cost: number, settled: boolean) =>
+    db.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+      VALUES($1,$2,(now() AT TIME ZONE 'UTC')::date,'agent',$3,100,$4,$5,$6,$7)`,
+      [
+        randomUUID(),
+        gameId,
+        AGENT_MODEL,
+        cost,
+        settled ? 100 : null,
+        settled ? cost : null,
+        settled ? new Date() : null,
+      ],
+    );
+  await agentRow(id, 2000, true);
   const board = await (await leaderboard(new Request(`${origin}/api/leaderboard`))).json();
   assert.ok(
     board.entries.some(
@@ -98,13 +117,13 @@ try {
     archived = randomUUID();
   gameIds.push(cheaper, pending, archived);
   for (const [gameId, version, turns, spend, reserved] of [
-    [cheaper, MONITOR_VERSION, 8, 1000, 0],
-    [pending, MONITOR_VERSION, 1, 0, 100],
+    [cheaper, ASYNC_MONITOR_VERSION, 8, 1000, 0],
+    [pending, ASYNC_MONITOR_VERSION, 1, 0, 100],
     [archived, oldVersion, 99, 500, 0],
   ] as const) {
     await db.query(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,turns,spent_microdollars,reserved_microdollars)
-      VALUES($1,$2,$3,$4,$5,$6,$7,500000,'captured',now(),$8,$9,$10)`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,token_budget,status,sprite_deleted_at,turns,spent_microdollars,reserved_microdollars,monitor_mode)
+      VALUES($1,$2,$3,$4,$5,$6,$7,500000,'captured',now(),$8,$9,$10,'async')`,
       [
         gameId,
         member.id,
@@ -118,8 +137,10 @@ try {
         reserved,
       ],
     );
+    if (spend > 0) await agentRow(gameId, spend, true);
+    if (reserved > 0) await agentRow(gameId, reserved, false);
   }
-  const operator = `Operator ${createHash("sha256").update(member.id).digest("hex").slice(0, 6)}`;
+  const operator = `Player ${createHash("sha256").update(member.id).digest("hex").slice(0, 6)}`;
   const ranked = await (await leaderboard(new Request(`${origin}/api/leaderboard`))).json();
   assert.equal(
     ranked.entries.find((entry: { name: string }) => entry.name === operator)?.turns,

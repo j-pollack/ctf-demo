@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { errorResponse, player } from "@/lib/http";
-import type { GameSummary } from "@/lib/types";
+import { endReasonOf, type GameSummary } from "@/lib/types";
 
 export const runtime = "nodejs";
 const pageSize = (value: string | null) => {
@@ -54,22 +54,25 @@ export async function GET(request: Request) {
     const result = await db.query(
       `
       SELECT g.id,g.status,
-        (WITH RECURSIVE lineage(id,parent) AS (
-          SELECT g.id,g.forked_from
-          UNION ALL
-          SELECT p.id,p.forked_from FROM ctf.games p JOIN lineage l ON p.id=l.parent
-        )
-        SELECT CASE
+        (SELECT CASE
           WHEN count(DISTINCT i.model)=0 THEN (
             SELECT s.agent_model FROM ctf.agent_sessions s WHERE s.game_id=g.id AND s.ordinal=1
           )
           WHEN count(DISTINCT i.model)=1 THEN min(i.model)
           ELSE NULL
         END
-        FROM lineage l JOIN ctf.inference i ON i.game_id=l.id AND i.role='agent') AS agent_model,
-        g.turns,g.blocks,g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
+        FROM ctf.inference i WHERE i.game_id=g.id AND i.role='agent') AS agent_model,
+        g.turns,g.blocks,g.budget_microdollars,p.spent AS spent_microdollars,p.held AS reserved_microdollars,
+        g.submitted_flag_correct,
+        CASE WHEN g.status='ended' THEN (SELECT e.data->>'cause' FROM ctf.events e
+          WHERE e.game_id=g.id AND e.data->>'decision'='unverified' ORDER BY e.id DESC LIMIT 1) END AS unverified_cause,
         g.monitor_difficulty,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
       FROM ctf.games g
+      CROSS JOIN LATERAL (
+        SELECT (SELECT coalesce(sum(cost),0) FROM ctf.inference
+                WHERE game_id=g.id AND settled_at IS NOT NULL AND role IN ('agent','screen')) AS spent,
+               (SELECT coalesce(sum(cost_ceiling),0) FROM ctf.inference
+                WHERE game_id=g.id AND settled_at IS NULL AND role IN ('agent','screen')) AS held) p
       WHERE g.owner_id=$1 AND ($2::timestamptz IS NULL OR (g.created_at,g.id)<($2,$3::uuid))
       ORDER BY g.created_at DESC,g.id DESC LIMIT $4`,
       [user.id, cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1],
@@ -97,6 +100,12 @@ export async function GET(request: Request) {
       spentMicrodollars: Number(row.spent_microdollars),
       reservedMicrodollars: Number(row.reserved_microdollars),
       createdAt: row.created_at,
+      ...(row.status === "ended" && {
+        ...(row.submitted_flag_correct !== null && {
+          submissionCorrect: row.submitted_flag_correct,
+        }),
+        ...(row.unverified_cause && { endReason: endReasonOf(row.unverified_cause) }),
+      }),
     }));
     return Response.json({ runs, nextCursor }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

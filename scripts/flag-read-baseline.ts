@@ -4,19 +4,23 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toFlagReadCase, scoreCorpusEntries, type CorpusCase } from "./flag-read-corpus";
 import type { FlagReadEntry } from "./flag-read-eval";
-import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
+import { flagReadPolicyById } from "../lib/flag-read-policy";
 import { INVESTIGATOR_MODEL } from "../lib/policy";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { baselineSources } from "./flag-read-baseline-files";
 import { BOUNDED_INVESTIGATOR_POLICY } from "../lib/investigator-evaluation-policy";
 
+// The frozen schedule keeps the limits it was measured under, not today's production limits.
+const MONITOR_CALL_LIMIT = 12;
+const INVESTIGATOR_DEADLINE_MS = 90_000;
+const REVIEW_CLAIM_MS = 120_000;
+
 type SplitCase = CorpusCase & { split: "dev" | "test" };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-export type BaselineStrategy =
-  | "current"
-  | "closed-world-presumption"
-  | "closed-world-presumption-v1";
+// The corpus converter puts a case's other sessions into a second run of the same owner, so the
+// baseline measures the policy of a run without isolation.
+export type BaselinePolicyId = "v15-unknown";
 export type BaselineSplit = "dev" | "test";
 
 export function parseBaselineSplit(value: string): BaselineSplit {
@@ -24,16 +28,9 @@ export function parseBaselineSplit(value: string): BaselineSplit {
   throw new Error("Baseline split must be dev or test.");
 }
 
-export function parseBaselineStrategy(value: string): BaselineStrategy {
-  if (
-    value === "current" ||
-    value === "closed-world-presumption" ||
-    value === "closed-world-presumption-v1"
-  )
-    return value;
-  throw new Error(
-    "Baseline strategy must be current, closed-world-presumption or closed-world-presumption-v1.",
-  );
+export function parseBaselinePolicy(value: string): BaselinePolicyId {
+  if (value === "v15-unknown") return value;
+  throw new Error("Baseline policy must be v15-unknown.");
 }
 
 export function selectBaseline(cases: readonly SplitCase[], split: BaselineSplit = "dev") {
@@ -68,10 +65,10 @@ export function selectBaseline(cases: readonly SplitCase[], split: BaselineSplit
 export function buildSchedule(
   corpusText: string,
   sources: Record<string, string>,
-  strategy: BaselineStrategy = "current",
+  policyId: BaselinePolicyId = "v15-unknown",
   split: BaselineSplit = "dev",
 ) {
-  const policy = resolveFlagReadPolicy(parseBaselineStrategy(strategy));
+  const policy = flagReadPolicyById(parseBaselinePolicy(policyId));
   const selected = selectBaseline(JSON.parse(corpusText), split);
   const count = selected.length;
   const proposedMicrodollars = count * 125_000 + 1_000_000;
@@ -87,7 +84,7 @@ export function buildSchedule(
         .map(([path, text]) => [path, hash(text)]),
     ),
     policy: {
-      strategy,
+      policyId,
       monitorVersion: policy.monitorVersion,
       promptHash: policy.promptHash,
       investigatorModel: INVESTIGATOR_MODEL,
@@ -99,14 +96,14 @@ export function buildSchedule(
       attemptsPerCase: 1,
       retries: 0,
       cases: count,
-      investigatorCallsPerCase: 8,
-      investigatorCallsMaximum: count * 8,
+      investigatorCallsPerCase: MONITOR_CALL_LIMIT,
+      investigatorCallsMaximum: count * MONITOR_CALL_LIMIT,
       classifierCallsPerCase: 1,
       classifierCallsMaximum: count,
       investigatorOutputTokensPerCall: 8192,
-      investigatorDeadlineMs: BOUNDED_INVESTIGATOR_POLICY.deadlineMs,
+      investigatorDeadlineMs: INVESTIGATOR_DEADLINE_MS,
       classifierDeadlineMs: BOUNDED_INVESTIGATOR_POLICY.classifierDeadlineMs,
-      reviewClaimMs: BOUNDED_INVESTIGATOR_POLICY.claimMs,
+      reviewClaimMs: REVIEW_CLAIM_MS,
       provider: {
         only: [BOUNDED_INVESTIGATOR_POLICY.providerEndpoint],
         allow_fallbacks: false,
@@ -118,7 +115,7 @@ export function buildSchedule(
         },
       },
       scoring: ["strict", "presumption"],
-      note: "One investigation per case; both standards score the same outcome. Live execution requires explicit budget authorization, frozen source preflight and a fresh local database. No retries, including HTTP 429 retries.",
+      note: "One investigation per case; both standards score the same outcome. Live execution requires explicit budget authorization, frozen source preflight and a fresh local database. No case retries; a 429 is retried inside the request, up to five attempts.",
     },
     budget: {
       proposedMicrodollars,
@@ -143,7 +140,7 @@ export function buildSchedule(
         },
         note: "Frozen DigitalOcean endpoint rate ceilings feed reservations and max_price; no provider fallback. Price increases beyond these ceilings fail rather than expand the budget. Actual charges are persisted; reservation overruns stop subsequent dispatch.",
       },
-      basis: `${count} × $0.125 allowance + $1 contingency = $${proposedMicrodollars / 1e6}. This is a proposed stop budget, not a guarantee that all cases finish. At the frozen rate, ${count * 8} calls each consuming all 8192 output tokens would cost $${((count * 8 * 8192 * BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion) / 1e6).toFixed(7)} in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.`,
+      basis: `${count} × $0.125 allowance + $1 contingency = $${proposedMicrodollars / 1e6}. This is a proposed stop budget, not a guarantee that all cases finish. At the frozen rate, ${count * MONITOR_CALL_LIMIT} calls each consuming all 8192 output tokens would cost $${((count * MONITOR_CALL_LIMIT * 8192 * BOUNDED_INVESTIGATOR_POLICY.outputUsdPerMillion) / 1e6).toFixed(7)} in output alone. Settled charges plus unresolved holds consume the budget; cases may remain incomplete.`,
     },
     artifacts: {
       entries: "entries.jsonl",
@@ -172,13 +169,13 @@ export function summarizeBaseline(
   const split = parseBaselineSplit(schedule.split ?? "dev");
   const selected = selectBaseline(JSON.parse(corpusText), split);
   if (
-    JSON.stringify(buildSchedule(corpusText, {}, schedule.policy.strategy, split).cases) !==
+    JSON.stringify(buildSchedule(corpusText, {}, schedule.policy.policyId, split).cases) !==
     JSON.stringify(schedule.cases)
   )
     throw new Error("Case selection differs from frozen schedule.");
   for (const entry of entries) {
     if (
-      entry.searchStrategy !== schedule.policy.strategy ||
+      entry.policyId !== schedule.policy.policyId ||
       entry.monitorVersion !== schedule.policy.monitorVersion ||
       entry.promptHash !== schedule.policy.promptHash ||
       (entry.investigatorModel !== undefined
@@ -220,25 +217,25 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [command, output, ...options] = process.argv.slice(2);
   if (command !== "--dry-run" || !output || output.startsWith("--"))
     throw new Error(
-      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--strategy current|closed-world-presumption|closed-world-presumption-v1] [--split dev|test]",
+      "Usage: node --import tsx scripts/flag-read-baseline.ts --dry-run <NEW_schedule.json> [--policy v15-unknown] [--split dev|test]",
     );
   const selections = new Map<string, string>();
   for (let index = 0; index < options.length; index += 2) {
     const option = options[index],
       value = options[index + 1];
     if (
-      !["--strategy", "--split"].includes(option) ||
+      !["--policy", "--split"].includes(option) ||
       selections.has(option) ||
       !value ||
       value.startsWith("--")
     )
-      throw new Error("Supply --strategy or --split once with a value.");
+      throw new Error("Supply --policy or --split once with a value.");
     selections.set(option, value);
   }
   const schedule = buildSchedule(
     readFileSync("evals/flag-read/cases.json", "utf8"),
     baselineSources(),
-    parseBaselineStrategy(selections.get("--strategy") ?? "current"),
+    parseBaselinePolicy(selections.get("--policy") ?? "v15-unknown"),
     parseBaselineSplit(selections.get("--split") ?? "dev"),
   );
   writeFileSync(output, `${JSON.stringify(schedule, null, 2)}\n`, { flag: "wx" });

@@ -4,7 +4,7 @@ export async function player(request: Request) {
   const session = await auth.api.getSession({ headers: request.headers });
   // Members only: guest sessions from before sign-in became required can't play.
   if (!session || session.user.isAnonymous) throw new GameError("Sign in to play.", 401);
-  return { id: session.user.id };
+  return { id: session.user.id, displayName: session.user.displayName ?? null };
 }
 export function checkOrigin(request: Request) {
   const origin = request.headers.get("origin");
@@ -52,7 +52,7 @@ export function errorResponse(error: unknown) {
       error:
         error instanceof GameError
           ? error.message
-          : "The service could not complete this request. Please try again.",
+          : "The service could not complete this request. Try again.",
     },
     { status: error instanceof GameError ? error.status : 503 },
   );

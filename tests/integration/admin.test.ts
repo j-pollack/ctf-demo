@@ -38,6 +38,8 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     "../../db/migrations/010-control-monitor.sql",
     "../../db/migrations/011-agent-effort.sql",
     "../../db/migrations/012-new-run.sql",
+    "../../db/migrations/017-settings.sql",
+    "../../db/migrations/021-game-rules.sql",
   ])
     await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";
@@ -47,7 +49,12 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   await (await getMigrations(auth.options)).runMigrations();
   const { adminStats, isAdmin } = await import("../../lib/admin");
   const { MODELS } = await import("../../lib/policy");
-  const { MONITOR_VERSION, ASYNC_MONITOR_VERSION } = await import("../../lib/control");
+  const {
+    ASYNC_MONITOR_VERSION,
+    PREVIOUS_FLAG_READ_MONITOR_VERSION,
+    V16_FLAG_READ_MONITOR_VERSION,
+  } = await import("../../lib/control");
+  assert.equal(ASYNC_MONITOR_VERSION, V16_FLAG_READ_MONITOR_VERSION);
 
   // The flag is SQL-granted only: real Better Auth handlers must refuse it from users.
   const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });
@@ -217,6 +224,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     turns = 4,
     blocks = 1,
     pick: { monitor?: string; difficulty?: string; version?: string } = {},
+    agentRow = true,
   ) =>
     pool
       .query(
@@ -235,16 +243,31 @@ await test("admin stats aggregate real persisted rows", async (t) => {
           pick.difficulty ?? "hard",
         ],
       )
-      .then((r) => r.rows[0].id as string);
-  const captured = await game("m1", "captured", 1_000_000);
-  await game("m1", "exhausted", 3_000_000, 0, 10, 5);
-  await game("g1", "active", 200_000, 50_000, 2, 0);
+      .then(async (r) => {
+        const id = r.rows[0].id as string;
+        // The leaderboard ranks by the agent's settled rows, so each run's spend is an agent row.
+        if (agentRow && spent > 0) {
+          await pool.query(
+            "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+          );
+          await pool.query(
+            `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+             VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,'agent','agent/a',1,$2,1,$2,now())`,
+            [id, spent],
+          );
+        }
+        return id;
+      });
+  const captured = await game("m1", "captured", 1_000_000, 0, 4, 1, {}, false);
+  await game("m1", "exhausted", 3_000_000, 0, 10, 5, {}, false);
+  await game("g1", "active", 200_000, 50_000, 2, 0, {}, false);
   await pool.query(
-    `INSERT INTO ctf.daily_spend(day,charged,reserved) VALUES((now() AT TIME ZONE 'UTC')::date,4200000,50000)`,
+    `INSERT INTO ctf.daily_spend(day,charged,reserved) VALUES((now() AT TIME ZONE 'UTC')::date,4200000,50000)
+     ON CONFLICT (day) DO UPDATE SET charged=4200000,reserved=50000`,
   );
   await pool.query(
     `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at,estimated)
-    VALUES($1,$3,(now() AT TIME ZONE 'UTC')::date,'agent','agent/a',100,900000,80,700000,now(),false),
+    VALUES($1,$3,(now() AT TIME ZONE 'UTC')::date,'agent','agent/a',100,900000,80,1000000,now(),false),
           ($2,$3,(now() AT TIME ZONE 'UTC')::date,'monitor','mon/a',50,300000,NULL,NULL,NULL,false)`,
     [randomUUID(), randomUUID(), captured],
   );
@@ -297,7 +320,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   assert.deepEqual(
     s.models.map((m) => [m.role, m.calls, m.tokens, m.spend, m.pending]),
     [
-      ["agent", 1, 80, 700_000, 0],
+      ["agent", 1, 80, 1_000_000, 0],
       ["monitor", 1, 0, 0, 1],
     ],
   );
@@ -309,39 +332,26 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     ],
   );
 
-  // A fork inherits its parent's spend and turns: count it as a run, but sum those once. Blocks
-  // are each run's own, so they sum over every run.
-  const base = (await adminStats()).totals;
   const parentRun = await game("m2", "blocked", 400_000, 0, 3, 1);
   const childRun = await game("m2", "captured", 700_000, 0, 5, 0);
-  await pool.query(
-    "UPDATE ctf.games SET agent_model=$3,forked_from=CASE WHEN id=$2 THEN $1::uuid END WHERE id IN ($1,$2)",
-    [parentRun, childRun, MODELS[0]],
-  );
+  await pool.query("UPDATE ctf.games SET agent_model=$2 WHERE id IN ($1,$3)", [
+    parentRun,
+    MODELS[0],
+    childRun,
+  ]);
   await pool.query(
     `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
     VALUES($1,$2,(now() AT TIME ZONE 'UTC')::date,'agent','other/model',10,10,10,400000,now())`,
     [randomUUID(), parentRun],
   );
-  const forked = await adminStats();
-  assert.deepEqual(
-    {
-      runs: forked.totals.runs - base.runs,
-      captures: forked.totals.captures - base.captures,
-      spend: forked.totals.spend - base.spend,
-      turns: forked.totals.turns - base.turns,
-      blocks: forked.totals.blocks - base.blocks,
-    },
-    { runs: 2, captures: 1, spend: 700_000, turns: 5, blocks: 1 },
-  );
-  assert.equal(forked.outcomes.find((x) => x.status === "blocked")?.spend, 0);
-  assert.equal(forked.spenders.find((x) => x.who === "two@example.invalid")?.spend, 700_000);
 
   await user("m3", "three@example.invalid", false, "2026-09-04T00:00:00Z");
-  // Runs against another monitor model and difficulty; one against an old monitor version never ranks.
+  // Runs against another monitor model and difficulty; one against the previous monitor version (v14) never ranks.
   await game("m3", "captured", 500_000, 0, 2, 0, { monitor: "mon/b" });
   await game("m3", "captured", 400_000, 0, 3, 0, { difficulty: "easy" });
-  await game("m3", "captured", 100_000, 0, 1, 0, { version: MONITOR_VERSION });
+  await game("m3", "captured", 100_000, 0, 1, 0, {
+    version: PREVIOUS_FLAG_READ_MONITOR_VERSION,
+  });
   await game("m3", "captured", 300_000, 0, 5, 0, { monitor: "mon/c" });
 
   await t.test("capture rate is grouped by monitor model and difficulty", async () => {
@@ -356,7 +366,7 @@ await test("admin stats aggregate real persisted rows", async (t) => {
         x.spend,
       ]),
       [
-        ["mon/a", "hard", 6, 3, 5_000_000],
+        ["mon/a", "hard", 6, 3, 5_400_000],
         ["mon/a", "easy", 1, 1, 400_000],
         ["mon/b", "hard", 1, 1, 500_000],
         ["mon/c", "hard", 1, 1, 300_000],
@@ -365,14 +375,13 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   });
 
   await t.test("the leaderboard ranks hard runs only, current monitor only", async () => {
-    // The agent filter looks at the whole lineage's inference, not just the last run.
     const { GET } = await import("../../app/api/leaderboard/route");
     const get = async (query: string) =>
       (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()) as {
         entries: { spend: number; monitor_reasoning: boolean }[];
       };
     const spends = async (query: string) => (await get(query)).entries.map((x) => x.spend);
-    // Each player's cheapest capture; m3's cheaper old-version capture (100_000) never ranks.
+    // Each player's cheapest capture; m3's cheaper v14 capture (100_000) never ranks.
     // The difficulty parameter is ignored: m3's captured easy run (400_000) never ranks.
     for (const query of ["", "?difficulty=easy", "?difficulty=medium", "?difficulty=extreme"])
       assert.deepEqual(await spends(query), [300_000, 700_000, 1_000_000], `query ${query}`);
@@ -385,11 +394,121 @@ await test("admin stats aggregate real persisted rows", async (t) => {
     const body = await get("");
     assert.ok(!("seasons" in body) && !("currentSeasonId" in body));
     assert.equal(body.entries.find((x) => x.spend === 700_000)?.monitor_reasoning, true);
-    // The agent filter excludes a lineage that used another agent model for any turn.
-    const mine = async (agent: string) =>
-      (await spends(`?agent=${encodeURIComponent(agent)}`)).filter((x) => x === 700_000);
-    assert.equal(await mine(MODELS[0]).then((x) => x.length), 0);
-    await pool.query("UPDATE ctf.inference SET model=$2 WHERE game_id=$1", [parentRun, MODELS[0]]);
-    assert.equal(await mine(MODELS[0]).then((x) => x.length), 1);
   });
+
+  await t.test(
+    "settled screen spend counts on the player's side and keeps the ranking",
+    async () => {
+      const { gameBilling } = await import("../../lib/games");
+      const { TYPESAFE_MODEL } = await import("../../lib/typesafe");
+      const { GET } = await import("../../app/api/leaderboard/route");
+      const spends = async (query: string) =>
+        (
+          (await (await GET(new Request(`http://localhost/api/leaderboard${query}`))).json()) as {
+            entries: { spend: number }[];
+          }
+        ).entries.map((x) => x.spend);
+      await pool.query(
+        `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+       VALUES($1,$2,(now() AT TIME ZONE 'UTC')::date,'screen',$3,100,500,40,210,now()),
+             ($4,$2,(now() AT TIME ZONE 'UTC')::date,'screen',$3,100,500,NULL,NULL,NULL)`,
+        [randomUUID(), captured, TYPESAFE_MODEL, randomUUID()],
+      );
+      const billing = await gameBilling(captured);
+      assert.equal(billing.agentSpendMicrodollars, 1_000_000);
+      assert.equal(billing.spentMicrodollars, 1_000_210, "the player's spend is agent plus screen");
+      assert.equal(billing.reservedMicrodollars, 500, "the player's hold is its unsettled screen");
+      assert.equal(billing.monitorSpendMicrodollars, 0, "a monitor hold is not spend");
+      assert.deepEqual(await spends(""), [300_000, 700_000, 1_000_000], "the run still ranks");
+    },
+  );
+
+  await t.test(
+    "A3-1: the leaderboard ranks by the agent's spend, not the run's total",
+    async () => {
+      const { GET } = await import("../../app/api/leaderboard/route");
+      await user("a3-1", "a31@example.invalid", false, "2026-09-04T00:00:00Z");
+      await user("a3-2", "a32@example.invalid", false, "2026-09-04T00:00:00Z");
+      // A cheap agent run beside 2,000,000 of monitor rows, and a dearer agent run with none.
+      const cheap = await game("a3-1", "captured", 0, 0, 3, 0, {}, false);
+      const dear = await game("a3-2", "captured", 0, 0, 3, 0, {}, false);
+      const seeded = [
+        [cheap, "agent", 250_000, 7],
+        [cheap, "monitor", 2_000_000, 999],
+        [dear, "agent", 450_000, 11],
+      ] as const;
+      await pool.query(
+        "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+      );
+      for (const [id, role, cost, tokens] of seeded)
+        await pool.query(
+          `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+         VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,$2,'agent/a',$4,$3,$4,$3,now())`,
+          [id, role, cost, tokens],
+        );
+      await pool.query("UPDATE ctf.games SET spent_microdollars=2250000 WHERE id=$1", [cheap]);
+      await pool.query("UPDATE ctf.games SET spent_microdollars=450000 WHERE id=$1", [dear]);
+      try {
+        const { entries } = (await (
+          await GET(new Request("http://localhost/api/leaderboard"))
+        ).json()) as { entries: { spend: number; tokens: number }[] };
+        assert.deepEqual(
+          entries.map((entry) => entry.spend),
+          [250_000, 300_000, 450_000, 700_000, 1_000_000],
+        );
+        assert.equal(entries[0].tokens, 7, "the agent's tokens, not the monitor's");
+        assert.equal(entries[2].tokens, 11);
+      } finally {
+        await pool.query("DELETE FROM ctf.inference WHERE game_id=ANY($1::uuid[])", [
+          [cheap, dear],
+        ]);
+        await pool.query("DELETE FROM ctf.games WHERE id=ANY($1::uuid[])", [[cheap, dear]]);
+        await pool.query(`DELETE FROM ctf."user" WHERE id IN ('a3-1','a3-2')`);
+      }
+    },
+  );
+
+  await t.test(
+    "L1: the leaderboard ranks only captures made under the rules in force",
+    async () => {
+      const { GET } = await import("../../app/api/leaderboard/route");
+      const { changeGameRule } = await import("../../lib/game-rules-admin");
+      const spends = async () =>
+        (
+          (await (await GET(new Request("http://localhost/api/leaderboard"))).json()) as {
+            entries: { spend: number }[];
+          }
+        ).entries.map((x) => x.spend);
+      const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });
+      await pool.query(`UPDATE ctf."user" SET "isAdmin"=true,"isAnonymous"=false WHERE id=$1`, [
+        signedIn.response!.user.id,
+      ]);
+      const setter = new Headers({
+        cookie: signedIn.headers
+          .getSetCookie()
+          .map((c) => c.split(";")[0])
+          .join("; "),
+      });
+      const all = [300_000, 700_000, 1_000_000];
+      assert.deepEqual(await spends(), all);
+      // The 300_000 capture was made with the bug fix optional and isolation on.
+      await pool.query(
+        "UPDATE ctf.games SET bug_fix_required=false,monitor_isolation=true WHERE status='captured' AND spent_microdollars=300000",
+      );
+      // Its owner's next cheapest capture, made under the default rules, ranks instead.
+      const rest = [500_000, 700_000, 1_000_000];
+      assert.deepEqual(await spends(), rest, "hidden under the default rules");
+      await changeGameRule(setter, "bug_fix_required", "off");
+      assert.deepEqual(await spends(), [], "isolation still differs from the setting");
+      await changeGameRule(setter, "monitor_isolation", "on");
+      assert.deepEqual(await spends(), [300_000], "only captures under the current rules");
+      await changeGameRule(setter, "bug_fix_required", "on");
+      await changeGameRule(setter, "monitor_isolation", "off");
+      assert.deepEqual(await spends(), rest, "flipping back hides it again");
+      await pool.query(
+        "UPDATE ctf.games SET bug_fix_required=true,monitor_isolation=false WHERE spent_microdollars=300000",
+      );
+      assert.deepEqual(await spends(), all);
+    },
+  );
 });

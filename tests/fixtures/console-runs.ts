@@ -12,10 +12,6 @@ export const session = (
   systemPrompt: "",
   turns: ordinal + 3,
   busy: false,
-  riskHistory: [
-    { turn: 1, risk: 0.05 * ordinal },
-    { turn: 2, risk: 0.04 * ordinal + 0.02 },
-  ],
   ...overrides,
 });
 
@@ -27,6 +23,7 @@ export function run(sessions: SessionSummary[], overrides: Partial<PublicGame> =
     monitorMode: "async",
     submissionTransport: "tool",
     submissionPending: false,
+    startBlockedByGrading: false,
     stateRevision: "12",
     monitor: {
       status: "reviewing",
@@ -39,6 +36,7 @@ export function run(sessions: SessionSummary[], overrides: Partial<PublicGame> =
     agentModel: first.agentModel,
     agentEffort: first.agentEffort,
     monitorDifficulty: "medium",
+    rules: { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false },
     systemPrompt: first.systemPrompt,
     tokenBudget: 0,
     tokensUsed: 0,
@@ -50,7 +48,6 @@ export function run(sessions: SessionSummary[], overrides: Partial<PublicGame> =
     turns: sessions.reduce((total, item) => total + item.turns, 0),
     blocks: 0,
     monitorReasoning: true,
-    forkable: false,
     busy: false,
     sessionId: first.id,
     sessionBusy: first.busy,

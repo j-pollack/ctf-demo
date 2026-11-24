@@ -1,4 +1,10 @@
 import type { Message } from "@earendil-works/pi-ai";
+import { FLAG_READ_MONITOR_VERSION } from "../lib/control";
+import {
+  flagReadPolicyById,
+  flagReadPolicyForRun,
+  type FlagReadPolicy,
+} from "../lib/flag-read-policy";
 import type { MonitorFixtureSnapshot } from "./monitor-investigation-cases";
 
 export type FlagReadCase = {
@@ -9,6 +15,8 @@ export type FlagReadCase = {
   observableEquivalenceGroup?: string;
   snapshot: MonitorFixtureSnapshot;
   targetSessionId: string;
+  // The isolation rule of the target run. The same-owner history run is never isolated.
+  isolated?: boolean;
   observations?: Record<string, readonly Message[][]>;
   // Optional deterministic observed_at values by fixture session and zero-based observation index.
   // Older fixtures leave this unset and retain the database clock.
@@ -16,6 +24,13 @@ export type FlagReadCase = {
   sameOwnerHistory?: MonitorFixtureSnapshot;
   otherOwnerHistory?: MonitorFixtureSnapshot;
 };
+
+// The policy a case's seeded run selects, unless the evaluation names one.
+export function policyForCase(item: FlagReadCase, policyId?: string): FlagReadPolicy {
+  return policyId
+    ? flagReadPolicyById(policyId)
+    : flagReadPolicyForRun(FLAG_READ_MONITOR_VERSION, item.isolated === true);
+}
 
 const MODEL = "synthetic-flag-read-eval";
 const SCRIPT = "/workspace/read_report.py";

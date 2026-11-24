@@ -8,12 +8,24 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { setTimeout as sleep } from "node:timers/promises";
-import { assertLease, reserveInference, settleInference, transaction, type GameRow } from "./games";
+import {
+  assertLease,
+  reserveInference,
+  settleUnidentifiedInference,
+  settleInference,
+  transaction,
+  type GameRow,
+} from "./games";
 import { db } from "./db";
 import { GameError, inputCeiling, MODELS, PLAYER_AGENT_EFFORT } from "./policy";
 import type { AgentEffort } from "./types";
-import { assertMonitorAuthorization } from "./run-lifecycle";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
+import { STREAM_IDLE_MS } from "./investigator-evaluation-policy";
+
+const AGENT_STALL_MESSAGE = "The agent stopped responding. Try again.";
+// One wait between attempts of a monitor request, whatever the provider's `retry-after` says.
+const MONITOR_RETRY_CAP_MS = 30_000;
+const INVESTIGATOR_STALL_MESSAGE = "The investigator's model stopped responding.";
 
 export type TrustedInferenceOptions = {
   role?: "agent" | "monitor";
@@ -21,14 +33,15 @@ export type TrustedInferenceOptions = {
   reviewId?: string;
   effort?: AgentEffort;
   maxOutputTokens?: number;
-  finalizationToken?: string;
-  pendingReviewId?: string;
   jobClaim?: MonitorJobClaim;
   stage?: string;
-  singleAttempt?: boolean;
+  // Shortens the idle bound of a monitor request; tests only.
+  streamIdleMs?: number;
   providerEndpoint?: string;
   // Bounded evaluations cap provider rates before dispatch and verify actual cost after settlement.
   stopOnReservationOverrun?: boolean;
+  // Told the request's inference id and the max_tokens it sends, once reserved. Must not throw.
+  onReserved?: (inferenceId: string, maxTokens: number) => void;
 };
 
 type CatalogModel = {
@@ -182,6 +195,8 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
     if (message.role === "user") return { role: "user", content: textOf(message) };
     const calls = message.content.filter((part) => part.type === "toolCall");
     const thinking = message.content.find((part) => part.type === "thinking");
+    // A cut-off turn whose only tool call was dropped has nothing to send; the provider rejects null.
+    const emptyCutOff = message.stopReason === "length" && !calls.length && !thinking;
     const switched = targetModel !== undefined && message.model !== targetModel;
     const details = thinking?.thinkingSignature ? JSON.parse(thinking.thinkingSignature) : [];
     return {
@@ -191,7 +206,7 @@ export function providerTranscript(messages: Message[], targetModel?: string) {
           ? [`Previous model reasoning:\n${thinking.thinking}`, textOf(message)]
               .filter(Boolean)
               .join("\n\n")
-          : textOf(message) || null,
+          : textOf(message) || (emptyCutOff ? "" : null),
       ...(calls.length
         ? {
             tool_calls: calls.map((call) => ({
@@ -217,8 +232,6 @@ export type AgentDelta = { reasoning?: string; text?: string; calls?: CallFragme
 // Reasoning counts toward output, so agents need room to think and then answer. Admission still
 // lowers this to what the run's remaining budget can pay for.
 export const AGENT_OUTPUT_TOKENS = 16_384;
-// A streamed call that sends nothing for this long, not even a keep-alive, is stuck.
-export const STREAM_IDLE_MS = 45_000;
 // Time kept back from the lease so a stopped call can still record its error.
 const LEASE_MARGIN_MS = 5_000;
 type StreamedToolCall = { id: string; type: string; function: { name: string; arguments: string } };
@@ -241,6 +254,7 @@ export async function collectStream(
   onDelta: (delta: AgentDelta) => void,
   onId: (id: string) => Promise<unknown>,
   idleMs = STREAM_IDLE_MS,
+  stallMessage = AGENT_STALL_MESSAGE,
 ) {
   const message = {
     content: "",
@@ -307,32 +321,40 @@ export async function collectStream(
       });
   };
   const reader = body.getReader();
-  while (true) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const stalled = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new GameError("The agent stopped responding. Please try again.", 504)),
-        idleMs,
-      );
-    });
-    const next = await Promise.race([reader.read(), stalled])
-      .catch(async (error) => {
-        await reader.cancel().catch(() => {});
-        throw error;
-      })
-      .finally(() => clearTimeout(timer));
-    if (next.done) break;
-    const bytes = next.value;
-    buffer += decoder.decode(bytes, { stream: true });
-    let end;
-    while ((end = buffer.indexOf("\n")) >= 0) {
-      const text = buffer.slice(0, end).trim();
-      buffer = buffer.slice(end + 1);
-      await line(text);
+  try {
+    while (true) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stalled = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new GameError(stallMessage, 504)), idleMs);
+      });
+      const next = await Promise.race([reader.read(), stalled]).finally(() => clearTimeout(timer));
+      if (next.done) break;
+      buffer += decoder.decode(next.value, { stream: true });
+      let end;
+      while ((end = buffer.indexOf("\n")) >= 0) {
+        const text = buffer.slice(0, end).trim();
+        buffer = buffer.slice(end + 1);
+        await line(text);
+      }
     }
+    await line((buffer + decoder.decode()).trim());
+  } catch (error) {
+    // A stall, an abort or a chunk that cannot be handled must not leave the request open.
+    await reader.cancel().catch(() => {});
+    throw error;
   }
-  await line((buffer + decoder.decode()).trim());
   return data;
+}
+
+// The readable reasoning of an assembled response: its reasoning text, else its text details.
+export function reasoningText(message: { reasoning?: string; reasoning_details?: Fragment[] }) {
+  return (
+    message.reasoning ||
+    (message.reasoning_details ?? [])
+      .filter((part) => part.type === "reasoning.text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("\n")
+  );
 }
 
 // Reasoning effort is a provider hint, not a hard token partition. Reasoning can consume
@@ -344,8 +366,50 @@ export function reasoningParam(
   return model.reasoning ? { effort, exclude: false } : undefined;
 }
 
-// Agent calls stream so the player can watch reasoning arrive; the assembled response is still
-// the one authoritative record for accounting and the transcript.
+// The shape of a monitor response that has no tool call, or a tool call whose arguments do not
+// parse. A response cut off at the output limit is continued and logs nothing. It holds lengths and names, never content.
+export function lostToolCallShape(
+  finishReason: string | null,
+  message: {
+    content?: string;
+    reasoning?: string;
+    reasoning_details?: Fragment[];
+    tool_calls?: StreamedToolCall[];
+  },
+) {
+  // A gap left by a sparse tool call index is a call that was lost.
+  const calls = Array.from(message.tool_calls ?? []);
+  const parses = (text: string) => {
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const broken = calls.some((call) => !call || !parses(call.function.arguments));
+  if (finishReason === "length" || (calls.length && !broken)) return undefined;
+  return {
+    finishReason,
+    textLength: (message.content ?? "").length,
+    reasoningLength: reasoningText(message).length,
+    toolCalls: calls.map((call, index) =>
+      call
+        ? {
+            index,
+            hasId: Boolean(call.id),
+            name: diagnosticText(call.function.name)?.slice(0, 64),
+            argumentsLength: call.function.arguments.length,
+          }
+        : { index, missing: true },
+    ),
+  };
+}
+
+// Every call streams, so a response that is still arriving is never cut off by a fixed bound and
+// its generation id is known early. The assembled response is the one authoritative record for
+// accounting and the transcript. Only the agent's request is bounded by its lease; a monitor
+// request ends on a stall or the caller's signal.
 export async function infer(
   game: GameRow,
   model: Model<"openai-completions">,
@@ -382,7 +446,7 @@ export async function infer(
           }
         : {}),
     },
-    ...(onDelta ? { stream: true } : {}),
+    stream: true,
   };
   const ceiling = inputCeiling(payload);
   if (ceiling + 4096 > model.contextWindow)
@@ -399,8 +463,6 @@ export async function infer(
     {
       sessionId,
       reviewId: trusted.reviewId,
-      finalizationToken: trusted.finalizationToken,
-      pendingReviewId: trusted.pendingReviewId,
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: trusted.jobClaim,
     },
@@ -417,16 +479,22 @@ export async function infer(
   // A reservation is still refundable until the provider transport is entered. Any failure in
   // local authorization or cancellation before that point must release the hold.
   let knownUnbilled = true;
+  let generationKnown = false;
   let response: Response | undefined,
     providerError: ReturnType<typeof providerErrorDetails> | undefined;
-  // A streamed agent call may use whatever the response's lease has left while it keeps making
-  // progress; non-streaming calls keep a fixed bound.
-  const deadline = AbortSignal.timeout(
-    onDelta
-      ? Math.max(0, new Date(game.lease_until ?? 0).getTime() - Date.now() - LEASE_MARGIN_MS)
-      : 90000,
+  // An agent call may use whatever the response's lease has left while it keeps making progress.
+  // A run being finalized has no usable lease, so a monitor call has no lease bound.
+  const deadline =
+    role === "agent"
+      ? AbortSignal.timeout(
+          Math.max(0, new Date(game.lease_until ?? 0).getTime() - Date.now() - LEASE_MARGIN_MS),
+        )
+      : undefined;
+  const requestSignal = AbortSignal.any(
+    [signal, deadline].filter((item): item is AbortSignal => item !== undefined),
   );
-  const requestSignal = AbortSignal.any([signal ?? new AbortController().signal, deadline]);
+  const idleMs = trusted.streamIdleMs ?? STREAM_IDLE_MS;
+  const stallMessage = role === "monitor" ? INVESTIGATOR_STALL_MESSAGE : AGENT_STALL_MESSAGE;
   const assertDispatchPermit = async () => {
     requestSignal.throwIfAborted();
     if (role === "agent") {
@@ -434,45 +502,60 @@ export async function infer(
       requestSignal.throwIfAborted();
       return;
     }
-    if (!trusted.jobClaim && (!game.lease || !trusted.reviewId))
-      throw new GameError("Monitor review authorization is required.", 409);
+    const { jobClaim } = trusted;
+    if (!jobClaim) throw new GameError("Monitor review authorization is required.", 409);
     await transaction(async (client) => {
       const { rows } = await client.query<{ execution_generation: string }>(
         "SELECT execution_generation FROM ctf.games WHERE id=$1 FOR UPDATE",
         [game.id],
       );
-      if (
-        !rows[0] ||
-        (!trusted.jobClaim &&
-          Number(rows[0].execution_generation) !== Number(game.execution_generation ?? 0))
-      )
-        throw new GameError("This response has stopped.", 409);
-      if (trusted.jobClaim) await assertMonitorJobClaim(client, trusted.jobClaim);
-      else
-        await assertMonitorAuthorization(client, game.id, sessionId, game.lease!, {
-          reviewId: trusted.reviewId,
-          finalizationToken: trusted.finalizationToken,
-          pendingReviewId: trusted.pendingReviewId,
-        });
+      if (!rows[0]) throw new GameError("This response has stopped.", 409);
+      await assertMonitorJobClaim(client, jobClaim);
     });
     requestSignal.throwIfAborted();
   };
   try {
-    const attempts = trusted.singleAttempt ? 1 : 5;
+    try {
+      trusted.onReserved?.(reservation.id, reservation.maxTokens);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "inference.on_reserved_failed",
+          timestamp: new Date().toISOString(),
+          ...context,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+    }
+    const attempts = 5;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       await assertDispatchPermit();
       response = undefined;
       providerError = undefined;
       knownUnbilled = false;
-      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ ...payload, max_tokens: reservation.maxTokens }),
-        signal: requestSignal,
-      });
+      // A monitor request whose headers never arrive is stuck as much as a silent stream.
+      const noHeaders = new AbortController();
+      const headerTimer =
+        role === "monitor"
+          ? setTimeout(() => noHeaders.abort(new GameError(stallMessage, 504)), idleMs)
+          : undefined;
+      try {
+        response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ...payload, max_tokens: reservation.maxTokens }),
+          signal: AbortSignal.any([requestSignal, noHeaders.signal]),
+        });
+      } catch (error) {
+        // The stall is the cause even when the transport reports a generic abort.
+        if (noHeaders.signal.aborted && !requestSignal.aborted) throw noHeaders.signal.reason;
+        throw error;
+      } finally {
+        clearTimeout(headerTimer);
+      }
       knownUnbilled = !response.ok && [400, 401, 402, 403, 404, 422, 429].includes(response.status);
       requestSignal.throwIfAborted();
       if (response.ok) break;
@@ -480,13 +563,25 @@ export async function infer(
       requestSignal.throwIfAborted();
       if (response.status !== 429 || attempt === attempts)
         throw new GameError(
-          `Inference service returned ${response.status}. The command was not executed.`,
+          `The AI service returned ${response.status}. Nothing was run. Try again.`,
           503,
         );
-      const delay = Math.max(
+      const wanted = Math.max(
         1000 * 2 ** (attempt - 1),
         retryAfter(providerError.headers["retry-after"]),
       );
+      const delay = role === "monitor" ? Math.min(wanted, MONITOR_RETRY_CAP_MS) : wanted;
+      if (role === "monitor")
+        console.warn(
+          JSON.stringify({
+            event: "inference.retry",
+            timestamp: new Date().toISOString(),
+            ...context,
+            reviewId: trusted.reviewId,
+            attempt,
+            waitMs: delay,
+          }),
+        );
       const caller = role === "monitor" ? "Investigator" : "Agent";
       onRetry?.(
         `${caller} rate limited; retrying attempt ${attempt + 1}/5 in ${Math.ceil(delay / 1000)}s`,
@@ -498,24 +593,24 @@ export async function infer(
       onRetry?.("Agent thinking");
     }
     if (!response) throw new Error("Inference service did not respond.");
-    const data =
-      onDelta && response.body
-        ? await collectStream(response.body, onDelta, (id) =>
-            db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [reservation.id, id]),
-          )
-        : await response.json();
+    if (!response.body) throw new Error("Inference service did not return a response.");
+    const data = await collectStream(
+      response.body,
+      onDelta ?? (() => {}),
+      async (id) => {
+        await db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [
+          reservation.id,
+          id,
+        ]);
+        generationKnown = true;
+      },
+      idleMs,
+      stallMessage,
+    );
     requestSignal.throwIfAborted();
-    if (typeof data.id === "string")
-      await db.query("UPDATE ctf.inference SET generation_id=$2 WHERE id=$1", [
-        reservation.id,
-        data.id,
-      ]);
     if (data.error) {
       providerError = providerErrorDetails(response, data);
-      throw new GameError(
-        "Inference service returned an error. The command was not executed.",
-        503,
-      );
+      throw new GameError("The AI service returned an error. Nothing was run. Try again.", 503);
     }
     const usage = data.usage;
     if (
@@ -526,7 +621,7 @@ export async function infer(
       usage.cost < 0
     )
       throw new GameError(
-        "Inference usage could not be verified. Billing is pending; the command was not executed.",
+        "The AI service’s usage could not be verified. Nothing was run. Try again.",
         503,
       );
     await settleInference(reservation.id, {
@@ -541,14 +636,19 @@ export async function infer(
       source = choice?.message;
     if (!source) throw new Error("Inference service did not return a response.");
     const details = source.reasoning_details ?? [];
-    const reasoning =
-      source.reasoning ||
-      source.reasoning_content ||
-      details
-        .filter((part: { type: string }) => part.type === "reasoning.text")
-        .map((part: { text: string }) => part.text)
-        .join("\n");
+    const reasoning = reasoningText(source);
     const content: AssistantMessage["content"] = [];
+    const shape = role === "monitor" ? lostToolCallShape(choice.finish_reason, source) : undefined;
+    if (shape)
+      console.warn(
+        JSON.stringify({
+          event: "inference.shape",
+          timestamp: new Date().toISOString(),
+          ...context,
+          reviewId: trusted.reviewId,
+          ...shape,
+        }),
+      );
     if (reasoning || details.length)
       content.push({
         type: "thinking",
@@ -561,6 +661,8 @@ export async function infer(
       try {
         args = JSON.parse(call.function.arguments);
       } catch {
+        // A monitor response cut off inside a tool call is continued, so the call is dropped.
+        if (role === "monitor" && choice.finish_reason === "length") continue;
         throw new Error("The agent proposed an invalid tool call.");
       }
       content.push({
@@ -620,7 +722,10 @@ export async function infer(
         usageVerified: settled,
       }),
     );
-    if (onDelta && (deadline.aborted || (error instanceof Error && error.name === "TimeoutError")))
+    if (
+      role === "agent" &&
+      (deadline?.aborted || (error instanceof Error && error.name === "TimeoutError"))
+    )
       throw new GameError(
         "The agent ran out of time for this response. Any charge settles automatically; try again or ask for a shorter answer.",
         504,
@@ -628,6 +733,31 @@ export async function infer(
     throw error;
   } finally {
     if (!settled && knownUnbilled) await settleInference(reservation.id, { tokens: 0, cost: 0 });
+    else if (!settled && !generationKnown) {
+      // No generation id means reconcileInference can never find this request, so its only other
+      // outcome is this same ceiling charge after 24 hours, which would keep a finalizing run
+      // waiting. Charge it now, whatever the role or the error.
+      // A failed settle must not replace the original error; the 24 hour expiry still covers it.
+      await settleUnidentifiedInference(reservation.id).then(
+        () =>
+          console.error(
+            JSON.stringify({
+              event: "inference.settled_without_generation",
+              timestamp: new Date().toISOString(),
+              ...context,
+            }),
+          ),
+        (error) =>
+          console.error(
+            JSON.stringify({
+              event: "inference.settle_failed",
+              timestamp: new Date().toISOString(),
+              ...context,
+              error: diagnosticText(error instanceof Error ? error.message : error),
+            }),
+          ),
+      );
+    }
   }
 }
 

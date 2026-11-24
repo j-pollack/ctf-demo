@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { SpritesClient, ExecError, type CheckpointStream, type RestoreStream } from "@fly/sprites";
+import { SpritesClient, ExecError } from "@fly/sprites";
 import { validateFlagEndpoint } from "./flag-submission-protocol";
 
 // Every command runs here, so it is also the working directory the agent is told about.
@@ -51,7 +51,8 @@ export async function createEnvironment(name: string, secret: string, submission
 export function commandOutput(stdout: string | Buffer, stderr: string | Buffer, exitCode: number) {
   const body =
     exitCode === 0 ? `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}` : `${stdout}\n${stderr}`;
-  return `${body}\n[exit ${exitCode}]`.slice(0, 16000);
+  // Postgres cannot store a NUL in text or jsonb, and one would hide the output from the checks.
+  return `${body}\n[exit ${exitCode}]`.replaceAll("\0", "").slice(0, 16000);
 }
 export async function executeCommand(
   name: string,
@@ -74,8 +75,20 @@ export async function executeCommand(
   } catch (error) {
     if (error instanceof ExecError)
       return commandOutput(error.stdout ?? "", error.stderr ?? "", error.exitCode);
-    throw new Error("The command could not finish in this run’s environment.");
+    // A stop aborts the signal, which is why the exec failed: that is not an environment fault.
+    // A deadline also aborts a signal, and that one is not a stop.
+    const stopped =
+      signal?.aborted && (signal.reason as { name?: string } | undefined)?.name !== "TimeoutError";
+    throw new Error(
+      stopped
+        ? "The command was stopped."
+        : "The command could not finish in this run’s environment.",
+    );
   }
+}
+// The exec sessions a sprite holds, live or lingering after a disconnect.
+export async function listSessions(name: string) {
+  return client().sprite(name).listSessions();
 }
 export async function destroyEnvironment(name: string) {
   try {
@@ -84,34 +97,4 @@ export async function destroyEnvironment(name: string) {
     if (error instanceof Error && /404|not found/i.test(error.message)) return;
     throw error;
   }
-}
-
-// How long a checkpoint or restore may run before its stream is closed and it counts as failed.
-export const operationTimeout = { ms: 30_000 };
-// The text of the stream's terminal `complete` message. An `error` message, an end without a
-// terminal message, or a closed (timed-out) stream is a failure; nothing is assumed to have happened.
-async function completion(stream: CheckpointStream | RestoreStream, what: string) {
-  const timer = setTimeout(() => stream.close(), operationTimeout.ms);
-  try {
-    for (let message; (message = await stream.next());) {
-      if (message.type === "error") throw new Error(`${what} failed.`);
-      if (message.type === "complete") return message.data ?? "";
-    }
-    throw new Error(`${what} did not finish.`);
-  } finally {
-    clearTimeout(timer);
-    stream.close();
-  }
-}
-// Snapshots the sprite and returns the checkpoint id (e.g. "v2").
-export async function checkpointEnvironment(name: string) {
-  const done = await completion(await client().sprite(name).createCheckpoint(), "Checkpoint");
-  const id = done.match(/^Checkpoint (v\d+) created/)?.[1];
-  if (!id) throw new Error("Checkpoint did not report an id.");
-  return id;
-}
-export async function restoreEnvironment(name: string, id: string, submissionUrl?: string) {
-  await completion(await client().sprite(name).restoreCheckpoint(id), "Restore");
-  if (submissionUrl)
-    await applySubmissionNetworkPolicy(name, validateFlagEndpoint(submissionUrl).hostname);
 }

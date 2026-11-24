@@ -45,6 +45,9 @@ export function SignInPanel({
           <button className="primary" disabled={busy}>
             {busy ? "Sending…" : "Email me a link"}
           </button>
+          <p className="hint">
+            New here? After you open the link, you’ll choose a display name for the leaderboard.
+          </p>
         </form>
       )}
       {error && (

@@ -43,6 +43,7 @@ test(
           "012-new-run",
           "013-agent-sessions",
           "015-transcript-evidence",
+          "021-game-rules",
         ].map((name) => `../../db/migrations/${name}.sql`),
       ])
         await pool.query(await readFile(new URL(file, import.meta.url), "utf8"));

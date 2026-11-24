@@ -21,7 +21,7 @@ const CHILD_SOURCE = String.raw`
 const tables = {
   sessions: 'session_id TEXT,is_target INTEGER,latest_observation_ref TEXT',
   observations: 'observation_ref TEXT,session_id TEXT,observation_seq INTEGER,observed_at TEXT,changed_start INTEGER,message_count INTEGER',
-  messages: 'observation_ref TEXT,session_id TEXT,message_index INTEGER,role TEXT,text TEXT,tool_call_id TEXT,tool_name TEXT,tool_error INTEGER',
+  messages: 'observation_ref TEXT,session_id TEXT,message_index INTEGER,role TEXT,text TEXT,tool_call_id TEXT,tool_name TEXT,tool_error INTEGER,sent_at TEXT,returned_at TEXT',
 };
 const functions = new Set(['abs','avg','coalesce','count','glob','group_concat','hex','ifnull','instr','length','like','lower','ltrim','max','min','nullif','replace','round','rtrim','substr','substring','sum','total','trim','upper','zeroblob']);
 let queryReady = false;

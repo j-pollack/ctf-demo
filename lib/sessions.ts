@@ -4,13 +4,7 @@ import type { PoolClient } from "pg";
 import { db } from "./db";
 import { GameError, MODELS } from "./policy";
 import type { AgentEffort, GameStatus, SessionSummary } from "./types";
-import {
-  bindQueuedLifecycleReview,
-  insertLifecycleReview,
-  registerLifecycleReview,
-} from "./run-lifecycle";
-import { INVESTIGATOR_MODEL } from "./monitor-review";
-import { MONITOR_VERSION } from "./control";
+import type { ReadConfirmation } from "./monitor-evidence";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { enqueueMonitorJob } from "./monitor-jobs";
 import { lastInstructionPrompt } from "./monitor-visibility";
@@ -36,18 +30,6 @@ export type SessionSettings = {
   monitorDifficulty?: string;
   monitorReasoning?: boolean;
 };
-export type MonitorReviewInput = {
-  sessionId: string;
-  sourceLease: string;
-  finalizationToken?: string;
-  snapshotRevision: number;
-  targetKind: "transcript" | "command" | "submission";
-  toolCallId?: string;
-  command?: string;
-  classifierSignals?: unknown;
-  model: string;
-  promptVersion: string;
-};
 export type MonitorReviewResult = {
   verdict?: "allow" | "block" | "unknown";
   reason?: string;
@@ -58,6 +40,9 @@ export type MonitorReviewResult = {
   retrievalCalls?: number;
   initialEvidenceCount?: number;
   retrievedRefs?: string[];
+  forcedDecision?: boolean;
+  continuations?: number;
+  readConfirmation?: ReadConfirmation | null;
 };
 async function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await db.connect();
@@ -96,24 +81,8 @@ export async function listSessions(gameId: string) {
 export async function listSessionSummaries(gameId: string): Promise<SessionSummary[]> {
   const { rows } = await db.query<SessionSummary>(
     `SELECT s.id,s.ordinal,s.agent_model AS "agentModel",s.agent_effort AS "agentEffort",
-      s.system_prompt AS "systemPrompt",s.turns,coalesce(s.lease_until>now(),false) AS busy,
-      coalesce(r.history,'[]'::jsonb) AS "riskHistory"
+      s.system_prompt AS "systemPrompt",s.turns,coalesce(s.lease_until>now(),false) AS busy
     FROM ctf.agent_sessions s
-    LEFT JOIN (
-      SELECT peaks.session_id,
-        jsonb_agg(jsonb_build_object('turn',peaks.turn,'risk',peaks.risk) ORDER BY peaks.turn) AS history
-      FROM (
-        SELECT e.session_id,
-          CASE WHEN jsonb_typeof(e.data->'turn')='number'
-            AND e.data->>'turn' ~ '^[0-9]{1,9}$' THEN (e.data->>'turn')::integer
-            ELSE 0 END AS turn,
-          least(1::numeric,greatest(0::numeric,max((e.data->>'suspicion')::numeric)))::float8 AS risk
-        FROM ctf.events e
-        WHERE e.game_id=$1 AND e.data->>'kind'='monitor'
-          AND jsonb_typeof(e.data->'suspicion')='number'
-        GROUP BY e.session_id,2
-      ) peaks GROUP BY peaks.session_id
-    ) r ON r.session_id=s.id
     WHERE s.game_id=$1 ORDER BY s.ordinal`,
     [gameId],
   );
@@ -192,26 +161,6 @@ export async function createSession(
     return rows[0];
   });
 }
-export async function createMonitorReview(gameId: string, input: MonitorReviewInput) {
-  if (!Number.isSafeInteger(input.snapshotRevision) || input.snapshotRevision < 0)
-    throw new GameError("Invalid monitor snapshot revision.", 400);
-  const id = randomUUID();
-  await registerLifecycleReview({
-    id,
-    gameId,
-    sessionId: input.sessionId,
-    sourceLease: input.sourceLease,
-    finalizationToken: input.finalizationToken,
-    snapshotRevision: input.snapshotRevision,
-    targetKind: input.targetKind,
-    toolCallId: input.toolCallId,
-    command: input.command,
-    classifierSignals: input.classifierSignals,
-    model: input.model,
-    promptVersion: input.promptVersion,
-  });
-  return id;
-}
 export async function completeMonitorReview(
   reviewId: string,
   result: Partial<MonitorReviewResult> & { operationalError?: string },
@@ -221,7 +170,8 @@ export async function completeMonitorReview(
   await inTransaction(async (client) => {
     const { rows } = await client.query<{ game_id: string }>(
       `UPDATE ctf.monitor_reviews SET verdict=$2,reason=$3,evidence=$4,operational_error=$5,
-        latency_ms=$6,calls=$7,retrieval_calls=$8,retrieved_refs=$9,initial_evidence_count=$10,completed_at=now()
+        latency_ms=$6,calls=$7,retrieval_calls=$8,retrieved_refs=$9,initial_evidence_count=$10,forced_decision=$11,continuations=$12,read_confirmation=$13,
+        completed_at=now()
         WHERE id=$1 AND completed_at IS NULL
         RETURNING game_id`,
       [
@@ -235,10 +185,28 @@ export async function completeMonitorReview(
         result.retrievalCalls ?? null,
         JSON.stringify(result.retrievedRefs ?? []),
         result.initialEvidenceCount ?? null,
+        result.forcedDecision ?? false,
+        result.continuations ?? 0,
+        result.readConfirmation ?? null,
       ],
     );
     if (!rows[0]) throw new GameError("Monitor review has already completed.", 409);
   });
+}
+// Records a failed attempt on its review row. A row that already completed keeps its first result.
+export async function failMonitorReview(
+  reviewId: string,
+  operationalError: string,
+  calls: number | null,
+  forcedDecision = false,
+  continuations = 0,
+  readConfirmation: ReadConfirmation | null = null,
+) {
+  await db.query(
+    `UPDATE ctf.monitor_reviews SET operational_error=$2,calls=$3,forced_decision=$4,continuations=$5,read_confirmation=$6,completed_at=now()
+     WHERE id=$1 AND completed_at IS NULL`,
+    [reviewId, operationalError, calls, forcedDecision, continuations, readConfirmation],
+  );
 }
 export async function updateMonitorClassifierSignals(reviewId: string, signals: unknown) {
   const { rowCount } = await db.query(
@@ -246,70 +214,6 @@ export async function updateMonitorClassifierSignals(reviewId: string, signals: 
     [reviewId, JSON.stringify(signals)],
   );
   if (!rowCount) throw new GameError("Monitor review is no longer active.", 409);
-}
-export async function admitMonitorCommand(
-  gameId: string,
-  sessionId: string,
-  lease: string,
-  reviewId: string,
-  reviewedRevision: number,
-  toolCallId: string,
-  command: string,
-) {
-  return inTransaction(async (client) => {
-    const { rows: games } = await client.query<{
-      status: GameStatus;
-      observation_revision: string;
-    }>("SELECT status,observation_revision FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId]);
-    const game = games[0];
-    if (!game || game.status !== "active") throw new GameError("This response has stopped.", 409);
-    if (Number(game.observation_revision) !== reviewedRevision)
-      throw new GameError("The reviewed evidence changed before command admission.", 409);
-    const { rowCount } = await client.query(
-      `UPDATE ctf.monitor_reviews r SET admitted_revision=$5
-      FROM ctf.agent_sessions s WHERE r.id=$1 AND r.game_id=$2 AND r.session_id=$3 AND r.snapshot_revision=$6
-        AND r.target_kind='command' AND r.tool_call_id=$7 AND r.command=$8 AND r.verdict='allow'
-        AND r.admitted_revision IS NULL AND s.game_id=$2 AND s.id=$3 AND s.lease=$4 AND s.lease_until>now()
-        AND $5::bigint=(SELECT observation_revision+1 FROM ctf.games WHERE id=$2)`,
-      [
-        reviewId,
-        gameId,
-        sessionId,
-        lease,
-        Number(game.observation_revision) + 1,
-        reviewedRevision,
-        toolCallId,
-        command,
-      ],
-    );
-    if (!rowCount) throw new GameError("The reviewed command is no longer current.", 409);
-    const { rows } = await client.query<{ observation_revision: string }>(
-      "UPDATE ctf.games SET observation_revision=observation_revision+1 WHERE id=$1 RETURNING observation_revision",
-      [gameId],
-    );
-    return Number(rows[0].observation_revision);
-  });
-}
-export async function completeMonitorCommand(
-  gameId: string,
-  reviewId: string,
-  outcome: "completed" | "interrupted" | "unknown",
-) {
-  return inTransaction(async (client) => {
-    await client.query("SELECT id FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId]);
-    const { rows } = await client.query<{ observation_revision: string }>(
-      `UPDATE ctf.games SET observation_revision=observation_revision+1,updated_at=now()
-      WHERE id=$1 RETURNING observation_revision`,
-      [gameId],
-    );
-    const revision = Number(rows[0].observation_revision);
-    const { rowCount } = await client.query(
-      "UPDATE ctf.monitor_reviews SET completed_revision=$3,outcome=$4,completed_at=now() WHERE id=$1 AND game_id=$2 AND admitted_revision IS NOT NULL AND completed_revision IS NULL",
-      [reviewId, gameId, revision, outcome],
-    );
-    if (!rowCount) throw new GameError("Command admission was not found.", 409);
-    return revision;
-  });
 }
 export async function claimSession(
   gameId: string,
@@ -337,6 +241,8 @@ export async function claimSession(
       monitor_settings_locked: boolean;
       monitor_mode: "legacy" | "async";
     }>("SELECT monitor_settings_locked,monitor_mode FROM ctf.games WHERE id=$1", [gameId]);
+    if (monitorRows[0].monitor_mode !== "async")
+      throw new GameError("This run can no longer continue.", 410);
     const { monitorDifficulty, monitorReasoning } = settings;
     if (monitorDifficulty !== undefined && !["easy", "medium", "hard"].includes(monitorDifficulty))
       throw new GameError("Choose a valid monitor difficulty.");
@@ -438,82 +344,6 @@ export async function requestSessionStop(gameId: string, sessionId: string, owne
   );
   return rowCount === 1;
 }
-export async function persistSessionMessages(
-  gameId: string,
-  sessionId: string,
-  lease: string,
-  messages: Message[],
-  turnsDelta = 0,
-  executionGeneration?: number,
-) {
-  return inTransaction(async (client) => {
-    const { rows: games } = await client.query<{
-      id: string;
-      execution_generation: number | string;
-      monitor_mode: "legacy" | "async";
-    }>("SELECT id,execution_generation,monitor_mode FROM ctf.games WHERE id=$1 FOR UPDATE", [
-      gameId,
-    ]);
-    if (!games[0]) throw new GameError("This response has stopped.", 409);
-    if (
-      executionGeneration !== undefined &&
-      Number(games[0].execution_generation) !== executionGeneration
-    )
-      throw new GameError("This response has stopped.", 409);
-    const { rows } = await client.query<{ observation_revision: string }>(
-      "UPDATE ctf.games SET turns=turns+$2,observation_revision=observation_revision+1,updated_at=now() WHERE id=$1 RETURNING observation_revision",
-      [gameId, turnsDelta],
-    );
-    const { rowCount } = await client.query(
-      `UPDATE ctf.agent_sessions SET messages=$4,turns=turns+$5,updated_at=now()
-      WHERE game_id=$1 AND id=$2 AND lease=$3 AND lease_until>now()`,
-      [gameId, sessionId, lease, JSON.stringify(messages), turnsDelta],
-    );
-    if (!rowCount) throw new GameError("This response has stopped.", 409);
-    const evidence = await persistTranscriptEvidence(client, {
-      gameId,
-      sessionId,
-      runRevision: Number(rows[0].observation_revision),
-      messages,
-    });
-    if (games[0].monitor_mode === "async" && evidence.changed)
-      await enqueueMonitorJob(client, {
-        gameId,
-        sessionId,
-        epoch: evidence.epoch,
-        version: evidence.version,
-      });
-    return Number(rows[0].observation_revision);
-  });
-}
-async function queueTranscriptReview(
-  client: PoolClient,
-  input: {
-    gameId: string;
-    sessionId: string;
-    lease: string;
-    revision: number;
-    generation: number;
-    eligibleDrainToken?: string | null;
-    model?: string;
-    promptVersion?: string;
-  },
-) {
-  const id = randomUUID();
-  await insertLifecycleReview(client, {
-    id,
-    gameId: input.gameId,
-    sessionId: input.sessionId,
-    sourceLease: input.lease,
-    snapshotRevision: input.revision,
-    targetKind: "transcript",
-    model: input.model ?? INVESTIGATOR_MODEL,
-    promptVersion: input.promptVersion ?? MONITOR_VERSION,
-    executionGeneration: input.generation,
-    eligibleDrainToken: input.eligibleDrainToken ?? undefined,
-  });
-  return id;
-}
 export async function persistReviewedSessionMessages(
   gameId: string,
   sessionId: string,
@@ -573,115 +403,6 @@ export async function persistReviewedSessionMessages(
       runRevision: revision,
       messages,
     });
-    if (game.monitor_mode === "async") {
-      if (evidence.changed)
-        await enqueueMonitorJob(client, {
-          gameId,
-          sessionId,
-          epoch: evidence.epoch,
-          version: evidence.version,
-        });
-      return { revision, reviewId: "" };
-    }
-    const reviewId = await queueTranscriptReview(client, {
-      gameId,
-      sessionId,
-      lease,
-      revision,
-      generation: executionGeneration,
-    });
-    return { revision, reviewId };
-  });
-}
-export async function bindQueuedTranscriptReview(
-  gameId: string,
-  sessionId: string,
-  lease: string,
-  reviewId: string,
-  executionGeneration: number,
-  snapshotRevision: number,
-) {
-  return bindQueuedLifecycleReview(
-    reviewId,
-    gameId,
-    sessionId,
-    lease,
-    executionGeneration,
-    snapshotRevision,
-  );
-}
-export async function persistCommandResult(
-  gameId: string,
-  sessionId: string,
-  lease: string,
-  messages: Message[],
-  toolCallId: string,
-  outcome: "completed" | "interrupted" | "unknown",
-  executionGeneration: number,
-  toolReviewConfig: { model: string; promptVersion: string },
-) {
-  return inTransaction(async (client) => {
-    const { rows: games } = await client.query<{
-      execution_generation: number | string;
-      status: GameStatus;
-      finalization_token: string | null;
-      monitor_mode: "legacy" | "async";
-    }>(
-      "SELECT execution_generation,status,finalization_token,monitor_mode FROM ctf.games WHERE id=$1 FOR UPDATE",
-      [gameId],
-    );
-    const game = games[0];
-    if (!game || !["active", "finalizing"].includes(game.status))
-      throw new GameError("This response has stopped.", 409);
-    const { rows: sessions } = await client.query<{
-      lease: string | null;
-      lease_until: Date | null;
-    }>("SELECT lease,lease_until FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE", [
-      gameId,
-      sessionId,
-    ]);
-    if (
-      sessions[0]?.lease !== lease ||
-      !sessions[0].lease_until ||
-      sessions[0].lease_until <= new Date()
-    )
-      throw new GameError("This response has stopped.", 409);
-    const { rows: admitted } = await client.query<{ id: string }>(
-      `SELECT id FROM ctf.monitor_reviews WHERE game_id=$1 AND session_id=$2 AND tool_call_id=$3
-        AND originating_lease=$4 AND execution_generation=$5 AND admitted_revision IS NOT NULL
-        AND completed_revision IS NULL ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE`,
-      [gameId, sessionId, toolCallId, lease, executionGeneration],
-    );
-    if (!admitted[0]) throw new GameError("Command admission was not found.", 409);
-    if (Number(game.execution_generation) !== executionGeneration && game.status !== "active")
-      throw new GameError("This response has stopped.", 409);
-    if (game.status === "finalizing") {
-      if (!game.finalization_token) throw new GameError("This response has stopped.", 409);
-      const { rowCount } = await client.query(
-        `SELECT 1 FROM ctf.monitor_reviews WHERE id=$1 AND completed_revision IS NULL
-          AND admitted_revision IS NOT NULL AND originating_lease=$2 AND execution_generation=$3`,
-        [admitted[0].id, lease, executionGeneration],
-      );
-      if (!rowCount) throw new GameError("This command is not authorized to drain.", 409);
-    }
-    const { rows } = await client.query<{ observation_revision: string }>(
-      `UPDATE ctf.games SET observation_revision=observation_revision+1,updated_at=now()
-       WHERE id=$1 RETURNING observation_revision`,
-      [gameId],
-    );
-    const revision = Number(rows[0].observation_revision);
-    const { rowCount: saved } = await client.query(
-      `UPDATE ctf.agent_sessions SET messages=$4,updated_at=now()
-       WHERE game_id=$1 AND id=$2 AND lease=$3 AND lease_until>now()`,
-      [gameId, sessionId, lease, JSON.stringify(messages)],
-    );
-    if (!saved) throw new GameError("This response has stopped.", 409);
-    const evidence = await persistTranscriptEvidence(client, {
-      gameId,
-      sessionId,
-      runRevision: revision,
-      messages,
-    });
     if (game.monitor_mode === "async" && evidence.changed)
       await enqueueMonitorJob(client, {
         gameId,
@@ -689,26 +410,6 @@ export async function persistCommandResult(
         epoch: evidence.epoch,
         version: evidence.version,
       });
-    const { rowCount: completed } = await client.query(
-      "UPDATE ctf.monitor_reviews SET completed_revision=$3,outcome=$4,completed_at=now() WHERE id=$1 AND game_id=$2 AND completed_revision IS NULL",
-      [admitted[0].id, gameId, revision, outcome],
-    );
-    if (!completed) throw new GameError("Command admission was not found.", 409);
-    const reviewId = await queueTranscriptReview(client, {
-      gameId,
-      sessionId,
-      lease,
-      revision,
-      generation: Number(game.execution_generation),
-      eligibleDrainToken: game.status === "finalizing" ? game.finalization_token : null,
-      model: toolReviewConfig.model,
-      promptVersion: toolReviewConfig.promptVersion,
-    });
-    return {
-      revision,
-      reviewId,
-      commandReviewId: admitted[0].id,
-      executionGeneration: Number(game.execution_generation),
-    };
+    return { revision, reviewId: "" };
   });
 }

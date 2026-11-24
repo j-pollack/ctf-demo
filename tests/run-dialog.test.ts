@@ -35,10 +35,10 @@ test("the close button is disabled while a run-level action is busy, and nothing
   assert.equal(render(false, false), "");
 });
 
-test("the dialog says how many new runs are left today", () => {
-  assert.equal(runsLeftText(3), "You can start 3 more runs today.");
-  assert.equal(runsLeftText(1), "You can start 1 more run today.");
-  assert.equal(runsLeftText(0), "You have no runs left today.");
+test("the dialog says how many new runs are left under the limit on the last 24 hours", () => {
+  assert.equal(runsLeftText(3), "You can start 3 more runs now.");
+  assert.equal(runsLeftText(1), "You can start 1 more run now.");
+  assert.equal(runsLeftText(0), "You have started 3 new runs in the last 24 hours.");
   assert.equal(runsLeftText(null), null, "an admin has no daily limit to report");
   assert.equal(runsLeftText(undefined), null, "nothing is claimed before the count is known");
 });
@@ -48,11 +48,11 @@ test("the setup notes say what starting ends and what is left, and nothing else"
     renderToStaticMarkup(createElement(RunSetupNotes, props));
   assert.equal(
     notes({ endsCurrent: true, runsLeft: 1, unusedRun: false }),
-    "<p>Starting a new run ends your current one.</p><p>You can start 1 more run today.</p>",
+    "<p>Starting a new run ends your current one.</p><p>You can start 1 more run now.</p>",
   );
   assert.equal(
     notes({ endsCurrent: false, runsLeft: 0, unusedRun: false }),
-    "<p>You have no runs left today.</p>",
+    "<p>You have started 3 new runs in the last 24 hours.</p>",
   );
   assert.equal(notes({ endsCurrent: false, runsLeft: undefined, unusedRun: false }), "");
   assert.match(
@@ -63,6 +63,22 @@ test("the setup notes say what starting ends and what is left, and nothing else"
     notes({ endsCurrent: true, runsLeft: 2, unusedRun: false }),
     /budget|investigator|difficulty/i,
   );
+});
+
+test("a run waiting to be graded says so instead of promising it ends the run", () => {
+  const html = renderToStaticMarkup(
+    createElement(RunSetupNotes, {
+      endsCurrent: true,
+      grading: true,
+      runsLeft: 2,
+      unusedRun: false,
+    }),
+  );
+  assert.match(
+    html,
+    /<p>Your current run’s upload is waiting to be graded\. You can start a new run once grading begins\.<\/p>/,
+  );
+  assert.doesNotMatch(html, /ends your current one/);
 });
 
 test("the review notice opens for a run awaiting its result until the player dismisses it", () => {
@@ -95,7 +111,7 @@ test("the review notice says play has ended, who is reviewing what, and how to k
     );
   const pending = notice();
   assert.match(pending, />The investigator is reviewing this run<\/h2>/);
-  assert.match(pending, /Your agent submitted, so play has ended\./);
+  assert.match(pending, /The flag was uploaded, so play has ended\./);
   assert.match(pending, /reading every session’s transcript before the result is confirmed/);
   assert.match(
     pending,
@@ -106,8 +122,28 @@ test("the review notice says play has ended, who is reviewing what, and how to k
     /<button type="button" class="primary">Read the transcripts while you wait<\/button>/,
   );
   assert.match(notice({ progress: null }), /<\/i>Review in progress\.<\/p>/);
-  const unresolved = notice({ unresolved: true });
-  assert.match(unresolved, />The review could not be completed<\/h2>/);
-  assert.match(unresolved, /the result is unconfirmed/);
+  const unresolved = notice({
+    unresolved: true,
+    reason: "Scoring could not be completed. The result remains unconfirmed.",
+  });
+  assert.match(unresolved, />Play has ended<\/h2>/);
+  assert.match(
+    unresolved,
+    /<p>Scoring could not be completed\. The result remains unconfirmed\.<\/p>/,
+  );
   assert.doesNotMatch(unresolved, /class="stage"|while you wait/);
+  const settling = notice({
+    unresolved: false,
+    settling: true,
+    reason: "A stopped command is being checked. This takes a few seconds.",
+  });
+  assert.match(settling, />The result is not ready yet<\/h2>/);
+  assert.match(settling, /A stopped command is being checked\. This takes a few seconds\./);
+  assert.doesNotMatch(settling, /review failed|could not be completed/);
+  const retrying = notice({ unresolved: true, willRetry: true });
+  assert.match(retrying, />The review failed<\/h2>/);
+  assert.match(
+    retrying,
+    /The review failed and will be retried\. The result is not confirmed yet\./,
+  );
 });

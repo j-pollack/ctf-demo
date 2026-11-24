@@ -3,9 +3,12 @@ import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { adminStats, isAdmin } from "@/lib/admin";
 import { agentModelSetting, currentAgentModel } from "@/lib/agent-model";
+import { currentGameRules, GAME_RULE_KEYS } from "@/lib/game-rules";
+import { gameRuleSettings, type GameRuleSetting } from "@/lib/game-rules-admin";
 import { MODELS } from "@/lib/policy";
-import { setAgentModel } from "./actions";
+import { setAgentModel, setGameRule } from "./actions";
 import { AgentModelCard } from "./agent-model-card";
+import { GameRulesCard } from "./game-rules-card";
 import {
   Area,
   Bars,
@@ -21,7 +24,7 @@ import {
 } from "./charts";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Admin — Capture the flag", robots: { index: false } };
+export const metadata = { title: "Admin · Capture the flag", robots: { index: false } };
 
 const RUNS = "var(--series-1)",
   SPEND = "var(--series-2)",
@@ -66,9 +69,10 @@ async function requireAdmin() {
   if (!isAdmin(session?.user)) notFound();
 }
 
-const changedBy = (setting: Awaited<ReturnType<typeof agentModelSetting>>) =>
-  setting &&
-  `Changed by ${setting.updatedBy ?? "an admin"} · ${setting.updatedAt.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+const changedBy = (setting: GameRuleSetting | null | undefined) =>
+  setting
+    ? `Changed by ${setting.updatedBy ?? "an admin"} · ${setting.updatedAt.toISOString().slice(0, 16).replace("T", " ")} UTC`
+    : null;
 
 export default async function Admin({
   searchParams,
@@ -77,10 +81,12 @@ export default async function Admin({
 }) {
   await requireAdmin();
   const refused = (await searchParams).model === "refused";
-  const [stats, setting, current] = await Promise.all([
+  const [stats, setting, current, rules, ruleSettings] = await Promise.all([
     adminStats(),
     agentModelSetting(),
     currentAgentModel(),
+    currentGameRules(),
+    gameRuleSettings(),
   ]);
   const { totals: t, daily, monthly, outcomes, models, monitors, spenders } = stats;
 
@@ -170,6 +176,13 @@ export default async function Admin({
           current={current}
           changedBy={setting?.model === current ? changedBy(setting) : null}
           refused={refused}
+        />
+        <GameRulesCard
+          action={setGameRule}
+          rules={rules}
+          changedBy={Object.fromEntries(
+            GAME_RULE_KEYS.map((key) => [key, changedBy(ruleSettings[key])]),
+          )}
         />
         <Card title="Runs per day" note="Last 30 days">
           <Legend

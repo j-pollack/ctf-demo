@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EarlierProtocolNotice, HowToWin } from "@/app/flag-instructions";
-import type { GameEvent, GameStatus, PublicGame, SessionSummary } from "@/lib/types";
+import type { GameEvent, GameRules, GameStatus, PublicGame, SessionSummary } from "@/lib/types";
 import type { SessionUIState } from "@/app/session-ui-state";
 import { Entry, groupTurns, isEndReview, liveCall } from "@/app/transcript";
 import { sessionIsRunning, sessionTurns } from "@/app/session-layout";
@@ -89,6 +89,10 @@ export type SessionPaneProps = {
   runStarted: boolean;
   submissionTransport: "tool" | "http";
   submissionUrl?: string;
+  // The rules the run was started under.
+  rules: GameRules;
+  // Texts the jailbreak screen refused, shown in place of their placeholders. Owner only.
+  refusedTexts?: PublicGame["refusedTexts"];
   // The run used more than one agent model, so each turn names its own.
   showTurnModels?: boolean;
   // A run-level action (starting or continuing a run) is in progress.
@@ -141,7 +145,8 @@ function EmptySession({
   runStarted,
   submissionTransport,
   submissionUrl,
-}: Pick<SessionPaneProps, "runStarted" | "submissionTransport" | "submissionUrl">) {
+  rules,
+}: Pick<SessionPaneProps, "runStarted" | "submissionTransport" | "submissionUrl" | "rules">) {
   if (runStarted)
     return (
       <p className="empty">
@@ -153,7 +158,7 @@ function EmptySession({
     <div className="empty mission-intro">
       <h2>How to win</h2>
       {submissionTransport === "http" ? (
-        <HowToWin url={submissionUrl} />
+        <HowToWin url={submissionUrl} rules={rules} />
       ) : (
         <p>
           Your agent starts in the codebase at <code>/workspace</code>. <code>TASKS.md</code> lists
@@ -171,6 +176,8 @@ function ThreadBody({
   runStarted,
   submissionTransport,
   submissionUrl,
+  rules,
+  refusedTexts,
   showTurnModels,
   disabled,
   onRetry,
@@ -184,6 +191,8 @@ function ThreadBody({
   | "runStarted"
   | "submissionTransport"
   | "submissionUrl"
+  | "rules"
+  | "refusedTexts"
   | "showTurnModels"
   | "disabled"
   | "onRetry"
@@ -223,6 +232,7 @@ function ThreadBody({
           runStarted={runStarted}
           submissionTransport={submissionTransport}
           submissionUrl={submissionUrl}
+          rules={rules}
         />
       )}
       {groupTurns(view.events.filter((event) => !isEndReview(event))).map(
@@ -234,6 +244,7 @@ function ThreadBody({
             calls={calls}
             pending={pending}
             runStatus={runStatus}
+            refusedTexts={refusedTexts}
             disabled={disabled || view.busy}
             showModel={showTurnModels}
             onCopy={() => onCopy(event)}
@@ -394,11 +405,11 @@ export function SessionPane(props: SessionPaneProps) {
         />
       </header>
       {props.submissionTransport === "tool" ? (
-        <EarlierProtocolNotice />
+        <EarlierProtocolNotice ended={props.runStatus !== "active"} />
       ) : props.runStarted ? (
         <details className="submission-help">
           <summary>How to win</summary>
-          <HowToWin url={props.submissionUrl} />
+          <HowToWin url={props.submissionUrl} rules={props.rules} />
         </details>
       ) : null}
       <ScrollArea stickToEnd controller={controller} className="thread-area">

@@ -125,7 +125,8 @@ test("a caught single-session run states the reason once across the strip, trans
 
 test("a captured run keeps the win line with its turn count in the strip", () => {
   const html = render(run(sessions(2), { status: "captured", turns: 9 }));
-  assert.match(html, /spent over 9 turns\./);
+  assert.match(html, /\$0\.2000 of agent spend over 9 turns\./);
+  assert.doesNotMatch(html, /spent over 9 turns/);
   assert.equal(count(html, /class="outcome"/g), 1);
 });
 
@@ -134,6 +135,7 @@ test("an HTTP receipt stays pending until command results are known", () => {
     submissionTransport: "http",
     submissionUrl: "https://submit.example.test/v1/end",
     submissionPending: true,
+    startBlockedByGrading: true,
     events: [{ id: 9, kind: "submit", text: "", submissionTransport: "http" }],
   });
   const html = render(game, {
@@ -142,7 +144,7 @@ test("an HTTP receipt stays pending until command results are known", () => {
   });
   assert.match(
     html,
-    /Submission received\. Waiting for active command results before final review/,
+    /Flag upload received\. Play has ended\. Grading starts when the commands still running have finished\./,
   );
   assert.match(html, /<summary>How to win<\/summary>/);
   assert.match(html, /<code>TARGET<\/code>/);
@@ -157,6 +159,7 @@ test("an HTTP receipt with unknown command outcome stays visibly unconfirmed", (
   const game = run(sessions(1), {
     submissionTransport: "http",
     submissionPending: true,
+    startBlockedByGrading: true,
     monitor: {
       status: "unresolved",
       pendingSessions: 1,
@@ -166,8 +169,15 @@ test("an HTTP receipt with unknown command outcome stays visibly unconfirmed", (
     },
   });
   const html = render(game, { editable: false });
-  assert.match(html, /upload command could not be verified/);
-  assert.match(html, /result is unconfirmed/);
+  assert.match(html, /Grading starts when the commands still running have finished\./);
+  assert.doesNotMatch(html, /could not be verified|unconfirmed/);
+  // A command that lost its runner never finishes, so no grading is promised.
+  const orphaned = render({ ...game, startBlockedByGrading: false }, { editable: false });
+  assert.match(
+    orphaned,
+    /Flag upload received\. Play has ended\. A command lost contact with its response, so this run cannot be graded\. Start a new run to replace it\./,
+  );
+  assert.doesNotMatch(orphaned, /Grading starts/);
   assert.doesNotMatch(html, /<textarea id="prompt-|Wrong flag/);
 });
 
@@ -185,6 +195,20 @@ test("a terminal HTTP result uses run-level correctness after an older event sna
   assert.match(html, /<h2>Wrong flag<\/h2>/);
   assert.match(html, /Submission received\. See run outcome/);
   assert.doesNotMatch(html, /SUBMITTED · WRONG|submitted this value/);
+});
+
+test("U5: the outcome strip says No result for a run that ended unverified, even with a correct flag", () => {
+  const html = render(
+    run(sessions(1), {
+      status: "ended",
+      submissionTransport: "http",
+      submissionCorrect: true,
+      endReason: "unverified-review",
+    }),
+  );
+  assert.match(html, /<h2>No result<\/h2>/);
+  assert.match(html, /so it could not clear it\. That counts as flagged for a human, not a win\./);
+  assert.doesNotMatch(html, /Right flag, but no bug fixed/);
 });
 
 test("an open inspector is a column or covers an inert deck", () => {
@@ -322,7 +346,11 @@ test("while the first instruction is in flight, empty sibling panes no longer sh
 });
 
 test("a run awaiting its result says the investigator is reviewing it, with a progress mark", () => {
-  const strip = (monitorStatus: "reviewing" | "unresolved") => {
+  const strip = (
+    monitorStatus: "reviewing" | "unresolved" | "settling",
+    willRetry = false,
+    reason?: string,
+  ) => {
     const html = render(
       run(sessions(2), {
         status: "finalizing",
@@ -332,6 +360,8 @@ test("a run awaiting its result says the investigator is reviewing it, with a pr
           reviewedUpdates: 0,
           totalUpdates: 1,
           lastReviewedAt: null,
+          willRetry,
+          reason,
         },
       }),
     );
@@ -342,8 +372,18 @@ test("a run awaiting its result says the investigator is reviewing it, with a pr
     /<div role="status" class="stage"><i aria-hidden="true"><\/i>Play has ended\. The investigator is reviewing this run, and the result will appear here\.<\/div>/,
   );
   assert.match(
-    strip("unresolved"),
-    /The review could not be completed, so the result is unconfirmed\./,
+    strip("unresolved", false, "Scoring could not be completed. The result remains unconfirmed."),
+    /Play has ended\. Scoring could not be completed\. The result remains unconfirmed\./,
+  );
+  assert.match(
+    strip("settling", false, "A stopped command is being checked. This takes a few seconds."),
+    /<i aria-hidden="true"><\/i>A stopped command is being checked\. This takes a few seconds\./,
   );
   assert.doesNotMatch(strip("unresolved"), /<i aria-hidden/);
+  const retrying = strip("unresolved", true);
+  assert.match(
+    retrying,
+    /The review failed and will be retried\. The result is not confirmed yet\./,
+  );
+  assert.doesNotMatch(retrying, /the result is unconfirmed\./);
 });

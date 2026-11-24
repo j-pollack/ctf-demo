@@ -130,7 +130,6 @@ test("a held stale session fetch cannot reopen a caught run or enable the compos
       caughtSessionId: "session-a",
       caughtSessionOrdinal: 2,
       caughtReason: "The investigator found the prepared flag read.",
-      forkable: false,
       turns: 1,
       tokensUsed: 12,
       blocks: 1,
@@ -147,7 +146,6 @@ test("a held stale session fetch cannot reopen a caught run or enable the compos
       caughtSessionId: null,
       caughtSessionOrdinal: null,
       caughtReason: null,
-      forkable: true,
       turns: 0,
       tokensUsed: 0,
       blocks: 0,
@@ -163,7 +161,6 @@ test("a held stale session fetch cannot reopen a caught run or enable the compos
     assert.equal(state.caughtSessionId, "session-a");
     assert.equal(state.caughtSessionOrdinal, 2);
     assert.equal(state.caughtReason, "The investigator found the prepared flag read.");
-    assert.equal(state.forkable, false);
     assert.equal(state.busy, false);
     assert.equal(state.sessionBusy, false);
     assert.equal(state.turns, 1);
@@ -179,4 +176,23 @@ test("a held stale session fetch cannot reopen a caught run or enable the compos
     "active",
     "an authoritative active fetch can recover a failed finalization",
   );
+});
+
+test("a refused submission's placeholder settles the pending instruction", async () => {
+  const { instructionStatus } = await import("../app/game-ui");
+  const refused = {
+    ...current,
+    busy: true,
+    events: [
+      ...current.events,
+      { id: 11, kind: "user" as const, text: "[placeholder]", refused: true },
+    ],
+  };
+  assert.equal(instructionStatus(pending, refused), "accepted");
+  assert.equal(
+    refreshedGame(current, refused, pending)?.events.some((e) => e.id === -1),
+    false,
+  );
+  // A placeholder older than the instruction does not settle it.
+  assert.equal(instructionStatus({ ...pending, afterId: 11 }, refused), "pending");
 });

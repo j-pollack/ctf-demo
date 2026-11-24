@@ -3,18 +3,16 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { isAdmin } from "./admin";
-import {
-  ASYNC_MONITOR_VERSION,
-  LEGACY_FLAG_READ_MONITOR_VERSION,
-  MONITOR_TOKEN_MICRODOLLARS,
-  MONITOR_VERSION,
-} from "./control";
+import { currentGameRules } from "./game-rules";
+import { ASYNC_MONITOR_VERSION } from "./control";
 import {
   AGENT_MODEL,
   PLAYER_AGENT_EFFORT,
   MODELS,
   DAILY_CAP_MICRODOLLARS,
-  MONITOR_OVERAGE_MICRODOLLARS,
+  FINAL_REVIEW_ALLOWANCE_MICRODOLLARS,
+  MONITOR_ALLOWANCE_USED_UP_TEXT,
+  MONITOR_RUN_ALLOWANCE_MICRODOLLARS,
   GameError,
   makeSecret,
 } from "./policy";
@@ -24,21 +22,25 @@ import {
   MONITOR_DIFFICULTIES,
   RUN_BUDGET_MICRODOLLARS,
   RUNS_PER_DAY,
+  UNVERIFIED_SUBMISSION_STATUS,
+  endReasonOf,
+  runHasEnded,
   type AgentEffort,
   type GameEvent,
   type GameStatus,
   type MonitorDifficulty,
   type PublicGame,
 } from "./types";
-import { createEnvironment, restoreEnvironment } from "./sprites";
+import { createEnvironment } from "./sprites";
 import { configuredFlagEndpoint, flagEndpointUrl } from "./flag-submission-protocol";
-import { forkBeforeLastInstruction, stripInheritedHiddenReasoning } from "./fork-transcript";
 import { persistTranscriptEvidence } from "./transcript-evidence";
-import { enqueueMonitorJob } from "./monitor-jobs";
-import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
+import {
+  assertMonitorJobClaim,
+  MAX_REQUEUES,
+  NEWEST_EPOCH,
+  type MonitorJobClaim,
+} from "./monitor-jobs";
 import { listSessionSummaries, claimSession } from "./sessions";
-import { assertMonitorAuthorization } from "./run-lifecycle";
-import { expireFinalizations } from "./run-lifecycle";
 
 export type GameRow = {
   id: string;
@@ -67,14 +69,14 @@ export type GameRow = {
   lease_until: Date | null;
   sprite_deleted_at: Date | null;
   updated_at: Date;
-  forked_from: string | null;
   monitor_reasoning: boolean;
   monitor_mode: "legacy" | "async";
   submission_transport: "tool" | "http";
+  monitor_isolation: boolean;
+  bug_fix_required: boolean;
+  jailbreak_catch: boolean;
   state_revision: string;
 };
-// A blocked or caught run's environment is kept this long so its owner can fork it (cleanup adds a margin).
-const FORK_WINDOW_MS = 24 * 60 * 60 * 1000;
 export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
   const client = await db.connect();
   try {
@@ -92,7 +94,7 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 // Everything publicGame reads. Excludes `messages`, the full transcript, which polled reads
 // would otherwise re-download on every request.
 export const PUBLIC_GAME_COLUMNS =
-  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,submission_transport,state_revision,sprite_deleted_at,updated_at";
+  "id,status,agent_model,agent_effort,system_prompt,token_budget,tokens_used,turns,blocks,budget_microdollars,spent_microdollars,reserved_microdollars,monitor_difficulty,lease_until,monitor_reasoning,monitor_mode,submission_transport,monitor_isolation,bug_fix_required,jailbreak_catch,state_revision,sprite_deleted_at,updated_at";
 export type PublicGameRow = Pick<
   GameRow,
   | "id"
@@ -112,6 +114,9 @@ export type PublicGameRow = Pick<
   | "monitor_reasoning"
   | "monitor_mode"
   | "submission_transport"
+  | "monitor_isolation"
+  | "bug_fix_required"
+  | "jailbreak_catch"
   | "state_revision"
   | "sprite_deleted_at"
   | "updated_at"
@@ -140,28 +145,93 @@ export async function getPublicGameRow(id: string, ownerId: string) {
   if (!rows[0]) throw new GameError("Run not found.", 404);
   return rows[0];
 }
-// One read of a run's money, shared by publicGame and the runner's live `billing` frames.
-export async function gameBilling(gameId: string) {
-  // A fork inherits its parent's spend, so the agent/monitor split sums the whole lineage.
-  const { rows } = await db.query(
-    `WITH RECURSIVE lineage(id,parent) AS (
-      SELECT id,forked_from FROM ctf.games WHERE id=$1
-      UNION ALL SELECT g.id,g.forked_from FROM ctf.games g JOIN lineage l ON g.id=l.parent)
-    SELECT g.budget_microdollars,g.spent_microdollars,g.reserved_microdollars,
-      coalesce(sum(i.cost) FILTER (WHERE i.role='agent'),0) AS agent,
-      coalesce(sum(i.cost) FILTER (WHERE i.role='monitor'),0) AS monitor
-    FROM ctf.games g LEFT JOIN ctf.inference i ON i.game_id IN (SELECT id FROM lineage) AND i.settled_at IS NOT NULL
-    WHERE g.id=$1 GROUP BY g.id`,
+// The player's side of a run is its agent and screen rows, the monitor's side its monitor rows.
+// Settled rows count at `cost`, unsettled rows at `cost_ceiling`. Two predicates on settled_at,
+// so each sum uses its own partial index.
+export type RunSpend = {
+  playerSpent: number;
+  playerHeld: number;
+  monitorSpent: number;
+  monitorHeld: number;
+  agentSpent: number;
+};
+export async function runSpend(
+  q: { query: (text: string, values: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
+  gameId: string,
+): Promise<RunSpend> {
+  const { rows } = await q.query(
+    `SELECT s.player_spent,s.monitor_spent,s.agent_spent,h.player_held,h.monitor_held FROM
+      (SELECT coalesce(sum(cost) FILTER (WHERE role IN ('agent','screen')),0) AS player_spent,
+        coalesce(sum(cost) FILTER (WHERE role='monitor'),0) AS monitor_spent,
+        coalesce(sum(cost) FILTER (WHERE role='agent'),0) AS agent_spent
+       FROM ctf.inference WHERE game_id=$1 AND settled_at IS NOT NULL) s,
+      (SELECT coalesce(sum(cost_ceiling) FILTER (WHERE role IN ('agent','screen')),0) AS player_held,
+        coalesce(sum(cost_ceiling) FILTER (WHERE role='monitor'),0) AS monitor_held
+       FROM ctf.inference WHERE game_id=$1 AND settled_at IS NULL) h`,
     [gameId],
   );
   const row = rows[0];
   return {
-    budgetMicrodollars: Number(row.budget_microdollars),
-    spentMicrodollars: Number(row.spent_microdollars),
-    reservedMicrodollars: Number(row.reserved_microdollars),
-    agentSpendMicrodollars: Number(row.agent),
-    monitorSpendMicrodollars: Number(row.monitor),
+    playerSpent: Number(row.player_spent),
+    playerHeld: Number(row.player_held),
+    monitorSpent: Number(row.monitor_spent),
+    monitorHeld: Number(row.monitor_held),
+    agentSpent: Number(row.agent_spent),
   };
+}
+// A command left running by a runner whose lease has expired. Nothing settles it, so it holds back
+// a run's grade for good and the run may be replaced. Written for a games row aliased `g`.
+const ORPHAN_COMMAND = `EXISTS(SELECT 1 FROM ctf.sprite_operations o
+  LEFT JOIN ctf.agent_sessions s ON s.game_id=o.game_id AND s.id=o.session_id
+  WHERE o.game_id=g.id AND o.kind='command' AND o.status='running'
+    AND (s.lease_until IS NULL OR s.lease_until<=now()))`;
+// Nothing settles such a command. Starting a new run replaces an open run, but not one under review.
+const ORPHAN_COMMAND_TEXT = {
+  active:
+    "A command lost contact with its response, so this run cannot be graded. Start a new run to replace it.",
+  ended: "A command lost contact with its response, so this run cannot be graded.",
+};
+const SETTLING_COMMAND_TEXT = "A stopped command is being checked. This takes a few seconds.";
+export const monitorAllowance = (status: GameStatus) =>
+  MONITOR_RUN_ALLOWANCE_MICRODOLLARS +
+  (status === "finalizing" ? FINAL_REVIEW_ALLOWANCE_MICRODOLLARS : 0);
+// A monitor request is admitted in full while the monitor's settled spend is below its allowance.
+export function assertMonitorAllowance(monitorSpent: number, status: GameStatus) {
+  if (monitorSpent >= monitorAllowance(status))
+    throw new GameError(MONITOR_ALLOWANCE_USED_UP_TEXT, 402);
+}
+// One read of a run's money, shared by publicGame and the runner's live `billing` frames.
+export async function gameBilling(gameId: string) {
+  const { rows } = await db.query("SELECT budget_microdollars FROM ctf.games WHERE id=$1", [
+    gameId,
+  ]);
+  const spend = await runSpend(db, gameId);
+  return {
+    budgetMicrodollars: Number(rows[0].budget_microdollars),
+    spentMicrodollars: spend.playerSpent,
+    reservedMicrodollars: spend.playerHeld,
+    agentSpendMicrodollars: spend.agentSpent,
+    monitorSpendMicrodollars: spend.monitorSpent,
+  };
+}
+// The only reader of ctf.refused_texts. Its caller has checked that the viewer owns the run.
+async function refusedTextsFor(gameId: string) {
+  const { rows } = await db.query<{
+    id: string;
+    kind: "instruction" | "system_prompt";
+    text: string;
+    flagged: boolean;
+  }>(
+    "SELECT id,kind,text,flagged FROM ctf.refused_texts WHERE game_id=$1 ORDER BY created_at,kind",
+    [gameId],
+  );
+  return rows;
+}
+// The classifier's score would steer play, so it leaves the server only once the run has ended.
+function withoutScore(data: Omit<GameEvent, "id">, status: GameStatus) {
+  if (runHasEnded(status)) return data;
+  const { suspicion: _hidden, ...rest } = data;
+  return rest;
 }
 // afterEventId > 0 returns only newer events, so pollers re-download nothing they already hold.
 // Safe because each run has one writer (its lease) and the runner records events sequentially.
@@ -182,7 +252,10 @@ export async function publicGame(
     reviewing: boolean;
     unresolved: boolean;
     has_pending_review: boolean;
-    uncertain_command: boolean;
+    settling_command: boolean;
+    orphan_command: boolean;
+    start_blocked_by_grading: boolean;
+    will_retry: boolean;
     last_reviewed_at: Date | null;
     finalization_error: string | null;
     submission_pending: boolean;
@@ -191,50 +264,59 @@ export async function publicGame(
     `SELECT g.status,g.monitor_mode,g.state_revision::text,g.finalization_error,g.submitted_flag_correct,
       EXISTS(SELECT 1 FROM ctf.flag_submissions r WHERE r.game_id=g.id AND r.promoted_at IS NULL) AS submission_pending,
       EXISTS(SELECT 1 FROM ctf.sprite_operations o
-        LEFT JOIN ctf.agent_sessions s ON s.game_id=o.game_id AND s.id=o.session_id
-        WHERE o.game_id=g.id AND o.kind='command' AND
-        (o.status='unknown' OR (o.status='running' AND
-          (s.lease_until IS NULL OR s.lease_until<=now())))) AS uncertain_command,
-      count(DISTINCT j.session_id) FILTER (WHERE j.covered_version<j.requested_version)::text AS pending_sessions,
+        WHERE o.game_id=g.id AND o.kind='command' AND o.status='unknown') AS settling_command,
+      ${ORPHAN_COMMAND} AS orphan_command,
+      (g.status='active' AND EXISTS(SELECT 1 FROM ctf.flag_submissions r WHERE r.game_id=g.id)
+        AND NOT ${ORPHAN_COMMAND}) AS start_blocked_by_grading,
+      count(DISTINCT j.session_id) FILTER (WHERE j.covered_version<j.requested_version
+        OR (g.status='finalizing' AND j.final_version<j.requested_version AND ${NEWEST_EPOCH}))::text AS pending_sessions,
       coalesce(sum(CASE WHEN j.reviewed_version>=j.start_version
         THEN j.reviewed_version-j.start_version+1 ELSE 0 END),0)::text AS reviewed_updates,
       coalesce(sum(j.requested_version-j.start_version+1),0)::text AS total_updates,
       coalesce(bool_or(j.status='reviewing'),false) AS reviewing,
       coalesce(bool_or(j.status='unresolved'),false) AS unresolved,
       coalesce(bool_or(j.status IN ('queued','reviewing')),false) AS has_pending_review,
+      g.status='finalizing' AND coalesce(bool_or(j.status='unresolved' AND j.requeues<$2),false) AS will_retry,
       max(j.last_reviewed_at) AS last_reviewed_at
      FROM ctf.games g LEFT JOIN ctf.monitor_jobs j ON j.game_id=g.id
      WHERE g.id=$1 GROUP BY g.id`,
-    [game.id],
+    [game.id, MAX_REQUEUES],
   );
   if (!monitorState) throw new GameError("Run not found.", 404);
+  const failed =
+    monitorState.unresolved || monitorState.finalization_error || monitorState.orphan_command;
   const monitor =
     monitorState.monitor_mode === "async"
       ? {
           status:
             monitorState.status === "caught"
               ? ("caught" as const)
-              : monitorState.unresolved ||
-                  monitorState.finalization_error ||
-                  monitorState.uncertain_command
+              : failed
                 ? ("unresolved" as const)
-                : monitorState.reviewing
-                  ? ("reviewing" as const)
-                  : Number(monitorState.pending_sessions) > 0
-                    ? ("queued" as const)
-                    : ("caught-up" as const),
+                : monitorState.settling_command
+                  ? ("settling" as const)
+                  : monitorState.reviewing
+                    ? ("reviewing" as const)
+                    : Number(monitorState.pending_sessions) > 0
+                      ? ("queued" as const)
+                      : ("caught-up" as const),
           pendingSessions: Number(monitorState.pending_sessions),
           reviewedUpdates: Number(monitorState.reviewed_updates),
           totalUpdates: Number(monitorState.total_updates),
           lastReviewedAt: monitorState.last_reviewed_at?.toISOString() ?? null,
           hasPendingReview: monitorState.has_pending_review,
-          ...((monitorState.unresolved ||
-            monitorState.finalization_error ||
-            monitorState.uncertain_command) &&
-            monitorState.status !== "caught" && {
+          willRetry: monitorState.will_retry,
+          ...(monitorState.status !== "caught" &&
+            (failed || monitorState.settling_command) && {
               reason: monitorState.finalization_error
                 ? "Scoring could not be completed. The result remains unconfirmed."
-                : "Review could not be completed. The result remains unconfirmed.",
+                : monitorState.unresolved && monitorState.status === "active"
+                  ? "A review failed. The session will be reviewed again, at the latest when the flag is uploaded."
+                  : monitorState.orphan_command && !monitorState.unresolved
+                    ? ORPHAN_COMMAND_TEXT[monitorState.status === "active" ? "active" : "ended"]
+                    : failed
+                      ? "Review could not be completed. The result remains unconfirmed."
+                      : SETTLING_COMMAND_TEXT,
             }),
         }
       : undefined;
@@ -244,14 +326,32 @@ export async function publicGame(
       .rows[0]?.turns ?? game.turns,
   );
   const caught = (
-    await db.query<{ session_id: string; ordinal: number; reason: string | null }>(
-      `SELECT e.session_id,s.ordinal,e.data->>'text' AS reason FROM ctf.events e
+    await db.query<{
+      session_id: string;
+      ordinal: number;
+      reason: string | null;
+      cause: string | null;
+      source: string | null;
+    }>(
+      `SELECT e.session_id,s.ordinal,e.data->>'text' AS reason,e.data->>'cause' AS cause,
+      e.data->>'source' AS source FROM ctf.events e
     LEFT JOIN ctf.agent_sessions s ON s.game_id=e.game_id AND s.id=e.session_id
     WHERE e.game_id=$1 AND e.data->>'kind'='monitor' AND e.data->>'decision'='block'
     ORDER BY e.id DESC LIMIT 1`,
       [game.id],
     )
   ).rows[0];
+  const unverified =
+    monitorState.status === UNVERIFIED_SUBMISSION_STATUS
+      ? (
+          await db.query<{ cause: string | null }>(
+            `SELECT data->>'cause' AS cause FROM ctf.events
+             WHERE game_id=$1 AND data->>'kind'='monitor' AND data->>'decision'='unverified'
+             ORDER BY id DESC LIMIT 1`,
+            [game.id],
+          )
+        ).rows[0]
+      : undefined;
   const selected = sessions.find((session) => session.id === selectedSessionId);
   if (!selected) throw new GameError("Session not found.", 404);
   const { rows } = await db.query<{ id: string; data: Omit<GameEvent, "id"> }>(
@@ -259,24 +359,6 @@ export async function publicGame(
     [game.id, selectedSessionId, afterEventId],
   );
   const billing = await gameBilling(game.id);
-  const forked = (await db.query("SELECT 1 FROM ctf.games WHERE forked_from=$1", [game.id]))
-    .rowCount;
-  const checkpointed =
-    (game.status === "blocked" || game.status === "caught") &&
-    !!(
-      await db.query(
-        "SELECT data->>'checkpoint' AS checkpoint FROM ctf.events WHERE game_id=$1 AND data->>'kind'='user' ORDER BY id DESC LIMIT 1",
-        [game.id],
-      )
-    ).rows[0]?.checkpoint;
-  const spriteBusy = !!(
-    await db.query(
-      `SELECT 1 FROM ctf.sprite_operations o JOIN ctf.games g ON g.sprite_name=o.sprite_name
-     WHERE g.id=$1 AND o.kind IN ('restore','delete') AND o.status IN ('running','unknown')
-     LIMIT 1`,
-      [game.id],
-    )
-  ).rowCount;
   const summaries = sessions;
   const busy = summaries.some((session) => session.busy);
   const sessionBusy = summaries.find((session) => session.id === selectedSessionId)?.busy ?? false;
@@ -286,6 +368,7 @@ export async function publicGame(
     monitorMode: monitorState.monitor_mode,
     submissionTransport: game.submission_transport,
     submissionPending: monitorState.submission_pending,
+    startBlockedByGrading: monitorState.start_blocked_by_grading,
     ...((monitorState.status === "captured" || monitorState.status === "ended") &&
       monitorState.submitted_flag_correct !== null && {
         submissionCorrect: monitorState.submitted_flag_correct,
@@ -295,24 +378,23 @@ export async function publicGame(
     }),
     stateRevision: monitorState.state_revision,
     ...(monitor && { monitor }),
+    ...(unverified && {
+      endReason: endReasonOf(unverified.cause) ?? "unverified-review",
+    }),
     agentModel: selected.agentModel,
     agentEffort: selected.agentEffort,
     monitorDifficulty: game.monitor_difficulty,
+    rules: {
+      monitorIsolation: game.monitor_isolation,
+      bugFixRequired: game.bug_fix_required,
+      jailbreakCatch: game.jailbreak_catch,
+    },
     systemPrompt: selected.systemPrompt,
     tokenBudget: game.token_budget,
     tokensUsed: game.tokens_used,
     turns: runTurns,
     blocks: game.blocks,
     monitorReasoning: game.monitor_reasoning,
-    forkable:
-      (game.status === "blocked" || game.status === "caught") &&
-      !forked &&
-      sessions.length === 1 &&
-      checkpointed &&
-      !spriteBusy &&
-      !busy &&
-      !game.sprite_deleted_at &&
-      Date.now() - new Date(game.updated_at).getTime() < FORK_WINDOW_MS,
     ...billing,
     busy,
     sessionId: selected.id,
@@ -321,7 +403,19 @@ export async function publicGame(
     caughtSessionId: caught?.session_id ?? null,
     caughtSessionOrdinal: caught ? Number(caught.ordinal) : null,
     caughtReason: caught?.reason ?? null,
-    events: rows.map((row) => ({ ...row.data, id: Number(row.id) })),
+    caughtCause:
+      monitorState.status !== "caught"
+        ? null
+        : caught?.cause === "jailbreak" && caught.source === "decoded"
+          ? ("decoded_jailbreak" as const)
+          : caught?.cause === "jailbreak" || caught?.cause === "flag_output"
+            ? caught.cause
+            : ("flag_read" as const),
+    refusedTexts: await refusedTextsFor(game.id),
+    events: rows.map(({ id, data }) => ({
+      ...withoutScore(data, monitorState.status),
+      id: Number(id),
+    })),
   };
 }
 export async function assertLease(game: GameRow) {
@@ -390,32 +484,6 @@ export async function record(
 export async function cleanup() {
   await reconcileInference();
   await expireUnverifiableHolds();
-  const expiredFinalizations = await expireFinalizations();
-  if (expiredFinalizations.length) {
-    const { rows } = await db.query<{ sprite_name: string }>(
-      "SELECT sprite_name FROM ctf.games WHERE id=ANY($1::uuid[])",
-      [expiredFinalizations],
-    );
-    await Promise.all(
-      rows.map(async ({ sprite_name }) => {
-        try {
-          const { deleteSpriteIfEligible } = await import("./monitor-commands");
-          await deleteSpriteIfEligible(sprite_name);
-        } catch {
-          // The terminal Sprite remains eligible for the ordinary cleanup retry below.
-        }
-      }),
-    );
-  }
-  // A fork child stuck in `creating` never ran: delete it so its parent can be forked again.
-  await transaction(async (client) => {
-    const stuck =
-      "status='creating' AND forked_from IS NOT NULL AND updated_at<now()-interval '5 minutes'";
-    await client.query(
-      `DELETE FROM ctf.events WHERE game_id IN (SELECT id FROM ctf.games WHERE ${stuck})`,
-    );
-    await client.query(`DELETE FROM ctf.games WHERE ${stuck}`);
-  });
   await db.query(
     "UPDATE ctf.games SET status='ended',state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE status='creating' AND updated_at<now()-interval '5 minutes'",
   );
@@ -426,16 +494,13 @@ export async function cleanup() {
     `UPDATE ctf.agent_sessions s SET lease=NULL,lease_until=NULL WHERE s.lease_until<now()
       AND NOT EXISTS(SELECT 1 FROM ctf.games g WHERE g.id=s.game_id AND g.status='finalizing')`,
   );
-  // Forks share their parent's sprite: destroy it once, when every run on it is done. A blocked or
-  // caught run is done once forked, or after 25h (the fork window plus a margin so cleanup cannot race a fork).
+  // A sprite is destroyed once, when every run on it is done.
   const { rows } = await db.query<{ sprite_name: string }>(
     `SELECT g.sprite_name FROM ctf.games g
     WHERE g.sprite_name IN (SELECT sprite_name FROM ctf.games WHERE sprite_deleted_at IS NULL)
     GROUP BY g.sprite_name
-    HAVING bool_or(g.sprite_deleted_at IS NULL) AND bool_and(g.status IN ('captured','exhausted','ended')
-      OR (g.status='caught' AND (SELECT count(*) FROM ctf.agent_sessions s WHERE s.game_id=g.id)>1)
-      OR (g.status IN ('blocked','caught') AND (g.updated_at<now()-interval '25 hours'
-        OR EXISTS(SELECT 1 FROM ctf.games c WHERE c.forked_from=g.id)))) LIMIT 20`,
+    HAVING bool_or(g.sprite_deleted_at IS NULL)
+      AND bool_and(g.status IN ('captured','exhausted','ended','blocked','caught')) LIMIT 20`,
   );
   await Promise.all(
     rows.map(async ({ sprite_name }) => {
@@ -509,11 +574,8 @@ async function stopOwnedResponses(ownerId: string) {
 export async function startGame(
   ownerId: string,
   agentModel?: string,
-  options: MonitorOptions & { sourceId?: string; agentEffort?: unknown } = {},
+  options: MonitorOptions & { agentEffort?: unknown } = {},
 ) {
-  const { sourceId } = options;
-  if (sourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sourceId))
-    throw new GameError("Run not found.", 404);
   if (agentModel !== undefined && !MODELS.includes(agentModel))
     throw new GameError("Unsupported agent model.");
   const effort = checkEffort(options.agentEffort);
@@ -530,23 +592,6 @@ export async function startGame(
   }
   await stopOwnedResponses(ownerId);
   await cleanup();
-  // cleanup() reconciles resolvable holds; for a fork, finalize any that remain on the terminal
-  // source run (e.g. a disconnected agent call) so the fork isn't blocked on billing that would
-  // otherwise clear only via the 24h sweep.
-  if (sourceId) {
-    const src = (
-      await db.query<{ owner_id: string; status: string; reserved_microdollars: string }>(
-        "SELECT owner_id,status,reserved_microdollars FROM ctf.games WHERE id=$1",
-        [sourceId],
-      )
-    ).rows[0];
-    if (
-      src?.owner_id === ownerId &&
-      (src.status === "blocked" || src.status === "caught") &&
-      Number(src.reserved_microdollars) > 0
-    )
-      await finalizeHolds(sourceId);
-  }
   const id = randomUUID();
   const { secret, hash } = makeSecret();
   const game = await transaction(async (client) => {
@@ -581,6 +626,18 @@ export async function startGame(
     );
     if (busyOwned.rowCount)
       throw new GameError("Wait for your current run to finish starting or responding.", 409);
+    // An upload that ended the run must be graded, so the run it ended is not replaced. A command
+    // left running with no live lease keeps the grade back for good, so that run is replaced.
+    const graded = await client.query(
+      `SELECT 1 FROM ctf.flag_submissions r JOIN ctf.games g ON g.id=r.game_id
+      WHERE g.owner_id=$1 AND g.status='active' AND NOT ${ORPHAN_COMMAND} LIMIT 1`,
+      [ownerId],
+    );
+    if (graded.rowCount)
+      throw new GameError(
+        "Your current run’s upload is waiting to be graded. You can start a new run once grading begins.",
+        409,
+      );
     const count = await client.query(
       `SELECT count(DISTINCT sprite_name)::int AS total FROM ctf.games
        WHERE status IN ('creating','active','finalizing')
@@ -589,268 +646,68 @@ export async function startGame(
     );
     if (count.rows[0].total >= 10)
       throw new GameError("All environments are busy. Try again in a few minutes.", 429);
-    let source: GameRow | undefined;
-    let cut: ReturnType<typeof forkBeforeLastInstruction> | undefined;
-    if (sourceId) {
-      // Every check runs before the owner's other runs are ended.
-      source = (
-        await client.query<GameRow>(
-          "SELECT * FROM ctf.games WHERE id=$1 AND owner_id=$2 FOR UPDATE",
-          [sourceId, ownerId],
-        )
-      ).rows[0];
-      if (!source) throw new GameError("Run not found.", 404);
-      const sourceSessions = await client.query<{
-        id: string;
-        messages: Message[];
-        turns: number;
-        busy: boolean;
-        agent_model: string;
-        agent_effort: AgentEffort;
-        system_prompt: string;
-      }>(
-        "SELECT id,messages,turns,coalesce(lease_until>now(),false) AS busy,agent_model,agent_effort,system_prompt FROM ctf.agent_sessions WHERE game_id=$1 ORDER BY ordinal FOR UPDATE",
-        [sourceId],
-      );
-      if (sourceSessions.rows.length !== 1)
-        throw new GameError("Runs with multiple sessions cannot be forked.", 409);
-      source.messages = sourceSessions.rows[0].messages;
-      source.turns = sourceSessions.rows[0].turns;
-      source.agent_model = sourceSessions.rows[0].agent_model;
-      source.agent_effort = sourceSessions.rows[0].agent_effort;
-      source.system_prompt = sourceSessions.rows[0].system_prompt;
-      if (source.status !== "blocked" && source.status !== "caught")
-        throw new GameError("Only a run the monitor stopped can be forked.", 409);
-      if (
-        (await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [sourceId]))
-          .rowCount
-      )
-        throw new GameError("A submitted run cannot be forked.", 409);
-      if ((await client.query("SELECT 1 FROM ctf.games WHERE forked_from=$1", [sourceId])).rowCount)
-        throw new GameError("This run has already been forked.", 409);
-      if (
-        source.sprite_deleted_at ||
-        Date.now() - new Date(source.updated_at).getTime() >= FORK_WINDOW_MS
-      )
-        throw new GameError("This run’s environment is gone, so it can’t be forked.", 410);
-      if (sourceSessions.rows[0].busy)
-        throw new GameError("Wait for the current response to finish before forking.", 409);
-      if (Number(source.reserved_microdollars) > 0)
-        throw new GameError("Billing is still settling; try again shortly.", 409);
-      try {
-        const history = (
-          await client.query<{ id: string; data: GameEvent }>(
-            "SELECT id,data FROM ctf.events WHERE game_id=$1 ORDER BY id",
-            [source.id],
-          )
-        ).rows.map((row) => ({ ...row.data, id: Number(row.id) }));
-        const fork = forkBeforeLastInstruction(source.messages, history);
-        cut = source.monitor_reasoning
-          ? fork
-          : { ...fork, messages: stripInheritedHiddenReasoning(fork.messages) };
-      } catch {
-        throw new GameError("This run can’t be safely forked.", 409);
-      }
-    }
-    // A fresh start takes new-run quota, and so does a fork that keeps no earlier instruction (it
-    // goes back to the run's very start). A fork that keeps some of the run is free.
-    const newRun = !cut || !cut.events.some((event) => event.kind === "user");
-    if (newRun) {
-      const starts = await client.query(
-        "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours'",
+    const starts = await client.query(
+      "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours'",
+      [ownerId],
+    );
+    if (starts.rows[0].total >= RUNS_PER_DAY) {
+      // Read current privileges inside admission; request/session hints cannot grant an exemption.
+      const owner = await client.query<{ isAdmin: boolean | null; isAnonymous: boolean | null }>(
+        'SELECT "isAdmin","isAnonymous" FROM ctf."user" WHERE id=$1',
         [ownerId],
       );
-      if (starts.rows[0].total >= RUNS_PER_DAY) {
-        // Read current privileges inside admission; request/session hints cannot grant an exemption.
-        const owner = await client.query<{ isAdmin: boolean | null; isAnonymous: boolean | null }>(
-          'SELECT "isAdmin","isAnonymous" FROM ctf."user" WHERE id=$1',
-          [ownerId],
+      if (!isAdmin(owner.rows[0]))
+        throw new GameError(
+          `You have started ${RUNS_PER_DAY} new runs in the last 24 hours. Try again later.`,
+          429,
         );
-        if (!isAdmin(owner.rows[0]))
-          throw new GameError("You’ve reached your daily limit of new runs.", 429);
-      }
-      const totalStarts = await client.query(
-        "SELECT count(*)::int AS total FROM ctf.games WHERE new_run AND created_at>now()-interval '24 hours'",
-      );
-      if (totalStarts.rows[0].total >= 100)
-        throw new GameError("No more new runs can start today. Come back tomorrow (UTC).", 429);
     }
+    const totalStarts = await client.query(
+      "SELECT count(*)::int AS total FROM ctf.games WHERE new_run AND created_at>now()-interval '24 hours'",
+    );
+    if (totalStarts.rows[0].total >= 100)
+      throw new GameError("No more new runs can start right now. Try again later.", 429);
     await client.query(
       "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL,state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE owner_id=$1 AND status IN ('creating','active')",
       [ownerId],
     );
-    // A fork is born `creating` on its parent's sprite and secret, carrying the parent's whole
-    // account; it turns active once the sprite is restored to the dropped instruction's checkpoint.
+    const rules = await currentGameRules(client);
     const { rows } = await client.query<GameRow>(
-      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,forked_from,messages,turns,blocks,tokens_used,spent_microdollars,agent_effort,new_run,monitor_settings_locked,monitor_mode,submission_transport)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'async','http') RETURNING *`,
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_difficulty,monitor_version,token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,agent_effort,new_run,monitor_mode,submission_transport,monitor_isolation,bug_fix_required,jailbreak_catch)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true,'async','http',$15,$16,$17) RETURNING *`,
       [
         id,
         ownerId,
-        source?.sprite_name ?? `ctf-${id}`,
-        source?.secret_hash ?? hash,
-        agentModel ?? source?.agent_model ?? AGENT_MODEL,
+        `ctf-${id}`,
+        hash,
+        agentModel ?? AGENT_MODEL,
         TYPESAFE_MODEL,
-        source?.monitor_difficulty ?? monitor.difficulty ?? "hard",
-        // Fork checkpoint/history semantics have not been promoted to the presumption policy.
-        source ? LEGACY_FLAG_READ_MONITOR_VERSION : ASYNC_MONITOR_VERSION,
-        source?.token_budget ?? 500000,
-        source?.budget_microdollars ?? RUN_BUDGET_MICRODOLLARS,
-        source?.system_prompt ?? "",
+        monitor.difficulty ?? "hard",
+        ASYNC_MONITOR_VERSION,
+        500000,
+        RUN_BUDGET_MICRODOLLARS,
+        "",
         true,
         "creating",
-        source?.id ?? null,
-        JSON.stringify(cut?.messages ?? []),
-        source?.turns ?? 0,
-        // A fork is a fresh attempt: it starts with no blocks, while spend and turns carry over.
-        0,
-        source?.tokens_used ?? 0,
-        source?.spent_microdollars ?? 0,
-        effort ?? source?.agent_effort ?? PLAYER_AGENT_EFFORT,
-        newRun,
-        !newRun,
+        effort ?? PLAYER_AGENT_EFFORT,
+        rules.monitorIsolation,
+        rules.bugFixRequired,
+        rules.jailbreakCatch,
       ],
     );
     await client.query(
-      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt,messages,turns)
-       VALUES($1,$1,1,$2,$3,$4,$5,$6)`,
-      [
-        id,
-        agentModel ?? source?.agent_model ?? AGENT_MODEL,
-        effort ?? source?.agent_effort ?? PLAYER_AGENT_EFFORT,
-        source?.system_prompt ?? "",
-        JSON.stringify(cut?.messages ?? []),
-        source?.turns ?? 0,
-      ],
+      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
+       VALUES($1,$1,1,$2,$3,'')`,
+      [id, agentModel ?? AGENT_MODEL, effort ?? PLAYER_AGENT_EFFORT],
     );
-    const initialEvidence = await persistTranscriptEvidence(client, {
+    await persistTranscriptEvidence(client, {
       gameId: id,
       sessionId: id,
       runRevision: 0,
-      messages: cut?.messages ?? [],
+      messages: [],
     });
-    if (cut?.messages.length)
-      await enqueueMonitorJob(client, {
-        gameId: id,
-        sessionId: id,
-        epoch: initialEvidence.epoch,
-        version: initialEvidence.version,
-      });
-    // The player-visible history up to the dropped instruction is copied as it was.
-    if (source && cut)
-      await client.query(
-        "INSERT INTO ctf.events(game_id,data,session_id) SELECT $1,data,$1 FROM ctf.events WHERE game_id=$2 AND id<$3 ORDER BY id",
-        [id, source.id, cut.userEventId],
-      );
-    if (source && cut) {
-      const retainedCalls = cut.messages.flatMap((message) =>
-        message.role === "assistant" && Array.isArray(message.content)
-          ? message.content
-              .filter((part) => part.type === "toolCall" && part.name === "sprite_exec")
-              .map((part) => part as { id: string; arguments?: unknown })
-          : [],
-      );
-      if (retainedCalls.length) {
-        const retainedIds = retainedCalls.map((call) => call.id);
-        const { rows: sourceObservations } = await client.query<{
-          tool_call_id: string;
-          command: string | null;
-          model: string;
-          prompt_version: string;
-          outcome: string | null;
-        }>(
-          `SELECT tool_call_id,command,model,prompt_version,outcome
-           FROM ctf.monitor_reviews
-           WHERE game_id=$1 AND session_id=$2 AND target_kind='command' AND tool_call_id=ANY($3::text[])
-           ORDER BY created_at,id`,
-          [source.id, source.id, retainedIds],
-        );
-        const byCallAndCommand = new Map(
-          sourceObservations.map((observation) => [
-            `${observation.tool_call_id}\u0000${observation.command ?? ""}`,
-            observation,
-          ]),
-        );
-        for (const call of retainedCalls) {
-          let args: { command?: unknown } = {};
-          try {
-            const value =
-              typeof call.arguments === "string" ? JSON.parse(call.arguments) : call.arguments;
-            if (value && typeof value === "object") args = value as { command?: unknown };
-          } catch {
-            // Malformed historical arguments remain visible with unknown outcome.
-          }
-          const commandFromTranscript = typeof args.command === "string" ? args.command : null,
-            observation = commandFromTranscript
-              ? byCallAndCommand.get(`${call.id}\u0000${commandFromTranscript}`)
-              : undefined,
-            command = commandFromTranscript ?? null;
-          await client.query(
-            `INSERT INTO ctf.monitor_reviews(
-              id,game_id,session_id,snapshot_revision,target_kind,tool_call_id,command,
-              classifier_signals,model,prompt_version,completed_revision,outcome,completed_at
-            ) VALUES($1,$2,$2,0,'command',$3,$4,'{}'::jsonb,$5,$6,0,$7,now())`,
-            [
-              randomUUID(),
-              id,
-              call.id,
-              command,
-              observation?.model ?? AGENT_MODEL,
-              observation?.prompt_version ?? MONITOR_VERSION,
-              observation?.outcome ?? "unknown",
-            ],
-          );
-        }
-      }
-    }
-    return { ...rows[0], cut };
+    return rows[0];
   });
-  if (game.cut) {
-    const { cut, ...child } = game;
-    let restoreOperation: string | null = null;
-    try {
-      const { beginExclusiveSpriteOperation, completeExclusiveSpriteOperation } =
-        await import("./monitor-commands");
-      restoreOperation = await beginExclusiveSpriteOperation({
-        spriteName: child.sprite_name,
-        gameId: child.forked_from!,
-        kind: "restore",
-      });
-      if (!restoreOperation)
-        throw new GameError("The environment is still finishing earlier work.", 409);
-      await restoreEnvironment(child.sprite_name, cut.checkpoint, submissionUrl);
-      await completeExclusiveSpriteOperation(restoreOperation, "completed");
-    } catch (error) {
-      if (restoreOperation) {
-        const { completeExclusiveSpriteOperation } = await import("./monitor-commands");
-        await completeExclusiveSpriteOperation(restoreOperation, "unknown");
-      }
-      // The child never ran and has no inference; remove it so the parent can be forked again.
-      await transaction(async (client) => {
-        await client.query("DELETE FROM ctf.events WHERE game_id=$1", [id]);
-        await client.query("DELETE FROM ctf.games WHERE id=$1 AND status='creating'", [id]);
-      });
-      console.error(
-        JSON.stringify({
-          event: "fork.restore.failed",
-          timestamp: new Date().toISOString(),
-          gameId: id,
-          error: String(error instanceof Error ? error.message : error).slice(0, 300),
-        }),
-      );
-      throw new GameError(
-        "Could not restore the environment, so the run was not forked. Try again.",
-        503,
-      );
-    }
-    await db.query(
-      "UPDATE ctf.games SET status='active',state_revision=state_revision+1,updated_at=now() WHERE id=$1",
-      [id],
-    );
-    child.status = "active";
-    await cleanup();
-    return { ...(await publicGame(child)), retryInstruction: cut.instruction };
-  }
   try {
     await createEnvironment(game.sprite_name, secret, submissionUrl);
     await db.query(
@@ -945,23 +802,11 @@ export function requestAllowance(
     cost: inputCost + Math.ceil(Math.max(0, maxTokens) * outputRate * 1_000_000),
   };
 }
-// A worker-claimed monitor review is admitted without the run budget until settled spend passes the overage ceiling.
-export function monitorRunBudgetExempt(
-  role: "agent" | "monitor",
-  claim: MonitorJobClaim | undefined,
-  spent: number,
-  budget: number,
-) {
-  return (
-    role === "monitor" &&
-    claim?.runBudgetExempt === true &&
-    spent < budget + MONITOR_OVERAGE_MICRODOLLARS
-  );
-}
+export type InferenceRole = "agent" | "monitor" | "screen";
 export async function reserveInference(
   gameId: string,
   lease: string | null,
-  role: "agent" | "monitor",
+  role: InferenceRole,
   model: string,
   input: number,
   wantedOutput: number,
@@ -970,8 +815,6 @@ export async function reserveInference(
   context: {
     sessionId?: string;
     reviewId?: string;
-    finalizationToken?: string;
-    pendingReviewId?: string;
     executionGeneration?: number;
     jobClaim?: MonitorJobClaim;
   } = {},
@@ -987,6 +830,10 @@ export async function reserveInference(
       await client.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId])
     ).rows[0];
     const sessionId = context.sessionId ?? game?.id;
+    // A screen is authorized like an agent call, by the session lease and generation, never a claim.
+    const leaseHeld = role === "agent" || role === "screen";
+    if (role === "screen" && (context.jobClaim || context.executionGeneration === undefined))
+      throw new GameError("This response has stopped.", 409);
     const session =
       game &&
       (
@@ -997,8 +844,8 @@ export async function reserveInference(
       ).rows[0];
     if (
       !game ||
-      (role === "agent" && game.status !== "active") ||
-      (role === "agent" &&
+      (leaseHeld && game.status !== "active") ||
+      (leaseHeld &&
         game.submission_transport === "http" &&
         !!(await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [gameId]))
           .rowCount) ||
@@ -1011,35 +858,21 @@ export async function reserveInference(
     )
       throw new GameError("This response has stopped.", 409);
     if (role === "monitor") {
-      if (context.jobClaim) {
-        await assertMonitorJobClaim(client, context.jobClaim);
-      } else if (!lease || !context.reviewId)
-        throw new GameError("Monitor review authorization is required.", 409);
-      else
-        await assertMonitorAuthorization(client, gameId, sessionId, lease, {
-          reviewId: context.reviewId,
-          finalizationToken: context.finalizationToken,
-          pendingReviewId: context.pendingReviewId,
-        });
+      if (!context.jobClaim) throw new GameError("Monitor review authorization is required.", 409);
+      await assertMonitorJobClaim(client, context.jobClaim);
     }
-    const available =
-      Number(game.budget_microdollars) -
-      Number(game.spent_microdollars) -
-      Number(game.reserved_microdollars);
-    const exempt = monitorRunBudgetExempt(
-      role,
-      context.jobClaim,
-      Number(game.spent_microdollars),
-      Number(game.budget_microdollars),
-    );
-    const allowance = exempt
-      ? { maxTokens: wantedOutput }
-      : requestAllowance(input, wantedOutput, inputRate, outputRate, available);
+    const run = await runSpend(client, gameId);
+    const available = Number(game.budget_microdollars) - run.playerSpent - run.playerHeld;
+    if (role === "monitor") assertMonitorAllowance(run.monitorSpent, game.status);
+    const allowance =
+      role === "monitor"
+        ? { maxTokens: wantedOutput }
+        : requestAllowance(input, wantedOutput, inputRate, outputRate, available);
     if (allowance.maxTokens < 64) {
       // An agent past its budget is exhausted unless a sibling's paid agent call is still unsettled.
       const spentOut =
         role === "agent" &&
-        Number(game.spent_microdollars) >= Number(game.budget_microdollars) &&
+        run.playerSpent >= Number(game.budget_microdollars) &&
         !(
           await client.query(
             "SELECT 1 FROM ctf.inference WHERE game_id=$1 AND role='agent' AND settled_at IS NULL LIMIT 1",
@@ -1049,12 +882,12 @@ export async function reserveInference(
       throw new GameError(
         spentOut
           ? "Your inference budget is exhausted."
-          : Number(game.reserved_microdollars) > 0
+          : run.playerHeld > 0
             ? "There isn’t enough available budget for this request. Some billing is still pending."
             : available <= 0
               ? "Your inference budget is exhausted."
               : "There isn’t enough budget for this request. Start a new run.",
-        spentOut || (available <= 0 && Number(game.reserved_microdollars) === 0) ? 402 : 400,
+        spentOut || (available <= 0 && run.playerHeld === 0) ? 402 : 400,
       );
     }
     const globalAllowance = requestAllowance(
@@ -1087,108 +920,6 @@ export async function reserveInference(
       [id, gameId, day, role, model, tokens, cost, sessionId, context.reviewId ?? null],
     );
     return { id, maxTokens, tokens, cost };
-  });
-}
-// Charges one Typesafe monitor call: a pre-settled inference row plus the day's and the run's spend,
-// in one transaction. It never reserves, so reconcile/expire (which need settled_at IS NULL) skip it.
-export async function chargeMonitor(
-  gameId: string,
-  lease: string | null,
-  inputTokens: number,
-  sessionId = gameId,
-  reviewId?: string,
-  executionGeneration?: number,
-  authorization: {
-    finalizationToken?: string;
-    pendingReviewId?: string;
-    dispatched?: boolean;
-    jobClaim?: MonitorJobClaim;
-  } = {},
-) {
-  if (!Number.isFinite(inputTokens) || inputTokens < 0) throw new Error("Invalid monitor usage.");
-  // Round fulfilled classifier usage to integer microdollars.
-  const cost = Math.round(inputTokens * MONITOR_TOKEN_MICRODOLLARS);
-  const tokens = Math.ceil(inputTokens);
-  await transaction(async (client) => {
-    const day = (await client.query("SELECT (now() AT TIME ZONE 'UTC')::date::text AS day")).rows[0]
-      .day as string;
-    await client.query("INSERT INTO ctf.daily_spend(day) VALUES($1) ON CONFLICT DO NOTHING", [day]);
-    const spend = (
-      await client.query("SELECT * FROM ctf.daily_spend WHERE day=$1 FOR UPDATE", [day])
-    ).rows[0];
-    const game = (
-      await client.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId])
-    ).rows[0];
-    const session =
-      game &&
-      (
-        await client.query<{ lease: string; lease_until: Date }>(
-          "SELECT lease,lease_until FROM ctf.agent_sessions WHERE game_id=$1 AND id=$2 FOR UPDATE",
-          [gameId, sessionId],
-        )
-      ).rows[0];
-    if (!game || !session) throw new GameError("This response has stopped.", 409);
-    if (authorization.jobClaim) {
-      const { rowCount } = await client.query(
-        `SELECT 1 FROM ctf.monitor_reviews WHERE id=$1 AND game_id=$2 AND session_id=$3
-         AND job_id=$4 AND job_claim_token=$5 FOR UPDATE`,
-        [
-          reviewId,
-          gameId,
-          sessionId,
-          authorization.jobClaim.jobId,
-          authorization.jobClaim.claimToken,
-        ],
-      );
-      if (!rowCount) throw new GameError("The dispatched monitor review was not found.", 409);
-    } else if (reviewId && authorization.dispatched) {
-      const { rowCount } = await client.query(
-        `SELECT id FROM ctf.monitor_reviews
-         WHERE id=$1 AND game_id=$2 AND session_id=$3 AND originating_lease=$4 FOR UPDATE`,
-        [reviewId, gameId, sessionId, lease],
-      );
-      if (!rowCount) throw new GameError("The dispatched monitor review was not found.", 409);
-    } else if (reviewId && session.lease !== lease) {
-      throw new GameError("This response has stopped.", 409);
-    }
-    if (
-      !authorization.dispatched &&
-      !authorization.jobClaim &&
-      ((executionGeneration !== undefined &&
-        Number(game.execution_generation) !== executionGeneration) ||
-        !lease ||
-        session.lease !== lease ||
-        new Date(session.lease_until).getTime() <= Date.now())
-    )
-      throw new GameError("This response has stopped.", 409);
-    if (reviewId && lease && !authorization.dispatched && !authorization.jobClaim)
-      await assertMonitorAuthorization(client, gameId, sessionId, lease, {
-        reviewId,
-        finalizationToken: authorization.finalizationToken,
-        pendingReviewId: authorization.pendingReviewId,
-      });
-    else if (!authorization.dispatched && !authorization.jobClaim && game.status !== "active")
-      throw new GameError("This response has stopped.", 409);
-    if (
-      !authorization.dispatched &&
-      Number(spend.charged) + Number(spend.reserved) >= DAILY_CAP_MICRODOLLARS
-    )
-      throw new GameError(
-        "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
-        429,
-      );
-    const { rowCount: inserted } = await client.query(
-      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,generation_id,settled_at,session_id,review_id)
-      VALUES($1,$2,$3,'monitor','typesafe',$4,$5,$4,$5,NULL,now(),$6,$7)
-      ON CONFLICT DO NOTHING`,
-      [randomUUID(), gameId, day, tokens, cost, sessionId, reviewId ?? null],
-    );
-    if (!inserted) return;
-    await client.query("UPDATE ctf.daily_spend SET charged=charged+$2 WHERE day=$1", [day, cost]);
-    await client.query(
-      "UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2 WHERE id=$1",
-      [gameId, cost],
-    );
   });
 }
 export async function settleInference(
@@ -1228,12 +959,12 @@ export async function settleInference(
     );
   });
 }
-// A hold with no generation id (the request died before the provider answered) can never be
-// reconciled. After a day, settle it at its ceiling: never undercount spend, never hold forever.
-export async function expireUnverifiableHolds() {
+// Settles unsettled holds at their ceiling, estimated: never undercount spend, never hold forever.
+async function settleHoldsAtCeiling(condition: string, params: unknown[]) {
   await transaction(async (client) => {
     const { rows } = await client.query(
-      "UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE settled_at IS NULL AND generation_id IS NULL AND created_at<now()-interval '24 hours' RETURNING game_id,day,token_ceiling,cost_ceiling",
+      `UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE settled_at IS NULL AND ${condition} RETURNING game_id,day,token_ceiling,cost_ceiling`,
+      params,
     );
     for (const call of rows) {
       await client.query(
@@ -1247,28 +978,12 @@ export async function expireUnverifiableHolds() {
     }
   });
 }
-// Finalize a terminal (caught/blocked) run's outstanding holds at their ceiling, so forking it isn't
-// blocked waiting for a hold that only the 24h sweep would clear — a dead agent call that disconnected
-// mid-stream leaves exactly such a hold (no generation id, so reconciliation can never resolve it).
-// The run is over, so nothing races this; conservative ceiling settlement never undercounts spend.
-export async function finalizeHolds(gameId: string) {
-  await transaction(async (client) => {
-    const { rows } = await client.query(
-      "UPDATE ctf.inference SET tokens=token_ceiling,cost=cost_ceiling,estimated=true,settled_at=now() WHERE game_id=$1 AND settled_at IS NULL RETURNING day,token_ceiling,cost_ceiling",
-      [gameId],
-    );
-    for (const call of rows) {
-      await client.query(
-        "UPDATE ctf.daily_spend SET reserved=reserved-$2,charged=charged+$2 WHERE day=$1",
-        [call.day, call.cost_ceiling],
-      );
-      await client.query(
-        "UPDATE ctf.games SET tokens_reserved=tokens_reserved-$2,tokens_used=tokens_used+$2,reserved_microdollars=reserved_microdollars-$3,spent_microdollars=spent_microdollars+$3 WHERE id=$1",
-        [gameId, call.token_ceiling, call.cost_ceiling],
-      );
-    }
-  });
-}
+// A hold the provider's record never settles (no generation id, or a record that never becomes
+// usable) is released after a day at its ceiling.
+export const expireUnverifiableHolds = () =>
+  settleHoldsAtCeiling("created_at<now()-interval '24 hours'", []);
+// A request that never got a provider generation id has no record to reconcile.
+export const settleUnidentifiedInference = (id: string) => settleHoldsAtCeiling("id=$1", [id]);
 export async function reconcileInference(gameId?: string) {
   if (!process.env.OPENROUTER_API_KEY) return;
   const pending = await db.query(

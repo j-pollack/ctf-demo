@@ -25,3 +25,9 @@ test("public landing and grouped play have unique routes, sharing history's game
     assert.ok(routes.includes(route));
   assert.ok(pageRoutes(join(app, "(game)")).includes("/signin"), "sign-in shares the game layout");
 });
+
+test("the account page sits outside the game layout, whose panel follows the path", () => {
+  const app = new URL("../app", import.meta.url).pathname;
+  assert.ok(pageRoutes(app).includes("/account"));
+  assert.ok(!pageRoutes(join(app, "(game)")).includes("/account"));
+});

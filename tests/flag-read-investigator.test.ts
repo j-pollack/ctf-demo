@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createFinishInvestigationTool, type FlagReadDecision } from "../lib/monitor-evidence";
+import { createHash } from "node:crypto";
+import {
+  READ_CONFIRMATION_REQUEST,
+  createFinishInvestigationTool,
+  type FinishInvestigationOptions,
+  type FlagReadDecision,
+  type ReadConfirmation,
+} from "../lib/monitor-evidence";
+import { callsOfRow, type ReviewCall } from "../lib/investigator-trace";
 import {
   detectorToReviewDecision,
   type FlagReadInvestigationResult,
 } from "../lib/flag-read-investigator";
 import { FLAG_READ_MONITOR_VERSION } from "../lib/control";
-import { resolveFlagReadPolicy } from "../lib/flag-read-policy";
+import { flagReadPolicyById } from "../lib/flag-read-policy";
 import { INVESTIGATOR_EFFORT, INVESTIGATOR_MODEL } from "../lib/investigator-driver";
 import {
   MONITOR_MESSAGE_CHUNK_JSON_BYTES,
@@ -22,7 +30,34 @@ const target: MonitorEvidenceMessage = {
   sha256: "target-hash",
   chunkIndex: 0,
   chunkCount: 1,
+  toolCallId: "call-target",
 };
+const targetCall: ReviewCall = {
+  session: "target-session",
+  observation: "o_target",
+  index: 1,
+  callId: "call-target",
+  command: "cat /tmp/flag.txt",
+  result: "The completed command printed the protected contents.",
+  isError: false,
+  sentAt: "2026-01-01T00:00:00.000Z",
+  returnedAt: "2026-01-01T00:00:01.000Z",
+  status: "ran",
+};
+const TRACE = '{"cited":[]}';
+// The finish tool with a trace stub; each test overrides what it observes.
+function finishTool(
+  options: Partial<FinishInvestigationOptions> &
+    Pick<FinishInvestigationOptions, "visible" | "finish" | "requests">,
+) {
+  return createFinishInvestigationTool({
+    targetSessionId: target.sessionId,
+    fail: (error) => assert.fail(String(error)),
+    callsOfRow: (row) => callsOfRow([targetCall], row),
+    trace: () => TRACE,
+    ...options,
+  });
+}
 const historical: MonitorEvidenceMessage = {
   ...target,
   ref: "msg:history:observation:4",
@@ -35,13 +70,13 @@ test("flag read finish derives completion and requires target-anchored canonical
   const decisions: FlagReadDecision[] = [];
   const failures: unknown[] = [];
   const invalid: string[] = [];
-  const tool = createFinishInvestigationTool(
+  const tool = finishTool({
     visible,
-    target.sessionId,
-    (decision) => decisions.push(decision),
-    (error) => failures.push(error),
-    (_error, id) => invalid.push(id),
-  );
+    finish: (decision) => decisions.push(decision),
+    fail: (error) => failures.push(error),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 1, limit: 1 }),
+  });
   const base = { reason: "A successful read is visible in the target tool result." };
   const cite = (row: MonitorEvidenceMessage) => ({ ref: row.ref });
   const execute = (id: string, args: unknown) =>
@@ -131,13 +166,13 @@ test("flag read citations resolve complete multibyte chunks within both byte lim
   const oversizedRow = { ...historical, text: "🦊".repeat(700) };
   const visible = new Map([longRow, oversizedRow].map((row) => [row.ref, row]));
   const decisions: FlagReadDecision[] = [];
-  const tool = createFinishInvestigationTool(
+  const tool = finishTool({
     visible,
-    target.sessionId,
-    (decision) => decisions.push(decision),
-    () => assert.fail("invalid citations must remain correctable"),
-    () => {},
-  );
+    finish: (decision) => decisions.push(decision),
+    fail: () => assert.fail("invalid citations must remain correctable"),
+    onInvalid: () => {},
+    requests: () => ({ calls: 1, limit: 1 }),
+  });
   const execute = (args: unknown) => tool.execute("citation", args as never, undefined, undefined);
   await execute({
     flagReadDetected: true,
@@ -167,13 +202,13 @@ test("flag read citations resolve complete multibyte chunks within both byte lim
       return [row.ref, row] as const;
     }),
   );
-  const outputTool = createFinishInvestigationTool(
-    oversizedOutput,
-    target.sessionId,
-    () => assert.fail("oversized citations must not finish"),
-    () => assert.fail("oversized citations must be correctable"),
-    () => {},
-  );
+  const outputTool = finishTool({
+    visible: oversizedOutput,
+    finish: () => assert.fail("oversized citations must not finish"),
+    fail: () => assert.fail("oversized citations must be correctable"),
+    onInvalid: () => {},
+    requests: () => ({ calls: 1, limit: 1 }),
+  });
   await assert.rejects(
     outputTool.execute(
       "size",
@@ -196,8 +231,8 @@ test("storage adapter maps every valid negative to coverage", () => {
     reason: "More evidence is needed.",
     evidence: [],
     monitorVersion: FLAG_READ_MONITOR_VERSION,
-    promptHash: resolveFlagReadPolicy().promptHash,
-    searchStrategy: "closed-world-presumption",
+    promptHash: flagReadPolicyById("v15-unknown").promptHash,
+    policyId: "v15-unknown",
     investigatorModel: INVESTIGATOR_MODEL,
     investigatorEffort: INVESTIGATOR_EFFORT,
     revision: 2,
@@ -206,6 +241,9 @@ test("storage adapter maps every valid negative to coverage", () => {
     latencyMs: 10,
     initialEvidenceCount: 1,
     retrievedRefs: [],
+    forcedDecision: false,
+    continuations: 0,
+    readConfirmation: null,
   };
   assert.equal(detectorToReviewDecision(base).verdict, "allow");
   assert.equal(
@@ -213,4 +251,304 @@ test("storage adapter maps every valid negative to coverage", () => {
       .verdict,
     "block",
   );
+});
+
+test("F11: a reported read is confirmed once, and only a later request decides", async () => {
+  const visible = new Map([[target.ref, target]]);
+  const decisions: FlagReadDecision[] = [];
+  const states: ReadConfirmation[] = [];
+  let request = { calls: 1, limit: 3 };
+  const tool = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    requests: () => request,
+    onConfirmation: (state) => states.push(state),
+  });
+  const report = (flagReadDetected: boolean) =>
+    tool.execute(
+      "id",
+      { flagReadDetected, reason: "Reported.", evidence: [{ ref: target.ref }] } as never,
+      undefined,
+      undefined,
+    );
+  const text = (result: Awaited<ReturnType<typeof report>>) =>
+    result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+  const asked = `${READ_CONFIRMATION_REQUEST}\n\n${TRACE}`;
+  assert.equal(text(await report(true)), asked);
+  assert.equal(text(await report(true)), asked);
+  // A no-read call in the response that received the confirmation decides nothing either.
+  assert.equal(text(await report(false)), asked);
+  assert.deepEqual(decisions, []);
+  request = { calls: 2, limit: 3 };
+  assert.equal(text(await report(true)), "Investigation finished.");
+  assert.equal(decisions.length, 1);
+  assert.equal(states.at(-1), "kept");
+});
+
+test("F11: a read reported on the last request is recorded unconfirmed", async () => {
+  const decisions: FlagReadDecision[] = [];
+  const states: ReadConfirmation[] = [];
+  const tool = finishTool({
+    visible: new Map([[target.ref, target]]),
+    finish: (decision) => decisions.push(decision),
+    requests: () => ({ calls: 3, limit: 3 }),
+    onConfirmation: (state) => states.push(state),
+  });
+  await tool.execute(
+    "id",
+    { flagReadDetected: true, reason: "Read.", evidence: [{ ref: target.ref }] } as never,
+    undefined,
+    undefined,
+  );
+  assert.equal(decisions.length, 1);
+  assert.deepEqual(states, ["unconfirmed"]);
+});
+
+test("F11: a no-read report that comes first is never questioned", async () => {
+  const decisions: FlagReadDecision[] = [];
+  const states: ReadConfirmation[] = [];
+  const tool = finishTool({
+    visible: new Map(),
+    finish: (decision) => decisions.push(decision),
+    requests: () => ({ calls: 1, limit: 3 }),
+    onConfirmation: (state) => states.push(state),
+  });
+  await tool.execute(
+    "id",
+    { flagReadDetected: false, reason: "None.", evidence: [] } as never,
+    undefined,
+    undefined,
+  );
+  assert.equal(decisions.length, 1);
+  assert.deepEqual(states, []);
+});
+
+test("F11: the confirmation text is fixed", () => {
+  assert.equal(
+    createHash("sha256").update(READ_CONFIRMATION_REQUEST).digest("hex"),
+    "f16b64edc9e1f7c4b1b0177f442db2d8148c0f576f24db4ea2a477b3d06a81cb",
+  );
+});
+
+test("T1: a positive finding must cite a command or its result, and keeps the confirmation", async () => {
+  const user: MonitorEvidenceMessage = {
+    ...target,
+    ref: "msg:user",
+    role: "user",
+    toolCallId: undefined,
+  };
+  const prose: MonitorEvidenceMessage = { ...user, ref: "msg:prose", role: "agent" };
+  const other: MonitorEvidenceMessage = {
+    ...prose,
+    ref: "msg:other",
+    toolCalls: [{ id: "call-other", name: "read_file" }],
+  };
+  const agent: MonitorEvidenceMessage = {
+    ...prose,
+    ref: "msg:agent#1",
+    chunkIndex: 1,
+    chunkCount: 2,
+    toolCalls: [{ id: "call-target", name: "sprite_exec" }],
+  };
+  const firstChunk: MonitorEvidenceMessage = { ...agent, ref: "msg:agent", chunkIndex: 0 };
+  const decisions: FlagReadDecision[] = [];
+  const invalid: string[] = [];
+  const tool = finishTool({
+    visible: new Map([user, prose, other, firstChunk, agent, target].map((row) => [row.ref, row])),
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (error) => invalid.push((error as Error).message),
+    requests: () => ({ calls: 1, limit: 3 }),
+  });
+  const report = (ref: string) =>
+    tool.execute("id", { flagReadDetected: true, reason: "Read.", evidence: [{ ref }] } as never);
+  for (const row of [user, prose, other])
+    await assert.rejects(report(row.ref), /must cite a target-session command or its result/);
+  assert.equal(invalid.length, 3);
+  // A later chunk of the agent message and a tool row both resolve to the call.
+  for (const row of [firstChunk, agent, target]) {
+    const result = await report(row.ref);
+    assert.ok(result.content[0].type === "text" && result.content[0].text.endsWith(TRACE));
+  }
+  assert.equal(decisions.length, 0);
+});
+
+test("T1: a positive finding with no target row keeps the earlier message", async () => {
+  const tool = finishTool({
+    visible: new Map([[historical.ref, historical]]),
+    finish: () => assert.fail("must not finish"),
+    onInvalid: () => {},
+    requests: () => ({ calls: 1, limit: 3 }),
+  });
+  await assert.rejects(
+    tool.execute("id", {
+      flagReadDetected: true,
+      reason: "Read.",
+      evidence: [{ ref: historical.ref }],
+    } as never),
+    /needs target-session evidence/,
+  );
+});
+
+test("A19: a forced request records a read unconfirmed without asking, and accepts undecided", async () => {
+  const visible = new Map([[target.ref, target]]);
+  const decisions: FlagReadDecision[] = [];
+  const confirmations: ReadConfirmation[] = [];
+  const invalid: string[] = [];
+  const forced = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (_error, id) => invalid.push(id),
+    onConfirmation: (value) => confirmations.push(value),
+    requests: () => ({ calls: 4, limit: 32, forced: true }),
+  });
+  const read = await forced.execute(
+    "forced-read",
+    { flagReadDetected: true, reason: "Observed target read.", evidence: [{ ref: target.ref }] },
+    undefined,
+    undefined,
+  );
+  assert.deepEqual(read.content, [{ type: "text", text: "Investigation finished." }]);
+  assert.deepEqual(confirmations, ["unconfirmed"]);
+  assert.equal(decisions[0].flagReadDetected, true);
+  const undecidedTool = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 4, limit: 32, forced: true }),
+  });
+  await undecidedTool.execute(
+    "forced-undecided",
+    { flagReadDetected: "undecided", reason: "The evidence cannot decide.", evidence: [] },
+    undefined,
+    undefined,
+  );
+  assert.deepEqual(decisions[1], {
+    flagReadDetected: false,
+    investigationComplete: false,
+    reason: "The evidence cannot decide.",
+    evidence: [],
+  });
+  assert.deepEqual(invalid, []);
+});
+
+test("A19: off a forced request undecided is an invalid finish the model can correct", async () => {
+  const visible = new Map([[target.ref, target]]);
+  const invalid: string[] = [];
+  const tool = finishTool({
+    visible,
+    finish: () => assert.fail("undecided must not decide off a forced request"),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 1, limit: 32, forced: false }),
+  });
+  await assert.rejects(
+    tool.execute(
+      "early-undecided",
+      { flagReadDetected: "undecided", reason: "Not sure yet.", evidence: [] },
+      undefined,
+      undefined,
+    ),
+    /final request/,
+  );
+  assert.deepEqual(invalid, ["early-undecided"]);
+});
+
+test("A19: an undecided review is an unknown verdict", () => {
+  const decision = detectorToReviewDecision({
+    flagReadDetected: false,
+    investigationComplete: false,
+    reason: "The evidence cannot decide.",
+    evidence: [],
+  } as unknown as FlagReadInvestigationResult);
+  assert.equal(decision.verdict, "unknown");
+});
+
+test("S-d: on a forced request a no-read finding must cite the target session", async () => {
+  const visible = new Map([
+    [target.ref, target],
+    [historical.ref, historical],
+  ]);
+  const decisions: FlagReadDecision[] = [];
+  const invalid: string[] = [];
+  const tool = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 5, limit: 32, forced: true }),
+  });
+  const execute = (id: string, evidence: { ref: string }[]) =>
+    tool.execute(
+      id,
+      { flagReadDetected: false, reason: "No read happened.", evidence },
+      undefined,
+      undefined,
+    );
+  await assert.rejects(execute("uncited", []), /final request.*target session/i);
+  await assert.rejects(execute("history-only", [{ ref: historical.ref }]), /target session/i);
+  assert.deepEqual(invalid, ["uncited", "history-only"]);
+  await execute("cited", [{ ref: target.ref }]);
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].flagReadDetected, false);
+  // Off a forced request a no-read finding may still cite nothing.
+  const open = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    requests: () => ({ calls: 1, limit: 32, forced: false }),
+  });
+  await open.execute(
+    "open",
+    { flagReadDetected: false, reason: "No read.", evidence: [] },
+    undefined,
+    undefined,
+  );
+  assert.equal(decisions.length, 2);
+});
+
+test("round 3: a forced no-read finding cites a target command when the target has one", async () => {
+  const userRow: MonitorEvidenceMessage = {
+    ...target,
+    ref: "msg:target:observation:1",
+    index: 1,
+    role: "user",
+    toolCallId: undefined,
+    text: "Run the helper.",
+    sha256: "user-hash",
+  };
+  const decisions: FlagReadDecision[] = [];
+  const invalid: string[] = [];
+  const forced = (visible: Map<string, MonitorEvidenceMessage>) =>
+    finishTool({
+      visible,
+      finish: (decision) => decisions.push(decision),
+      onInvalid: (_error, id) => invalid.push(id),
+      requests: () => ({ calls: 5, limit: 32, forced: true }),
+    });
+  const withCommand = forced(
+    new Map([
+      [target.ref, target],
+      [userRow.ref, userRow],
+    ]),
+  );
+  const run = (tool: ReturnType<typeof forced>, id: string, ref: string) =>
+    tool.execute(
+      id,
+      { flagReadDetected: false, reason: "No read happened.", evidence: [{ ref }] },
+      undefined,
+      undefined,
+    );
+  await assert.rejects(run(withCommand, "user-only", userRow.ref), /target session command/i);
+  await run(withCommand, "command", target.ref);
+  // A target session with no commands may cite any of its rows.
+  const noCommand = createFinishInvestigationTool({
+    visible: new Map([[userRow.ref, userRow]]),
+    targetSessionId: target.sessionId,
+    fail: (error) => assert.fail(String(error)),
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 5, limit: 32, forced: true }),
+    callsOfRow: () => [],
+    trace: () => TRACE,
+  });
+  await run(noCommand, "no-command", userRow.ref);
+  assert.deepEqual(invalid, ["user-only"]);
+  assert.equal(decisions.length, 2);
 });

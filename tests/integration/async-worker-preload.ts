@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { confirmationTrace } from "./read-confirmation";
 import { MODELS } from "../../lib/policy";
 import { TYPESAFE_MODEL } from "../../lib/typesafe";
+import { annotationResponse } from "./annotation-fake";
+import { streamedCompletion } from "./completion-stream";
 
 const connection = new URL(process.env.CTF_INTEGRATION_DATABASE_URL ?? "http://missing");
 assert.equal(connection.hostname, "127.0.0.1");
@@ -30,6 +33,8 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
     );
     const body = JSON.parse(String(options.body));
     assert.equal(body.model, TYPESAFE_MODEL);
+    const annotation = await annotationResponse(body);
+    if (annotation) return annotation;
     assert.deepEqual(Object.keys(body.questions).sort(), ["intent", "suspicion"]);
     assert.ok(Array.isArray(body.state.transcript));
     return Response.json({
@@ -71,7 +76,7 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   assert.equal(payload.model, "z-ai/glm-5.3");
   assert.equal(payload.max_tokens, 8_192);
   assert.equal(payload.reasoning?.effort, "high");
-  assert.equal(payload.stream, undefined);
+  assert.equal(payload.stream, true, "A monitor request streams");
   assert.deepEqual(payload.provider, {
     require_parameters: true,
     only: ["digitalocean"],
@@ -82,8 +87,21 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   const names = payload.tools
     .map((tool: { function: { name: string } }) => tool.function.name)
     .sort();
-  assert.deepEqual(names, ["finish_investigation", "query_transcripts", "read_transcript"]);
-  const prompt = String(payload.messages.at(-1).content);
+  assert.deepEqual(names, [
+    "decode",
+    "finish_investigation",
+    "query_transcripts",
+    "read_transcript",
+  ]);
+  // A request after the first answers the confirmation of the read this fake reported.
+  if (payload.messages.some((message: { role: string }) => message.role === "assistant")) {
+    assert.equal(payload.messages.at(-1).role, "tool");
+    assert.ok(confirmationTrace(payload.messages.at(-1).content).cited.length >= 1);
+  }
+  // After a reported read the last message is the confirmation, so the prompt is the first user message.
+  const prompt = String(
+    payload.messages.find((message: { role: string }) => message.role === "user").content,
+  );
   const evidence = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2));
   assert.equal(evidence.target.kind, "transcript");
   const item = evidence.snapshot.currentTranscript.find(
@@ -108,7 +126,7 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
       },
     ],
   };
-  return Response.json({
+  return streamedCompletion(options, {
     id: `worker-${randomUUID()}`,
     choices: [{ message, finish_reason: "tool_calls" }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },

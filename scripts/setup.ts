@@ -31,6 +31,19 @@ try {
     "018-monitor-ready.sql",
     "019-session-stop.sql",
     "020-http-flag-submission.sql",
+    "021-game-rules.sql",
+    "022-tool-call-annotations.sql",
+    "023-text-screens.sql",
+    "024-command-returned.sql",
+    "025-jailbreak-catch.sql",
+    "026-investigator-verdicts.sql",
+    "027-review-prompt-hash.sql",
+    "028-review-continuations.sql",
+    "029-review-read-confirmation.sql",
+    "030-inference-game-unsettled.sql",
+    "031-monitor-routing.sql",
+    "032-second-look.sql",
+    "034-investigator-requests.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),
@@ -45,13 +58,11 @@ try {
     [ADMIN_EMAILS],
   );
   for (const { email } of admins.rows) console.log(`Granted admin to ${email}.`);
-  // Adjusts a Better Auth table, so it must run after Better Auth's migrations.
-  await db.query(
-    await readFile(
-      new URL("../db/migrations/004-rate-limit-timestamp.sql", import.meta.url),
-      "utf8",
-    ),
-  );
+  // These adjust Better Auth tables, so they must run after Better Auth's migrations.
+  for (const migration of ["004-rate-limit-timestamp.sql", "033-display-name.sql"])
+    await db.query(
+      await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),
+    );
   console.log("Tripwire game and authentication tables are ready.");
 } finally {
   await db.end();

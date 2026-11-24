@@ -7,9 +7,6 @@ export function isAdmin(
   return user?.isAdmin === true && !user.isAnonymous;
 }
 
-// A fork inherits its parent's spend and turns, so those sums skip any run that has a fork. Blocks
-// are each run's own and sum over every run.
-const LEAF = "NOT EXISTS(SELECT 1 FROM ctf.games c WHERE c.forked_from=g.id)";
 // All buckets are UTC. Money is microdollars; bigint sums are cast to float8 so pg returns numbers.
 export async function adminStats() {
   const [totals, daily, monthly, outcomes, models, monitors, spenders] = await Promise.all([
@@ -21,15 +18,15 @@ export async function adminStats() {
       count(*) FILTER (WHERE status='captured')::int AS captures,
       count(*) FILTER (WHERE status IN ('creating','active'))::int AS open_runs,
       count(DISTINCT owner_id)::int AS players,
-      coalesce(sum(spent_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS spend,
-      coalesce(sum(reserved_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS reserved,
-      coalesce(avg(spent_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS spend_avg,
-      coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY spent_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS spend_p50,
-      coalesce(percentile_cont(0.9) WITHIN GROUP (ORDER BY spent_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS spend_p90,
-      coalesce(max(spent_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS spend_max,
+      coalesce(sum(spent_microdollars),0)::float8 AS spend,
+      coalesce(sum(reserved_microdollars),0)::float8 AS reserved,
+      coalesce(avg(spent_microdollars),0)::float8 AS spend_avg,
+      coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY spent_microdollars),0)::float8 AS spend_p50,
+      coalesce(percentile_cont(0.9) WITHIN GROUP (ORDER BY spent_microdollars),0)::float8 AS spend_p90,
+      coalesce(max(spent_microdollars),0)::float8 AS spend_max,
       coalesce(avg(spent_microdollars) FILTER (WHERE status='captured'),0)::float8 AS spend_per_capture,
-      coalesce(avg(turns) FILTER (WHERE ${LEAF}),0)::float8 AS turns_avg,
-      coalesce(sum(turns) FILTER (WHERE ${LEAF}),0)::int AS turns,
+      coalesce(avg(turns),0)::float8 AS turns_avg,
+      coalesce(sum(turns),0)::int AS turns,
       coalesce(sum(blocks),0)::int AS blocks,
       (SELECT count(*) FROM ctf.inference WHERE estimated)::int AS estimated_settlements
       FROM ctf.games g`),
@@ -45,19 +42,19 @@ export async function adminStats() {
       count(*) FILTER (WHERE "isAnonymous" IS NOT TRUE)::int AS members,
       count(*) FILTER (WHERE "isAnonymous" IS TRUE)::int AS guests
       FROM ctf."user" GROUP BY 1 ORDER BY 1 DESC LIMIT 12`),
-    db.query(`SELECT status,count(*)::int AS runs,coalesce(sum(spent_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS spend
+    db.query(`SELECT status,count(*)::int AS runs,coalesce(sum(spent_microdollars),0)::float8 AS spend
       FROM ctf.games g GROUP BY status ORDER BY runs DESC`),
     db.query(`SELECT role,model,count(*)::int AS calls,coalesce(sum(tokens),0)::float8 AS tokens,
       coalesce(sum(cost),0)::float8 AS spend,count(*) FILTER (WHERE settled_at IS NULL)::int AS pending
       FROM ctf.inference GROUP BY role,model ORDER BY spend DESC`),
     db.query(`SELECT g.monitor_model,g.monitor_difficulty,count(*)::int AS runs,
       count(*) FILTER (WHERE g.status='captured')::int AS captures,
-      coalesce(sum(g.spent_microdollars) FILTER (WHERE ${LEAF}),0)::float8 AS spend
+      coalesce(sum(g.spent_microdollars),0)::float8 AS spend
       FROM ctf.games g
       GROUP BY g.monitor_model,g.monitor_difficulty ORDER BY runs DESC,g.monitor_model,g.monitor_difficulty LIMIT 12`),
     db.query(`SELECT coalesce(u.email,g.owner_id) AS who,u."isAnonymous" AS guest,count(*)::int AS runs,
       count(*) FILTER (WHERE g.status='captured')::int AS captures,
-      sum(g.spent_microdollars) FILTER (WHERE ${LEAF})::float8 AS spend
+      sum(g.spent_microdollars)::float8 AS spend
       FROM ctf.games g LEFT JOIN ctf."user" u ON u.id=g.owner_id
       GROUP BY 1,2 ORDER BY spend DESC LIMIT 10`),
   ]);

@@ -90,7 +90,14 @@ const RUNS = (["captured", "caught", "exhausted", "ended", "active"] as const).m
 );
 // The My Runs and run detail markup mirrors GameUI, which needs a router and a session.
 const INFO_PAGES: Record<string, { nav: string; body: React.ReactNode }> = {
-  rules: { nav: "rules", body: <RulesPanel /> },
+  rules: {
+    nav: "rules",
+    body: (
+      <RulesPanel
+        rules={{ monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false }}
+      />
+    ),
+  },
   rank: {
     nav: "rank",
     body: (

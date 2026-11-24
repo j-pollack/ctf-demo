@@ -48,16 +48,29 @@ await test(
       "migrations/013-agent-sessions.sql",
       "migrations/014-async-monitor.sql",
       "migrations/015-transcript-evidence.sql",
+      "migrations/017-settings.sql",
       "migrations/018-monitor-ready.sql",
       "migrations/019-session-stop.sql",
       "migrations/020-http-flag-submission.sql",
+      "migrations/021-game-rules.sql",
+      "migrations/023-text-screens.sql",
+      "migrations/024-command-returned.sql",
+      "migrations/025-jailbreak-catch.sql",
+      "migrations/026-investigator-verdicts.sql",
+      "migrations/027-review-prompt-hash.sql",
+      "migrations/028-review-continuations.sql",
+      "migrations/029-review-read-confirmation.sql",
+      "migrations/030-inference-game-unsettled.sql",
+      "migrations/031-monitor-routing.sql",
+      "migrations/032-second-look.sql",
+      "migrations/034-investigator-requests.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
 
     const { claimSession, releaseSessionLease } = await import("../../lib/sessions");
     const { dispatchAsyncCommand, completeAsyncCommand } =
       await import("../../lib/monitor-commands");
-    const { receiveFlagSubmission } = await import("../../lib/flag-submissions");
+    const { receiveFlagUpload } = await import("../../lib/flag-submissions");
     const { beginAsyncSubmission, claimAsyncFinalization } =
       await import("../../lib/async-finalization");
     const { makeSecret } = await import("../../lib/policy");
@@ -99,11 +112,11 @@ await test(
     assert.match(first.submissionToken ?? "", /^[A-Za-z0-9_-]{43}$/);
     assert.notEqual(first.submissionToken, sibling.submissionToken);
     assert.equal(
-      await receiveFlagSubmission({ token: first.submissionToken!, value: secret }),
+      (await receiveFlagUpload({ token: first.submissionToken!, value: secret })).result,
       "accepted",
     );
     assert.equal(
-      await receiveFlagSubmission({ token: first.submissionToken!, value: secret }),
+      (await receiveFlagUpload({ token: first.submissionToken!, value: secret })).result,
       "accepted",
     );
     await assert.rejects(
@@ -191,10 +204,12 @@ await test(
       generation: 0,
     });
     assert.equal(
-      await receiveFlagSubmission({
-        token: uncertain.submissionToken!,
-        value: secret,
-      }),
+      (
+        await receiveFlagUpload({
+          token: uncertain.submissionToken!,
+          value: secret,
+        })
+      ).result,
       "accepted",
     );
     await completeAsyncCommand({
@@ -243,25 +258,23 @@ await test(
           [unknownId],
         )
       ).rows[0];
-    // A receipt run whose response still holds its lease may yet drain, so it is not replaced.
+    // A run holding a receipt is being graded, so a new run neither replaces it nor starts.
     await assert.rejects(startGame(owner), { status: 409 });
     assert.deepEqual(created, []);
-    assert.deepEqual(await unknownRun(), {
+    const stillActive = {
       status: "active",
       submitted_flag_correct: null,
       promoted_at: null,
       jobs: 0,
-    });
-    // Once that response has ended with the uploader unknown, nothing can promote the receipt, so a
-    // new run replaces it instead of waiting for the 24-hour sweep.
+    };
+    assert.deepEqual(await unknownRun(), stillActive);
     await releaseSessionLease(unknownId, unknownId, unknownLease);
-    await assert.rejects(startGame(owner), /integration Sprite creation refused/);
-    assert.equal(created.length, 1);
-    assert.deepEqual(await unknownRun(), {
-      status: "ended",
-      submitted_flag_correct: null,
-      promoted_at: null,
-      jobs: 0,
+    await assert.rejects(startGame(owner), {
+      status: 409,
+      message:
+        "Your current run’s upload is waiting to be graded. You can start a new run once grading begins.",
     });
+    assert.deepEqual(created, []);
+    assert.deepEqual(await unknownRun(), stillActive);
   },
 );

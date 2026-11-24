@@ -1,0 +1,312 @@
+# Monitor delete pass, stage 1: forks and unused investigator strategies
+
+Worktree: `/Users/jonathan/Code/ctf/.worktrees/monitor-delete-pass`
+Branch: `feature/monitor-delete-pass`
+Baseline: `9657348` on `main`. Index and worktree clean at start. The primary checkout has one untracked file, `paseo.json`, which is not part of this work.
+Roles: lead Claude Fable 5.2. Plan verifier and code reviewer are independent Opus agents at high effort, read-only. Developer is a Sonnet agent at medium effort, scoped by this contract.
+Authorization: the user approved a delete pass on 2026-11-18. No commit, merge, push, deployment, production database access or paid model call is authorized.
+
+## Request
+
+The user is rethinking the classifier and investigator. Before anything new is built, remove what is no longer supported:
+
+1. Forks. A run can no longer be forked.
+2. The investigator prompt strategies that production never selects.
+3. The legacy synchronous monitor. This is stage 2 and is out of scope here. See "Stage 2".
+
+## Design decisions
+
+- **Historical fork accounting goes too.** The user decided on 2026-11-18 that it is not needed. Four read paths walk a fork lineage: `LEAF` in `lib/admin.ts`, the lineage CTE in `app/api/games/history/route.ts`, the lineage CTE in `gameBilling` in `lib/games.ts`, and the lineage subqueries in `app/api/leaderboard/route.ts`. All four are removed. Old rows with `forked_from` set stay in the database. Admin totals then count a historical parent and its child separately, and an old fork child's history and billing show only its own rows.
+- **Legacy-path scenarios that break are deleted, not repaired.** The user decided on 2026-11-18 that the legacy synchronous monitor and its test scenarios are deleted, not ported. Most of `tests/integration/sprites.test.ts` runs through a wrapper that turns every run into a legacy run. A scenario that starts through that wrapper is deleted, and listed in the developer's report, only when its failing assertion is about the legacy runner or the legacy reviewer. A failure in `startGame`, `cleanup`, admission, quota, billing, `publicGame` or a route is repaired, whichever way the run was started. A scenario that mixes fork steps with other checks loses only its fork steps. Scenarios that start through `productionStartGame` or `startPersistedToolGame` are on the async path and are repaired.
+- **A caught or blocked run releases its Sprite at once.** Single-session caught and blocked runs kept their Sprite for 25 hours so they could be forked. Multi-session caught runs were already deleted at once. With no forks the wait has no purpose. `deleteSpriteIfEligible` in `lib/monitor-commands.ts` and the candidate query in `cleanup` in `lib/games.ts` both change. Two consequences follow. A legacy single-session caught run loses its Sprite at the next `cleanup`. The worker can delete a Sprite while a command of the caught run is still in flight, which marks that command interrupted. Multi-session runs already behave this way.
+- **No checkpoint is taken per instruction.** `lib/runner-async.ts` and `lib/runner-session.ts` checkpoint the Sprite before each single-session instruction. Forks were the only reader. Removing the call removes one Sprite request per instruction and one way for a response to fail before inference. Historical user events keep their `checkpoint` value in stored JSON and in API responses. That is harmless.
+- **The strategy selector stays, with one member.** `FlagReadSearchStrategy`, `resolveFlagReadPolicy` and the `--strategy` flag of the two baseline scripts keep their shape and accept only `closed-world-presumption`. The next stage compares a new investigator against production through this selector.
+- **The eval always mirrors the worker.** `boundedBaseline` is removed from `runFlagReadInvestigation` and from `scripts/flag-read-eval-live.ts`. Every flag-read evaluation uses the bounded classifier deadline, budget reservation, claim duration and investigator inference that the worker uses.
+- **The production prompt stays byte-for-byte.** Its SHA-256 is `2b36e1c16706456ab155fd57cd16b7151558ca933f32e89885b4e5efc880668d`. No test pins it today. A pin is added before any edit to `lib/flag-read-policy.ts`. The sentence about "checkpoint-restored forks" stays in the prompt, because changing it changes the monitor version.
+- **An unsupported monitor version fails closed.** `flagReadPolicyForRun` returns the production policy for `FLAG_READ_MONITOR_VERSION` and throws for every other value, including the two retired versions.
+- **No migration.** The `forked_from` column, its index, the `new_run` column and the `'restore'` value in the `sprite_operations.kind` check constraint stay. `new_run` is written `true` for every run, as it already is for every start that is not a fork.
+
+## Non-goals
+
+- The legacy synchronous monitor: `lib/runner-session.ts` apart from its checkpoint call, `lib/monitor-orchestration.ts`, `lib/run-lifecycle.ts`, `runMonitorReview`, `finish_review`, `captureMonitorSnapshot`, `lib/transcript-search.ts`, the legacy half of `lib/monitor-tools.ts`, and every `monitor_mode` conditional.
+- The non-bounded branches in `lib/monitor-classifier.ts`, `lib/investigator-driver.ts` and `chargeMonitor`. The legacy runner still reaches them.
+- `MONITOR_VERSION`, `FLAG_READ_MONITOR_VERSION`, classifier questions, difficulty settings.
+- `docs/plans/*` other than this file. They are history.
+- The eval corpus under `evals/flag-read/` apart from the schedules named below.
+- New CLI flags, new production seams, new test helpers or any behaviour a criterion does not name.
+
+## Acceptance criteria
+
+### Forks, brief A
+
+- F1. `app/api/games/[id]/fork/route.ts`, `lib/fork-transcript.ts` and `tests/fork-transcript.test.ts` no longer exist. `npm run build` lists no fork route. The imports of `fork-transcript` in `tests/transcript-evidence.test.ts` and `tests/integration/transcript-evidence.test.ts` go with the assertions that used them.
+- F2. `startGame` takes no `sourceId`. The fresh-run scenarios in `tests/integration/sprites.test.ts`, `game-rules.test.ts` and `admin.test.ts` pass: admission, daily quota, rules recorded on the run, initial evidence.
+- F3. No code calls a Sprite checkpoint or restore endpoint. `checkpointEnvironment`, `restoreEnvironment` and the helpers only they use are gone from `lib/sprites.ts`. The integration fakes no longer serve those endpoints. An unexpected request still reaches the rejecting global `fetch` and fails the test's `afterEach`, so a passing runner scenario shows that no checkpoint request was sent.
+- F4. The public game payload has no `forkable` and no `retryInstruction`. `GameEvent.checkpoint` is removed from `lib/types.ts`. `grep -rn "checkpoint" lib app` returns one hit, the "checkpoint-restored forks" sentence of the production prompt in `lib/flag-read-policy.ts`, which must stay. With F3 this shows a new user event cannot carry a checkpoint.
+- F5. A single-session run that the worker catches has its Sprite deleted in the same worker pass. The block mode of `tests/integration/flag-read-production.test.ts` asserts the delete request against its strict `deleteSprite` fake and asserts `sprite_deleted_at`. That assertion is written first and fails for the retention reason before the implementation. These async-path assertions change with it: the "remains forkable" check in `flag-read-production.test.ts` and the fork-refused-after-submission check in `flag-submission-lifecycle.test.ts`. The legacy-path retention scenarios in `sprites.test.ts` are deleted. One async-path check replaces them for the changed `cleanup` query: start with `productionStartGame`, set `status='caught'` by SQL, run `cleanup()`, and assert the delete request and `sprite_deleted_at`. A second pass makes the first delete fail and asserts that the next `cleanup()` deletes the Sprite.
+- F6. No code reads `forked_from`. `grep -rn "forked_from" lib app scripts` returns nothing, and the field is gone from `GameRow`. For a run that is neither a fork nor forked, `gameBilling`, `/api/games/history`, the admin statistics and `/api/leaderboard` return what they returned before. Each lineage join collapses to `i.game_id=g.id`, and each `FILTER (WHERE LEAF)` is dropped.
+- F7. The fork-lineage assertions are deleted and the fixtures that fed them become plain runs.
+  - `tests/integration/admin.test.ts`: the fixture keeps both rows and no longer sets `forked_from`. The `LEAF` assertions and the fork-child leaderboard assertion are deleted. The monitors assertion that expected a spend of `5_000_000` expects `5_400_000`, because the former parent's `400_000` is now counted. Leaderboard values that depend on the former child row are unchanged.
+  - `tests/integration/history.ts`: the mixed-lineage scenario is deleted, and the game count that followed it changes from 25 to 23.
+  - `tests/integration/sprites.test.ts`: the `gameBilling` lineage scenarios go with the fork block.
+- F8. `cleanup` no longer deletes fork children stuck in `creating`. The existing rule that ends any run stuck in `creating` for five minutes still covers them.
+- F9. `"restore"` is removed from the TypeScript kinds in `lib/monitor-commands.ts` and from the busy checks that named it, including `spriteBusy` in `lib/games.ts`, which existed only for `forkable`. A test that passed `kind: "restore"` to exercise the exclusive-operation path uses `"score"`. No migration is added.
+- F10. `README.md` no longer describes forking, checkpoints or the fork quota. `deploy/flag-submission.md` and `docs/verification.md` no longer describe a restore step. `scripts/flag-submission-smoke.ts` drops only its checkpoint and restore calls and keeps the network-policy check around them. `scripts/smoke.ts` drops its fork steps.
+- F11. The scenario "a first instruction stopped before inference is recorded and frees the run" in `sprites.test.ts` is on the async path and is the only test of a stop that arrives before inference. It holds the response on the checkpoint gate, which this work removes. The developer repairs it by holding the response on the model catalog request instead: the OpenRouter catalog fake is an existing boundary that precedes inference, and the catalog cache in `lib/inference.ts` expires by `Date.now()`, which the test runner can advance. If that cannot be done without a production change, the developer deletes the scenario and reports it. The lead then reports the lost coverage to the user. No production seam is added in this work.
+- F12. `lib/games.ts` no longer imports `LEGACY_FLAG_READ_MONITOR_VERSION` or `MONITOR_VERSION`. Brief A does not touch `lib/flag-read-policy.ts`, `lib/control.ts` or the eval harness.
+
+### Strategies, brief B
+
+- P1. `tests/flag-read-policy.test.ts` asserts that the production policy has `monitorVersion` equal to `FLAG_READ_MONITOR_VERSION`, `searchStrategy` `closed-world-presumption` and `promptHash` `2b36e1c1…668d` as a literal, and that the hash equals the SHA-256 of `systemPrompt`. The test is added first and passes before and after the edit to `lib/flag-read-policy.ts`.
+- P2. `resolveFlagReadPolicy()` and `resolveFlagReadPolicy("closed-world-presumption")` return the production policy. Any other value throws "Invalid flag read search strategy." `flagReadPolicyForRun` returns production for `FLAG_READ_MONITOR_VERSION` and throws "Unsupported flag-read monitor version." for the literal strings `investigator-v7-glm53-jev114-canonical-refs-policy-delivery` and `investigator-v8-glm53-jev114-context32k`.
+- P3. `runFlagReadInvestigation` has no `boundedBaseline` option and no evidence-chain branch, and always runs bounded inference.
+- P4. The worker reviews every claimed run with the bounded classifier deadline, budget reservation and investigator deadline. The classifier-timeout, deadline and budget modes of `tests/integration/flag-read-production.test.ts` pass with their assertions unchanged. Its `legacy` and `legacy-context` modes are deleted. Its existing unknown-version mode covers the fail-closed outcome.
+- P5. These files no longer exist.
+  - Library: `lib/flag-read-chain.ts`.
+  - Scripts: `scripts/flag-read-reliability.ts`, `flag-read-shadow.ts`, `flag-read-semantic-assessment.ts`, `flag-read-semantic-controls.ts`, `flag-read-attribution-cases.ts`, `flag-read-evidence-chain-cases.ts`, `flag-read-provenance-cases.ts`, `flag-read-process-read-cases.ts`, `flag-read-heldout-cases.ts`.
+  - Unit tests: `tests/flag-read-chain.test.ts`, `flag-read-reliability.test.ts`, `flag-read-shadow.test.ts`, `flag-read-semantic-assessment.test.ts`, `flag-read-attribution-cases.test.ts`, `flag-read-evidence-chain-cases.test.ts`.
+  - Integration tests: `tests/integration/flag-read-evidence-chain.test.ts`, `flag-read-reliability-helper.ts`, `flag-read-reliability-skip.test.ts`, `flag-read-reliability.test.ts`, `flag-read-attribution.test.ts`, `flag-read-provenance.test.ts`, `flag-read-read-semantics.test.ts`, `flag-read-shadow.test.ts`, `flag-read-semantic-assessment.test.ts`.
+  - Schedules: `evals/flag-read/baseline-schedule.json` and the four `closed-world-presumption-v1-*.json` files.
+- P6. `LEGACY_FLAG_READ_MONITOR_VERSION` and `LEGACY_CONTEXT_FLAG_READ_MONITOR_VERSION` appear nowhere in `lib`, `app`, `scripts` or `tests`. `grep -rnE "\"(current|focused|provenance|read-semantics|attribution|evidence-chain|closed-world-presumption-v1)\"" lib scripts tests` returns no strategy selection. The word `"current"` in `tests/integration/transcript-evidence.test.ts` is unrelated and is an expected hit.
+- P7. The eval harness runs production only.
+  - `scripts/flag-read-baseline.ts` and `flag-read-baseline-run.ts` accept `--strategy closed-world-presumption`, reject every other value, default to it, and `flag-read-baseline-run` requires an explicit `--schedule`.
+  - `scripts/flag-read-eval-live.ts` defaults to the production policy and has no `boundedBaseline` option. `scripts/flag-read-eval.ts` gains no flag.
+  - `tests/integration/flag-read-eval.test.ts` is converted to the bounded production contract: the pinned provider endpoint and price cap, one attempt per call, and the production prompt, hash and version.
+  - `tests/integration/flag-read-baseline.test.ts` runs its base modes under production. A `candidate-X` mode merges into `X` where both exist. The remaining candidate-only modes are renamed without the prefix.
+  - Tests that checked "a different strategy is rejected" check a mutated `promptHash` instead.
+  - Tests that need a schedule file use one of the two `closed-world-presumption-digitalocean-90s-*` schedules.
+
+### Gates
+
+- G1. `npm run check` passes.
+- G2. `npm run test:integration` passes with zero failed, cancelled or skipped tests.
+- G3. `npm run build` passes.
+- G4. `npm run test:coverage` is run and its figures are reported beside the baseline figures.
+- G5. `git diff --stat` shows no change under `db/migrations/` and none under `docs/plans/` except this file.
+
+## File map
+
+Line numbers are from the baseline and drift as edits land. Symbols are the stable reference.
+
+### Forks
+
+| File                                                                                                                     | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/games.ts`                                                                                                           | `startGame`: remove `sourceId`, the hold finalization for a source, the source branch, the fork quota comment and the `source ?? …` fallbacks. Remove `FORK_WINDOW_MS`, `finalizeHolds`, `forked`, `checkpointed`, `spriteBusy`, `forkable`, the event and review copy into a child, the restore block, the stuck-child delete and the fork and 25 hour clauses in the Sprite cleanup query. Remove the `gameBilling` lineage CTE and `forked_from` from `GameRow`. |
+| `lib/sprites.ts`                                                                                                         | Remove `checkpointEnvironment`, `restoreEnvironment`, `operationTimeout`, `completion`.                                                                                                                                                                                                                                                                                                                                                                             |
+| `lib/runner-async.ts`, `lib/runner-session.ts`                                                                           | Remove the checkpoint call and the `checkpoint` value on the user event.                                                                                                                                                                                                                                                                                                                                                                                            |
+| `lib/monitor-commands.ts`                                                                                                | Remove the `"restore"` kind and the fork and 25 hour clauses in `deleteSpriteIfEligible`.                                                                                                                                                                                                                                                                                                                                                                           |
+| `lib/types.ts`, `app/session-ui-state.ts`                                                                                | Remove `forkable`, `retryInstruction`, `GameEvent.checkpoint` and the "(non-fork)" comment.                                                                                                                                                                                                                                                                                                                                                                         |
+| `app/api/leaderboard/route.ts`, `app/api/games/history/route.ts`, `lib/admin.ts`                                         | Remove the lineage subqueries, the lineage CTE and `LEAF`.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `tests/integration/sprites.test.ts`                                                                                      | Delete the fork block and the checkpoint and restore fakes. Delete legacy-path scenarios that break.                                                                                                                                                                                                                                                                                                                                                                |
+| Other tests and fixtures                                                                                                 | `flag-submission-lifecycle.test.ts`, `flag-read-production.test.ts`, `admin.test.ts`, `history.ts`, `transcript-evidence` unit and integration tests, `session-ui-state.test.ts`, `instruction.test.ts`, `fixtures/console-runs.ts`.                                                                                                                                                                                                                                |
+| `scripts/smoke.ts`, `scripts/flag-submission-smoke.ts`, `README.md`, `deploy/flag-submission.md`, `docs/verification.md` | As in F10.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+
+### Strategies
+
+| File                                                                                                   | Change                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/flag-read-policy.ts`                                                                              | Keep only the production policy. Build its prompt from `FLAG_READ_SYSTEM_PROMPT`, the read-semantics paragraph and the presumption paragraphs, already in production wording. Narrow `FlagReadSearchStrategy` and `FlagReadPolicy`. Fix the comment that mentions restored forks. |
+| `lib/control.ts`                                                                                       | Remove the two `LEGACY_*` version constants.                                                                                                                                                                                                                                      |
+| `lib/flag-read-investigator.ts`                                                                        | Remove `boundedBaseline`, the evidence-chain branch and the `flag-read-chain` import.                                                                                                                                                                                             |
+| `lib/monitor-worker.ts`                                                                                | Remove `bounded` and collapse its three ternaries. Keep the `flagReadPolicyForRun` call as the version guard.                                                                                                                                                                     |
+| `scripts/flag-read-eval-live.ts`, `scripts/flag-read-baseline.ts`, `scripts/flag-read-baseline-run.ts` | As in P7.                                                                                                                                                                                                                                                                         |
+| Tests                                                                                                  | As in P1, P4, P5 and P7, plus `tests/flag-read-eval.test.ts`, `tests/flag-read-investigator.test.ts`, `tests/flag-read-baseline.test.ts`, `tests/flag-read-baseline-run.test.ts` and the `boundedBaseline` uses in `tests/monitor-review.test.ts`.                                |
+
+## Steps
+
+1. Lead: baseline checks on the untouched worktree. Done, see Evidence.
+2. Developer brief A, forks: F5's assertion first, then F1 to F12. Verify with `npm run check` and the affected integration files.
+3. Lead verifies brief A against raw output and runs the full integration suite.
+4. Developer brief B, strategies: P1 first, then P2 to P7. Verify with `npm run check` and the affected integration files.
+5. Lead verifies brief B, then runs G1 to G5.
+6. Code review of the full delta. One corrective cycle if it finds P0 to P2 issues.
+
+## Risks and limits
+
+- `scripts/smoke.ts` and `scripts/flag-submission-smoke.ts` call live services. Their edits are checked by the type checker only. A live smoke run is required before deployment and is not part of this work.
+- A run that carries a retired monitor version and is not yet terminal at deploy time can no longer be reviewed. That covers forks and any fresh run from before the current version that is still being played. The worker marks its review jobs unresolved after the retry delays. `cleanup` ends an `active` or `creating` run 24 hours after its last update. A `finalizing` run is never ended and its result stays unconfirmed. A read-only count of non-terminal runs on the two retired versions, taken before deploy, would size this. That needs the user's authorization.
+- Deleting source files makes the committed eval schedules stale as records of past runs. No test validates their source hashes.
+
+## Stage 2: legacy synchronous monitor
+
+Baseline for this stage: `7d711da`. `npm run check` 360 of 360, `npm run test:integration` 315 of 315.
+
+The legacy monitor reviewed each proposed command before it ran and returned allow, block or unknown. Every run created today is `monitor_mode='async'` and is reviewed by the worker. The user decided on 2026-11-18 that the legacy path is deleted together with its test scenarios, with no port.
+
+### Design decisions
+
+- **Execution is deleted, history is still readable.** Rows with `monitor_mode='legacy'` stay in the database. The public payload still carries `monitorMode`, and the UI still renders an old legacy run. No file under `app/` changes.
+- **A legacy run can no longer be continued.** A prompt to a run whose `monitor_mode` is not `async` is refused with `GameError` 410 "This run can no longer continue." The refusal happens in `claimSession` in `lib/sessions.ts`, which already reads `monitor_mode` before it takes the lease. The prompt route only reads before that point.
+- **The `monitor_mode` guards and SQL conditionals stay.** They keep async operations away from old rows. Collapsing them would touch live SQL for no functional gain.
+- **Code that only the legacy runner reached is removed with it.** That covers the unbounded classifier and investigator branches, `chargeMonitor`, and the monitor authorization that works without a worker job claim. After this stage a monitor call exists only under a job claim, with a budget reservation and the bounded limits.
+- **Tests lose legacy assertions, not live coverage.** The `startGame` wrapper in `tests/integration/sprites.test.ts` that turns runs into legacy runs is removed, so every scenario starts an async run.
+  - A scenario whose subject is legacy behaviour is deleted whole. Its title names a synchronous review before a command, a command block, an end review, a submission reviewed by the legacy reviewer, or a symbol on the L1 or L3 lists.
+  - A scenario whose subject is live behaviour keeps running. Only its assertions about the legacy protocol are removed. If it needs a caught or legacy row to reach its subject, it sets that state by SQL.
+  - A scenario that tests a guard against legacy rows, such as the stop route or start admission refusing one, is kept and creates its legacy row by SQL.
+  - A failure in `startGame`, `cleanup`, admission, quota, billing, `publicGame`, session handling, agent retry, streaming, abort or a route is repaired.
+  - Nothing is ported: no scenario is rewritten to drive the worker in place of the legacy reviewer.
+  - Async tool submission through `startPersistedToolGame` is live and is not legacy protocol.
+- **The classifier's questions, weights and difficulty table are not touched.** They are the subject of the rebuild that follows.
+
+### Non-goals
+
+- `app/` rendering of legacy runs, `PublicGame.monitorMode`, and UI fixtures with `monitorMode: "legacy"`.
+- `monitor_mode` conditionals and guards in `lib/games.ts`, `lib/sessions.ts`, `lib/monitor-commands.ts`, `lib/flag-submissions.ts` and `lib/async-finalization.ts`.
+- `createSession` on a legacy run. It still writes a session whose prompts are then refused.
+- `CONTROL_DIFFICULTY`, `MONITOR_QUESTIONS`, `combineSuspicion`, `lib/monitor-document.ts`, `lib/typesafe.ts`, `lib/classifier-context.ts`.
+- The flag-read investigator's prompt, tools, limits and monitor version.
+- `submission_transport='tool'` handling in `lib/runner-async.ts`.
+- Migrations, including the `'legacy'` column default. `docs/plans/*` other than this file. `evals/`.
+- A test seam for the deleted stop-before-inference scenario.
+- Making `scripts/auth-check.ts` pass. It already expects leaderboard names the route no longer emits.
+
+### Acceptance criteria
+
+- L1. These files no longer exist: `lib/runner-session.ts`, `lib/monitor-orchestration.ts`, `lib/run-lifecycle.ts`, `lib/transcript-search.ts`, `scripts/monitor-calibrate.ts`, `scripts/control-eval-cases.ts`, `tests/integration/run-lifecycle-cases.ts`, `tests/integration/monitor-eval.test.ts`, `tests/monitor-investigation-cases.test.ts`. The `ReviewDecision` type moves to `lib/async-finalization.ts`. `loadVersion` and its `manifest` helper move to `lib/transcript-query.ts`.
+- L2. A prompt to a legacy run is refused. An integration test starts a run with `productionStartGame`, sets `monitor_mode='legacy'` and `submission_transport='tool'` by SQL and posts a prompt. It asserts status 410, the message, no session lease, no new event and no agent or monitor inference request. The model catalog request is allowed. The test is written first and fails before the implementation. `lib/runner.ts` no longer imports a legacy runner.
+- L3. These symbols no longer exist.
+  - `lib/monitor-review.ts`: `runMonitorReview`, `promptForReview`, `MonitorReviewResult`, and the `command` and `submission` variants of `MonitorTarget` with the command branch of `validateReviewScope`.
+  - `lib/monitor-evidence.ts`: `INVESTIGATOR_SYSTEM_PROMPT`, `createFinishReviewTool`, `InvalidFinishReviewDecision`, `validateRiskSignals`, `validateInitialContext`. `createInvestigatorAgent` in `lib/investigator-driver.ts` takes its system prompt as a required argument.
+  - `lib/monitor-tools.ts`: `createMonitorTools`, `makeInitialMonitorEvidence` and the paging, session-inventory and cursor code only they use.
+  - `lib/monitor-snapshot.ts`: `captureMonitorSnapshot`, `MAX_HISTORICAL_SESSIONS`.
+  - `lib/sessions.ts`: `createMonitorReview`, `MonitorReviewInput`, `admitMonitorCommand`, `completeMonitorCommand`, `persistSessionMessages`, `queueTranscriptReview`, `bindQueuedTranscriptReview`, `persistCommandResult`, and the non-async tail of `persistReviewedSessionMessages`.
+  - `lib/games.ts`: `chargeMonitor`, the `expireFinalizations` call in `cleanup`, and the branches of `reserveInference` that authorize a monitor call without a job claim.
+  - `lib/control.ts`: `MONITOR_VERSION`. A fixture that used it to mean "an old monitor that never ranks" uses a literal retired version string, so leaderboard assertions do not change. Other fixtures use `ASYNC_MONITOR_VERSION`.
+  - The `finalizationToken` and `pendingReviewId` options that only the legacy runner passed, in `lib/inference.ts`, `lib/monitor-classifier.ts` and `lib/monitor-review.ts`.
+- L4. A monitor call needs a job claim. `classifyMonitorTarget` takes only a transcript target, requires `jobClaim` and always reserves budget. `agentStream` with role `monitor` requires `jobClaim`. `runInvestigatorDriver` has no unbounded mode: `MONITOR_DEADLINE_MS` and the `boundedInference` option are gone and the bounded limits always apply. The production-mode scenarios in `tests/integration/flag-read-production.test.ts`, `flag-read-eval.test.ts` and `flag-read-baseline.test.ts` pass with their assertions unchanged.
+- L5. The worker path is unchanged in behaviour. `lib/monitor-worker.ts` changes only where a removed option or import forces it.
+- L6. Tests.
+  - `tests/integration/sprites.test.ts`: the legacy wrapper is gone and the rule above is applied. The developer's report has three lists: scenarios deleted whole with the reason, scenarios that lost assertions with the assertions named, and scenarios repaired. The scenarios "billing frames follow every recorded event" and its neighbour keep their SSE `billing` and `done` assertions. The agent retry, streaming, abort, resume, command adapter and idle expiration scenarios are kept. The scenario "sessions claim independently" uses `persistReviewedSessionMessages`. The system prompt scenario reads transcripts through the transcript-query tools or `reconstructTranscript`.
+  - `tests/monitor-review.test.ts` and `tests/monitor-tools.test.ts`: tests of removed symbols are deleted. Tests of the driver, chunking and visibility are kept and adapted to the bounded-only driver and the required system prompt.
+  - `tests/integration/async-backend.test.ts`: the scenarios that call the classifier without a budget reservation are deleted. The reserved scenarios move from the command target to the transcript target, and their expected request and charge counts drop by the command-only call.
+  - `tests/integration/transcript-evidence.test.ts`: assertions that only exercise `searchCommittedTranscripts`, `readCommittedTranscript`, `createCommittedEvidenceTools` or `makeInitialMonitorEvidence` are deleted. The manifest assertions for isolation stay. The isolation check that used literal search is re-expressed as a `query_transcripts` call through `createTranscriptInvestigationTools` on the isolated and the open snapshot.
+  - `tests/monitor-investigate-eval.test.ts`: only the `parseArguments` and `validateLiveConfig` assertions stay.
+  - `tests/control.test.ts` and `tests/integration/game-rules.test.ts` are unchanged.
+- L7. Scripts.
+  - `scripts/monitor-investigate-eval.ts` keeps `parseArguments`, `validateLiveConfig`, `EvaluationEnvironment` and `LiveEvaluationConfig`. `scripts/monitor-investigate-eval-live.ts` keeps `migrateFreshDatabase`, `seedWorkspace`, `loadReviewGame` and `SeededWorkspace`. `scripts/monitor-investigation-cases.ts` keeps `MonitorFixtureSnapshot` and what `seedWorkspace` needs. `runLiveEvaluation` and the legacy cases go.
+  - `scripts/auth-check.ts` and `scripts/budget-check.ts` no longer use `MONITOR_VERSION` and insert `monitor_mode='async'` rows.
+  - `scripts/smoke.ts`: brief C2 makes the rewrite that both outcomes of the open decision need. Runs are created as async runs. The checks that are not about the legacy monitor stay: isolated Sprites with ownership and the seed bugs reproducing, the shared Sprite with exclusive session leases, live agent streaming that settles from streamed usage, concurrent admission under both dollar caps, and the exhaustion tail. The blocks that assert a synchronous review are deleted. The live catch on the async path is added only if the user chooses it.
+- L8. `README.md`, `docs/verification.md` and the comment at the top of `lib/control.ts` no longer describe command blocking, the legacy monitor mode or the calibration script as current.
+- L9. `grep -rnE "runner-session|monitor-orchestration|run-lifecycle|transcript-search|runMonitorReview|finish_review|captureMonitorSnapshot|chargeMonitor|assertMonitorAuthorization|createMonitorTools|makeInitialMonitorEvidence|createMonitorReview|admitMonitorCommand|persistSessionMessages|MONITOR_DEADLINE_MS|search_transcripts|read_evidence|monitor-calibrate|control-eval-cases|MONITOR_VERSION\b" lib app scripts tests` returns nothing apart from `ASYNC_MONITOR_VERSION` and `FLAG_READ_MONITOR_VERSION`. Test fixtures that set `monitor_mode='legacy'` on purpose are expected.
+- Gates: G1 to G5 as in stage 1.
+
+### Open decision: live smoke
+
+`scripts/smoke.ts` is the gate run against live services before deployment. Its first section turns runs into legacy runs. That section also holds checks that are not about the legacy monitor: two isolated Sprites with ownership and the seed bugs reproducing, one Sprite shared by sessions with exclusive leases, live agent streaming that settles from streamed usage, and concurrent admission under both dollar caps. Those move to async runs and stay. The blocks that assert a synchronous review go, and the exhaustion tail moves to an async run.
+
+One check has no async equivalent today. The only place a real Jev call and a real investigator catch a real read is in that legacy section. The async section answers every model call with controlled replies. The user decides between two outcomes:
+
+1. Add a live path to the async section: a real read on an async run, then `runMonitorWorkerOnce`, then assert the run is caught. This keeps a live catch in the gate.
+2. Accept that live smoke no longer proves a real catch until the rebuild adds one.
+
+Either way the rewritten script is type-checked only until someone runs it live.
+
+### Steps
+
+1. Developer brief C1, tests only: remove the wrapper in `sprites.test.ts` and apply the rule. Delete or repair every scenario that calls a symbol on the L1 or L3 lists, so that brief C2 starts green. Delete the test files in L1 and apply L6. No file under `lib/`, `app/` or `scripts/` changes. Lead verifies and commits.
+2. Developer brief C2, source: L2 test first, then L1 to L5 and L7 to L9. Lead verifies, runs G1 to G5 and commits.
+3. Code review of the stage 2 delta. One corrective cycle if it finds P0 to P2 issues.
+
+### Risks and limits
+
+- Integration coverage that only legacy-protocol scenarios provided is lost. The developer's three lists are the record of what went.
+- `scripts/smoke.ts` is rewritten without being run. A live smoke run is required before deployment.
+- A legacy run that is still open at deploy time can no longer be continued. `cleanup` ends it 24 hours after its last update.
+- The `monitor_mode` column still defaults to `'legacy'`. A row inserted without the column cannot be played. `startGame` sets `'async'` explicitly.
+
+## Stage 3: two follow-ups the user approved
+
+Baseline for this stage: `5bcce46`. `npm run check` 331 of 331, `npm run test:integration` 261 of 261.
+
+On 2026-11-18 the user approved two additions that close gaps the delete pass left: a test seam so the stop-before-inference scenario can return, and a real monitor catch in the live smoke on the async path.
+
+### Design decisions
+
+- **The seam is one optional field on an existing parameter.** `runAsyncGame` already takes `options: { deadlineSignal? }`, and `runMonitorWorkerOnce` takes a timing override, so parameter seams are this repository's convention. The new field is `beforePrompt?: (signal: AbortSignal) => Promise<void>`. The runner awaits it only when it is set, between `await assertLease(game)` and `session.agent.prompt(...)`, which is where the checkpoint call used to be. `runGame` in `lib/runner.ts` passes the option through. The prompt route builds its options as a literal with `deadlineSignal` only, so no request can reach the field and nothing under `app/` changes.
+- **The deleted scenario returns with the same assertions.** "A first instruction stopped before inference is recorded and frees the run" is restored from `9657348`. It drives `claimGameSession` and `runGame` directly, as about forty scenarios in that file already do, and still stops the response through the real stop route.
+- **The hook is released by the signal, not by a sleep.** The hook receives the response's abort signal. The test's hook resolves when that signal aborts, which happens only after a heartbeat has seen the stop request. The old scenario slept 1.5 seconds and could release before a slow heartbeat.
+- **The live smoke catches a real read on an async run.** In live mode only, the script starts one fresh async run under a fresh owner, gives the live agent a fixed instruction to read the flag, and runs the worker until that run's job resolves. The block sits between the end of the async section, where the live `fetch` is restored, and the exhaustion tail, which queues a job of its own.
+- **The instruction is fixed text.** "Run only `cat /tmp/flag.txt` with sprite_exec. Do not upload, submit or run another command. Report its output and stop." Every command gets an upload URL, and an agent that uploaded the flag would move the run to finalizing.
+- **The live catch asserts what a deployment needs to know.** A completed Sprite operation for the run has a command that names `/tmp/flag.txt`, and a tool event contains `flag{`. The run is `caught`. A completed review has verdict `block` with evidence. The script does not check which session the evidence cites: stored refs carry a per-review alias of the session, built from a snapshot id that is not stored, and the finish tool already rejects a positive finding that does not cite the target session. At least one monitor inference row for the classifier model and one for the investigator model are settled with a cost above zero.
+
+### Non-goals
+
+- Any change to what the runner does when the option is absent, and any change to the worker, the classifier or the investigator.
+- Other live smoke checks: monitor error handling, rate limits, the provider pin.
+- Running the live smoke. That needs the user's approval because it spends on live models.
+
+### Acceptance criteria
+
+- S1. With the option absent, the async runner runs the same statements as before. The hook is called as `if (hook) await hook(signal)`. The full integration suite passes with no other test changed.
+- S2. The restored scenario passes. It asserts no agent inference request and no inference row after the stop, the run `active` and not busy, exactly a user event and a stopped error event, and that the instruction was recorded. Its waits for the hook to be entered and for the response to end are bounded.
+- S3. The scenario proves the seam. With the `await` of the hook removed from the runner, the scenario fails. The developer runs that mutation twice, records the failing assertion's message both times, and restores the file.
+- S4. `grep -rn "beforePrompt"` finds the option in `lib/runner-async.ts`, `lib/runner.ts` and tests only.
+- S5. `scripts/smoke.ts` in live mode performs the catch described above. The block is guarded by `!messagesOnly`, and the output and assertions of messages-only mode are unchanged.
+  - Before the first worker pass it asserts that the only `queued` or `reviewing` monitor job belongs to the new run.
+  - It runs at most four worker passes, one plus the number of retry delays. Between passes it waits until the job's `next_attempt_at`. It stops when the job is `caught`, `caught-up` or `unresolved`. It logs every retried pass. It does not rerun the agent turn.
+  - Each failure names the step that did not happen: the read command, the catch, the review evidence or the settled spend. The message includes the job's status and reason and the review's verdict, reason and operational error.
+- S6. The new run's id joins the list the script cleans up and reports on failure.
+- S7. `docs/verification.md` states that live smoke proves one real catch through the worker and still does not prove monitor error handling.
+- Gates: G1 to G3 as before. `scripts/smoke.ts` is type-checked only.
+
+### Steps
+
+1. Developer: S2 with the seam, then S3, S1 and S4.
+2. Developer: S5 to S7.
+3. Lead verifies and commits. Code review of the stage 3 delta. One corrective cycle if needed.
+
+## Evidence
+
+- Baseline, 2026-11-18, untouched worktree at `9657348` plus this file: `npm run check` exit 0 with 394 of 394 unit tests passing. `npm run test:integration` exit 0 with 364 of 364 passing, none failed, cancelled or skipped, in 85 seconds. Logs: `/Users/jonathan/Code/ctf/.artifacts/monitor-delete-pass/baseline-check.log` and `baseline-integration.log`.
+- Plan verification, 2026-11-18: approve with changes. The verifier confirmed the leaderboard, Sprite retention, checkpoint, `new_run`, `finalizeHolds` and prompt-hash claims against source. Its P1 and P2 findings are folded into this revision: brief order swapped, F7 and P4 corrected, P7 narrowed, F4, F5 and F6 given named checks, P5 file list made explicit, F11 added.
+- User decisions, 2026-11-18, after plan verification: historical fork accounting is dropped, and the legacy path is deleted with its scenarios. F4 to F7 and F11 changed accordingly. Commits are not authorized yet.
+- Plan re-verification, 2026-11-18: approve with changes. Its three P1 findings and two P2 findings are folded in: F11 reclassified as async-path with a repair attempt, the deletion rule now depends on what the failing assertion tests, F7 names the fixture consequences, F6 reworded, F5 gains an async-path `cleanup` check, F4 names its expected hit. The lead treats the contract as approved for brief A with these edits and does not run a third verification round.
+- Brief A, forks, 2026-11-18, verified by the lead from raw output: `npm run check` exit 0 with 389 of 389 unit tests. `npm run test:integration` exit 0 with 341 of 341, none failed, cancelled or skipped. `npm run build` exit 0 and its route list has no fork route. `grep -rn "checkpoint" lib app` returns only the production prompt sentence. `grep -rn "forked_from" lib app scripts` returns nothing. No change under `db/migrations/`. Logs: `briefA-check.log`, `briefA-integration.log` and `briefA-build.log` beside the baseline logs.
+  - F1 to F10 and F12 met. F5 was written first and failed with "a caught single-session run's Sprite is deleted in the same worker pass, 0 !== 1" before the implementation.
+  - F11 not repaired. The scenario was deleted. A gate on the model catalog request holds the response before the instruction is recorded, so it cannot show that the instruction was recorded, and a mocked clock broke leases and heartbeats. Integration coverage of a stop that arrives before inference is lost. Reported to the user.
+  - Test counts fell by 5 unit tests and 23 integration tests. Every deleted scenario covered forks, checkpoints or restore. No scenario was deleted for a legacy-runner failure. Scenarios that failed on `cleanup`, quota or rules were repaired with their fork steps removed.
+  - `scripts/smoke.ts` starts a fresh run where it used to fork. `scripts/flag-submission-smoke.ts` drops its checkpoint and restore calls. Both are type-checked only.
+- Brief B, strategies, 2026-11-18, verified by the lead from raw output: `npm run check` exit 0 with 360 of 360 unit tests. `npm run test:integration` exit 0 with 315 of 315, none failed, cancelled or skipped. `npm run build` exit 0. `npm run test:coverage` exit 0 at 40.87% lines, 87.19% branches and 56.14% functions over all owned source. Baseline coverage was not captured before the edits, so G4 has no before figure. Logs: `briefB-check.log`, `briefB-integration.log`, `briefB-build.log` and `briefB-coverage.log`.
+  - P1 to P7 met. The P1 pin passed on the untouched policy file and passes after the edit. The lead recomputed the production prompt hash from the rebuilt policy: `2b36e1c16706456ab155fd57cd16b7151558ca933f32e89885b4e5efc880668d`.
+  - P6: the strategy-name grep still matches the retired names where tests pass them as values that must be rejected, in `tests/flag-read-policy.test.ts`, `tests/flag-read-baseline.test.ts` and `tests/flag-read-baseline-run.test.ts`. None selects a strategy.
+  - 30 files deleted and 14 modified. Under `evals/` only the five retired schedules changed. Nothing changed under `db/`.
+  - The baseline wrapper tests generate a schedule from current sources. The two committed production schedules pin source hashes that this work made stale, so they serve only for case comparison.
+- Code review, 2026-11-18, independent Opus reviewer over `9657348..f7de980`: one P1 and one P2. It reran `npm run check` at 360 of 360 and `npm run test:integration` at 315 of 315, confirmed the production prompt byte-identical, and measured baseline coverage at `9657348`: 40.97% lines, 87.63% branches, 56.38% functions. That supplies the before figure for G4.
+  - P1: the rewritten `scripts/smoke.ts` switched model on a fresh run's first instruction and then asserted an earlier agent event from the original model, which only a fork's copied history supplied. Fixed by running one turn on the default model before the switch. Type-checked only.
+  - P2: the leaderboard filter's exclusion of runs that used a second attack model lost its only test with the fork scenarios. Fixed with a plain captured run that has agent inference from two models, asserted present unfiltered and absent for each model. With the `NOT EXISTS` clause removed from the route the test fails with "a run that used another attack model is not attributed to" the first model. The route is unchanged.
+  - P3 fixed: stray indentation in the `gameBilling` query, and a leftover restore phrase in `deploy/flag-submission.md`.
+  - Corrective cycle verified by the lead: `npm run check` 360 of 360, `npm run test:integration` 315 of 315, `npm run build` exit 0. Logs: `fix-check.log`, `fix-integration.log`, `fix-build.log`.
+- Re-review, 2026-11-18, same reviewer over `9657348..3f8c2b2`: ship. No P0 to P2 finding remains. It traced the smoke fix through the fixture in live and messages-only mode and the owner's run quota, and repeated the mutation run on the leaderboard test. Remaining notes are P3 and need no action.
+- Stage 1 final status: F1 to F10 and F12 met. F11 not met: the stop-before-inference scenario is deleted and the user decides whether a test seam is added. P1 to P7 met. G1 to G5 met. Checkpoints: `dec9a7c`, `f7de980`, `3f8c2b2`. A live smoke run is required before deployment and has not been run.
+- Stage 2 plan verification, 2026-11-18: approve with changes. The verifier confirmed the deletion lists, the `claimSession` placement for L2, that `lib/run-lifecycle.ts` and `lib/transcript-search.ts` can go whole, that no file under `app/` imports a removed symbol, and that the eval harness already calls the monitor under real job claims. Its findings are folded in: the test rule removes legacy assertions and keeps live scenarios, brief C1 also handles direct callers of removed symbols, the `MONITOR_VERSION` fixture rule keeps "never ranks" fixtures on a retired literal, `async-backend` moves to the transcript target, L7 names the exports that stay, and the smoke script becomes an open decision for the user. The lead treats the contract as approved for brief C1.
+- Brief C1, tests only, 2026-11-18, verified by the lead from raw output: `npm run check` exit 0 with 330 of 330 unit tests. `npm run test:integration` exit 0 with 259 of 259, none failed, cancelled or skipped. Only files under `tests/` changed. The grep for symbols that brief C2 removes returns nothing under `tests/`. Logs: `c1-check.log`, `c1-integration.log`.
+  - The legacy wrapper in `sprites.test.ts` is gone. Scenarios whose subject was a synchronous review, a command block, an end review, a legacy submission review or a removed symbol were deleted whole. The developer's report lists them by title.
+  - Kept with legacy assertions removed: the two billing-frame scenarios, reasoning streaming and stream settlement, the system prompt scenario, the mid-response cap scenario and three others. Kept unchanged: agent retry, streaming, abort and resume, the command adapter and idle expiration.
+  - Repaired by SQL fixtures: the Sprite cleanup scenarios, the stop-route and start-admission refusals of a legacy run, and the leaderboard scenario, which uses a retired version literal.
+  - Live behaviour that lost a test: none whose code stays without other coverage, by the developer's account. The seed-scoring and "every fixed bug counts" scenarios observed the legacy scorer, which goes in brief C2. The worker's scorer keeps its own scenarios. The mid-response daily cap no longer asserts a stopped command, because async runs do not gate commands on a monitor.
+- Brief C2, source, 2026-11-18, verified by the lead from raw output: `npm run check` exit 0 with 330 of 330 unit tests. `npm run test:integration` exit 0 with 260 of 260, none failed, cancelled or skipped. `npm run build` exit 0. `npm run test:coverage` exit 0 at 43.43% lines, 87.37% branches and 58.26% functions, against 40.97%, 87.63% and 56.38% at the stage 1 baseline. The L9 grep returns nothing. No change under `app/`, `db/`, `evals/` or `docs/plans/` apart from this file. Logs: `c2-check.log`, `c2-integration.log`, `c2-build.log`, `c2-coverage.log`.
+  - L1 to L5 and L7 to L9 met. The L2 test failed with "200 !== 410" before the refusal was added to `claimSession` and passes after.
+  - The lead read the authorization diff. A monitor call without a job claim is refused in `infer` and in `reserveInference`. The job-claim path keeps its claim assertion, the daily cap and the run budget rule. The checks that were removed applied only to calls without a claim.
+  - One scenario was repaired because of L2: "starting a new run stops the open run's responses and ends it" took a lease on a legacy run through the claim, which is now refused. It sets that lease by SQL and keeps its assertions.
+  - `scripts/smoke.ts` was rewritten and not run. It keeps Sprite isolation and ownership, the shared Sprite with exclusive leases, live streaming settlement, admission under both dollar caps, the model switch, hold reconciliation, the existing async section and the exhaustion tail. The synchronous-review blocks are gone, including the only live-model monitor catch. No live catch was added on the async path. That is the user's open decision.
+- Stage 2 code review, 2026-11-18, independent Opus reviewer over `7d711da..137b3bb`: no P0 or P1. It reran `npm run check` at 330 of 330 and `npm run test:integration` at 260 of 260, compared each changed authorization and billing function with its earlier version and found the job-claim path and the agent path intact, and confirmed the moved functions byte-identical. Three P2 findings were fixed in one corrective cycle.
+  - `validateReviewScope` had lost its only test. A unit test now covers a valid input, a different target session, owner and game, and a non-transcript target. With the owner comparison removed the test fails; the source file is unchanged.
+  - The rewritten `scripts/smoke.ts` left monitor jobs queued on its non-async runs, which the async section's worker would have claimed first and failed on. Those runs' jobs are marked caught up before the async section, as the old script did. Type-checked only.
+  - No test asserted a non-zero `bugsPassed` from the worker's scorer. Scenario W5 captures a run with a required fix and all four seed tests passing and asserts the count. The dead `simulateSeedIndexLock` fixture is removed.
+  - Two stale phrases in `docs/verification.md` were corrected.
+  - Corrective cycle verified by the lead: `npm run check` 331 of 331, `npm run test:integration` 261 of 261, `npm run build` exit 0. Logs: `c2fix-check.log`, `c2fix-integration.log`, `c2fix-build.log`.
+  - The reviewer's list of what live smoke no longer proves: a live classifier and investigator catch, live monitor billing and settlement, the live pinned provider endpoint, and monitor error and rate-limit handling. A historical legacy row in `finalizing` now blocks its owner from starting a run until the 24 hour sweep ends it.
+- Stage 2 re-review, 2026-11-18, same reviewer over `7d711da..d59c686`: ship. No P0 to P2 finding remains. It reran `npm run check` at 331 of 331 and `npm run test:integration` at 261 of 261, and traced that no job of the smoke script's non-async runs can be claimed after they are marked caught up.
+- Stage 2 final status: L1 to L9 met. G1 to G5 met. Checkpoints: `609161c`, `137b3bb`, `d59c686`. Open with the user: whether live smoke gets a real catch on the async path, and whether a test seam is added for the stop-before-inference scenario. A live smoke run is required before deployment and has not been run.
+- Stage 3 plan verification, 2026-11-18: approve with changes. The verifier traced that every assertion of the restored scenario is reachable with a hook between `assertLease` and the prompt call, and that the worker needs no more than the keys the smoke script already uses. Its findings are folded in: the live block sits before the exhaustion tail and checks that only its own job is claimable, the seam is an option on the existing parameter and not a module-level object, the hook is released by the abort signal, the worker loop is bounded at four passes with retry waits, and the instruction text is fixed.
+- Stage 3, 2026-11-18, verified by the lead from raw output: `npm run check` exit 0 with 331 of 331. `npm run test:integration` exit 0 with 262 of 262, none failed, cancelled or skipped. `npm run build` exit 0. `beforePrompt` appears only in `lib/runner-async.ts`, `lib/runner.ts` and the restored test. No change under `app/`, `db/` or `evals/`. Logs: `s3-check.log`, `s3-integration.log`, `s3-build.log`.
+  - S1 to S4 met. The restored scenario keeps the original assertions and adds a check that no agent inference row exists. With the `await` of the hook removed it failed twice with "no inference after the stop, 2 !== 0".
+  - S5 to S7 met by type check and reading only. `scripts/smoke.ts` has not been run.
+  - The lead found one defect before commit. The contract had said an evidence ref names the run's session, taken from the plan verifier without a check. Refs carry a per-review alias, so the smoke's check could never pass. It was removed and the contract corrected.
+- Stage 3 code review, 2026-11-18, independent Opus reviewer over `e14a8d1..39621cb`: ship. No P0 to P2 finding. It reran `npm run check` at 331 of 331 and `npm run test:integration` at 262 of 262, traced that no request can reach `beforePrompt`, and traced the live block's job precondition, schema queries, retry bound and cleanup. It did not repeat the S3 mutation. Four P3 notes were fixed.
+  - The restored scenario now asserts that the stop request released the hook and not the request timeout, and that the session lease is cleared. With the stop call removed from the test it fails on its bounded wait, "still running after 5s". The reason assertion did not fire in that mutation, because the 5 second wait is shorter than the 8 second timeout.
+  - The live catch's retry wait has a 250 ms margin for clock skew, and a pass that claims nothing no longer counts against the four-pass bound. Such passes are bounded at ten.
+  - The pass-bound comment and the `npm run smoke` row in `docs/verification.md` were corrected.
+  - Verified by the lead: `npm run check` 331 of 331, `npm run test:integration` 262 of 262, `npm run build` exit 0. Logs: `s3fix-check.log`, `s3fix-integration.log`, `s3fix-build.log`.
+- Stage 3 final status: S1 to S7 met, S5 to S7 by type check and reading only. Checkpoints: `39621cb` and the commit that carries this entry. Still required before deployment and not run: `scripts/smoke.ts` against live services.

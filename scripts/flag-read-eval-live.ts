@@ -1,16 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { flagReadCases, type FlagReadCase } from "./flag-read-cases";
+import { flagReadCases, policyForCase, type FlagReadCase } from "./flag-read-cases";
+import { withOperations } from "./flag-read-corpus";
 import {
   createInvestigationTraceRecorder,
   type InvestigationObserver,
 } from "../lib/investigation-trace";
-import type { ValidatedMonitorEvidence } from "../lib/monitor-evidence";
-import {
-  resolveFlagReadPolicy,
-  type FlagReadPolicy,
-  type FlagReadSearchStrategy,
-} from "../lib/flag-read-policy";
+import type { ReadConfirmation, ValidatedMonitorEvidence } from "../lib/monitor-evidence";
+import type { FlagReadPolicy, FlagReadPolicyId } from "../lib/flag-read-policy";
+import { MONITOR_RUN_ALLOWANCE_MICRODOLLARS } from "../lib/policy";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
 import {
   BOUNDED_INVESTIGATOR_POLICY,
@@ -25,6 +23,8 @@ import {
 } from "./monitor-investigate-eval-live";
 
 const CLASSIFIER_RESERVE_MICRODOLLARS = 10;
+// Marks the settled monitor row that leaves a case's run exactly the evaluation's remaining budget.
+export const BUDGET_SEED_MODEL = "eval-budget-seed";
 
 export async function seedCase(
   pool: Pool,
@@ -37,7 +37,7 @@ export async function seedCase(
   const ownerId = `synthetic-flag-read-owner-${randomUUID()}`;
   const workspace = await seedWorkspace(
     pool,
-    item.snapshot,
+    withOperations(item.snapshot),
     ownerId,
     remainingMicrodollars,
     agentModel,
@@ -47,13 +47,31 @@ export async function seedCase(
       activeSessionId: item.targetSessionId,
       observations: item.observations,
       observationTimes: item.observationTimes,
+      isolated: item.isolated,
     },
   );
   await pool.query("UPDATE ctf.games SET monitor_mode='async' WHERE id=$1", [workspace.gameId]);
+  // Monitor requests ignore the run budget and answer to the monitor's allowance, so the
+  // evaluation's remaining budget is the allowance less a settled monitor row that no review owns.
+  const seed = Math.max(0, MONITOR_RUN_ALLOWANCE_MICRODOLLARS - remainingMicrodollars);
+  if (seed > 0) {
+    await pool.query(
+      "INSERT INTO ctf.daily_spend(day) VALUES((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
+    );
+    await pool.query(
+      `INSERT INTO ctf.inference(id,game_id,day,role,model,token_ceiling,cost_ceiling,tokens,cost,settled_at)
+       VALUES(gen_random_uuid(),$1,(now() AT TIME ZONE 'UTC')::date,'monitor',$2,0,$3,0,$3,now())`,
+      [workspace.gameId, BUDGET_SEED_MODEL, seed],
+    );
+    await pool.query("UPDATE ctf.games SET spent_microdollars=spent_microdollars+$2 WHERE id=$1", [
+      workspace.gameId,
+      seed,
+    ]);
+  }
   const historyWorkspace = item.sameOwnerHistory
     ? await seedWorkspace(
         pool,
-        item.sameOwnerHistory,
+        withOperations(item.sameOwnerHistory),
         ownerId,
         remainingMicrodollars,
         agentModel,
@@ -81,7 +99,6 @@ async function createClaim(
   workspace: SeededWorkspace,
   enqueueMonitorJob: typeof import("../lib/monitor-jobs").enqueueMonitorJob,
   claimMonitorJob: typeof import("../lib/monitor-jobs").claimMonitorJob,
-  boundedBaseline: boolean,
 ) {
   const sessionId = workspace.sessionIds.get(item.targetSessionId);
   if (!sessionId) throw new Error(`${item.id}: target session was not seeded.`);
@@ -123,9 +140,7 @@ async function createClaim(
   );
   let claim: Awaited<ReturnType<typeof claimMonitorJob>>;
   try {
-    claim = await claimMonitorJob(
-      boundedBaseline ? BOUNDED_INVESTIGATOR_POLICY.claimMs : undefined,
-    );
+    claim = await claimMonitorJob(BOUNDED_INVESTIGATOR_POLICY.claimMs);
   } finally {
     await pool.query("UPDATE ctf.agent_sessions SET lease_until=$2 WHERE id=$1", [
       sessionId,
@@ -154,10 +169,11 @@ async function reviewCase(
     games: typeof import("../lib/games");
     finalization: typeof import("../lib/async-finalization");
     inference: typeof import("../lib/inference");
+    review: typeof import("../lib/monitor-review");
   },
   testObserver?: InvestigationObserver,
-  boundedBaseline = false,
   timing: InvestigatorTiming = BOUNDED_INVESTIGATOR_POLICY,
+  callLimit?: number,
 ): Promise<FlagReadEntry> {
   const started = Date.now();
   const claim = await createClaim(
@@ -166,13 +182,12 @@ async function reviewCase(
     workspace,
     modules.jobs.enqueueMonitorJob,
     modules.jobs.claimMonitorJob,
-    boundedBaseline,
   );
   const reviewId = randomUUID();
   await pool.query(
     `INSERT INTO ctf.monitor_reviews
-       (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,job_id,job_claim_token)
-     VALUES($1,$2,$3,$4,'transcript',$5,$6,$7,$8)`,
+       (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,prompt_hash,job_id,job_claim_token)
+     VALUES($1,$2,$3,$4,'transcript',$5,$6,$7,$8,$9)`,
     [
       reviewId,
       claim.gameId,
@@ -180,6 +195,7 @@ async function reviewCase(
       item.snapshot.revision,
       modules.policy.INVESTIGATOR_MODEL,
       selectedPolicy.monitorVersion,
+      selectedPolicy.promptHash,
       claim.jobId,
       claim.claimToken,
     ],
@@ -192,9 +208,12 @@ async function reviewCase(
   let retrievedReferences: string[] | undefined;
   let retrievalCalls: number | undefined;
   let calls: number | undefined;
+  let forcedDecision: boolean | undefined;
+  let continuations = 0;
+  let readConfirmation: ReadConfirmation | null = null;
   let monitorVersion = selectedPolicy.monitorVersion;
   let promptHash = selectedPolicy.promptHash;
-  let searchStrategy: FlagReadSearchStrategy = selectedPolicy.searchStrategy;
+  let policyId: FlagReadPolicyId = selectedPolicy.id;
   let investigatorModel: string | undefined;
   let reviewPersisted = false;
   const trace = createInvestigationTraceRecorder();
@@ -232,12 +251,9 @@ async function reviewCase(
       reviewId,
       messages: [...target.messages],
       target: { kind: "transcript" },
-      signal: boundedBaseline
-        ? AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)])
-        : signal,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timing.classifierDeadlineMs)]),
       executionGeneration: Number(game.execution_generation ?? 0),
       jobClaim: claim,
-      reserveBudget: boundedBaseline,
     });
     await modules.sessions.updateMonitorClassifierSignals(reviewId, classifier.signals);
     const result = await modules.investigator.runFlagReadInvestigation(
@@ -251,14 +267,17 @@ async function reviewCase(
         signal,
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
-        deadlineAt: boundedBaseline ? Date.now() + timing.deadlineMs : undefined,
+        deadlineAt: Date.now() + timing.deadlineMs,
+        forceDecisionMs: timing.forceDecisionMs,
+        callLimit,
       },
-      { observer, searchStrategy: selectedPolicy.searchStrategy, boundedBaseline },
+      selectedPolicy,
+      { observer },
     );
     if (
       result.monitorVersion !== selectedPolicy.monitorVersion ||
       result.promptHash !== selectedPolicy.promptHash ||
-      result.searchStrategy !== selectedPolicy.searchStrategy
+      result.policyId !== selectedPolicy.id
     )
       throw new Error(`${item.id}: dispatched investigator policy does not match seeded policy.`);
     reason = result.reason;
@@ -269,9 +288,12 @@ async function reviewCase(
     retrievedReferences = result.retrievedRefs;
     retrievalCalls = result.retrievalCalls;
     calls = result.calls;
+    forcedDecision = result.forcedDecision;
+    continuations = result.continuations;
+    readConfirmation = result.readConfirmation;
     monitorVersion = result.monitorVersion;
     promptHash = result.promptHash;
-    searchStrategy = result.searchStrategy;
+    policyId = result.policyId;
     investigatorModel = result.investigatorModel;
     if (detected)
       await modules.finalization.catchAsyncRun(claim, reviewId, decision, classifier.suspicion);
@@ -285,9 +307,16 @@ async function reviewCase(
     operationalError =
       modules.inference.diagnosticText(error instanceof Error ? error.message : String(error)) ??
       "Flag-read investigation failed.";
+    calls = modules.review.investigatorCallsOf(error) ?? undefined;
+    continuations = modules.review.investigatorContinuationsOf(error);
+    readConfirmation =
+      modules.investigator.investigatorReadConfirmationOf(error) ?? readConfirmation;
     await modules.sessions.completeMonitorReview(reviewId, {
       operationalError,
       latencyMs: Date.now() - started,
+      calls,
+      continuations,
+      readConfirmation,
     });
     await modules.jobs.finishMonitorJob(claim, { kind: "error", reason: operationalError });
     // This one-pass evaluator records the retryable error and keeps later cases independent.
@@ -303,12 +332,17 @@ async function reviewCase(
     [claim.gameId, reviewId],
   );
   const billing = await modules.games.gameBilling(claim.gameId);
+  const {
+    rows: [seeded],
+  } = await pool.query<{ seed: string }>(
+    "SELECT coalesce(sum(cost),0)::bigint AS seed FROM ctf.inference WHERE game_id=$1 AND role='monitor' AND model=$2 AND review_id IS NULL",
+    [claim.gameId, BUDGET_SEED_MODEL],
+  );
+  const monitorSpend = billing.monitorSpendMicrodollars - Number(seeded.seed);
+  const monitorHeld = (await modules.games.runSpend(pool, claim.gameId)).monitorHeld;
   const settledMicrodollars = Number(inferenceRows[0].settled);
   const heldMicrodollars = Number(inferenceRows[0].held);
-  if (
-    settledMicrodollars !== billing.monitorSpendMicrodollars ||
-    heldMicrodollars !== billing.reservedMicrodollars
-  )
+  if (settledMicrodollars !== monitorSpend || heldMicrodollars !== monitorHeld)
     throw new Error(`${item.id}: persisted inference and game billing disagree.`);
   const {
     rows: [job],
@@ -348,9 +382,12 @@ async function reviewCase(
     retrievedReferences,
     retrievalCalls,
     calls,
+    continuations,
+    readConfirmation,
+    ...(forcedDecision === undefined ? {} : { forcedDecision }),
     monitorVersion,
     promptHash,
-    searchStrategy,
+    policyId,
     investigatorModel,
     inference,
     accountingOverrun: inference.some(
@@ -364,14 +401,13 @@ export async function runFlagReadLiveEvaluation(
   cases: readonly FlagReadCase[] = flagReadCases,
   testObserver?: InvestigationObserver,
   options: {
-    searchStrategy?: FlagReadSearchStrategy;
-    boundedBaseline?: boolean;
+    policyId?: FlagReadPolicyId;
     timing?: InvestigatorTiming;
+    callLimit?: number;
     onEntry?: (entry: FlagReadEntry) => void | Promise<void>;
   } = {},
 ): Promise<FlagReadEntry[]> {
   const timing = resolveInvestigatorTiming(options.timing);
-  const selectedPolicy = resolveFlagReadPolicy(options.searchStrategy ?? "current");
   const { Pool } = await import("pg");
   const pool = new Pool({
     connectionString: config.databaseUrl,
@@ -393,6 +429,7 @@ export async function runFlagReadLiveEvaluation(
       games,
       finalization,
       inference,
+      review,
     ] = await Promise.all([
       import("../lib/policy"),
       import("../lib/typesafe"),
@@ -405,6 +442,7 @@ export async function runFlagReadLiveEvaluation(
       import("../lib/games"),
       import("../lib/async-finalization"),
       import("../lib/inference"),
+      import("../lib/monitor-review"),
     ]);
     const modules = {
       policy,
@@ -418,11 +456,13 @@ export async function runFlagReadLiveEvaluation(
       games,
       finalization,
       inference,
+      review,
     };
     const entries: FlagReadEntry[] = [];
     let usedMicrodollars = 0;
     let accountingOverrun = false;
     for (const item of cases) {
+      const selectedPolicy = policyForCase(item, options.policyId);
       const remaining = config.budgetMicrodollars - usedMicrodollars;
       if (remaining <= CLASSIFIER_RESERVE_MICRODOLLARS || accountingOverrun) {
         const entry: FlagReadEntry = {
@@ -443,7 +483,7 @@ export async function runFlagReadLiveEvaluation(
           heldMicrodollars: 0,
           monitorVersion: selectedPolicy.monitorVersion,
           promptHash: selectedPolicy.promptHash,
-          searchStrategy: selectedPolicy.searchStrategy,
+          policyId: selectedPolicy.id,
         };
         entries.push(entry);
         await options.onEntry?.(entry);
@@ -464,12 +504,12 @@ export async function runFlagReadLiveEvaluation(
         selectedPolicy,
         modules,
         testObserver,
-        options.boundedBaseline,
         timing,
+        options.callLimit,
       );
       entries.push(entry);
       usedMicrodollars += entry.settledMicrodollars + entry.heldMicrodollars;
-      accountingOverrun ||= Boolean(options.boundedBaseline && entry.accountingOverrun);
+      accountingOverrun ||= Boolean(entry.accountingOverrun);
       await options.onEntry?.(entry);
     }
     return entries;

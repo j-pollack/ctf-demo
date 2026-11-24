@@ -46,3 +46,11 @@ test("an error shows in the page's alert", () => {
   );
   assert.doesNotMatch(render(), /role="alert"/);
 });
+
+test("the form tells a new player they choose a leaderboard name after the link", () => {
+  assert.match(
+    render(),
+    /<p class="hint">New here\? After you open the link, you’ll choose a display name for the leaderboard\.<\/p>/,
+  );
+  assert.doesNotMatch(render({ sent: true }), /display name/);
+});

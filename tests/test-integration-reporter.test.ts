@@ -6,7 +6,7 @@ import { heldOutput } from "../scripts/test-integration-reporter";
 
 // The runner names a file as it was passed in output events and by absolute path in results.
 const passing = "tests/run-format.test.ts";
-const failing = "tests/run-risk.test.ts";
+const failing = "tests/monitor-saw.test.ts";
 const output = (file: string, message: string) =>
   ({ type: "test:stdout", data: { file, message } }) as TestEvent;
 const result = (type: "test:pass" | "test:fail", file: string, name: string) =>
