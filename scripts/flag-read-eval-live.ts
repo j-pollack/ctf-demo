@@ -268,6 +268,7 @@ async function reviewCase(
         jobClaim: claim,
         includeReasoning: game.monitor_reasoning,
         deadlineAt: Date.now() + timing.deadlineMs,
+        forceDecisionMs: timing.forceDecisionMs,
         callLimit,
       },
       selectedPolicy,

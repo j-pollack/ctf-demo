@@ -292,6 +292,8 @@ export async function finishMonitorJob(
               ? "queued"
               : "unresolved";
     const delay = retry ? RETRY_DELAYS_MS[job.attempts - 1] : 0;
+    // A final review that could not decide is not requeued: the run ends with no result.
+    const exhausted = outcome.kind === "unknown" && claim.final && !newer;
     await client.query(
       `UPDATE ctf.monitor_jobs SET status=$2,
        covered_version=CASE WHEN $3='allow' THEN greatest(covered_version,$4) ELSE covered_version END,
@@ -301,6 +303,7 @@ export async function finishMonitorJob(
          THEN greatest(reviewed_version,$4) ELSE reviewed_version END,
        claim_token=NULL,claim_until=NULL,target_version=NULL,reason=$5,
        attempts=CASE WHEN $7::boolean OR $3='allow' THEN 0 ELSE attempts END,
+       requeues=CASE WHEN $9::boolean THEN greatest(requeues,$10) ELSE requeues END,
        next_attempt_at=now()+($6::int * interval '1 millisecond'),
        last_reviewed_at=now(),updated_at=now() WHERE id=$1`,
       [
@@ -312,6 +315,8 @@ export async function finishMonitorJob(
         delay,
         newer,
         claim.final,
+        exhausted,
+        MAX_REQUEUES,
       ],
     );
     await client.query("UPDATE ctf.games SET state_revision=state_revision+1 WHERE id=$1", [

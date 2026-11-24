@@ -324,8 +324,10 @@ export async function publicGame(
       ordinal: number;
       reason: string | null;
       cause: string | null;
+      source: string | null;
     }>(
-      `SELECT e.session_id,s.ordinal,e.data->>'text' AS reason,e.data->>'cause' AS cause FROM ctf.events e
+      `SELECT e.session_id,s.ordinal,e.data->>'text' AS reason,e.data->>'cause' AS cause,
+      e.data->>'source' AS source FROM ctf.events e
     LEFT JOIN ctf.agent_sessions s ON s.game_id=e.game_id AND s.id=e.session_id
     WHERE e.game_id=$1 AND e.data->>'kind'='monitor' AND e.data->>'decision'='block'
     ORDER BY e.id DESC LIMIT 1`,
@@ -397,9 +399,11 @@ export async function publicGame(
     caughtCause:
       monitorState.status !== "caught"
         ? null
-        : caught?.cause === "jailbreak" || caught?.cause === "flag_output"
-          ? caught.cause
-          : ("flag_read" as const),
+        : caught?.cause === "jailbreak" && caught.source === "decoded"
+          ? ("decoded_jailbreak" as const)
+          : caught?.cause === "jailbreak" || caught?.cause === "flag_output"
+            ? caught.cause
+            : ("flag_read" as const),
     refusedTexts: await refusedTextsFor(game.id),
     events: rows.map((row) => ({ ...row.data, id: Number(row.id) })),
   };

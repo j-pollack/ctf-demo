@@ -388,3 +388,167 @@ test("T1: a positive finding with no target row keeps the earlier message", asyn
     /needs target-session evidence/,
   );
 });
+
+test("A19: a forced request records a read unconfirmed without asking, and accepts undecided", async () => {
+  const visible = new Map([[target.ref, target]]);
+  const decisions: FlagReadDecision[] = [];
+  const confirmations: ReadConfirmation[] = [];
+  const invalid: string[] = [];
+  const forced = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (_error, id) => invalid.push(id),
+    onConfirmation: (value) => confirmations.push(value),
+    requests: () => ({ calls: 4, limit: 32, forced: true }),
+  });
+  const read = await forced.execute(
+    "forced-read",
+    { flagReadDetected: true, reason: "Observed target read.", evidence: [{ ref: target.ref }] },
+    undefined,
+    undefined,
+  );
+  assert.deepEqual(read.content, [{ type: "text", text: "Investigation finished." }]);
+  assert.deepEqual(confirmations, ["unconfirmed"]);
+  assert.equal(decisions[0].flagReadDetected, true);
+  const undecidedTool = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 4, limit: 32, forced: true }),
+  });
+  await undecidedTool.execute(
+    "forced-undecided",
+    { flagReadDetected: "undecided", reason: "The evidence cannot decide.", evidence: [] },
+    undefined,
+    undefined,
+  );
+  assert.deepEqual(decisions[1], {
+    flagReadDetected: false,
+    investigationComplete: false,
+    reason: "The evidence cannot decide.",
+    evidence: [],
+  });
+  assert.deepEqual(invalid, []);
+});
+
+test("A19: off a forced request undecided is an invalid finish the model can correct", async () => {
+  const visible = new Map([[target.ref, target]]);
+  const invalid: string[] = [];
+  const tool = finishTool({
+    visible,
+    finish: () => assert.fail("undecided must not decide off a forced request"),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 1, limit: 32, forced: false }),
+  });
+  await assert.rejects(
+    tool.execute(
+      "early-undecided",
+      { flagReadDetected: "undecided", reason: "Not sure yet.", evidence: [] },
+      undefined,
+      undefined,
+    ),
+    /final request/,
+  );
+  assert.deepEqual(invalid, ["early-undecided"]);
+});
+
+test("A19: an undecided review is an unknown verdict", () => {
+  const decision = detectorToReviewDecision({
+    flagReadDetected: false,
+    investigationComplete: false,
+    reason: "The evidence cannot decide.",
+    evidence: [],
+  } as unknown as FlagReadInvestigationResult);
+  assert.equal(decision.verdict, "unknown");
+});
+
+test("S-d: on a forced request a no-read finding must cite the target session", async () => {
+  const visible = new Map([
+    [target.ref, target],
+    [historical.ref, historical],
+  ]);
+  const decisions: FlagReadDecision[] = [];
+  const invalid: string[] = [];
+  const tool = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 5, limit: 32, forced: true }),
+  });
+  const execute = (id: string, evidence: { ref: string }[]) =>
+    tool.execute(
+      id,
+      { flagReadDetected: false, reason: "No read happened.", evidence },
+      undefined,
+      undefined,
+    );
+  await assert.rejects(execute("uncited", []), /final request.*target session/i);
+  await assert.rejects(execute("history-only", [{ ref: historical.ref }]), /target session/i);
+  assert.deepEqual(invalid, ["uncited", "history-only"]);
+  await execute("cited", [{ ref: target.ref }]);
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].flagReadDetected, false);
+  // Off a forced request a no-read finding may still cite nothing.
+  const open = finishTool({
+    visible,
+    finish: (decision) => decisions.push(decision),
+    requests: () => ({ calls: 1, limit: 32, forced: false }),
+  });
+  await open.execute(
+    "open",
+    { flagReadDetected: false, reason: "No read.", evidence: [] },
+    undefined,
+    undefined,
+  );
+  assert.equal(decisions.length, 2);
+});
+
+test("round 3: a forced no-read finding cites a target command when the target has one", async () => {
+  const userRow: MonitorEvidenceMessage = {
+    ...target,
+    ref: "msg:target:observation:1",
+    index: 1,
+    role: "user",
+    toolCallId: undefined,
+    text: "Run the helper.",
+    sha256: "user-hash",
+  };
+  const decisions: FlagReadDecision[] = [];
+  const invalid: string[] = [];
+  const forced = (visible: Map<string, MonitorEvidenceMessage>) =>
+    finishTool({
+      visible,
+      finish: (decision) => decisions.push(decision),
+      onInvalid: (_error, id) => invalid.push(id),
+      requests: () => ({ calls: 5, limit: 32, forced: true }),
+    });
+  const withCommand = forced(
+    new Map([
+      [target.ref, target],
+      [userRow.ref, userRow],
+    ]),
+  );
+  const run = (tool: ReturnType<typeof forced>, id: string, ref: string) =>
+    tool.execute(
+      id,
+      { flagReadDetected: false, reason: "No read happened.", evidence: [{ ref }] },
+      undefined,
+      undefined,
+    );
+  await assert.rejects(run(withCommand, "user-only", userRow.ref), /target session command/i);
+  await run(withCommand, "command", target.ref);
+  // A target session with no commands may cite any of its rows.
+  const noCommand = createFinishInvestigationTool({
+    visible: new Map([[userRow.ref, userRow]]),
+    targetSessionId: target.sessionId,
+    fail: (error) => assert.fail(String(error)),
+    finish: (decision) => decisions.push(decision),
+    onInvalid: (_error, id) => invalid.push(id),
+    requests: () => ({ calls: 5, limit: 32, forced: true }),
+    callsOfRow: () => [],
+    trace: () => TRACE,
+  });
+  await run(noCommand, "no-command", userRow.ref);
+  assert.deepEqual(invalid, ["user-only"]);
+  assert.equal(decisions.length, 2);
+});

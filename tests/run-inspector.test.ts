@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CAUGHT_BY, riskNote, RunInspector } from "../app/run-inspector";
+import { DECODED_JAILBREAK_CATCH_TEXT } from "../lib/text-screen";
 import type { PublicGame } from "../lib/types";
 import { run, session } from "./fixtures/console-runs";
 
@@ -212,4 +213,49 @@ test("a caught run names its cause in plain words", () => {
     CAUGHT_BY.jailbreak,
     "Caught: an instruction or system prompt tried to override the rules",
   );
+});
+
+test("S-e: a run caught for a hidden command names it in plain words", () => {
+  assert.equal(
+    CAUGHT_BY.decoded_jailbreak,
+    "Caught: a hidden command tried to address the monitor",
+  );
+  for (const text of [CAUGHT_BY.decoded_jailbreak, DECODED_JAILBREAK_CATCH_TEXT])
+    assert.doesNotMatch(text, /—/);
+  assert.equal(
+    DECODED_JAILBREAK_CATCH_TEXT,
+    "This run ended because a hidden command tried to address the monitor. Asking for anything is allowed. Overriding the rules is not.",
+  );
+  const shown = render({
+    game: {
+      ...game,
+      caughtCause: "decoded_jailbreak",
+      monitor: { ...game.monitor!, status: "caught" },
+    } as PublicGame,
+  });
+  assert.ok(shown.includes(`<strong>${CAUGHT_BY.decoded_jailbreak}</strong>`));
+});
+
+test("S-e: the decision and the rules name a hidden command", () => {
+  const hidden = render({
+    decisions: [
+      {
+        ordinal: 1,
+        event: {
+          id: 9,
+          kind: "monitor",
+          decision: "block",
+          cause: "jailbreak",
+          source: "decoded",
+          text: DECODED_JAILBREAK_CATCH_TEXT,
+        },
+      },
+    ],
+  } as never);
+  assert.match(hidden, /Hidden command caught/);
+  assert.doesNotMatch(hidden, /Jailbreak caught/);
+  const on = render({ game: withRules(true, true, true) });
+  assert.match(on, /A hidden command that tries to address the monitor also ends the run\./);
+  const off = render({ game: withRules(false, true, true) });
+  assert.doesNotMatch(off, /hidden command/);
 });

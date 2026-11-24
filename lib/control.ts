@@ -1,9 +1,12 @@
 import type { TypesafeAnswer, TypesafeQuestion } from "./typesafe";
 
-// Stamped on every run; bump the flag-read version when classifier calibration or investigator
-// policy/model changes.
-export const FLAG_READ_MONITOR_VERSION =
+// Bump the flag-read version when classifier calibration or investigator policy/model changes.
+export const V15_FLAG_READ_MONITOR_VERSION =
   "investigator-v15-glm53-jev114-isolation-times-digitalocean";
+export const V16_FLAG_READ_MONITOR_VERSION = "investigator-v16-glm53-jev114-decode-digitalocean";
+// Stamped on every new run. Vercel deploys before the worker, and an old worker fails a v16 run,
+// so the stamp moves to v16 in a follow-up once the worker that supports it is live.
+export const FLAG_READ_MONITOR_VERSION = V15_FLAG_READ_MONITOR_VERSION;
 // Runs stamped before the v15 deploy keep this stamp and are reviewed under their own prompt.
 export const PREVIOUS_FLAG_READ_MONITOR_VERSION =
   "investigator-v14-glm53-jev114-presumption-digitalocean";

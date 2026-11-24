@@ -125,6 +125,12 @@ test(
     await pool.query(
       await readFile(new URL("../../db/migrations/032-second-look.sql", import.meta.url), "utf8"),
     );
+    await pool.query(
+      await readFile(
+        new URL("../../db/migrations/034-investigator-requests.sql", import.meta.url),
+        "utf8",
+      ),
+    );
     const legacy = (
       await pool.query(
         `SELECT submission_transport,messages,tokens_used,blocks,reserved_microdollars

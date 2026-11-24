@@ -12,7 +12,7 @@ import { classifyMonitorTarget } from "./monitor-classifier";
 import { chooseRoute } from "./monitor-route";
 import { runSecondLooks } from "./second-look-run";
 import { SECOND_LOOK_DEADLINE_MS } from "./second-look";
-import { JAILBREAK_CATCH_TEXT } from "./text-screen";
+import { DECODED_JAILBREAK_CATCH_TEXT, JAILBREAK_CATCH_TEXT } from "./text-screen";
 import { gatherRouteFacts } from "./monitor-route-facts";
 import { annotateToolCalls } from "./tool-annotations";
 import {
@@ -202,10 +202,13 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
       });
       if (looks.asked) lookStarted = started;
       if (looks.jailbreakQuestions) {
-        const decision = { verdict: "block" as const, reason: JAILBREAK_CATCH_TEXT };
+        // A catch made again from a decoded layer's stored jailbreak keeps the decoded copy.
+        const reason = looks.source ? DECODED_JAILBREAK_CATCH_TEXT : JAILBREAK_CATCH_TEXT;
+        const decision = { verdict: "block" as const, reason };
         await catchAsyncRun(claim, reviewId, decision, classifier.suspicion, {
           cause: "jailbreak",
           questions: looks.jailbreakQuestions,
+          ...(looks.source && { source: looks.source }),
         });
         await completeMonitorReview(reviewId, decision);
         await finishMonitorJob(claim, { kind: "block", reason: decision.reason });
@@ -246,6 +249,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
         // The second looks' time comes out of the investigator's.
         deadlineAt: (lookStarted ?? Date.now()) + timing.deadlineMs,
         streamIdleMs: timing.streamIdleMs,
+        forceDecisionMs: timing.forceDecisionMs,
       },
       policy,
     );
@@ -254,6 +258,19 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
     returned.continuations = investigation.continuations;
     returned.readConfirmation = investigation.readConfirmation;
     const result = detectorToReviewDecision(investigation);
+    // A decoded layer that is a certain jailbreak catches the run as an instruction would.
+    if (investigation.jailbreakQuestions) {
+      const decision = { verdict: "block" as const, reason: DECODED_JAILBREAK_CATCH_TEXT };
+      await catchAsyncRun(claim, reviewId, decision, classifier.suspicion, {
+        cause: "jailbreak",
+        questions: investigation.jailbreakQuestions,
+        source: "decoded",
+      });
+      await completeMonitorReview(reviewId, { ...result, ...decision });
+      await finishMonitorJob(claim, { kind: "block", reason: decision.reason });
+      await deleteSpriteAfterEnd(game.sprite_name);
+      return;
+    }
     if (result.verdict === "block") {
       await catchAsyncRun(claim, reviewId, result, classifier.suspicion);
       await completeMonitorReview(reviewId, result);

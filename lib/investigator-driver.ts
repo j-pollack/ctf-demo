@@ -3,6 +3,7 @@ import {
   createAssistantMessageEventStream,
   type Api,
   type AssistantMessage,
+  type Message,
   type Model,
 } from "@earendil-works/pi-ai";
 import {
@@ -27,6 +28,14 @@ import {
   MAX_CALL_LIMIT,
   MIN_CALL_LIMIT,
 } from "./investigator-evaluation-policy";
+import { createTranscriptRecorder } from "./investigator-transcript";
+import {
+  FORCE_DECISION_REMAINING_MS,
+  finalRequestNotice,
+  forceCause,
+  forcedLogger,
+  type ForceCause,
+} from "./investigator-force";
 
 export { MONITOR_CALL_LIMIT };
 export { INVESTIGATOR_MODEL } from "./policy";
@@ -37,26 +46,14 @@ const failureFacts = new WeakMap<
   { calls: number; forced: boolean; continuations: number }
 >();
 
+const factsOf = (error: unknown) =>
+  typeof error === "object" && error !== null ? failureFacts.get(error) : undefined;
 // The number of investigator requests a failed review made, or null when none could have been.
-export function investigatorCallsOf(error: unknown): number | null {
-  return typeof error === "object" && error !== null
-    ? (failureFacts.get(error)?.calls ?? null)
-    : null;
-}
-
+export const investigatorCallsOf = (error: unknown): number | null => factsOf(error)?.calls ?? null;
 // Whether a failed review had received the final-request notice.
-export function investigatorForcedOf(error: unknown): boolean {
-  return typeof error === "object" && error !== null
-    ? (failureFacts.get(error)?.forced ?? false)
-    : false;
-}
-
+export const investigatorForcedOf = (error: unknown) => factsOf(error)?.forced ?? false;
 // How many of a failed review's responses were cut off at the output limit.
-export function investigatorContinuationsOf(error: unknown): number {
-  return typeof error === "object" && error !== null
-    ? (failureFacts.get(error)?.continuations ?? 0)
-    : 0;
-}
+export const investigatorContinuationsOf = (error: unknown) => factsOf(error)?.continuations ?? 0;
 
 function withCalls(error: unknown, calls: number, forced: boolean, continuations: number) {
   if (typeof error === "object" && error !== null)
@@ -69,10 +66,6 @@ const CONTINUE_MESSAGE =
 
 export function budgetLine(limit: number) {
   return `This review has ${limit} model request${limit === 1 ? "" : "s"}. Retrieval calls spend them. Decide on the last one.`;
-}
-
-function finalRequestNotice(finishName: string) {
-  return `This is the final request. Call ${finishName} now with the evidence already retrieved. Report a read only if that evidence establishes it.`;
 }
 
 // The investigator's model at the bounded policy's rates.
@@ -133,6 +126,8 @@ export function guardInvestigatorStream(
     onContextLimit?: (bytes: number, limit: number) => void;
     maxContextBytes?: number;
     admitCall: () => boolean;
+    // Runs once a request is admitted, just before it is dispatched.
+    onDispatch?: (context: Parameters<ReturnType<typeof agentStream>>[1]) => void;
   },
 ) {
   return (
@@ -153,6 +148,7 @@ export function guardInvestigatorStream(
       options.onLimit();
       return abortedStream(model);
     }
+    options.onDispatch?.(context);
     return dispatch(model, context, streamOptions);
   };
 }
@@ -182,7 +178,7 @@ export async function runInvestigatorDriver<T>(
       recordFailure: (error: unknown) => void;
       finish: (value: T) => void;
       onInvalid: (error: unknown, toolCallId: string) => void;
-      requests: () => { calls: number; limit: number };
+      requests: () => { calls: number; limit: number; forced: boolean };
     }) => Promise<InvestigatorSetup> | InvestigatorSetup;
   },
 ): Promise<{
@@ -228,6 +224,16 @@ export async function runInvestigatorDriver<T>(
   let calls = 0;
   let forcedDecision = false;
   let continuations = 0;
+  // Why requests are forced to decide. Once set it stays: the library keeps the finish-only tools.
+  let forcedCause: ForceCause | undefined;
+  const logForced = forcedLogger();
+  // Responses in a row cut off at the output limit.
+  let cutOffStreak = 0;
+  const transcript = createTranscriptRecorder({
+    reviewId: input.reviewId,
+    gameId: input.game.id,
+    model: model.id,
+  });
   // Tool calls in a cut-off response. The agent library reports each as a tool error unexecuted.
   const cutOffCalls = new Set<string>();
   const recordFailure = (error: unknown) => {
@@ -268,7 +274,7 @@ export async function runInvestigatorDriver<T>(
       recordFailure,
       finish,
       onInvalid,
-      requests: () => ({ calls, limit }),
+      requests: () => ({ calls, limit, forced: forcedCause !== undefined }),
     });
     if (failure) throw failure;
     const dispatch = agentStream(input.game, model, recordFailure, undefined, undefined, {
@@ -282,6 +288,7 @@ export async function runInvestigatorDriver<T>(
       streamIdleMs: input.streamIdleMs,
       stopOnReservationOverrun: true,
       providerEndpoint: BOUNDED_INVESTIGATOR_POLICY.providerEndpoint,
+      onReserved: (id, maxTokens) => transcript.reserved(id, maxTokens),
     } satisfies TrustedInferenceOptions);
     const streamFn = guardInvestigatorStream(dispatch, {
       signal,
@@ -302,8 +309,38 @@ export async function runInvestigatorDriver<T>(
         calls += 1;
         return true;
       },
+      onDispatch: (context) => transcript.dispatched(calls, context.messages, forcedCause),
     });
-    investigator = createInvestigatorAgent(model, setup.tools, streamFn, config.systemPrompt);
+    const thresholdMs = input.forceDecisionMs ?? FORCE_DECISION_REMAINING_MS;
+    // Whether the next request must decide. Once forced, always forced.
+    const updateForced = () => {
+      forcedCause =
+        forceCause({
+          calls,
+          limit,
+          remainingMs: deadline - Date.now(),
+          streak: cutOffStreak,
+          thresholdMs,
+        }) ?? forcedCause;
+      if (forcedCause) {
+        forcedDecision = true;
+        logForced(input.reviewId, forcedCause, calls, limit);
+      }
+      return forcedCause;
+    };
+    const notice = (): AgentMessage => ({
+      role: "user",
+      content: finalRequestNotice(config.finishName),
+      timestamp: Date.now(),
+    });
+    // A review that starts with too little time left is forced on its first request too.
+    const forcedAtStart = updateForced() !== undefined;
+    investigator = createInvestigatorAgent(
+      model,
+      forcedAtStart ? [setup.finishTool] : setup.tools,
+      streamFn,
+      config.systemPrompt,
+    );
     // A response that ends at the output limit is continued, and the loop does not end on it.
     investigator.finishTurn = ({ message }) =>
       message.role === "assistant" &&
@@ -314,32 +351,28 @@ export async function runInvestigatorDriver<T>(
         ? { action: "continue" }
         : undefined;
     // The hook runs before every request after the first. It tells the model to continue after a
-    // cut-off response. When the next request is the last the limit allows, it then adds the
-    // notice and offers only the finish tool.
+    // cut-off response. When the next request must decide (forceCause), it then adds the notice
+    // and offers only the finish tool, on that request and every later one.
     investigator.prepareNextTurnWithContext = ({ context, message }) => {
       // A valid finish does not end the loop by itself, so a settled review is left alone.
       if (decision || failure) return undefined;
       const cutOff = message.role === "assistant" && message.stopReason === "length";
-      const last = calls === limit - 1;
-      if (!cutOff && !last) return undefined;
+      const forced = updateForced();
+      if (!cutOff && !forced) return undefined;
       const messages: AgentMessage[] = [];
       if (cutOff) messages.push({ role: "user", content: CONTINUE_MESSAGE, timestamp: Date.now() });
-      if (last) {
-        forcedDecision = true;
-        messages.push({
-          role: "user",
-          content: finalRequestNotice(config.finishName),
-          timestamp: Date.now(),
-        });
-      }
-      return last
+      if (forced) messages.push(notice());
+      return forced
         ? { context: { ...context, tools: [setup!.finishTool] }, messages }
         : { messages };
     };
     investigator.subscribe((event) => {
-      if (event.type === "message_end" && event.message.role === "assistant")
+      if (event.type === "message_end" && event.message.role === "assistant") {
+        transcript.responded(event.message);
+        cutOffStreak = event.message.stopReason === "length" ? cutOffStreak + 1 : 0;
         for (const part of event.message.content)
           if (part.type === "toolCall") toolArguments.set(part.id, part.arguments);
+      }
       if (
         event.type === "message_end" &&
         event.message.role === "assistant" &&
@@ -399,8 +432,13 @@ export async function runInvestigatorDriver<T>(
               part.type === "text" &&
               part.text?.startsWith(`Validation failed for tool "${event.toolName}":`),
           );
-        if (event.isError && !decision && !schemaRejected && !cutOff)
+        // A forced request offers only the finish tool. A call to another is answered with the
+        // library's tool error, and the next request repeats the notice to finish.
+        const notOffered = forcedCause !== undefined;
+        if (event.isError && !decision && !schemaRejected && !cutOff && !notOffered)
           recordFailure(new Error(`Investigator tool failed: ${event.toolName}.`));
+        // A tool can settle the review itself, as decode does for a decoded jailbreak.
+        if (decision) investigator?.abort();
       }
       if (event.type === "agent_end" && !decision && !failure)
         failure = new Error(
@@ -416,7 +454,12 @@ export async function runInvestigatorDriver<T>(
           : "Investigator review deadline expired.",
       );
     if (failure) throw failure;
-    await investigator.prompt(setup.prompt);
+    if (forcedAtStart)
+      await investigator.prompt([
+        { role: "user", content: setup.prompt, timestamp: Date.now() },
+        notice(),
+      ]);
+    else await investigator.prompt(setup.prompt);
     if (failure) throw failure;
     return result();
   } catch (error) {
@@ -439,6 +482,7 @@ export async function runInvestigatorDriver<T>(
     throw withCalls(error, calls, forcedDecision, continuations);
   } finally {
     signal.removeEventListener("abort", disposeSignal);
+    await transcript.close((investigator?.state.messages ?? []) as Message[]);
     await setup?.dispose?.();
   }
 }

@@ -120,7 +120,8 @@ export function ReviewNotice({
             ? (reason ?? "A stopped command is being checked. This takes a few seconds.")
             : willRetry
               ? REVIEW_WILL_RETRY_TEXT
-              : (reason ?? "Review could not be completed. The result remains unconfirmed.")}
+              : (reason ??
+                "The review could not be completed. If the monitor cannot clear the run, it ends with no result, which is not a win.")}
         </p>
         <button type="button" className="primary" onClick={onClose}>
           Read the transcripts

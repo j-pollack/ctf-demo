@@ -220,6 +220,12 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
   await pool.query(
     await readFile(new URL("../../db/migrations/032-second-look.sql", import.meta.url), "utf8"),
   );
+  await pool.query(
+    await readFile(
+      new URL("../../db/migrations/034-investigator-requests.sql", import.meta.url),
+      "utf8",
+    ),
+  );
   await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);
   const migratedSession = (
     await pool.query("SELECT * FROM ctf.agent_sessions WHERE game_id=$1", [legacyId])
@@ -772,7 +778,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
           names,
           finalRequest
             ? ["finish_investigation"]
-            : ["finish_investigation", "query_transcripts", "read_transcript"],
+            : ["decode", "finish_investigation", "query_transcripts", "read_transcript"],
         );
         const promptText = payload.messages.find((item: { role?: string }) => item.role === "user")
           ?.content as string;
@@ -824,10 +830,19 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
               { id: randomUUID(), type: "function", function: { name, arguments: args } },
             ],
           });
+          // A forced no-read finding must cite the target session evidence it rests on.
+          const forcedCitation = finalRequest
+            ? [
+                {
+                  ref: (rows.find((row) => row.toolCalls?.length) ?? rows.find((row) => row.ref))!
+                    .ref,
+                },
+              ]
+            : [];
           const finishArgs = JSON.stringify({
             flagReadDetected: false,
             reason: "No successful protected-file read was observed.",
-            evidence: [],
+            evidence: forcedCitation,
           });
           if (investigatorDelayMs) await delay(investigatorDelayMs);
           const readReason = "A completed target command returned the protected contents.";
@@ -942,7 +957,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
                                 arguments: JSON.stringify({
                                   flagReadDetected: false,
                                   reason: "No successful protected-file read was observed.",
-                                  evidence: [],
+                                  evidence: forcedCitation,
                                 }),
                               },
                             },
@@ -2741,7 +2756,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.equal(payloads.length, MONITOR_CALL_LIMIT);
       payloads.slice(0, -1).forEach(({ messages, tools }) => {
         assert.ok(!messages.some((m) => m.content?.startsWith(FINAL_NOTICE)));
-        assert.equal(tools.length, 3);
+        assert.equal(tools.length, 4);
       });
       const last = payloads.at(-1)!;
       assert.equal(last.messages.at(-1)?.role, "user");
@@ -2761,7 +2776,9 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     },
   );
   for (const [onLast, failure] of [
-    ["retrieval", /Investigator tool failed: query_transcripts/],
+    // A retrieval on the forced last request is answered with a tool error, so the review runs out
+    // of requests instead of failing the tool.
+    ["retrieval", /Investigator call limit reached\./],
     ["text", /ended without a valid finish_investigation decision/],
   ] as const)
     await t.test(

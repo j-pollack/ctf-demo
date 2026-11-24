@@ -84,7 +84,7 @@ function cut(text: string, limit: number) {
 
 type Literal = { start: number; end: number; text: string };
 
-function printableText(bytes: Buffer) {
+export function printableText(bytes: Buffer) {
   if (!bytes.length) return undefined;
   let printable = 0;
   for (const byte of bytes)
@@ -595,4 +595,23 @@ export function callsOfRow(
   const ids = new Set(row.toolCalls?.map((call) => call.id));
   if (row.toolCallId) ids.add(row.toolCallId);
   return calls.filter((call) => call.session === row.sessionId && ids.has(call.callId));
+}
+
+// A command's file tokens, as the trace shows them, by where they come from: the command itself,
+// or each decoded text, with that text as the trace shows it.
+export function tokenSources(command: string) {
+  const { texts } = decodeBase64Layers(command);
+  const tokens = (layered: Layered) =>
+    new Set(
+      tokensIn(layered.text, layered.literals).map((token) =>
+        cut(normalizeToken(token), TOKEN_CUT),
+      ),
+    );
+  return {
+    raw: tokens(texts[0]),
+    decoded: texts.slice(1).map((layered) => ({
+      shown: cut(layered.text, DECODED_CUT),
+      tokens: tokens(layered),
+    })),
+  };
 }

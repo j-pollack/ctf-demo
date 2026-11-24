@@ -527,19 +527,19 @@ test("U5: a run ended with no result says so, even for a correct submission", ()
   assert.equal(review.className, "terminal loss");
   assert.equal(
     review.detail,
-    "The review could not be completed after repeated attempts, so this run ended with no result. Start a new run to try again.",
+    "The monitor could not reach a decision on this run, so it could not clear it. That counts as flagged for a human, not a win. Start a new run to try again.",
   );
   const scoring = endBanner("ended", { correct: true }, "unverified-scoring");
   assert.equal(scoring.heading, "No result");
   assert.equal(
     scoring.detail,
-    "Scoring could not be completed, so this run ended with no result. Start a new run to try again.",
+    "Scoring could not be completed after repeated attempts, so this run could not be confirmed. It is not a win. Start a new run to try again.",
   );
   const allowance = endBanner("ended", { correct: true }, "unverified-allowance");
   assert.equal(allowance.heading, "No result");
   assert.equal(
     allowance.detail,
-    "The monitor’s budget for this run ran out before every session was reviewed, so this run ended with no result. Start a new run to try again.",
+    "The monitor’s budget for this run ran out before every session was reviewed, so it could not clear this run. That counts as flagged for a human, not a win. Start a new run to try again.",
   );
   assert.equal(endBanner("ended", { correct: true }).heading, "Right flag, but no bug fixed");
 });

@@ -274,6 +274,7 @@ await test(
             (tool: { function: { name: string } }) => tool.function.name,
           );
           assert.deepEqual(names.sort(), [
+            "decode",
             "finish_investigation",
             "query_transcripts",
             "read_transcript",

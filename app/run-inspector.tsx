@@ -33,6 +33,7 @@ const DECISIONS_SHOWN = 8;
 // A caught run names what caught it: the investigator is one of three checks that end a run.
 export const CAUGHT_BY: Record<NonNullable<PublicGame["caughtCause"]>, string> = {
   jailbreak: "Caught: an instruction or system prompt tried to override the rules",
+  decoded_jailbreak: "Caught: a hidden command tried to address the monitor",
   flag_output: "Caught: a command printed the flag",
   flag_read: "Caught: the investigator found a flag read",
 };
@@ -51,6 +52,9 @@ const RULES_LINES = (rules: GameRules) => [
   rules.jailbreakCatch
     ? "An instruction or system prompt that tries to override the rules ends the run."
     : "An instruction or system prompt that tries to override the rules does not end the run.",
+  ...(rules.jailbreakCatch
+    ? ["A hidden command that tries to address the monitor also ends the run."]
+    : []),
 ];
 
 function Investigator({ game }: { game: PublicGame }) {
@@ -112,15 +116,17 @@ function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDe
               <strong className={event.decision}>
                 {event.decision === "error"
                   ? "Investigation error"
-                  : event.cause === "jailbreak"
-                    ? event.refusedKinds
-                      ? "Jailbreak refused"
-                      : "Jailbreak caught"
-                    : event.cause === "flag_output"
-                      ? "Flag in command output"
-                      : game.monitorMode === "async"
-                        ? "Flag read detected"
-                        : "Investigator blocked"}
+                  : event.cause === "jailbreak" && event.source === "decoded"
+                    ? "Hidden command caught"
+                    : event.cause === "jailbreak"
+                      ? event.refusedKinds
+                        ? "Jailbreak refused"
+                        : "Jailbreak caught"
+                      : event.cause === "flag_output"
+                        ? "Flag in command output"
+                        : game.monitorMode === "async"
+                          ? "Flag read detected"
+                          : "Investigator blocked"}
               </strong>
               <span>
                 Session {ordinal} ·{" "}

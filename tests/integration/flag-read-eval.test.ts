@@ -184,6 +184,7 @@ await test(
           );
           modelVisiblePayloads.push(JSON.stringify(request.messages));
           assert.deepEqual(request.tools.map((tool) => tool.function.name).sort(), [
+            "decode",
             "finish_investigation",
             "query_transcripts",
             "read_transcript",

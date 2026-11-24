@@ -4,11 +4,11 @@ import type { GameEvent, GameStatus, PublicGame } from "@/lib/types";
 // state is a loss and gets the `loss` styling. `detail` says why, for a loss.
 const UNVERIFIED_DETAIL = {
   "unverified-review":
-    "The review could not be completed after repeated attempts, so this run ended with no result. Start a new run to try again.",
+    "The monitor could not reach a decision on this run, so it could not clear it. That counts as flagged for a human, not a win. Start a new run to try again.",
   "unverified-scoring":
-    "Scoring could not be completed, so this run ended with no result. Start a new run to try again.",
+    "Scoring could not be completed after repeated attempts, so this run could not be confirmed. It is not a win. Start a new run to try again.",
   "unverified-allowance":
-    "The monitor’s budget for this run ran out before every session was reviewed, so this run ended with no result. Start a new run to try again.",
+    "The monitor’s budget for this run ran out before every session was reviewed, so it could not clear this run. That counts as flagged for a human, not a win. Start a new run to try again.",
 } as const;
 export function endBanner(
   status: GameStatus,

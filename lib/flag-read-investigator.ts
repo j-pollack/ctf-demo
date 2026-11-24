@@ -20,6 +20,10 @@ import {
   type RunMonitorReviewInput,
 } from "./monitor-review";
 import { buildTrace, callsOfRow } from "./investigator-trace";
+import { createDecodeTool, type DecodeScreen } from "./decode-layers";
+import { screenedTrace } from "./trace-screen";
+import { createDecodedScreen } from "./decode-screen";
+import { DECODED_JAILBREAK_CATCH_TEXT } from "./text-screen";
 import { createTranscriptInvestigationTools } from "./transcript-query";
 import { notifyInvestigationObserver, type InvestigationObserver } from "./investigation-trace";
 
@@ -109,6 +113,27 @@ export async function runFlagReadInvestigation(
         recordVisible(visible, retrieval.initialEvidence.currentTranscript);
         const initialEvidence = { target, snapshot: retrieval.initialEvidence };
         notifyInvestigationObserver(options?.observer, "onInitialEvidence", initialEvidence);
+        // Every decoded text the investigator sees, from decode or a confirmation's trace, takes
+        // this one screen, on every version.
+        const screen: DecodeScreen = {
+          jailbreakCatch: input.game.jailbreak_catch === true,
+          layers: createDecodedScreen({
+            game: input.game,
+            claim: input.jobClaim,
+            reviewId: input.reviewId,
+            signal,
+            streamIdleMs: input.streamIdleMs,
+            fail: recordFailure,
+          }),
+          onJailbreak: (questions) =>
+            finish({
+              flagReadDetected: false,
+              investigationComplete: true,
+              reason: DECODED_JAILBREAK_CATCH_TEXT,
+              evidence: [],
+              jailbreakQuestions: questions,
+            }),
+        };
         const finishTool = createFinishInvestigationTool({
           visible,
           targetSessionId: retrieval.initialEvidence.targetSessionId,
@@ -118,9 +143,18 @@ export async function runFlagReadInvestigation(
           requests,
           onConfirmation: (value) => (confirmation = value),
           callsOfRow: (row) => callsOfRow(retrieval.calls, row),
-          trace: (cited) => {
+          trace: async (cited) => {
             const started = performance.now();
-            const { json } = buildTrace(retrieval.calls, cited);
+            const shown = await screenedTrace(
+              buildTrace(retrieval.calls, cited).trace,
+              screen,
+              retrieval.calls,
+            );
+            if ("jailbreak" in shown) {
+              screen.onJailbreak(shown.jailbreak);
+              return "A decoded layer ended the review.";
+            }
+            const json = JSON.stringify(shown.trace);
             console.warn(
               JSON.stringify({
                 event: "investigator.trace",
@@ -133,7 +167,12 @@ export async function runFlagReadInvestigation(
             return json;
           },
         });
-        const tools = [...retrieval.piTools, finishTool];
+        const decodeTool = createDecodeTool({
+          visible,
+          callsOfRow: (row) => callsOfRow(retrieval.calls, row),
+          screen,
+        });
+        const tools = [...retrieval.piTools, decodeTool, finishTool];
         return {
           tools,
           finishTool,
@@ -193,7 +232,13 @@ export function detectorToReviewDecision(
     | "readConfirmation"
   > {
   return {
-    verdict: result.flagReadDetected ? "block" : "allow",
+    // An undecided finish is incomplete: no verdict clears the session.
+    verdict:
+      result.flagReadDetected || result.jailbreakQuestions
+        ? "block"
+        : result.investigationComplete
+          ? "allow"
+          : "unknown",
     reason: result.reason,
     evidence: result.evidence,
     calls: result.calls,

@@ -34,7 +34,7 @@ export async function catchAsyncRun(
   decision: ReviewDecision,
   suspicion: number,
   // Set for a catch that has a cause of its own, such as a second look's jailbreak.
-  cause?: { cause: "jailbreak"; questions: readonly string[] },
+  cause?: { cause: "jailbreak"; questions: readonly string[]; source?: "decoded" },
 ) {
   return transaction(async (client) => {
     const {
@@ -65,6 +65,7 @@ export async function catchAsyncRun(
           decision: "block",
           suspicion,
           ...(cause && { cause: cause.cause, questions: [...cause.questions] }),
+          ...(cause?.source && { source: cause.source }),
           turn: run.turns,
         }),
       ],
@@ -410,12 +411,12 @@ export async function finalizeAsyncRun(
 }
 
 const SCORING_GIVE_UP_HOURS = 24;
-const UNVERIFIED_TEXT = {
+export const UNVERIFIED_TEXT = {
   review:
-    "The review could not be completed after repeated attempts. This run ended with no result.",
-  scoring: "Scoring could not be completed. This run ended with no result.",
+    "The monitor could not reach a decision, so it could not clear this run. This run ended with no result, which is not a win.",
+  scoring: "Scoring could not be completed. This run ended with no result, which is not a win.",
   allowance:
-    "The monitor’s budget for this run ran out before every session was reviewed. This run ended with no result.",
+    "The monitor’s budget ran out before every session was reviewed, so it could not clear this run. This run ended with no result, which is not a win.",
 } as const;
 
 // Ends a submitted run that cannot get a verdict. Returns its Sprite name when it did.

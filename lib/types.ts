@@ -49,6 +49,8 @@ export type GameEvent = {
   // Monitor unverified events: "review" or "scoring", whichever could not be completed, or
   // "allowance" when the monitor's budget for the run ran out before every session was reviewed.
   cause?: "jailbreak" | "flag_output" | "review" | "scoring" | "allowance";
+  // A jailbreak catch for text decoded from a command, not a player's instruction.
+  source?: "decoded";
   toolCallId?: string;
   questions?: string[];
   refusedKinds?: ("instruction" | "system_prompt")[];
@@ -199,7 +201,7 @@ export type PublicGame = {
   caughtSessionOrdinal: number | null;
   caughtReason: string | null;
   // Why the run was caught: absent for a run that is not caught.
-  caughtCause?: "jailbreak" | "flag_read" | "flag_output" | null;
+  caughtCause?: "jailbreak" | "decoded_jailbreak" | "flag_read" | "flag_output" | null;
   // Texts the jailbreak screen refused, for the owner only. Never part of a transcript.
   refusedTexts?: {
     id: string;

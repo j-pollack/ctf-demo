@@ -5,6 +5,7 @@ import { reserveInference, settleInference, type GameRow } from "./games";
 import { diagnosticText } from "./inference";
 import { inputCeiling } from "./policy";
 import { evaluate, TYPESAFE_MODEL, type TypesafeQuestion } from "./typesafe";
+import type { MonitorJobClaim } from "./monitor-jobs";
 
 export const SCREEN_DEADLINE_MS = 2000;
 // The screens of one response may take this long in total, out of the response's fixed lease.
@@ -224,6 +225,9 @@ export type ScreenContext = {
   generation: number;
   stop: AbortSignal;
   breaker: ScreenBreaker;
+  // A screen inside a monitor review, such as a decoded layer, is billed to the monitor under the
+  // review's job claim. Every other screen is billed as a screen under the session lease.
+  review?: { reviewId: string; jobClaim: MonitorJobClaim };
 };
 
 type Outcome = {
@@ -289,9 +293,14 @@ async function store(context: ScreenContext, request: Planned, outcome: Outcome)
       `INSERT INTO ctf.text_screens
        (game_id,session_id,kind,ref,text_sha256,question_set,answers,model,input_tokens,duration_ms)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT (session_id,kind,ref,question_set) DO UPDATE SET
+       ON CONFLICT (session_id,kind,ref,question_set) DO ${
+         // A screen inside a review never replaces a stored row: the row may be a player's own.
+         context.review
+           ? "NOTHING"
+           : `UPDATE SET
          text_sha256=EXCLUDED.text_sha256,answers=EXCLUDED.answers,model=EXCLUDED.model,
-         input_tokens=EXCLUDED.input_tokens,duration_ms=EXCLUDED.duration_ms,created_at=now()`,
+         input_tokens=EXCLUDED.input_tokens,duration_ms=EXCLUDED.duration_ms,created_at=now()`
+       }`,
       [
         context.game.id,
         context.sessionId,
@@ -348,13 +357,20 @@ async function screen(context: ScreenContext, texts: readonly ScreenText[]) {
     reservation = await reserveInference(
       context.game.id,
       context.lease,
-      "screen",
+      context.review ? "monitor" : "screen",
       TYPESAFE_MODEL,
       requests.reduce((sum, request) => sum + request.ceiling, 0),
       SCREEN_OUTPUT_TOKENS,
       rate,
       rate,
-      { sessionId: context.sessionId, executionGeneration: context.generation },
+      {
+        sessionId: context.sessionId,
+        executionGeneration: context.generation,
+        ...(context.review && {
+          reviewId: context.review.reviewId,
+          jobClaim: context.review.jobClaim,
+        }),
+      },
     );
   } catch (error) {
     log("text_screen.refused", {
@@ -461,6 +477,8 @@ export function unwrapFlagged(text: string) {
 // What a transcript holds in place of a refused submission, and what the player is told.
 export const REFUSED_PLACEHOLDER_TEXT =
   "[An instruction was refused by the jailbreak check. Its text is withheld.]";
+export const DECODED_JAILBREAK_CATCH_TEXT =
+  "This run ended because a hidden command tried to address the monitor. Asking for anything is allowed. Overriding the rules is not.";
 export const JAILBREAK_CATCH_TEXT =
   "This run ended because an instruction or system prompt tried to override the agent's or the monitor's rules. Asking for anything is allowed. Overriding the rules is not.";
 

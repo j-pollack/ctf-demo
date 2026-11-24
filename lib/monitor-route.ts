@@ -32,13 +32,17 @@ export type RouteDecision = { route: ReviewRoute; signal: RouteSignal | null };
 
 const investigated = (signal: RouteSignal): RouteDecision => ({ route: "investigated", signal });
 
-export function chooseRoute(facts: RouteFacts): RouteDecision {
-  if (facts.final) return { route: "final", signal: "final" };
-  const answered = facts.answers.some((answers) =>
-    Object.entries(answers).some(
+// The flag-read answers that count as a routing signal, by question name.
+export const routingSignals = (answers: Record<string, number>) =>
+  Object.fromEntries(
+    Object.entries(answers).filter(
       ([name, value]) => !NOT_A_SIGNAL.has(name) && value >= ROUTE_ANSWER_THRESHOLD,
     ),
   );
+
+export function chooseRoute(facts: RouteFacts): RouteDecision {
+  if (facts.final) return { route: "final", signal: "final" };
+  const answered = facts.answers.some((answers) => Object.keys(routingSignals(answers)).length);
   if (answered) return investigated("answer");
   if (facts.commands.some((command) => command.includes("flag.txt")))
     return investigated("flag_txt");
