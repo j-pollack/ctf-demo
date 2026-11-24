@@ -503,27 +503,6 @@ form label {
     opacity: 0.2;
   }
 }
-.risk-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 12px;
-}
-.risk-heading > * {
-  white-space: nowrap;
-}
-.risk-note {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-.risk-heading strong {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--band-ink, var(--band));
-}
 .spend-breakdown {
   display: flex;
   flex-wrap: wrap;
@@ -537,7 +516,124 @@ form label {
 .spend-breakdown p + p {
   margin-top: 0;
 }
-/* Suspicion bands, as a percent of the catch line: <40 green, <70 yellow, <100 orange, caught red. */
+/* What the monitor saw: each session's reviews as a numbered timeline, then what crossed a
+   threshold. The caught review's marker takes the blocked colour. */
+.saw-note,
+.saw-footer {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.saw-footer {
+  font-size: 11px;
+}
+.monitor-saw h4 {
+  margin: 18px 0 8px;
+  font-size: 12px;
+}
+.monitor-saw h5 {
+  margin: 12px 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.route-legend {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 10px;
+  margin: 10px 0 0;
+  font-size: 11px;
+}
+.route-legend dt {
+  font-weight: 600;
+}
+.route-legend dd {
+  margin: 0;
+  color: var(--muted);
+}
+.review-timeline {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.review-timeline::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 14px;
+  left: 9px;
+  width: 1px;
+  background: var(--line);
+}
+.review-timeline li {
+  position: relative;
+  padding: 0 0 12px 30px;
+  font-size: 11px;
+}
+.review-number {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.review-timeline li[data-verdict="block"] .review-number {
+  border-color: var(--blocked);
+  background: var(--blocked);
+  color: var(--paper);
+}
+.review-timeline header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 8px;
+}
+.review-timeline time {
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.review-timeline p {
+  margin: 2px 0 0;
+}
+.review-score[data-band] {
+  color: var(--band-ink, var(--band));
+}
+.review-timeline .review-reason {
+  color: var(--muted);
+}
+.saw-item {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+.saw-item pre {
+  max-height: 7.5em;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  overflow: auto;
+  background: var(--panel);
+}
+.saw-item pre:first-child {
+  margin-top: 0;
+}
+.saw-item p {
+  margin: 4px 0 0;
+}
+.saw-item .saw-kind {
+  margin: 0;
+}
+.saw-item .saw-signals {
+  color: var(--muted);
+}
+/* Bands: a risk score under 40% green, under 70% yellow, then orange. Red marks a caught run. */
 /* Text uses a darker ink of each band, at least 4.5:1 on both the panel and the paper. */
 [data-band="low"] {
   --band: #4d7c0f;
@@ -554,7 +650,7 @@ form label {
 [data-band="caught"] {
   --band: #c62828;
 }
-/* Shared turn axis for the session risk traces. */
+/* Shared review axis for the session risk score lines. */
 .run-risk-chart svg {
   display: block;
   width: 100%;
@@ -1509,23 +1605,9 @@ dialog::backdrop {
 .run-total {
   color: var(--muted);
 }
-.run-risk[data-band],
 .run-status[data-band] {
   color: var(--band-ink, var(--band));
   font-weight: 600;
-}
-/* Reads as text in the stats line; the dotted underline says it opens something. */
-.run-bar .run-risk {
-  min-height: 24px;
-  padding: 0;
-  border: 0;
-  background: none;
-  text-decoration: underline dotted;
-  text-underline-offset: 4px;
-}
-.run-bar .run-risk:hover:not(:disabled) {
-  background: none;
-  text-decoration-style: solid;
 }
 .run-sessions {
   grid-area: sessions;
@@ -1963,11 +2045,7 @@ dialog::backdrop {
   .run-pending {
     display: none;
   }
-  /* Keeps the two stats lines no taller than the buttons beside them. */
-  .run-bar .run-risk {
-    min-height: 22px;
-  }
-  /* Run id and budget left share a line beside the actions; risk wraps under them. */
+  /* Run id and budget left share a line beside the actions. */
   .run-stats {
     column-gap: 8px;
   }
@@ -2004,41 +2082,6 @@ dialog::backdrop {
     min-width: 44px;
     min-height: 44px;
   }
-}
-
-/* Monitor suspicion shown in the corner of each reviewed command, out of the text flow. */
-.call {
-  position: relative;
-}
-.call > pre:first-child {
-  padding-right: 80px;
-}
-.suspicion {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  width: 64px;
-  height: 18px;
-  flex: none;
-  border: 1px solid var(--line, #cfd3c6);
-  background: #eef1ea;
-  font-size: 11px;
-  overflow: hidden;
-}
-.suspicion-bar {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: color-mix(in srgb, var(--band) 30%, transparent);
-}
-.suspicion-num {
-  position: relative;
-  padding-right: 5px;
-  color: var(--band-ink, var(--band));
-  font-variant-numeric: tabular-nums;
 }
 
 .submit-conditions {

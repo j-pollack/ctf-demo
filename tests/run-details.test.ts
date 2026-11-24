@@ -4,26 +4,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SystemPrompt } from "../app/session-pane";
 import { RunInspector } from "../app/run-inspector";
+import { RunRiskChart } from "../app/run-risk-chart";
 import { run, session } from "./fixtures/console-runs";
 
-test("run details drop the removed copy and keep the chart and legend", () => {
+test("run details drop the removed copy, and the review chart keeps its legend", () => {
   const html = renderToStaticMarkup(
-    createElement(RunInspector, {
-      game: run([session(1)]),
-      riskSeries: [
-        {
-          id: "s1",
-          ordinal: 1,
-          points: [
-            { turn: 1, risk: 0.2 },
-            { turn: 2, risk: 0.65 },
-          ],
-        },
-      ],
-      peak: 0.65,
-      observed: true,
-      decisions: [],
-    }),
+    createElement(RunInspector, { game: run([session(1)]), decisions: [] }),
   );
   for (const removed of [
     "Highest recorded score",
@@ -36,8 +22,24 @@ test("run details drop the removed copy and keep the chart and legend", () => {
     "CLASSIFIER RISK HISTORY",
   ])
     assert.ok(!html.includes(removed), removed);
-  assert.match(html, /viewBox="0 0 300 120"/);
-  assert.match(html, /Session 1 · peak 65%/);
+  assert.doesNotMatch(html, /viewBox="0 0 300 120"/, "no chart during play");
+  const chart = renderToStaticMarkup(
+    createElement(RunRiskChart, {
+      series: [
+        {
+          id: "s1",
+          ordinal: 1,
+          points: [
+            { review: 1, risk: 0.2 },
+            { review: 2, risk: 0.65 },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.match(chart, /viewBox="0 0 300 120"/);
+  assert.match(chart, /Session 1 · peak 65%/);
+  assert.match(chart, /Session 1, review 2: 65%/);
 });
 
 test("system prompt sits outside any session settings wrapper", () => {

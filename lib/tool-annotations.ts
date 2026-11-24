@@ -386,7 +386,8 @@ async function billedDispatch(
 
 // The row key of a decoded layer's annotation. A real tool call id never starts with it, so a
 // layer's row cannot replace its command's.
-export const decodedAnnotationKey = (text: string) => `decoded:${sha256(text)}`;
+export const DECODED_KEY_PREFIX = "decoded:";
+export const decodedAnnotationKey = (text: string) => `${DECODED_KEY_PREFIX}${sha256(text)}`;
 
 // The command questions of tool-v2 for each decoded layer, in order. A layer has no output of its
 // own, so it has no outcome answers. A stored row is reused and never replaced. Undefined where

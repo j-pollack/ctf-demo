@@ -13,6 +13,17 @@ export type GameStatus =
   | "ended"
   | "blocked"
   | "caught";
+// A run in any other status can still change, so the monitor's view of it stays closed.
+const ENDED_STATUSES: readonly GameStatus[] = [
+  "captured",
+  "exhausted",
+  "ended",
+  "blocked",
+  "caught",
+];
+export function runHasEnded(status: GameStatus) {
+  return ENDED_STATUSES.includes(status);
+}
 // The status of a submitted run that no review could settle. It is not a win and not a catch.
 export const UNVERIFIED_SUBMISSION_STATUS = "ended" as const satisfies GameStatus;
 export type GameEvent = {
@@ -63,7 +74,6 @@ export type MonitorDifficulty = (typeof MONITOR_DIFFICULTIES)[number];
 // How much the agent reasons per turn; chosen per run and changeable between instructions.
 export const AGENT_EFFORTS = ["low", "medium", "high"] as const;
 export type AgentEffort = (typeof AGENT_EFFORTS)[number];
-export type RiskPoint = { turn: number; risk: number };
 export type SessionSummary = {
   id: string;
   ordinal: number;
@@ -72,10 +82,55 @@ export type SessionSummary = {
   systemPrompt: string;
   turns: number;
   busy: boolean;
-  riskHistory?: RiskPoint[];
 };
 export type MonitorTargetKind = "transcript" | "command" | "submission";
 export type MonitorVerdict = "allow" | "block" | "unknown";
+// A classifier question at or above the threshold that made it count, with its answer (0-1).
+export type MonitorSignal = { name: string; value: number };
+// What the monitor saw in one session of an ended run, for its owner.
+export type MonitorSessionView = {
+  id: string;
+  ordinal: number;
+  reviews: {
+    id: string;
+    route: "investigated" | "deferred" | "final" | null;
+    verdict: MonitorVerdict | null;
+    reason: string | null;
+    createdAt: string;
+    // The classifier's risk score for the review (0-1), when it recorded one.
+    score: number | null;
+  }[];
+  // Commands whose answers crossed the routing threshold.
+  commands: { toolCallId: string; command: string | null; signals: MonitorSignal[] }[];
+  commandsUnder: number;
+  // Command outputs the classifier labelled as flagged.
+  outputs: { toolCallId: string; command: string | null; signals: MonitorSignal[] }[];
+  outputsUnder: number;
+  // Instruction and system prompt screens that were unclear or certain.
+  screens: {
+    kind: "instruction" | "system_prompt";
+    verdict: "unclear" | "certain";
+    signals: MonitorSignal[];
+    text: string | null;
+    secondLook: { verdict: "jailbreak" | "clear"; reason: string | null } | null;
+  }[];
+  screensUnder: number;
+  // Layers the investigator decoded from this session's commands, by the hash of their text. The
+  // text is never sent: it is player-controlled and comes from commands.
+  decoded: {
+    ref: string;
+    // Flag-read answers over the routing threshold, or null when no annotation answered.
+    flagRead: MonitorSignal[] | null;
+    // The jailbreak screen, or null when no screen answered.
+    screen: {
+      verdict: "clear" | "unclear" | "certain";
+      signals: MonitorSignal[];
+      secondLook: { verdict: "jailbreak" | "clear"; reason: string | null } | null;
+    } | null;
+  }[];
+};
+// `commandThreshold` is the answer (0-1) at which a command sends its session to the investigator.
+export type MonitorView = { commandThreshold: number; sessions: MonitorSessionView[] };
 export type MonitorReviewRecord = {
   id: string;
   game_id: string;

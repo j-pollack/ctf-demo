@@ -271,4 +271,10 @@ Each is built with the default below and kept to one constant.
 
 ## Merge note
 
-PR 39 (`feature/monitor-review-view`, not merged) adds `lib/monitor-view.ts`, which reads every `tool-v2` row and every instruction screen of a session. Once both changes are on main, rows under `decoded:` keys and instruction screens whose ref hashes none of the session's own texts must show as decoded layers, or be left out. Today they would show as commands or instructions with no text. Whichever PR merges second carries that fix.
+PR 39 (`feature/monitor-review-view`) was squash-merged into main as `1affcd1`, and main is merged into this branch. Done in this branch:
+
+- `lib/monitor-view.ts` keeps `tool-v2` rows under `decoded:` keys out of `commands` and `commandsUnder`, and keeps instruction screens whose hash is none of the run's transcript or refused texts out of `screens` and `screensUnder`. Each session's `decoded` list gives, per layer, its hash, its flag-read signals over the routing threshold (or null, not annotated) and its screen verdict with signals and second look (or null, not screened). The decoded text is never sent.
+- `app/monitor-saw.tsx` shows them under "Decoded layers": "The investigator decoded these from hidden commands. Their text is not shown."
+- `routingSignals` has one definition, main's, which returns entries. The decode screen turns them into an object.
+- PR 39's score strip removes `suspicion` from every event during play, so the decoded catch event is covered. A test pins it.
+- Tests: `tests/integration/monitor-view.test.ts` (R3 and the decoded catch event) and `tests/monitor-saw.test.ts`.

@@ -12,7 +12,6 @@ import {
   Entry,
   groupTurns,
   REFUSED_NOTE,
-  suspicionBand,
 } from "../app/transcript";
 import type { GameEvent, PublicGame } from "../lib/types";
 
@@ -339,19 +338,6 @@ test("a refused placeholder shows what the player sent, as plain text, with the 
   assert.doesNotMatch(banner, /refused/i, "the banner does not repeat the text");
 });
 
-test("suspicion bands split the catch line at 40%, 70% and 100%", () => {
-  assert.deepEqual([0, 0.399, 0.4, 0.699, 0.7, 0.999, 1, 2.14].map(suspicionBand), [
-    "low",
-    "low",
-    "mid",
-    "mid",
-    "high",
-    "high",
-    "caught",
-    "caught",
-  ]);
-});
-
 test("only a capture gets the green win banner; every loss says why it lost", () => {
   const won = endBanner("captured", { correct: true });
   assert.equal(won.win, true);
@@ -379,7 +365,7 @@ test("terminal HTTP outcome names uploaded contents while preserving historical 
   assert.match(endBanner("ended", { correct: false }).detail, /handed in something/);
 });
 
-test("each reviewed command shows its monitor suspicion", () => {
+test("a reviewed command shows no classifier score during play", () => {
   const events: GameEvent[] = [
     { id: 1, kind: "agent", text: "", turn: 1, model: "m", commands: ["ls", "cat x"] },
     { id: 2, kind: "monitor", text: "", decision: "allow", command: "ls", suspicion: 0.02 },
@@ -394,14 +380,10 @@ test("each reviewed command shows its monitor suspicion", () => {
     },
   ];
   const [{ event, calls, pending }] = groupTurns(events);
-  assert.equal(calls[0].suspicion, 0.02);
-  assert.equal(calls[1].suspicion, 0.98);
-  // Risk remains an advisory score, independent of the investigator's verdict.
+  assert.ok(calls.every((call) => !("suspicion" in call)));
   const html = renderToStaticMarkup(createElement(Entry, { event, calls, pending }));
-  assert.ok(html.includes(">2%<") && html.includes(">98%<"));
-  assert.match(html, /data-band="low"[^>]*>.*>2%</);
-  assert.match(html, /data-band="high"[^>]*>.*>98%</);
-  assert.ok(!html.includes(">0.98<"), "the raw score is not the headline number");
+  assert.match(html, /Blocked/);
+  assert.doesNotMatch(html, /2%|98%|0\.98|suspicion|data-band/);
 });
 
 test("an Easy fail-open shows its note above the output; an ordinary approval shows none", () => {
@@ -462,11 +444,12 @@ test("the end review renders standalone (not folded) and isn't labelled Blocked"
   assert.deepEqual(groups.find((g) => g.event.kind === "agent")?.calls, []);
   const review = groups.find((g) => g.event.kind === "monitor")!.event;
   const html = renderToStaticMarkup(createElement(Entry, { event: review }));
-  assert.match(html, /Investigator review · 98% classifier risk/);
+  assert.match(html, /<span>Investigator review<\/span>/);
+  assert.doesNotMatch(html, /98%|classifier risk/);
   assert.ok(!html.includes(">Blocked<"));
 });
 
-test("classifier-only observations stay in risk data without an investigation error row", () => {
+test("classifier-only observations render nothing and leave no investigation error row", () => {
   const advisory: GameEvent = { id: 1, kind: "monitor", text: "", turn: 2, suspicion: 0 };
   const failure: GameEvent = {
     id: 2,

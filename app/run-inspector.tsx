@@ -1,8 +1,7 @@
 "use client";
 import React from "react";
-import type { GameEvent, GameRules, PublicGame } from "@/lib/types";
-import type { SessionRiskSeries } from "@/app/run-risk";
-import { RunRiskChart } from "@/app/run-risk-chart";
+import { runHasEnded, type GameEvent, type GameRules, type PublicGame } from "@/lib/types";
+import { MonitorSaw } from "@/app/monitor-saw";
 import {
   EFFORT_NAMES,
   label,
@@ -11,19 +10,13 @@ import {
   MONITOR_STATUS_LOADING,
   monitorStatusLabel,
 } from "@/app/run-format";
-import { suspicionBand } from "@/app/transcript";
 
 export type SessionDecision = { ordinal: number; event: GameEvent };
 export type RunInspectorProps = {
   game: PublicGame;
-  riskSeries: SessionRiskSeries[];
-  peak: number;
-  observed: boolean;
   // Blocked or failed investigator decisions from every loaded session.
   decisions: SessionDecision[];
   titleRef?: React.Ref<HTMLHeadingElement>;
-  // The classifier risk section, which the run bar's risk control scrolls to.
-  riskRef?: React.Ref<HTMLElement>;
   // Overlay mode only: the inspector covers the sessions, so a footer offers the way back.
   onClose?: () => void;
 };
@@ -37,13 +30,6 @@ export const CAUGHT_BY: Record<NonNullable<PublicGame["caughtCause"]>, string> =
   flag_output: "Caught: a command printed the flag",
   flag_read: "Caught: the investigator found a flag read",
 };
-// What ends a run, under the rules the run started with.
-export const riskNote = (rules: GameRules) =>
-  `A separate classifier scores how suspicious each turn looks, from 0% to 100%. This is the highest score so far. The score never ends a run. A run ends when the investigator finds a flag read${
-    rules.jailbreakCatch
-      ? ", when a command’s output contains the flag, or when an instruction or system prompt tries to override the agent’s or the monitor’s rules."
-      : " or when a command’s output contains the flag."
-  }`;
 const RULES_LINES = (rules: GameRules) => [
   rules.monitorIsolation
     ? "The investigator reads only this run’s sessions."
@@ -129,10 +115,7 @@ function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDe
                           : "Investigator blocked"}
               </strong>
               <span>
-                Session {ordinal} ·{" "}
-                {typeof event.suspicion === "number"
-                  ? `${Math.round(event.suspicion * 100)}% classifier risk`
-                  : `turn ${event.turn}`}
+                Session {ordinal} · turn {event.turn}
               </span>
             </header>
             {event.text && event.text !== game.caughtReason && <p>{event.text}</p>}
@@ -142,16 +125,7 @@ function Decisions({ game, decisions }: { game: PublicGame; decisions: SessionDe
   );
 }
 
-export function RunInspector({
-  game,
-  riskSeries,
-  peak,
-  observed,
-  decisions,
-  titleRef,
-  riskRef,
-  onClose,
-}: RunInspectorProps) {
+export function RunInspector({ game, decisions, titleRef, onClose }: RunInspectorProps) {
   return (
     <aside className="inspector" id="run-inspector" aria-labelledby="inspector-title">
       <h2 id="inspector-title" tabIndex={-1} ref={titleRef}>
@@ -159,23 +133,7 @@ export function RunInspector({
       </h2>
       <AgentSettings game={game} />
       <Investigator game={game} />
-      <section ref={riskRef}>
-        <div className="risk-heading">
-          <h3>Classifier risk</h3>
-          <strong
-            data-band={observed ? suspicionBand(peak) : undefined}
-            title={
-              observed
-                ? `Highest classifier risk score across all sessions: ${peak.toFixed(2)} out of 1`
-                : "No classifier risk observations have been recorded yet"
-            }
-          >
-            {observed ? `Peak ${Math.round(peak * 100)}%` : "No risk data yet"}
-          </strong>
-        </div>
-        <p className="risk-note">{riskNote(game.rules)}</p>
-        <RunRiskChart series={riskSeries} />
-      </section>
+      {runHasEnded(game.status) && <MonitorSaw key={game.id} gameId={game.id} />}
       <Decisions game={game} decisions={decisions} />
       <section>
         <h3>Spend</h3>

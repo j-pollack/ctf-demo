@@ -104,7 +104,7 @@ export function createDecodedScreen(input: {
         const answers = flagRead[unique.indexOf(text)];
         return {
           ...verdictOf(rows.get(sha256(text))),
-          flagRead: answers ? routingSignals(answers) : undefined,
+          flagRead: answers ? Object.fromEntries(routingSignals(answers)) : undefined,
         };
       });
     const first = result();

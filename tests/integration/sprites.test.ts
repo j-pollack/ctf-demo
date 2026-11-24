@@ -4394,7 +4394,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       assert.ok(!environments.has(spriteName));
     },
   );
-  await t.test("run responses include scoped risk history for every session", async () => {
+  await t.test("run responses list every session and no risk history", async () => {
     const game = await productionStartGame("risk-owner");
     const sibling = await createSession(game.id, "risk-owner");
     const empty = await createSession(game.id, "risk-owner");
@@ -4417,17 +4417,11 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     const response = await projectGame(await row(game.id), 1_000_000, game.id);
     assert.deepEqual(response.events, [], "the selected transcript honors after");
     assert.deepEqual(
-      response.sessions.map((session) => session.riskHistory),
-      [
-        [{ turn: 1, risk: 0.2 }],
-        [
-          { turn: 0, risk: 0.4 },
-          { turn: 2, risk: 0.85 },
-        ],
-        [],
-      ],
+      response.sessions.map((session) => session.id),
+      [game.id, sibling.id, empty.id],
     );
-    assert.equal(response.sessions[2].id, empty.id);
+    // A run in play sends no classifier score; the monitor's view has them once it ends.
+    assert.ok(response.sessions.every((session) => !("riskHistory" in session)));
   });
   await t.test("starting another owner's run preserves the first active Sprite", async () => {
     const first = await productionStartGame("owner-isolation-a");

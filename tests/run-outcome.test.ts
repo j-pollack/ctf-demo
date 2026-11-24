@@ -9,16 +9,13 @@ import { UNVERIFIED_TEXT } from "../lib/async-finalization";
 import { run, session } from "./fixtures/console-runs";
 import type { GameStatus } from "../lib/types";
 
-const render = (status: GameStatus, observed = true, peak = 0.9) =>
+const render = (status: GameStatus) =>
   renderToStaticMarkup(
     createElement(RunBar, {
       game: run([session(1)], { status }),
-      observed,
-      peak,
       inspectorOpen: false,
       newRunDisabled: false,
       onToggleDetails: () => {},
-      onShowRisk: () => {},
       onNewRun: () => {},
     }),
   );
@@ -36,15 +33,8 @@ test("outcome headline uses the actual run status rather than the risk score", (
     assert.match(html, new RegExp(`>${label}</span>`));
     assert.doesNotMatch(html, /90%|RUN RISK|review can lag/);
   }
-  assert.match(render("caught", false), />Caught<\/span>/);
   assert.match(render("caught"), /data-band="caught"/);
   assert.doesNotMatch(render("captured"), /data-band="caught"/);
-});
-
-test("active risk keeps measured zero, advisory percentages and missing observations distinct", () => {
-  assert.match(render("active"), />Classifier risk 90%<\/button>/);
-  assert.match(render("active", true, 0), />Classifier risk 0%<\/button>/);
-  assert.match(render("active", false), />No classifier risk yet<\/button>/);
 });
 
 test("an unverified run says the monitor could not clear it and it is not a win", () => {
