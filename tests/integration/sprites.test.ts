@@ -4840,7 +4840,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       "./flag-submission-runner.test.ts",
       "./flag-submission.test.ts",
       "./sprites.test.ts",
-      "../../README.md",
+      "../../deploy/operations.md",
     ])
       assert.match(
         await readFile(new URL(list, import.meta.url), "utf8"),
@@ -10383,7 +10383,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       "./flag-submission-runner.test.ts",
       "./flag-submission.test.ts",
       "./sprites.test.ts",
-      "../../README.md",
+      "../../deploy/operations.md",
     ])
       assert.match(
         await readFile(new URL(list, import.meta.url), "utf8"),
@@ -10426,7 +10426,7 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
       "./flag-submission-runner.test.ts",
       "./flag-submission.test.ts",
       "./sprites.test.ts",
-      "../../README.md",
+      "../../deploy/operations.md",
     ])
       assert.match(await readFile(new URL(list, import.meta.url), "utf8"), /032-second-look/, list);
   });

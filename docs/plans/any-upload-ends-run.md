@@ -54,7 +54,7 @@ A receipt that is accepted is scored only by `promoteHttpSubmission`, and only w
 
 ## Open question for the user
 
-- Uploads from outside the sandbox. With the window gone, a printed upload address works from anywhere until the run ends. The lead recommends accepting this, as the ruling says "anything": the flag's value is the secret, and every session's final review still decides the run. Limiting uploads to the sandbox has no reliable signal, because Sprites' outbound address is not fixed and the address can be re-encoded to dodge redaction. `docs/plans/flag-vercel-rollout.md` describes the token as bound to the command's lease, which stops being true.
+- Uploads from outside the sandbox. With the window gone, a printed upload address works from anywhere until the run ends. The lead recommends accepting this, as the ruling says "anything": the flag's value is the secret, and every session's final review still decides the run. Limiting uploads to the sandbox has no reliable signal, because Sprites' outbound address is not fixed and the address can be re-encoded to dodge redaction. See the [receiver contract](../../deploy/flag-submission.md) for token lifetime and replay behavior.
 
 ## Open follow-up
 

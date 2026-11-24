@@ -1473,7 +1473,7 @@ await test(
         "./flag-submission-runner.test.ts",
         "./flag-submission.test.ts",
         "./sprites.test.ts",
-        "../../README.md",
+        "../../deploy/operations.md",
       ])
         assert.match(
           await readFile(new URL(list, import.meta.url), "utf8"),
