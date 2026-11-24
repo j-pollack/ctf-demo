@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { runTranscriptSql } from "../lib/transcript-query-runtime";
 
 const projection = {
@@ -112,4 +113,88 @@ test("result rows and bytes stop at declared bounds", async () => {
   );
   assert.equal(wide.ok, false);
   if (!wide.ok) assert.match(wide.error, /select narrower columns/i);
+});
+
+const SLOW_SQL =
+  "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n) SELECT sum(x) FROM n";
+
+const timed = async <T>(promise: Promise<T>) => {
+  const result = await promise;
+  return { result, at: performance.now() };
+};
+
+test("at most two SQL children run at once and aborted waiters release nothing", async () => {
+  const cancelled = { ok: false, error: "SQL query cancelled." };
+  const start = performance.now();
+  const slow = [SLOW_SQL, SLOW_SQL].map((sql) =>
+    runTranscriptSql(projection, sql, new AbortController().signal),
+  );
+  const controller = new AbortController();
+  const queued = timed(runTranscriptSql(projection, "SELECT 1 AS one", controller.signal));
+  await sleep(600 - (performance.now() - start));
+  const abortedAt = performance.now();
+  controller.abort();
+  const queuedDone = await queued;
+  assert.deepEqual(queuedDone.result, cancelled);
+  assert.ok(queuedDone.at - abortedAt < 200, "queued abort settles promptly");
+  const preAbortedAt = performance.now();
+  const preAborted = await timed(
+    runTranscriptSql(projection, "SELECT 1 AS one", AbortSignal.abort()),
+  );
+  assert.deepEqual(preAborted.result, cancelled);
+  assert.ok(preAborted.at - preAbortedAt < 200, "pre-aborted call settles promptly");
+  await Promise.all(slow);
+
+  const phase2 = performance.now();
+  const [slowA, slowB, quick] = await Promise.all([
+    timed(runTranscriptSql(projection, SLOW_SQL, new AbortController().signal)),
+    timed(runTranscriptSql(projection, SLOW_SQL, new AbortController().signal)),
+    timed(runTranscriptSql(projection, "SELECT 1 AS one", new AbortController().signal)),
+  ]);
+  const timedOut = { ok: false, error: "SQL query timed out." };
+  assert.deepEqual(slowA.result, timedOut);
+  assert.deepEqual(slowB.result, timedOut);
+  assert.ok(
+    slowA.at - phase2 <= 1_800 && slowB.at - phase2 <= 1_800,
+    "both slow queries admitted together",
+  );
+  assert.deepEqual(quick.result, {
+    ok: true,
+    rows: [{ one: 1 }],
+    truncated: false,
+  });
+  assert.ok(quick.at - phase2 >= 900, "third query waited for a slot");
+});
+
+const withMessageText = (texts: string[]) => ({
+  ...projection,
+  messages: texts.map((text, index) => ({
+    ...projection.messages[0],
+    message_index: index,
+    text,
+  })),
+});
+
+test("a projection over the 12 MiB child input limit is rejected", async () => {
+  await assert.rejects(
+    runTranscriptSql(
+      withMessageText(["x".repeat(13_000_000)]),
+      "SELECT count(*) AS c FROM messages",
+      new AbortController().signal,
+    ),
+    /SQLite query (input|process) failed/,
+  );
+});
+
+test("a large projection under the limit is queried exactly", async () => {
+  const result = await runTranscriptSql(
+    withMessageText(Array.from({ length: 4 }, () => "y".repeat(2_500_000))),
+    "SELECT count(*) AS c, sum(length(text)) AS l FROM messages",
+    new AbortController().signal,
+  );
+  assert.deepEqual(result, {
+    ok: true,
+    rows: [{ c: 4, l: 10_000_000 }],
+    truncated: false,
+  });
 });

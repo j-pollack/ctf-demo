@@ -24,13 +24,15 @@ const tables = {
   messages: 'observation_ref TEXT,session_id TEXT,message_index INTEGER,role TEXT,text TEXT,tool_call_id TEXT,tool_name TEXT,tool_error INTEGER,sent_at TEXT,returned_at TEXT',
 };
 const functions = new Set(['abs','avg','coalesce','count','glob','group_concat','hex','ifnull','instr','length','like','lower','ltrim','max','min','nullif','replace','round','rtrim','substr','substring','sum','total','trim','upper','zeroblob']);
-let input = '';
 let queryReady = false;
-process.stdin.setEncoding('utf8');
+const chunks = [];
+let total = 0;
 for await (const chunk of process.stdin) {
-  input += chunk;
-  if (Buffer.byteLength(input) > 12 * 1024 * 1024) throw new Error('Projection input exceeds child limit.');
+  chunks.push(chunk);
+  total += chunk.length;
+  if (total > 12 * 1024 * 1024) throw new Error('Projection input exceeds child limit.');
 }
+const input = Buffer.concat(chunks, total).toString('utf8');
 try {
   const { projection, sql, runtimeUrl } = JSON.parse(input);
   if (typeof sql !== 'string' || Buffer.byteLength(sql) > 8192) throw new Error('SQL exceeds the 8 KiB limit.');
@@ -83,14 +85,58 @@ try {
 }
 `;
 
+// Each child peaks near 150 MB on large projections; the worker VM has 1 GB.
+const MAX_SQL_CHILDREN = 2;
+let activeChildren = 0;
+const waiters: (() => void)[] = [];
+
+async function acquireSlot(signal: AbortSignal): Promise<boolean> {
+  if (activeChildren < MAX_SQL_CHILDREN) {
+    activeChildren += 1;
+    return true;
+  }
+  return new Promise((resolve) => {
+    const grant = () => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    };
+    const onAbort = () => {
+      waiters.splice(waiters.indexOf(grant), 1);
+      resolve(false);
+    };
+    waiters.push(grant);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function releaseSlot() {
+  const next = waiters.shift();
+  if (next) next();
+  else activeChildren -= 1;
+}
+
 export async function runTranscriptSql(
   projection: SqlProjection,
   sql: string,
   signal: AbortSignal,
 ): Promise<SqlResult> {
-  if (signal.aborted) return { ok: false, error: "SQL query cancelled." };
+  const cancelled = { ok: false, error: "SQL query cancelled." } as const;
+  if (signal.aborted) return cancelled;
   if (Buffer.byteLength(sql, "utf8") > 8192)
     return { ok: false, error: "SQL exceeds the 8 KiB limit." };
+  if (!(await acquireSlot(signal))) return cancelled;
+  try {
+    return signal.aborted ? cancelled : await spawnSqlChild(projection, sql, signal);
+  } finally {
+    releaseSlot();
+  }
+}
+
+async function spawnSqlChild(
+  projection: SqlProjection,
+  sql: string,
+  signal: AbortSignal,
+): Promise<SqlResult> {
   const child = spawn(
     process.execPath,
     [
