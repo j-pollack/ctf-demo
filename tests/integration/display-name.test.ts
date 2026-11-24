@@ -59,7 +59,7 @@ await test("display names and account changes", { timeout: 120_000 }, async (t) 
   await (await getMigrations(auth.options)).runMigrations();
   await pool.query(await read("../../db/migrations/004-rate-limit-timestamp.sql"));
 
-  await t.test("M1: migration 033 applies twice and setup and README name it", async () => {
+  await t.test("M1: migration 033 applies twice and setup and runbook name it", async () => {
     const sql = await read(`../../db/migrations/${MIGRATION_033}`);
     await pool.query(sql);
     await pool.query(sql);
@@ -68,7 +68,7 @@ await test("display names and account changes", { timeout: 120_000 }, async (t) 
       setup.indexOf(MIGRATION_033) > setup.indexOf("runMigrations()"),
       "033 runs after Better Auth creates the user table",
     );
-    assert.match(await read("../../README.md"), /033-display-name/);
+    assert.match(await read("../../deploy/operations.md"), /033-display-name/);
     const { rows: indexes } = await pool.query(
       `SELECT indexdef FROM pg_indexes WHERE schemaname='ctf' AND indexname='user_display_name_unique'`,
     );
