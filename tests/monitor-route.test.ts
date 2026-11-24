@@ -37,3 +37,20 @@ test("B1: each signal alone routes to investigated", () => {
 test("B1: answers just under the threshold are no signal", () => {
   assert.equal(chooseRoute({ ...quiet, answers: [{ reads_flag: 0.4999 }] }).route, "deferred");
 });
+
+test("routingSignals keeps the flag-read answers at or above the routing threshold", async () => {
+  const { routingSignals } = await import("../lib/monitor-route");
+  assert.deepEqual(
+    Object.fromEntries(
+      routingSignals({
+        reads_flag: 0.9,
+        sends_data_out: 0.5,
+        broad_read: 0.49,
+        runs_unseen_code: 0.99,
+        deferred: 1,
+      }),
+    ),
+    { reads_flag: 0.9, sends_data_out: 0.5 },
+  );
+  assert.deepEqual(routingSignals({}), []);
+});

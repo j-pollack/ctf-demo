@@ -15,7 +15,7 @@ import {
   signalsAtOrAbove,
   SYSTEM_PROMPT_QUESTION_SET,
 } from "./text-screen";
-import { TOOL_QUESTION_SET } from "./tool-annotations";
+import { DECODED_KEY_PREFIX, TOOL_QUESTION_SET } from "./tool-annotations";
 import {
   runHasEnded,
   type MonitorSessionView,
@@ -121,19 +121,27 @@ function sessionView(
 ): MonitorSessionView {
   const own = <T extends { session_id: string }>(list: T[]) =>
     list.filter((row) => row.session_id === session.id);
-  const commands = own(rows.annotations).map((row) => ({
-    toolCallId: row.tool_call_id,
-    command: row.command,
-    signals: signalsOf([
-      ...routingSignals(row.command_answers),
-      ...routingSignals(row.outcome_answers),
-    ]),
-  }));
+  const annotations = own(rows.annotations);
+  const isDecoded = (row: { tool_call_id: string }) =>
+    row.tool_call_id.startsWith(DECODED_KEY_PREFIX);
+  const commands = annotations
+    .filter((row) => !isDecoded(row))
+    .map((row) => ({
+      toolCallId: row.tool_call_id,
+      command: row.command,
+      signals: signalsOf([
+        ...routingSignals(row.command_answers),
+        ...routingSignals(row.outcome_answers),
+      ]),
+    }));
   const screens = own(rows.screens);
   const outputs = screens.filter((row) => row.kind === "tool_output");
   const flagged = outputs.filter((row) => injectionVerdict(row.answers));
+  // An instruction screen whose hash is none of the run's texts is a decoded layer's.
+  const decodedScreen = (row: (typeof screens)[number]) =>
+    row.kind === "instruction" && !texts.has(`instruction:${row.ref}`);
   const prompts = screens.flatMap(({ kind, ...row }) =>
-    kind === "tool_output" ? [] : [{ ...row, kind }],
+    kind === "tool_output" || decodedScreen({ kind, ...row }) ? [] : [{ ...row, kind }],
   );
   const shown = prompts.flatMap((row) => {
     const verdict = jailbreakVerdict(row.answers);
@@ -173,7 +181,43 @@ function sessionView(
         : null,
     })),
     screensUnder: prompts.length - shown.length,
+    decoded: decodedLayers(annotations.filter(isDecoded), screens.filter(decodedScreen)),
   };
+}
+
+// One entry per decoded layer, in the order it was first stored. No text is sent.
+function decodedLayers(
+  annotations: Rows["annotations"],
+  screens: Rows["screens"],
+): MonitorSessionView["decoded"] {
+  const refs = [
+    ...new Set([
+      ...annotations.map((row) => row.tool_call_id.slice(DECODED_KEY_PREFIX.length)),
+      ...screens.map((row) => row.ref),
+    ]),
+  ];
+  return refs.map((ref) => {
+    const annotation = annotations.find((row) => row.tool_call_id === DECODED_KEY_PREFIX + ref);
+    const screen = screens.find((row) => row.ref === ref);
+    return {
+      ref,
+      flagRead: annotation ? signalsOf(routingSignals(annotation.command_answers)) : null,
+      screen: screen
+        ? {
+            verdict: jailbreakVerdict(screen.answers),
+            signals: strongestFirst(
+              signalsAtOrAbove(screen.answers, SECOND_LOOK_THRESHOLD).map((name) => ({
+                name,
+                value: screen.answers[name],
+              })),
+            ),
+            secondLook: screen.second_look_verdict
+              ? { verdict: screen.second_look_verdict, reason: screen.second_look_reason }
+              : null,
+          }
+        : null,
+    };
+  });
 }
 
 // What the monitor saw in an ended run, for its owner only. A run still in play gets 409, so the

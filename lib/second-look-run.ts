@@ -45,8 +45,11 @@ async function candidates(input: {
   messages: readonly Message[];
   systemPrompt: string | undefined;
   final: boolean;
+  texts?: readonly string[];
 }): Promise<Candidate[]> {
-  const sources = screenSources(input.messages, input.systemPrompt);
+  const sources = input.texts
+    ? { instruction: [...input.texts], system_prompt: [] }
+    : screenSources(input.messages, input.systemPrompt);
   const texts = {
     instruction: new Map(sources.instruction.map((text) => [sha256(text), text])),
     system_prompt: new Map(sources.system_prompt.map((text) => [sha256(text), text])),
@@ -65,8 +68,10 @@ async function candidates(input: {
     [input.sessionId, INSTRUCTION_QUESTION_SET, SYSTEM_PROMPT_QUESTION_SET],
   );
   const found = rows.flatMap((row) => {
-    const stored = row.second_look_verdict === "jailbreak";
     const text = texts[row.kind].get(row.ref);
+    // Given texts are judged alone: another text's stored jailbreak is not theirs.
+    if (input.texts && text === undefined) return [];
+    const stored = row.second_look_verdict === "jailbreak";
     return stored || (text !== undefined && jailbreakVerdict(row.answers) === "unclear")
       ? [
           {
@@ -93,6 +98,9 @@ export type SecondLooks = {
   failed: number;
   // Whether any request was sent.
   asked: boolean;
+  // Set when every stored jailbreak behind the catch was a decoded layer's: its ref is the hash of
+  // none of the session's own texts.
+  source?: "decoded";
 };
 
 // One request per screen, all at once under one deadline. An answer is stored on its screen row.
@@ -106,6 +114,8 @@ export async function runSecondLooks(input: {
   signal: AbortSignal;
   deadlineMs: number;
   streamIdleMs?: number;
+  // Screened texts to judge instead of the session's instructions, such as decoded layers.
+  texts?: readonly string[];
 }): Promise<SecondLooks> {
   const { game, claim, reviewId } = input;
   const pending = await candidates({
@@ -113,6 +123,7 @@ export async function runSecondLooks(input: {
     messages: input.messages,
     systemPrompt: input.systemPrompt,
     final: claim.final,
+    texts: input.texts,
   });
   if (!pending.length) return { jailbreakQuestions: undefined, failed: 0, asked: false };
   if (pending[0].stored)
@@ -120,6 +131,7 @@ export async function runSecondLooks(input: {
       jailbreakQuestions: [...new Set(pending.flatMap((candidate) => candidate.questions))],
       failed: 0,
       asked: false,
+      ...(pending.every((candidate) => candidate.text === "") && { source: "decoded" as const }),
     };
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(input.deadlineMs)]);
   let model: Awaited<ReturnType<typeof investigatorModel>> | undefined;

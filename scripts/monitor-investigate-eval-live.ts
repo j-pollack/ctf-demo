@@ -34,6 +34,7 @@ const MIGRATIONS = [
   "030-inference-game-unsettled.sql",
   "031-monitor-routing.sql",
   "032-second-look.sql",
+  "034-investigator-requests.sql",
 ];
 
 export type SeededWorkspace = {

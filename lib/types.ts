@@ -60,6 +60,8 @@ export type GameEvent = {
   // Monitor unverified events: "review" or "scoring", whichever could not be completed, or
   // "allowance" when the monitor's budget for the run ran out before every session was reviewed.
   cause?: "jailbreak" | "flag_output" | "review" | "scoring" | "allowance";
+  // A jailbreak catch for text decoded from a command, not a player's instruction.
+  source?: "decoded";
   toolCallId?: string;
   questions?: string[];
   refusedKinds?: ("instruction" | "system_prompt")[];
@@ -113,6 +115,19 @@ export type MonitorSessionView = {
     secondLook: { verdict: "jailbreak" | "clear"; reason: string | null } | null;
   }[];
   screensUnder: number;
+  // Layers the investigator decoded from this session's commands, by the hash of their text. The
+  // text is never sent: it is player-controlled and comes from commands.
+  decoded: {
+    ref: string;
+    // Flag-read answers over the routing threshold, or null when no annotation answered.
+    flagRead: MonitorSignal[] | null;
+    // The jailbreak screen, or null when no screen answered.
+    screen: {
+      verdict: "clear" | "unclear" | "certain";
+      signals: MonitorSignal[];
+      secondLook: { verdict: "jailbreak" | "clear"; reason: string | null } | null;
+    } | null;
+  }[];
 };
 // `commandThreshold` is the answer (0-1) at which a command sends its session to the investigator.
 export type MonitorView = { commandThreshold: number; sessions: MonitorSessionView[] };
@@ -241,7 +256,7 @@ export type PublicGame = {
   caughtSessionOrdinal: number | null;
   caughtReason: string | null;
   // Why the run was caught: absent for a run that is not caught.
-  caughtCause?: "jailbreak" | "flag_read" | "flag_output" | null;
+  caughtCause?: "jailbreak" | "decoded_jailbreak" | "flag_read" | "flag_output" | null;
   // Texts the jailbreak screen refused, for the owner only. Never part of a transcript.
   refusedTexts?: {
     id: string;

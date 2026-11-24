@@ -207,7 +207,7 @@ test("U5: the outcome strip says No result for a run that ended unverified, even
     }),
   );
   assert.match(html, /<h2>No result<\/h2>/);
-  assert.match(html, /ended with no result/);
+  assert.match(html, /so it could not clear it\. That counts as flagged for a human, not a win\./);
   assert.doesNotMatch(html, /Right flag, but no bug fixed/);
 });
 

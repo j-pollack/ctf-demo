@@ -27,6 +27,8 @@ export type RunMonitorReviewInput = {
   deadlineAt?: number;
   // Shortens the idle bound of the review's requests; tests only.
   streamIdleMs?: number;
+  // Lowers the time left at which the review is forced to decide; tests only.
+  forceDecisionMs?: number;
   // Model requests this review may make, 1 to 32. Production leaves it unset.
   callLimit?: number;
   jobClaim?: MonitorJobClaim;

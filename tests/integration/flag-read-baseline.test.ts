@@ -632,7 +632,8 @@ await test(
             // generation id), and it ends the same way. The evaluation's budget is then spent, so
             // the third case is skipped before any admission.
             assert.equal(investigator, 2);
-            const ceilings = [44_528, 44_919];
+            // The decode tool's schema is part of each request, so it is part of each ceiling.
+            const ceilings = [46_088, 46_479];
             if (mode === "timeout") {
               const { rows: atCeiling } = await inspection.query(
                 "SELECT cost::int AS cost,cost_ceiling::int AS ceiling FROM ctf.inference WHERE model=$1 AND estimated AND settled_at IS NOT NULL ORDER BY created_at",

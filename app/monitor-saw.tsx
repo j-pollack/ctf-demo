@@ -166,8 +166,53 @@ function Screens({ session }: { session: MonitorSessionView }) {
   );
 }
 
+const SCREEN_TEXT = { clear: "Clear", unclear: "Unclear", certain: "Certain" } as const;
+
+// Shown only when the investigator decoded something. The layers' text never reaches the view.
+function DecodedLayers({ session, threshold }: { session: MonitorSessionView; threshold: number }) {
+  if (!session.decoded.length) return null;
+  return (
+    <List
+      title="Decoded layers"
+      footer="The investigator decoded these from hidden commands. Their text is not shown."
+    >
+      {session.decoded.map((layer, index) => (
+        <div className="saw-item" key={layer.ref}>
+          <p className="saw-kind">
+            Layer {index + 1} ·{" "}
+            {layer.screen ? (
+              <span className={layer.screen.verdict === "certain" ? "block" : undefined}>
+                Screen: {SCREEN_TEXT[layer.screen.verdict]}
+              </span>
+            ) : (
+              "Not screened"
+            )}
+          </p>
+          {layer.flagRead === null ? (
+            <p className="saw-footer">Not annotated.</p>
+          ) : layer.flagRead.length ? (
+            <Signals signals={layer.flagRead} />
+          ) : (
+            <p className="saw-footer">No flag-read signal crossed {percent(threshold)}.</p>
+          )}
+          {layer.screen && layer.screen.signals.length > 0 && (
+            <Signals signals={layer.screen.signals} />
+          )}
+          {layer.screen?.secondLook && (
+            <p className="saw-second-look">
+              Second look: {layer.screen.secondLook.verdict}.
+              {layer.screen.secondLook.reason && ` ${layer.screen.secondLook.reason}`}
+            </p>
+          )}
+        </div>
+      ))}
+    </List>
+  );
+}
+
 const checked = (session: MonitorSessionView) =>
-  session.commands.length +
+  session.decoded.length +
+    session.commands.length +
     session.commandsUnder +
     session.outputs.length +
     session.outputsUnder +
@@ -193,6 +238,7 @@ function Session({ session, threshold }: { session: MonitorSessionView; threshol
           <Commands session={session} threshold={threshold} />
           <Outputs session={session} />
           <Screens session={session} />
+          <DecodedLayers session={session} threshold={threshold} />
         </>
       ) : (
         <p className="saw-footer">
@@ -270,7 +316,9 @@ const isSession = (value: unknown) =>
   isRecord(value) &&
   typeof value.id === "string" &&
   typeof value.ordinal === "number" &&
-  ["reviews", "commands", "outputs", "screens"].every((key) => Array.isArray(value[key]));
+  ["reviews", "commands", "outputs", "screens", "decoded"].every((key) =>
+    Array.isArray(value[key]),
+  );
 
 // The route's answer as a view, or an error whose message the panel shows.
 export function parseMonitorView(ok: boolean, data: unknown): MonitorView {

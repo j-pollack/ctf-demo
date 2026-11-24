@@ -79,6 +79,7 @@ await test(
       "migrations/030-inference-game-unsettled.sql",
       "migrations/031-monitor-routing.sql",
       "migrations/032-second-look.sql",
+      "migrations/034-investigator-requests.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
     await (await import("../../lib/transcript-evidence")).backfillTranscriptSearchText(pool);

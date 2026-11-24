@@ -4,7 +4,9 @@ import { isDeepStrictEqual } from "node:util";
 // What a scenario can set on the Jev boundary's `tool-v2` answers. Every answer is 0 unless
 // `scores` names it, and `fail` makes the annotation requests it accepts fail.
 export const annotationControls = {
-  scores: undefined as undefined | ((part: "command" | "outcome", name: string) => number),
+  scores: undefined as
+    | undefined
+    | ((part: "command" | "outcome", name: string, state: Record<string, unknown>) => number),
   fail: undefined as undefined | ((state: Record<string, unknown>) => boolean),
   reset() {
     this.scores = undefined;
@@ -36,7 +38,7 @@ export async function annotationResponse(body: { questions: unknown; state: unkn
     answers: Object.fromEntries(
       Object.keys(body.questions as object).map((name) => [
         name,
-        { type: "noul", noul: annotationControls.scores?.(kind, name) ?? 0 },
+        { type: "noul", noul: annotationControls.scores?.(kind, name, state) ?? 0 },
       ]),
     ),
     usage: { input_tokens: 50 },

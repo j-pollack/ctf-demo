@@ -312,7 +312,7 @@ async function storeRow(input: {
 }
 
 async function annotate(input: AnnotationInput) {
-  const { game, sessionId, reviewId, signal } = input;
+  const { game, sessionId, reviewId } = input;
   const annotatable = annotatableCalls(
     input.messages,
     input.commands,
@@ -323,6 +323,26 @@ async function annotate(input: AnnotationInput) {
   const planned = (await unannotated(sessionId, annotatable)).slice(-MAX_ANNOTATED_CALLS).reverse();
   if (!planned.length) return;
   const requests = planned.flatMap(requestsFor);
+  const outcomes = await billedDispatch(input, requests);
+  if (!outcomes) return;
+  for (const [index, call] of planned.entries()) {
+    const command = outcomes[index * 2];
+    const outcome = outcomes[index * 2 + 1];
+    if (command.answers && outcome.answers)
+      await storeRow({ game, sessionId, reviewId, call, command, outcome });
+  }
+}
+
+// Reserves the requests under the monitor's allowance, sends them, and settles what they used.
+// Undefined when the reservation is refused.
+async function billedDispatch(
+  input: Pick<
+    AnnotationInput,
+    "game" | "sessionId" | "reviewId" | "signal" | "executionGeneration" | "jobClaim"
+  >,
+  requests: Request[],
+) {
+  const { game, sessionId, reviewId, signal } = input;
   const rate = MONITOR_TOKEN_MICRODOLLARS / 1e6;
   let reservation: Awaited<ReturnType<typeof reserveInference>>;
   try {
@@ -344,7 +364,7 @@ async function annotate(input: AnnotationInput) {
     );
   } catch (error) {
     log("monitor.annotation.refused", { sessionId, reviewId, error: messageOf(error) });
-    return;
+    return undefined;
   }
   const outcomes = await dispatchAll(requests, signal, sessionId);
   // Usage that came back is billed as reported; a dispatched request without it, at its ceiling.
@@ -361,12 +381,67 @@ async function annotate(input: AnnotationInput) {
     tokens,
     costMicrodollars: Math.min(cost, reservation.cost),
   });
-  for (const [index, call] of planned.entries()) {
-    const command = outcomes[index * 2];
-    const outcome = outcomes[index * 2 + 1];
-    if (command.answers && outcome.answers)
-      await storeRow({ game, sessionId, reviewId, call, command, outcome });
+  return outcomes;
+}
+
+// The row key of a decoded layer's annotation. A real tool call id never starts with it, so a
+// layer's row cannot replace its command's.
+export const DECODED_KEY_PREFIX = "decoded:";
+export const decodedAnnotationKey = (text: string) => `${DECODED_KEY_PREFIX}${sha256(text)}`;
+
+// The command questions of tool-v2 for each decoded layer, in order. A layer has no output of its
+// own, so it has no outcome answers. A stored row is reused and never replaced. Undefined where
+// no annotation answered.
+export async function annotateDecodedLayers(
+  input: Omit<AnnotationInput, "messages" | "commands"> & { texts: readonly string[] },
+): Promise<(Record<string, number> | undefined)[]> {
+  const { game, sessionId, reviewId, texts } = input;
+  const keys = texts.map(decodedAnnotationKey);
+  const { rows } = await db.query<{
+    tool_call_id: string;
+    command_answers: Record<string, number>;
+  }>(
+    `SELECT tool_call_id,command_answers FROM ctf.tool_call_annotations
+     WHERE session_id=$1 AND question_set=$2 AND tool_call_id=ANY($3::text[])`,
+    [sessionId, TOOL_QUESTION_SET, keys],
+  );
+  const answers = new Map(rows.map((row) => [row.tool_call_id, row.command_answers]));
+  const missing = [...new Set(texts)].filter((text) => !answers.has(decodedAnnotationKey(text)));
+  const requests = missing.map((text) => {
+    const call = {
+      toolCallId: decodedAnnotationKey(text),
+      command: text,
+      output: "",
+      isError: false,
+    };
+    return requestsFor(call)[0];
+  });
+  const outcomes = requests.length ? await billedDispatch(input, requests) : [];
+  for (const [index, request] of requests.entries()) {
+    const outcome = outcomes?.[index];
+    if (!outcome?.answers) continue;
+    answers.set(request.call.toolCallId, outcome.answers);
+    await db.query(
+      `INSERT INTO ctf.tool_call_annotations
+       (game_id,session_id,tool_call_id,question_set,review_id,command_sha256,output_sha256,
+        command_answers,outcome_answers,facts,model,input_tokens)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,'{}','{}',$9,$10)
+       ON CONFLICT (session_id,tool_call_id,question_set) DO NOTHING`,
+      [
+        game.id,
+        sessionId,
+        request.call.toolCallId,
+        TOOL_QUESTION_SET,
+        reviewId,
+        sha256(request.call.command),
+        sha256(""),
+        JSON.stringify(outcome.answers),
+        TYPESAFE_MODEL,
+        outcome.tokens ?? 0,
+      ],
+    );
   }
+  return keys.map((key) => answers.get(key));
 }
 
 export type AnnotationInput = {

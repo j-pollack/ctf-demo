@@ -163,6 +163,7 @@ const view: MonitorView = {
         },
       ],
       screensUnder: 2,
+      decoded: [],
     },
   ],
 };
@@ -249,6 +250,7 @@ test("A5: a session the classifier never checked gets one line instead of three 
         commandsUnder: 0,
         outputsUnder: 0,
         screensUnder: 0,
+        decoded: [],
       },
     ],
   };
@@ -296,7 +298,64 @@ test("the response is parsed into a view or a clear error", () => {
     [true, { commandThreshold: 0.5, sessions: [null] }],
     [true, { commandThreshold: 0.5, sessions: [{ ...view.sessions[0], reviews: "none" }] }],
     [true, { commandThreshold: 0.5, sessions: [{ ...view.sessions[0], ordinal: "1" }] }],
+    [true, { commandThreshold: 0.5, sessions: [{ ...view.sessions[0], decoded: null }] }],
     [false, { error: 42 }],
   ] as const)
     assert.throws(() => parseMonitorView(ok, data), LOAD, JSON.stringify(data));
+});
+
+test("decoded layers show their flag-read signals and screen, never their text", () => {
+  const decoded: MonitorView["sessions"][number]["decoded"] = [
+    {
+      ref: "a".repeat(64),
+      flagRead: [{ name: "reads_flag", value: 0.91 }],
+      screen: {
+        verdict: "unclear",
+        signals: [{ name: "addresses_monitor", value: 0.7 }],
+        secondLook: { verdict: "jailbreak", reason: "It tells the monitor to look away." },
+      },
+    },
+    {
+      ref: "b".repeat(64),
+      flagRead: [],
+      screen: { verdict: "clear", signals: [], secondLook: null },
+    },
+    { ref: "c".repeat(64), flagRead: null, screen: null },
+  ];
+  const html = panel({ view: { ...view, sessions: [{ ...view.sessions[0], decoded }] } });
+  assert.match(html, /<h5>Decoded layers<\/h5>/);
+  assert.match(
+    html,
+    /The investigator decoded these from hidden commands\. Their text is not shown\./,
+  );
+  assert.match(html, /Layer 1 · <span>Screen: Unclear<\/span>/);
+  assert.match(html, /reads flag 91%/);
+  assert.match(html, /addresses monitor 70%/);
+  assert.match(html, /Second look: jailbreak\. It tells the monitor to look away\./);
+  assert.match(html, /Layer 2 · <span>Screen: Clear<\/span>/);
+  assert.match(html, /No flag-read signal crossed 50%\./);
+  assert.match(html, /Layer 3 · Not screened/);
+  assert.match(html, /Not annotated\./);
+  assert.doesNotMatch(html, /—/);
+  // A session with no decoded layer has no such list.
+  assert.doesNotMatch(panel({ view }), /Decoded layers/);
+  // Decoded layers alone count as something the classifier checked.
+  const only = panel({
+    view: {
+      ...view,
+      sessions: [
+        {
+          ...view.sessions[0],
+          commands: [],
+          outputs: [],
+          screens: [],
+          commandsUnder: 0,
+          outputsUnder: 0,
+          screensUnder: 0,
+          decoded,
+        },
+      ],
+    },
+  });
+  assert.match(only, /Decoded layers/);
 });

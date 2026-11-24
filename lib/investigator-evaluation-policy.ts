@@ -1,4 +1,5 @@
 import { SECOND_LOOK_DEADLINE_MS } from "./second-look";
+import { FORCE_DECISION_REMAINING_MS } from "./investigator-force";
 
 // Frozen bounded contract, also used by the promoted production flag-read policy.
 // Rates are USD per million tokens from the
@@ -31,6 +32,8 @@ export type InvestigatorTiming = Readonly<{
   streamIdleMs?: number;
   // Shortens the second looks' shared deadline; tests only.
   secondLookDeadlineMs?: number;
+  // Lowers the time left at which a review is forced to decide; tests only.
+  forceDecisionMs?: number;
 }>;
 
 // Trusted callers may shorten review budgets. Claims and production ceilings stay fixed.
@@ -59,11 +62,20 @@ export function resolveInvestigatorTiming(
       secondLookDeadlineMs > SECOND_LOOK_DEADLINE_MS)
   )
     throw new Error("Invalid investigator timing: secondLookDeadlineMs.");
+  const { forceDecisionMs } = timing;
+  if (
+    forceDecisionMs !== undefined &&
+    (!Number.isSafeInteger(forceDecisionMs) ||
+      forceDecisionMs <= 0 ||
+      forceDecisionMs > FORCE_DECISION_REMAINING_MS)
+  )
+    throw new Error("Invalid investigator timing: forceDecisionMs.");
   return Object.freeze({
     deadlineMs: timing.deadlineMs,
     classifierDeadlineMs: timing.classifierDeadlineMs,
     annotationDeadlineMs: timing.annotationDeadlineMs,
     ...(streamIdleMs !== undefined && { streamIdleMs }),
     ...(secondLookDeadlineMs !== undefined && { secondLookDeadlineMs }),
+    ...(forceDecisionMs !== undefined && { forceDecisionMs }),
   });
 }

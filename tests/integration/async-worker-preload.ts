@@ -87,7 +87,12 @@ globalThis.fetch = async (input: string | URL | Request, options?: RequestInit) 
   const names = payload.tools
     .map((tool: { function: { name: string } }) => tool.function.name)
     .sort();
-  assert.deepEqual(names, ["finish_investigation", "query_transcripts", "read_transcript"]);
+  assert.deepEqual(names, [
+    "decode",
+    "finish_investigation",
+    "query_transcripts",
+    "read_transcript",
+  ]);
   // A request after the first answers the confirmation of the read this fake reported.
   if (payload.messages.some((message: { role: string }) => message.role === "assistant")) {
     assert.equal(payload.messages.at(-1).role, "tool");

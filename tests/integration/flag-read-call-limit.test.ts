@@ -90,7 +90,10 @@ await test(
         const request = JSON.parse(String(init?.body)) as Request;
         const prompt = request.messages.find((message) => message.role === "user")!.content!;
         const initial = JSON.parse(prompt.slice(prompt.indexOf("\n\n") + 2)) as {
-          snapshot: { scope: { sessionCount: number }; currentTranscript: { text: string }[] };
+          snapshot: {
+            scope: { sessionCount: number };
+            currentTranscript: { text: string; ref: string }[];
+          };
         };
         const marker = ["FORCED", "REFUSES", "SHORT"].find((name) =>
           initial.snapshot.currentTranscript.some((row) => row.text.includes(name)),
@@ -103,7 +106,8 @@ await test(
           return toolReply(init, "finish_investigation", {
             flagReadDetected: false,
             reason: "No successful protected-file read was observed.",
-            evidence: [],
+            // A forced no-read finding must cite the target session evidence it rests on.
+            evidence: final ? [{ ref: initial.snapshot.currentTranscript[0].ref }] : [],
           });
         return toolReply(init, "query_transcripts", { sql: "SELECT count(*) AS n FROM sessions" });
       },
@@ -164,9 +168,10 @@ await test(
     // E1: every session of a case is in the one snapshot the target is reviewed in.
     assert.equal(sessionCounts.get("FORCED"), 2);
     assert.equal(sessionCounts.get("SHORT"), 1);
-    // E1: a failure is reported with its text and the requests it made.
+    // E1: a failure is reported with its text and the requests it made. A retrieval on the forced
+    // request is answered with a tool error, so the review runs out of requests instead.
     const refused = byId.get("refuses@run")!;
-    assert.match(refused.operationalError!, /Investigator tool failed: query_transcripts/);
+    assert.equal(refused.operationalError, "Investigator call limit reached.");
     assert.equal(refused.calls, 3);
     assert.equal(refused.flagReadDetected, null);
     assert.equal(refused.forcedDecision, undefined);

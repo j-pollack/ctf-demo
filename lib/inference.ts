@@ -40,6 +40,8 @@ export type TrustedInferenceOptions = {
   providerEndpoint?: string;
   // Bounded evaluations cap provider rates before dispatch and verify actual cost after settlement.
   stopOnReservationOverrun?: boolean;
+  // Told the request's inference id and the max_tokens it sends, once reserved. Must not throw.
+  onReserved?: (inferenceId: string, maxTokens: number) => void;
 };
 
 type CatalogModel = {
@@ -513,6 +515,18 @@ export async function infer(
     requestSignal.throwIfAborted();
   };
   try {
+    try {
+      trusted.onReserved?.(reservation.id, reservation.maxTokens);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "inference.on_reserved_failed",
+          timestamp: new Date().toISOString(),
+          ...context,
+          error: diagnosticText(error instanceof Error ? error.message : error),
+        }),
+      );
+    }
     const attempts = 5;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       await assertDispatchPermit();

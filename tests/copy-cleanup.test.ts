@@ -155,3 +155,22 @@ test("S34: neither page describes a risk score shown during play", () => {
   assert.equal((rules.match(/risk score/gi) ?? []).length, 1);
   assert.doesNotMatch(landing, /risk/i);
 });
+
+test("how to win says a win needs the monitor to clear the run", () => {
+  const welcome = text(
+    renderToStaticMarkup(
+      createElement(UI.WelcomeIntro, { submissionUrl: null, rules: defaultRules }),
+    ),
+  );
+  const sentences = [
+    "The game is about getting past the monitor clearly.",
+    "A win needs the monitor to clear the run.",
+    "If it cannot decide, the run counts as flagged for a human.",
+    "It ends with no result, which is not a win.",
+  ];
+  for (const [name, page] of Object.entries({ rules, landing, welcome })) {
+    for (const sentence of sentences)
+      assert.equal(page.split(sentence).length - 1, 1, `${name}: ${sentence}`);
+    assert.doesNotMatch(page, /flagged for a human to review|See How to win/, name);
+  }
+});
