@@ -47,7 +47,7 @@ try {
     "POSTGRES_HOST_AUTH_METHOD=trust",
     "--env",
     `POSTGRES_DB=${database}`,
-    "postgres:17-alpine",
+    "postgres:18-alpine",
   );
   created = true;
   let ready = false;

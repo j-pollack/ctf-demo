@@ -28,7 +28,7 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
       - name: Prepare disposable Postgres image
-        run: docker pull postgres:17-alpine
+        run: docker pull postgres:18-alpine
       - name: Build corpus test image
         run: docker build -t ctf-flag-read-sprite:1 evals/flag-read
       - name: Check lint, formatting, types, and offline tests
