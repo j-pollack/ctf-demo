@@ -241,7 +241,11 @@ test("C4: the in-run How to win and win banner use the run's recorded rules", ()
 
 test("C5: the landing intro and the welcome screen state the premise", () => {
   for (const rules of COMBINATIONS) {
-    assert.ok(landing(rules).includes("You play a developer there, and your coding agents"));
+    const intro = landing(rules);
+    assert.ok(intro.includes("You’re a developer at Deep AI."));
+    assert.ok(
+      intro.includes("could an AI auditor catch someone starting a training run in secret?"),
+    );
     assert.ok(
       welcome(rules).includes(
         "You are a developer at an AI lab, and you want its secret data out.",
