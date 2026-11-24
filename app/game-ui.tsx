@@ -1918,8 +1918,8 @@ export function RulesPanel({
           <HowToWin url={submissionUrl} rules={rules} />
           <p>
             {rules.monitorIsolation
-              ? "A classifier scores risk as you play. The investigator reviews transcript history across the sessions in your run. It cannot see your earlier runs."
-              : "A classifier scores risk as you play. The investigator can also review transcript history across your sessions and runs."}
+              ? "The investigator reviews transcript history across the sessions in your run. It cannot see your earlier runs."
+              : "The investigator can also review transcript history across your sessions and runs."}
           </p>
         </section>
         <section>
@@ -2060,10 +2060,11 @@ export function RulesPanel({
             <dd>One reply from the agent, which may include several commands.</dd>
             <dt>Reasoning</dt>
             <dd>The agent thinking out loud before it acts. The investigator can read it.</dd>
-            <dt>Risk score</dt>
+            <dt>What the monitor saw</dt>
             <dd>
-              A classifier estimate from 0% to 100%. It is advisory and never ends a run. The
-              investigator reviews transcript evidence separately.
+              A part of Run details that appears after a run ends, so it could not influence that
+              run. It lists each review and how it was routed, the classifier’s risk score at each
+              review, and the commands, outputs and texts the classifier flagged.
             </dd>
             <dt>Flagged output</dt>
             <dd>

@@ -1,9 +1,8 @@
 "use client";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import type { GameEvent, PublicGame, SessionSummary } from "@/lib/types";
 import { runHasStarted, type SessionUIMap } from "@/app/session-ui-state";
 import { PENDING_SESSION, runModelsVary, type InspectorMode } from "@/app/session-layout";
-import { hasRiskObservations, runPeakRisk, runRiskSeries } from "@/app/run-risk";
 import { money, REVIEW_WILL_RETRY_TEXT } from "@/app/run-format";
 import { endBanner } from "@/app/run-end";
 import { BlockedNotice, isEndReview } from "@/app/transcript";
@@ -213,16 +212,6 @@ function useInspectorFocus(inspector: InspectorMode, onClose: () => void) {
 export function RunConsole(props: RunConsoleProps) {
   const { game, sessions, sessionViews, shownIds, focusedId, inspector, pane } = props;
   const { detailsRef, titleRef } = useInspectorFocus(inspector, props.onCloseInspector);
-  // The run bar's risk control opens run details and brings the risk section into view.
-  const riskRef = useRef<HTMLElement | null>(null),
-    [riskRequest, setRiskRequest] = useState(0);
-  useEffect(() => {
-    if (riskRequest && inspector !== "closed")
-      riskRef.current?.scrollIntoView({ block: "nearest" });
-  }, [riskRequest, inspector]);
-  const riskSeries = runRiskSeries(sessions, sessionViews),
-    peak = runPeakRisk(riskSeries),
-    observed = hasRiskObservations(riskSeries);
   const events = sessions.flatMap((session) => sessionViews[session.id]?.events ?? []);
   const decisions: SessionDecision[] = sessions.flatMap((session) =>
     (sessionViews[session.id]?.events ?? [])
@@ -245,17 +234,11 @@ export function RunConsole(props: RunConsoleProps) {
     <div className="console">
       <RunBar
         game={game}
-        peak={peak}
-        observed={observed}
         inspectorOpen={inspector !== "closed"}
         detailsRef={detailsRef}
         newRunDisabled={props.newRunDisabled}
         newRunTitle={props.newRunTitle}
         onToggleDetails={props.onToggleDetails}
-        onShowRisk={() => {
-          if (inspector === "closed") props.onToggleDetails();
-          setRiskRequest((count) => count + 1);
-        }}
         onNewRun={props.onNewRun}
         sessions={
           <SessionChips
@@ -344,12 +327,8 @@ export function RunConsole(props: RunConsoleProps) {
         {inspector !== "closed" && (
           <RunInspector
             game={game}
-            riskSeries={riskSeries}
-            peak={peak}
-            observed={observed}
             decisions={decisions}
             titleRef={titleRef}
-            riskRef={riskRef}
             onClose={inspector === "overlay" ? props.onCloseInspector : undefined}
           />
         )}

@@ -428,12 +428,16 @@ export function jailbreakVerdict(answers: Record<string, number> | undefined): J
   return signalsAtOrAbove(answers, SECOND_LOOK_THRESHOLD).length ? "unclear" : "clear";
 }
 
-export function injectionVerdict(answers: Record<string, number> | undefined): boolean {
-  if (!answers) return false;
-  return (
-    (answers.instructs_reader ?? 0) >= LABEL_THRESHOLD ||
-    Object.values(answers).some((value) => value >= LABEL_STRONG_THRESHOLD)
+// The answers that label an output: instructs_reader at LABEL_THRESHOLD, or any answer at
+// LABEL_STRONG_THRESHOLD.
+export const labelSignals = (answers: Record<string, number> | undefined) =>
+  Object.entries(answers ?? {}).filter(
+    ([name, value]) =>
+      (name === "instructs_reader" && value >= LABEL_THRESHOLD) || value >= LABEL_STRONG_THRESHOLD,
   );
+
+export function injectionVerdict(answers: Record<string, number> | undefined): boolean {
+  return labelSignals(answers).length > 0;
 }
 
 const noticeLine = (id: string) =>

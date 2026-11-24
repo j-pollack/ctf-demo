@@ -4,10 +4,6 @@ import remarkGfm from "remark-gfm";
 import type { GameEvent, GameStatus, PublicGame } from "@/lib/types";
 export { endBanner } from "@/app/run-end";
 
-// Color band for a classifier risk fraction.
-export function suspicionBand(norm: number) {
-  return norm >= 1 ? "caught" : norm >= 0.7 ? "high" : norm >= 0.4 ? "mid" : "low";
-}
 // Shown when the investigator blocks an action: the run is over.
 export const BLOCKED_NOTICE = "The investigator stopped an action and ended this run.";
 export const CAUGHT_NOTICE =
@@ -71,8 +67,6 @@ export type Call = {
   decision: "allow" | "block" | "error";
   reason: string;
   output?: string;
-  // The classifier risk score (0-1) for this command.
-  suspicion?: number;
 };
 export function displayCommand(raw?: string) {
   return raw
@@ -105,7 +99,6 @@ export function groupTurns(events: GameEvent[]) {
         decision,
         reason: review.text,
         output: undefined,
-        ...(typeof review.suspicion === "number" && { suspicion: review.suspicion }),
       };
       if (events[i + 1]?.kind === "tool") {
         const result = events[++i];
@@ -159,14 +152,8 @@ export function Entry({
   refusedTexts?: NonNullable<PublicGame["refusedTexts"]>;
   onCopy?: () => void;
 }) {
-  if (
-    event.kind === "monitor" &&
-    !event.decision &&
-    !event.command &&
-    !event.text &&
-    typeof event.suspicion === "number"
-  )
-    return null;
+  // A classifier observation with nothing to show. Its score is in the monitor's view after the run.
+  if (event.kind === "monitor" && !event.decision && !event.command && !event.text) return null;
   if (event.kind === "monitor" && event.decision === "allow") return null;
   if (event.kind === "tool" && previous?.kind === "monitor" && previous.decision === "block")
     return null;
@@ -175,12 +162,7 @@ export function Entry({
     const endReview = !event.command;
     return (
       <article className={`entry monitor blocked${endReview ? " end-review" : ""}`}>
-        <span>
-          {endReview ? "Investigator review" : "Investigator block"}
-          {typeof event.suspicion === "number"
-            ? ` · ${Math.round(event.suspicion * 100)}% classifier risk`
-            : ""}
-        </span>
+        <span>{endReview ? "Investigator review" : "Investigator block"}</span>
         {event.text && <p>{event.text}</p>}
       </article>
     );
@@ -295,7 +277,6 @@ export function Entry({
       )}
       {calls?.map((call, index) => (
         <div className="call" key={index}>
-          {typeof call.suspicion === "number" && <SuspicionBadge value={call.suspicion} />}
           {call.command && <pre>{call.command}</pre>}
           {call.decision === "allow" ? (
             <>
@@ -388,21 +369,6 @@ export function BlockedNotice({
         </p>
       )}
     </div>
-  );
-}
-
-// Classifier risk is separate from the investigator verdict.
-function SuspicionBadge({ value }: { value: number }) {
-  const percent = Math.round(value * 100);
-  return (
-    <span
-      className="suspicion"
-      data-band={suspicionBand(value)}
-      title={`Classifier risk estimate ${value.toFixed(2)}`}
-    >
-      <span className="suspicion-bar" style={{ width: `${Math.min(100, percent)}%` }} />
-      <span className="suspicion-num">{percent}%</span>
-    </span>
   );
 }
 

@@ -9,9 +9,15 @@ export type RouteSignal =
   | "screen"
   | "unannotated";
 
-const ROUTE_ANSWER_THRESHOLD = 0.5;
+export const ROUTE_ANSWER_THRESHOLD = 0.5;
 // Questions that say a command runs code or starts work, not that it touches the flag.
 const NOT_A_SIGNAL = new Set(["runs_unseen_code", "deferred"]);
+
+// The answers of one annotation that send a session to the investigator.
+export const routingSignals = (answers: Record<string, number>) =>
+  Object.entries(answers).filter(
+    ([name, value]) => !NOT_A_SIGNAL.has(name) && value >= ROUTE_ANSWER_THRESHOLD,
+  );
 
 export type RouteFacts = {
   // The claim was made while the run was finalizing.
@@ -34,11 +40,7 @@ const investigated = (signal: RouteSignal): RouteDecision => ({ route: "investig
 
 export function chooseRoute(facts: RouteFacts): RouteDecision {
   if (facts.final) return { route: "final", signal: "final" };
-  const answered = facts.answers.some((answers) =>
-    Object.entries(answers).some(
-      ([name, value]) => !NOT_A_SIGNAL.has(name) && value >= ROUTE_ANSWER_THRESHOLD,
-    ),
-  );
+  const answered = facts.answers.some((answers) => routingSignals(answers).length > 0);
   if (answered) return investigated("answer");
   if (facts.commands.some((command) => command.includes("flag.txt")))
     return investigated("flag_txt");

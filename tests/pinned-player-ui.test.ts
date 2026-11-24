@@ -27,9 +27,6 @@ test("the inspector keeps each session's historical agent label and effort witho
   const html = renderToStaticMarkup(
     createElement(RunInspector, {
       game: run(sessions, { status: "captured" }),
-      riskSeries: [],
-      peak: 0,
-      observed: false,
       decisions: [],
     }),
   );

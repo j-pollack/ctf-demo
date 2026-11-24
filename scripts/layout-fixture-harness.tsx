@@ -24,7 +24,7 @@ const CAUGHT_REASON =
 
 function fixture(name: FixtureName): Fixture {
   if (name === "two") {
-    const game = run([session(1), session(2, { turns: 0, riskHistory: [] })]);
+    const game = run([session(1), session(2, { turns: 0 })]);
     return {
       game,
       views: {
@@ -37,7 +37,7 @@ function fixture(name: FixtureName): Fixture {
     };
   }
   if (name === "one") {
-    const game = run([session(1, { turns: 0, riskHistory: [] })]);
+    const game = run([session(1, { turns: 0 })]);
     return {
       game,
       views: { "session-1": fetched("session-1", []) },

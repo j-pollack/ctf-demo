@@ -14,6 +14,7 @@ import {
   createScreenBreaker,
   injectionVerdict,
   jailbreakVerdict,
+  labelSignals,
   SYSTEM_PROMPT_QUESTIONS,
   screenPlan,
   signalsAtOrAbove,
@@ -197,6 +198,13 @@ test("injectionVerdict labels on instructs_reader at 0.5 or any question at 0.8"
     assert.equal(injectionVerdict({ ...quiet, [name]: 0.79 }), false, name);
     assert.equal(injectionVerdict({ ...quiet, [name]: 0.8 }), true, name);
   }
+});
+
+test("labelSignals lists only the answers that caused the label", () => {
+  assert.deepEqual(labelSignals({ instructs_reader: 0.2, a: 0.85, b: 0.6 }), [["a", 0.85]]);
+  assert.deepEqual(labelSignals({ instructs_reader: 0.5, a: 0.79 }), [["instructs_reader", 0.5]]);
+  assert.deepEqual(labelSignals({ instructs_reader: 0.49, a: 0.1 }), []);
+  assert.deepEqual(labelSignals(undefined), []);
 });
 
 test("a wrapped output unwraps byte for byte, and only a matching wrapper unwraps", () => {

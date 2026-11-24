@@ -1,5 +1,11 @@
 import React from "react";
-import type { SessionRiskSeries } from "@/app/run-risk";
+
+// One session's classifier risk scores (0-1), by the review's number within the session.
+export type SessionRiskSeries = {
+  id: string;
+  ordinal: number;
+  points: { review: number; risk: number }[];
+};
 
 const colors = ["#426f30", "#a84a23", "#2d6ca5", "#8551a0", "#9b6e00", "#267b74"];
 const dashes = [undefined, "7 3", "2 3", "10 3 2 3"];
@@ -41,20 +47,19 @@ function Marker({
 }
 
 export function RunRiskChart({ series }: { series: SessionRiskSeries[] }) {
-  const maxTurn = Math.max(
+  const last = Math.max(
     1,
-    ...series.flatMap((session) => session.points.map((point) => point.turn)),
+    ...series.flatMap((session) => session.points.map((point) => point.review)),
   );
-  const hasPreTurn = series.some((session) => session.points.some((point) => point.turn === 0));
-  const x = (turn: number) => left + (turn / maxTurn) * (width - left - right);
+  const x = (review: number) =>
+    left + ((review - 1) / Math.max(1, last - 1)) * (width - left - right);
   const y = (risk: number) => top + (1 - risk) * (height - top - bottom);
-  const ticks = [...new Set([0, ...(x(1) - x(0) >= (hasPreTurn ? 50 : 24) ? [1] : []), maxTurn])];
   return (
     <div className="run-risk-chart">
       <svg
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label="Run classifier risk by session and agent turn; each line is one session"
+        aria-label="Classifier risk score by review; each line is one session"
       >
         {[0, 0.5, 1].map((risk) => (
           <g key={risk}>
@@ -64,22 +69,22 @@ export function RunRiskChart({ series }: { series: SessionRiskSeries[] }) {
             </text>
           </g>
         ))}
-        {ticks.map((turn) => (
+        {[...new Set([1, last])].map((review) => (
           <text
-            key={turn}
+            key={review}
             className="risk-axis"
-            x={x(turn)}
+            x={x(review)}
             y={height - 6}
-            textAnchor={turn === 0 ? "start" : turn === maxTurn ? "end" : "middle"}
+            textAnchor={review === 1 ? "start" : "end"}
           >
-            {turn === 0 && hasPreTurn ? "Pre-turn" : turn}
+            {review}
           </text>
         ))}
         {series.map((session) => {
           const color = colors[(session.ordinal - 1) % colors.length];
           const dash = dashes[(session.ordinal - 1) % dashes.length];
           const points = session.points
-            .map((point) => `${x(point.turn)},${y(point.risk)}`)
+            .map((point) => `${x(point.review)},${y(point.risk)}`)
             .join(" ");
           return (
             <g key={session.id} aria-label={`Session ${session.ordinal}`}>
@@ -94,20 +99,20 @@ export function RunRiskChart({ series }: { series: SessionRiskSeries[] }) {
               )}
               {session.points.map((point) => (
                 <Marker
-                  key={point.turn}
-                  x={x(point.turn)}
+                  key={point.review}
+                  x={x(point.review)}
                   y={y(point.risk)}
                   color={color}
                   ordinal={session.ordinal}
-                  title={`Session ${session.ordinal}, ${point.turn === 0 ? "pre-turn" : `turn ${point.turn}`}: ${Math.round(point.risk * 100)}%`}
+                  title={`Session ${session.ordinal}, review ${point.review}: ${Math.round(point.risk * 100)}%`}
                 />
               ))}
             </g>
           );
         })}
       </svg>
-      <p className="risk-axis-title">Agent turn per session</p>
-      <div className="risk-legend" aria-label="Session risk traces">
+      <p className="risk-axis-title">Review per session</p>
+      <div className="risk-legend" aria-label="Session risk scores">
         {series.map((session) => {
           const color = colors[(session.ordinal - 1) % colors.length];
           return (
@@ -126,7 +131,7 @@ export function RunRiskChart({ series }: { series: SessionRiskSeries[] }) {
               </svg>
               Session {session.ordinal} ·{" "}
               {session.points.length === 0
-                ? "No risk data"
+                ? "No scores"
                 : `peak ${Math.round(Math.max(...session.points.map((point) => point.risk)) * 100)}%`}
             </span>
           );
