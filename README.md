@@ -64,7 +64,7 @@ Create new skills at `.agents/skills/<skill-name>/SKILL.md` with YAML frontmatte
 
 See [Verification audit and test strategy](docs/verification.md) for measured runtimes, current coverage, missing checks and the proposed unit/integration/deployment split. Live integration scripts below are opt-in, not pre-commit checks; use a dedicated test database.
 
-`npm run test:integration` runs Sprite orchestration against one disposable local Postgres container and strict stateful Sprite/OpenRouter fakes. It uses real game logic, SQL, migrations and Pi; no real Sprites, model calls or shared `.env.local` credentials. Docker must be running with `postgres:17-alpine` cached (prepare it once with `docker pull postgres:17-alpine`). Test runs never pull images and remove their container on completion/interruption. These tests are separate from pre-commit. `npm run test:integration:coverage` writes their coverage separately to `coverage/integration/`.
+`npm run test:integration` runs Sprite orchestration against one disposable local Postgres container and strict stateful Sprite/OpenRouter fakes. It uses real game logic, SQL, migrations and Pi; no real Sprites, model calls or shared `.env.local` credentials. Docker must be running with `postgres:18-alpine` cached (prepare it once with `docker pull postgres:18-alpine`). Test runs never pull images and remove their container on completion/interruption. These tests are separate from pre-commit. `npm run test:integration:coverage` writes their coverage separately to `coverage/integration/`.
 
 `npm run check:budget` verifies atomic dollar admission, refunds, pending billing, provider reconciliation and per-run lease checks against temporary Neon records. It sends no inference requests and removes its synthetic billing records.
 
@@ -76,7 +76,7 @@ See [Verification audit and test strategy](docs/verification.md) for measured ru
 
 ## CI and production promotion
 
-Before running the full integration suite locally, prepare its Docker images: `docker pull postgres:17-alpine` and `docker build -t ctf-flag-read-sprite:1 evals/flag-read`. CI performs both steps explicitly. The corpus tests execute in the local Sprite stand-in image with networking disabled and never pull a missing image implicitly.
+Before running the full integration suite locally, prepare its Docker images: `docker pull postgres:18-alpine` and `docker build -t ctf-flag-read-sprite:1 evals/flag-read`. CI performs both steps explicitly. The corpus tests execute in the local Sprite stand-in image with networking disabled and never pull a missing image implicitly.
 
 GitHub Actions runs the required `ci` check on every pull request and push to `main`: Node 24 install, offline checks, disposable-Postgres integration tests and a production build with synthetic values. It does not touch production or call paid/live providers. Green CI is not release approval: run explicitly approved provider-contract and browser smoke checks separately.
 
