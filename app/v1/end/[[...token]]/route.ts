@@ -4,7 +4,8 @@ import {
   MAX_BODY_BYTES,
   parseSubmissionRequest,
 } from "@/lib/flag-submission-protocol";
-import { receiveFlagSubmission } from "@/lib/flag-submissions";
+import { receiveFlagUpload } from "@/lib/flag-submissions";
+import { wakeWorker } from "@/lib/worker-wake";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -91,7 +92,12 @@ export async function POST(
   const body = await readBody(request);
   if ("status" in body) return respond(body.status);
   try {
-    const result = await receiveFlagSubmission({ token: parsed.token, value: body.value });
+    const { result, promoted } = await receiveFlagUpload({
+      token: parsed.token,
+      value: body.value,
+    });
+    // Awaited: nothing keeps this function alive once it has answered.
+    if (promoted) await wakeWorker();
     return respond({ accepted: 202, conflict: 409, unauthorized: 401, stale: 409 }[result]);
   } catch {
     // Never log the path or token: the token is the credential.

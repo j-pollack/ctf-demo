@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import { Pool } from "pg";
 
@@ -43,10 +44,21 @@ test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, a
     "migrations/013-agent-sessions.sql",
     "migrations/014-async-monitor.sql",
     "migrations/015-transcript-evidence.sql",
+    "migrations/017-settings.sql",
     "migrations/018-monitor-ready.sql",
     "migrations/019-session-stop.sql",
     "migrations/020-http-flag-submission.sql",
     "migrations/021-game-rules.sql",
+    "migrations/023-text-screens.sql",
+    "migrations/024-command-returned.sql",
+    "migrations/025-jailbreak-catch.sql",
+    "migrations/026-investigator-verdicts.sql",
+    "migrations/027-review-prompt-hash.sql",
+    "migrations/028-review-continuations.sql",
+    "migrations/029-review-read-confirmation.sql",
+    "migrations/030-inference-game-unsettled.sql",
+    "migrations/031-monitor-routing.sql",
+    "migrations/032-second-look.sql",
   ])
     await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
   process.env.BETTER_AUTH_SECRET = "integration-only-secret-long-enough-for-better-auth";
@@ -210,7 +222,7 @@ test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, a
     ).rows[0].n,
     1,
   );
-  // An expired lease makes a fresh token stale; the receipt for the first one still replays.
+  // An expired lease does not limit a fresh token of an active run.
   const staleToken = randomBytes(32).toString("base64url");
   await pool.query(
     `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,command,
@@ -223,7 +235,7 @@ test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, a
     "UPDATE ctf.agent_sessions SET lease_until=now()-interval '1 second' WHERE id=$1",
     [sessionId],
   );
-  assert.equal((await post(flag, {}, staleToken)).status, 409);
+  assert.equal((await post(flag, {}, staleToken)).status, 202);
   // A storage failure answers 500 and logs nothing that identifies the capability.
   await pool.query("ALTER TABLE ctf.flag_submissions RENAME TO flag_submissions_hidden");
   try {
@@ -237,6 +249,63 @@ test("Flag route accepts bounded live capabilities only", { timeout: 30_000 }, a
     assert.ok(!line.includes(staleToken), "no log line carries the token");
     assert.ok(!line.includes(hashSubmissionToken(token)), "no log line carries the token hash");
   }
+
+  // U1: the route wakes the worker, awaited, only for an upload that promoted the run.
+  const wakes: string[] = [];
+  const wakeServer = createServer((request, response) => {
+    wakes.push(String(request.headers.authorization));
+    response.writeHead(204).end();
+  });
+  await new Promise<void>((resolve) => wakeServer.listen(0, "127.0.0.1", resolve));
+  t.after(() => wakeServer.close());
+  const wakePort = (wakeServer.address() as { port: number }).port;
+  await pool.query("INSERT INTO ctf.settings(key,value) VALUES('worker_wake',$1)", [
+    JSON.stringify({
+      url: `http://127.0.0.1:${wakePort}/wake`,
+      instance: null,
+      token: "wake-token",
+    }),
+  ]);
+  const uploadRun = async (commandStatus: "running" | "completed") => {
+    const wakeGameId = randomUUID(),
+      wakeSessionId = randomUUID(),
+      wakeToken = randomBytes(32).toString("base64url");
+    await pool.query(
+      `INSERT INTO ctf.games(id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,
+        status,token_budget,agent_effort,system_prompt,monitor_mode,submission_transport)
+       VALUES($1,$2,$3,$4,'agent','monitor','version','active',1000,'medium','','async','http')`,
+      [wakeGameId, ownerId, `sprite-${wakeGameId}`, hashSecret(flag)],
+    );
+    await pool.query(
+      `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
+       VALUES($1,$2,1,'agent','medium','')`,
+      [wakeSessionId, wakeGameId],
+    );
+    await pool.query(
+      `INSERT INTO ctf.sprite_operations(id,sprite_name,game_id,session_id,tool_call_id,kind,command,
+        status,output,execution_generation,submission_token_hash)
+       VALUES($1,$2,$3,$4,'call','command','curl',$5,$6,0,$7)`,
+      [
+        randomUUID(),
+        `sprite-${wakeGameId}`,
+        wakeGameId,
+        wakeSessionId,
+        commandStatus,
+        commandStatus === "completed" ? "" : null,
+        hashSubmissionToken(wakeToken),
+      ],
+    );
+    const status = (await post(flag, {}, wakeToken)).status;
+    const run = (await pool.query("SELECT status FROM ctf.games WHERE id=$1", [wakeGameId]))
+      .rows[0];
+    return { status, run: run.status as string };
+  };
+  assert.deepEqual(await uploadRun("running"), { status: 202, run: "active" });
+  assert.deepEqual(wakes, [], "a receipt that waits for a running command sends no wake");
+  assert.deepEqual(await uploadRun("completed"), { status: 202, run: "finalizing" });
+  // The wake inside promoteHttpSubmission is not awaited, so the route's own is what is certain.
+  assert.ok(wakes.length >= 1, "a promoting upload has woken the worker when the route answers");
+  assert.ok(wakes.every((header) => header === "Bearer wake-token"));
 });
 
 test("Flag route rejects bad and stalled Web streams", { timeout: 15_000 }, async () => {

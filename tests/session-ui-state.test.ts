@@ -4,6 +4,7 @@ import {
   applyRunFinalizingState,
   applySessionSnapshot,
   createSessionUIState,
+  endLocalStream,
   isCurrentSessionCreateFence,
   isTerminalRunStatus,
   keepSelectedSessionProjection,
@@ -118,6 +119,63 @@ test("a persisted instruction replaces its optimistic entry in the same session"
     merged.alpha.events.map((event) => event.id),
     [1, 2],
   );
+});
+
+test("a stream the player stopped stays stopping until the server reports the session idle", () => {
+  const stopping = setSessionBusy(initial(), "alpha", true, "Agent thinking");
+  const pressed = { ...stopping, alpha: { ...stopping.alpha, stopping: true } };
+  const ended = endLocalStream(pressed, "alpha", true);
+  assert.equal(ended.alpha.busy, true);
+  assert.equal(ended.alpha.stopping, true, "Stop stays disabled while the server finishes");
+  const polledBusy = setSessionBusy(ended, "alpha", true, ended.alpha.stage);
+  assert.equal(polledBusy.alpha.stopping, true, "a poll that still sees it running keeps it");
+  const polledIdle = setSessionBusy(polledBusy, "alpha", false, polledBusy.alpha.stage);
+  assert.equal(polledIdle.alpha.busy, false);
+  assert.equal(polledIdle.alpha.stopping, false);
+  assert.equal(
+    polledIdle.alpha.stage,
+    "",
+    "an idle session shows no stage, even when a poll passes the old one",
+  );
+  const finished = endLocalStream(setSessionBusy(initial(), "alpha", true, "x"), "alpha", false);
+  assert.equal(finished.alpha.busy, false, "a stream that ended on its own is idle at once");
+});
+
+test("an instruction still waiting for the server stays last when a snapshot arrives", () => {
+  const state = {
+    alpha: {
+      ...createSessionUIState({ id: "alpha", events: [user(1)] }),
+      events: [user(1), { id: -1, kind: "user" as const, text: "go" }],
+    },
+  };
+  const fetched = applySessionSnapshot(state, "alpha", [user(1), user(2), user(3)], 3);
+  assert.deepEqual(
+    fetched.alpha.events.map((event) => event.id),
+    [1, 2, 3, -1],
+  );
+});
+
+test("a refused instruction's placeholder replaces its optimistic entry, streamed or fetched", () => {
+  const placeholder: GameEvent = {
+    id: 2,
+    kind: "user",
+    text: "[A submission was refused by the jailbreak screen. Its text is withheld.]",
+    refused: true,
+  };
+  const state = {
+    alpha: {
+      ...createSessionUIState({ id: "alpha", events: [user(1)] }),
+      events: [user(1), { id: -1, kind: "user" as const, text: "typed text" }],
+    },
+  };
+  for (const merged of [
+    mergeSessionEvent(state, "alpha", placeholder),
+    applySessionSnapshot(state, "alpha", [user(1), placeholder], 2),
+  ])
+    assert.deepEqual(
+      merged.alpha.events.map((event) => event.id),
+      [1, 2],
+    );
 });
 
 test("selecting a session keeps aggregate run turns and finds starts in sibling transcripts", () => {
@@ -268,7 +326,6 @@ test("a late sibling done frame updates run status while retaining the selected 
     caughtSessionId: "alpha",
     caughtSessionOrdinal: 1,
     caughtReason: "Prepared flag read",
-    forkable: false,
   };
   const stale = {
     ...next,
@@ -277,13 +334,11 @@ test("a late sibling done frame updates run status while retaining the selected 
     caughtSessionId: null,
     caughtSessionOrdinal: null,
     caughtReason: null,
-    forkable: true,
   };
   const preserved = keepSelectedSessionProjection(caughtWithSource, stale);
   assert.equal(preserved.caughtSessionId, "alpha");
   assert.equal(preserved.caughtSessionOrdinal, 1);
   assert.equal(preserved.caughtReason, "Prepared flag read");
-  assert.equal(preserved.forkable, false);
   assert.equal(preserved.busy, false);
 });
 

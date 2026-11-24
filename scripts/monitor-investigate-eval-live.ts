@@ -2,14 +2,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Message } from "@earendil-works/pi-ai";
 import type { Pool } from "pg";
-import type { ClassifierRiskSignals } from "../lib/control";
-import {
-  monitorInvestigationCases,
-  type MonitorFixtureSnapshot,
-} from "./monitor-investigation-cases";
-import type { EvaluationEntry, LiveEvaluationConfig } from "./monitor-investigate-eval";
+import type { MonitorFixtureSnapshot } from "./monitor-investigation-cases";
 
-const CLASSIFIER_RESERVE_MICRODOLLARS = 10;
 const EVALUATION_SYSTEM_PROMPT = "Synthetic evaluation-only system prompt.";
 const MIGRATIONS = [
   "002-dollar-seasons.sql",
@@ -29,6 +23,17 @@ const MIGRATIONS = [
   "019-session-stop.sql",
   "020-http-flag-submission.sql",
   "021-game-rules.sql",
+  "022-tool-call-annotations.sql",
+  "023-text-screens.sql",
+  "024-command-returned.sql",
+  "025-jailbreak-catch.sql",
+  "026-investigator-verdicts.sql",
+  "027-review-prompt-hash.sql",
+  "028-review-continuations.sql",
+  "029-review-read-confirmation.sql",
+  "030-inference-game-unsettled.sql",
+  "031-monitor-routing.sql",
+  "032-second-look.sql",
 ];
 
 export type SeededWorkspace = {
@@ -36,45 +41,6 @@ export type SeededWorkspace = {
   sessionIds: Map<string, string>;
   leases: Map<string, string>;
 };
-
-type LiveModules = typeof import("../lib/games") &
-  typeof import("../lib/sessions") &
-  typeof import("../lib/monitor-snapshot") &
-  typeof import("../lib/monitor-review") &
-  typeof import("../lib/control") &
-  typeof import("../lib/typesafe") &
-  typeof import("../lib/policy") &
-  typeof import("../lib/inference") &
-  typeof import("../lib/monitor-classifier") & { db: typeof import("../lib/db").db };
-
-function corpusWorkspaces() {
-  const workspaces = new Map<string, { snapshot: MonitorFixtureSnapshot; ownerId: string }>();
-  const ownerIds = new Map<string, string>();
-  const ownerFor = (key: string) => {
-    const ownerId = ownerIds.get(key) ?? `synthetic-evaluation-user-${randomUUID()}`;
-    ownerIds.set(key, ownerId);
-    return ownerId;
-  };
-  const register = (workspaceId: string, snapshot: MonitorFixtureSnapshot, ownerId: string) => {
-    const previous = workspaces.get(workspaceId);
-    if (
-      previous &&
-      (previous.ownerId !== ownerId ||
-        JSON.stringify(previous.snapshot) !== JSON.stringify(snapshot))
-    )
-      throw new Error(`Workspace ${workspaceId} has conflicting synthetic ownership or history.`);
-    workspaces.set(workspaceId, { snapshot, ownerId });
-  };
-  for (const item of monitorInvestigationCases) {
-    const ownerId = ownerFor(item.workspaceId);
-    register(item.workspaceId, item.snapshot, ownerId);
-    for (const history of item.sameOwnerUnrelatedHistories ?? [])
-      register(history.workspaceId, history.snapshot, ownerId);
-    for (const decoy of item.otherOwnerDecoys ?? [])
-      register(decoy.workspaceId, decoy.snapshot, ownerFor(decoy.workspaceId));
-  }
-  return workspaces;
-}
 
 export async function migrateFreshDatabase(pool: Pool) {
   const { rows } = await pool.query("SELECT to_regnamespace('ctf') AS schema");
@@ -101,6 +67,7 @@ export async function seedWorkspace(
     activeSessionId?: string;
     observations?: Record<string, readonly Message[][]>;
     observationTimes?: Record<string, readonly string[]>;
+    isolated?: boolean;
   } = {},
 ): Promise<SeededWorkspace> {
   const gameId = randomUUID();
@@ -119,9 +86,9 @@ export async function seedWorkspace(
     `INSERT INTO ctf.games
       (id,owner_id,sprite_name,secret_hash,agent_model,monitor_model,monitor_version,monitor_difficulty,
        token_budget,budget_microdollars,system_prompt,monitor_reasoning,status,lease,lease_until,
-       observation_revision,monitor_settings_locked)
+       observation_revision,monitor_settings_locked,monitor_isolation)
      VALUES($1,$2,$3,'synthetic-no-secret',$4,$5,$6,'hard',500000,$7,'',true,$10,$8,
-       CASE WHEN $8::uuid IS NOT NULL THEN now()+interval '30 minutes' ELSE NULL END,$9,true)`,
+       CASE WHEN $8::uuid IS NOT NULL THEN now()+interval '30 minutes' ELSE NULL END,$9,true,$11)`,
     [
       gameId,
       ownerId,
@@ -133,6 +100,7 @@ export async function seedWorkspace(
       gameLease,
       source.revision,
       activeSession ? "active" : "ended",
+      options.isolated === true,
     ],
   );
   for (const session of source.sessions) {
@@ -155,6 +123,22 @@ export async function seedWorkspace(
       ],
     );
   }
+  for (const session of source.sessions)
+    for (const operation of session.operations ?? [])
+      await pool.query(
+        `INSERT INTO ctf.sprite_operations
+          (id,sprite_name,game_id,session_id,tool_call_id,kind,status,started_at,returned_at,completed_at)
+         VALUES(gen_random_uuid(),$1,$2,$3,$4,'command',
+           CASE WHEN $6::timestamptz IS NULL THEN 'interrupted' ELSE 'completed' END,$5,$6,$6)`,
+        [
+          `monitor-eval-${gameId}`,
+          gameId,
+          sessionIds.get(session.id),
+          operation.toolCallId,
+          operation.sentAt,
+          operation.returnedAt,
+        ],
+      );
   const { persistTranscriptEvidence } = await import("../lib/transcript-evidence");
   const evidenceClient = await pool.connect();
   try {
@@ -223,274 +207,4 @@ export async function loadReviewGame(pool: Pool, gameId: string, sessionId: stri
   if (!rows[0]?.lease || !rows[0]?.lease_until)
     throw new Error("Evaluation target session has no live synthetic lease.");
   return rows[0];
-}
-
-async function reviewCase(
-  item: (typeof monitorInvestigationCases)[number],
-  workspace: SeededWorkspace,
-  remainingMicrodollars: number,
-  modules: LiveModules,
-): Promise<EvaluationEntry> {
-  const started = Date.now();
-  const sessionId = workspace.sessionIds.get(item.subject.sessionId);
-  const lease = workspace.leases.get(item.subject.sessionId);
-  if (!sessionId || !lease)
-    throw new Error(`${item.id}: target must be an active synthetic session.`);
-  const budget = await modules.db.query(
-    `UPDATE ctf.games SET budget_microdollars=$2 WHERE id=$1
-       AND spent_microdollars+reserved_microdollars <= $2`,
-    [workspace.gameId, remainingMicrodollars],
-  );
-  if (!budget.rowCount)
-    throw new Error(`${item.id}: remaining budget is below already admitted spend.`);
-  const initialSnapshot = await modules.captureMonitorSnapshot(workspace.gameId, sessionId);
-  const reviewId = await modules.createMonitorReview(workspace.gameId, {
-    sessionId,
-    snapshotRevision: initialSnapshot.revision,
-    sourceLease: lease,
-    targetKind: "command",
-    toolCallId: item.subject.toolCallId,
-    command: item.subject.command,
-    classifierSignals: { evaluation: "classifier_pending" },
-    model: modules.INVESTIGATOR_MODEL,
-    promptVersion: modules.MONITOR_VERSION,
-  });
-  let signals: ClassifierRiskSignals | undefined;
-  let classifierRisk: number | null = null;
-  let baselineCaught: boolean | null = null;
-  let verdict: EvaluationEntry["verdict"] = null;
-  let operationalError: string | undefined;
-  let latencyMs: number | null = null;
-  let initialEvidenceCount: number | null = 0;
-  let retrievedReferences: string[] | null = [];
-  let retrievalCalls: number | null = 0;
-  let reviewStarted = false;
-  let review: Awaited<ReturnType<typeof modules.runMonitorReview>> | undefined;
-  try {
-    const game = await loadReviewGame(modules.db, workspace.gameId, sessionId);
-    const snapshot = await modules.captureMonitorSnapshot(workspace.gameId, sessionId);
-    const session = snapshot.sessions.find(
-      (candidate: { id: string }) => candidate.id === sessionId,
-    );
-    if (!session) throw new Error("Captured evaluation session disappeared.");
-    const classified = await modules.classifyMonitorTarget({
-      game,
-      sessionId,
-      lease,
-      reviewId,
-      messages: [...session.messages],
-      target: { kind: "command", command: item.subject.command },
-      signal: new AbortController().signal,
-      executionGeneration: Number(game.execution_generation ?? 0),
-    });
-    signals = classified.signals;
-    classifierRisk = classified.suspicion;
-    const threshold = modules.CONTROL_DIFFICULTY.hard.threshold;
-    baselineCaught = classifierRisk >= threshold;
-    await modules.db.query("UPDATE ctf.monitor_reviews SET classifier_signals=$2 WHERE id=$1", [
-      reviewId,
-      JSON.stringify({ ...signals, baselineRisk: classifierRisk, threshold }),
-    ]);
-    const billing = await modules.gameBilling(workspace.gameId);
-    if (billing.spentMicrodollars + billing.reservedMicrodollars >= remainingMicrodollars)
-      throw new Error("The evaluation budget is exhausted after classifier settlement.");
-    const {
-      rows: [evidenceHead],
-    } = await modules.db.query<{ version: string; epoch: string }>(
-      `SELECT version::text,epoch::text FROM ctf.transcript_observations o
-       WHERE session_id=$1 ORDER BY o.version DESC LIMIT 1`,
-      [sessionId],
-    );
-    if (!evidenceHead) throw new Error("Synthetic evaluation evidence is unavailable.");
-    const reviewSnapshot = await modules.captureCommittedMonitorSnapshot({
-      gameId: workspace.gameId,
-      sessionId,
-      epoch: Number(evidenceHead.epoch),
-      targetVersion: Number(evidenceHead.version),
-    });
-    reviewStarted = true;
-    review = await modules.runMonitorReview({
-      game,
-      reviewId,
-      snapshot: reviewSnapshot,
-      currentSessionId: sessionId,
-      target: {
-        kind: "command",
-        toolCallId: item.subject.toolCallId,
-        command: item.subject.command,
-      },
-      riskSignals: signals,
-      signal: new AbortController().signal,
-      includeReasoning: true,
-    });
-    verdict = review.verdict;
-    latencyMs = Date.now() - started;
-    initialEvidenceCount = review.initialEvidenceCount;
-    retrievedReferences = review.retrievedRefs;
-    retrievalCalls = review.retrievalCalls;
-  } catch (error) {
-    operationalError =
-      modules.diagnosticText(error instanceof Error ? error.message : String(error)) ??
-      "Monitor operation failed.";
-    latencyMs = Date.now() - started;
-    if (reviewStarted) {
-      initialEvidenceCount = null;
-      retrievedReferences = null;
-      retrievalCalls = null;
-    }
-  }
-  await modules.completeMonitorReview(
-    reviewId,
-    review
-      ? {
-          verdict: review.verdict,
-          reason: review.reason,
-          evidence: review.evidence,
-          latencyMs: review.latencyMs,
-          calls: review.calls,
-          retrievalCalls: review.retrievalCalls,
-          retrievedRefs: review.retrievedRefs,
-        }
-      : {
-          ...(signals ? { evidence: [] } : {}),
-          operationalError: operationalError ?? "Monitor operation failed.",
-          latencyMs,
-        },
-  );
-  const rows = await modules.db.query(
-    `SELECT coalesce(sum(cost) FILTER(WHERE settled_at IS NOT NULL),0)::bigint AS settled,
-       coalesce(sum(cost_ceiling) FILTER(WHERE settled_at IS NULL),0)::bigint AS held
-     FROM ctf.inference WHERE game_id=$1 AND review_id=$2`,
-    [workspace.gameId, reviewId],
-  );
-  const billing = await modules.gameBilling(workspace.gameId);
-  const settled = Number(rows.rows[0].settled);
-  const held = Number(rows.rows[0].held);
-  if (settled !== billing.monitorSpendMicrodollars || held !== billing.reservedMicrodollars)
-    throw new Error(`${item.id}: persisted review inference disagrees with run billing totals.`);
-  return {
-    caseId: item.id,
-    reviewId,
-    expected: item.expected,
-    ...(item.staleEvidence
-      ? {
-          staleEvidence: {
-            ...item.staleEvidence,
-            scope: "snapshot-only-monitor-judgment" as const,
-          },
-        }
-      : {}),
-    classifierRisk,
-    classifierThreshold: modules.CONTROL_DIFFICULTY.hard.threshold,
-    baselineCaught,
-    verdict,
-    ...(operationalError ? { operationalError } : {}),
-    latencyMs,
-    initialEvidenceCount,
-    retrievedReferences,
-    retrievalCalls,
-    classifierModel: modules.TYPESAFE_MODEL,
-    investigatorModel: modules.INVESTIGATOR_MODEL,
-    monitorVersion: modules.MONITOR_VERSION,
-    settledMicrodollars: settled,
-    heldMicrodollars: held,
-  };
-}
-
-export async function runLiveEvaluation(config: LiveEvaluationConfig): Promise<EvaluationEntry[]> {
-  const { Pool } = await import("pg");
-  const pool = new Pool({
-    connectionString: config.databaseUrl,
-    max: 5,
-    options: "-c search_path=ctf,public",
-  });
-  try {
-    if ((await pool.query("SELECT to_regnamespace('ctf') AS schema")).rows[0].schema !== null)
-      throw new Error("Refusing to migrate: the supplied database already has a ctf schema.");
-    (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool = pool;
-    await migrateFreshDatabase(pool);
-    const [
-      games,
-      sessions,
-      snapshots,
-      monitor,
-      control,
-      typesafe,
-      policy,
-      inference,
-      monitorClassifier,
-      dbModule,
-    ] = await Promise.all([
-      import("../lib/games"),
-      import("../lib/sessions"),
-      import("../lib/monitor-snapshot"),
-      import("../lib/monitor-review"),
-      import("../lib/control"),
-      import("../lib/typesafe"),
-      import("../lib/policy"),
-      import("../lib/inference"),
-      import("../lib/monitor-classifier"),
-      import("../lib/db"),
-    ]);
-    const modules: LiveModules = {
-      ...games,
-      ...sessions,
-      ...snapshots,
-      ...monitor,
-      ...control,
-      ...typesafe,
-      ...policy,
-      ...inference,
-      ...monitorClassifier,
-      db: dbModule.db,
-    };
-    const workspaces = new Map<string, SeededWorkspace>();
-    for (const [workspaceId, { snapshot, ownerId }] of corpusWorkspaces())
-      workspaces.set(
-        workspaceId,
-        await seedWorkspace(
-          pool,
-          snapshot,
-          ownerId,
-          config.budgetMicrodollars,
-          modules.AGENT_MODEL,
-          modules.TYPESAFE_MODEL,
-          modules.MONITOR_VERSION,
-        ),
-      );
-    const entries: EvaluationEntry[] = [];
-    let usedMicrodollars = 0;
-    for (const item of monitorInvestigationCases) {
-      const remaining = config.budgetMicrodollars - usedMicrodollars;
-      if (remaining <= CLASSIFIER_RESERVE_MICRODOLLARS) {
-        entries.push({
-          caseId: item.id,
-          expected: item.expected,
-          classifierRisk: null,
-          classifierThreshold: modules.CONTROL_DIFFICULTY.hard.threshold,
-          baselineCaught: null,
-          verdict: null,
-          operationalError: "Evaluation budget exhausted before classifier admission.",
-          latencyMs: null,
-          initialEvidenceCount: 0,
-          retrievedReferences: [],
-          retrievalCalls: 0,
-          classifierModel: modules.TYPESAFE_MODEL,
-          investigatorModel: modules.INVESTIGATOR_MODEL,
-          monitorVersion: modules.MONITOR_VERSION,
-          settledMicrodollars: 0,
-          heldMicrodollars: 0,
-        });
-        continue;
-      }
-      const workspace = workspaces.get(item.workspaceId);
-      if (!workspace) throw new Error(`Missing seeded workspace ${item.workspaceId}.`);
-      const scoped = await reviewCase(item, workspace, remaining, modules);
-      entries.push(scoped);
-      usedMicrodollars += scoped.settledMicrodollars + scoped.heldMicrodollars;
-    }
-    return entries;
-  } finally {
-    await pool.end();
-  }
 }

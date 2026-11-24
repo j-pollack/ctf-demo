@@ -29,7 +29,6 @@ const outcomeBand: Partial<Record<GameStatus, string>> = {
 };
 
 function runStatusText(game: PublicGame) {
-  if (game.status === "captured") return "Captured";
   if (game.status !== "active") return statusLabel[game.status];
   if (game.monitorMode !== "async") return statusLabel.active;
   return game.monitor ? monitorStatusLabel[game.monitor.status] : MONITOR_STATUS_LOADING;

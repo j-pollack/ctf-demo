@@ -1,11 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { GameError } from "../lib/policy";
 import {
   collectStream,
   diagnosticText,
   getModel,
+  lostToolCallShape,
+  providerTranscript,
   providerErrorDetails,
   reasoningParam,
+  reasoningText,
   type AgentDelta,
 } from "../lib/inference";
 
@@ -276,7 +280,7 @@ const timed = (steps: { after: number; text: string }[], close: boolean) =>
     },
   });
 
-test("a stream that goes silent is stopped, but keep-alives count as progress", async () => {
+test("S7: the agent's stream stall keeps its message, and keep-alives count as progress", async () => {
   const first = frame({ id: "gen-4", choices: [{ delta: { reasoning: "a" } }] });
   const started = Date.now();
   await assert.rejects(
@@ -304,4 +308,152 @@ test("a stream that goes silent is stopped, but keep-alives count as progress", 
     40,
   );
   assert.equal(kept.choices[0].message.content, "done");
+});
+
+test("a cut-off turn with nothing left to send goes back as empty content, not null", () => {
+  const turn = (stopReason: string, content: object[]) =>
+    ({ role: "assistant", content, stopReason, model: "m" }) as never;
+  const sent = (message: never) =>
+    (providerTranscript([message], "m").messages[0] as { content: unknown }).content;
+  assert.equal(sent(turn("length", [])), "");
+  // Every other shape keeps its content.
+  assert.equal(sent(turn("stop", [])), null);
+  assert.equal(
+    sent(turn("length", [{ type: "thinking", thinking: "Cut.", thinkingSignature: "[]" }])),
+    null,
+  );
+  assert.equal(sent(turn("length", [{ type: "text", text: "Partial." }])), "Partial.");
+  assert.equal(
+    sent(turn("length", [{ type: "toolCall", id: "c", name: "t", arguments: {} }])),
+    null,
+  );
+});
+
+test("a stalled stream fails with the message the caller names, and 504", async () => {
+  const stalled = () =>
+    collectStream(
+      timed([{ after: 0, text: frame({ id: "gen-5", choices: [{ delta: {} }] }) }], false),
+      () => {},
+      async () => {},
+      40,
+      "The investigator's model stopped responding.",
+    );
+  await assert.rejects(stalled(), (error: GameError) => {
+    assert.equal(error.message, "The investigator's model stopped responding.");
+    assert.equal(error.status, 504);
+    return true;
+  });
+});
+
+test("reasoning text comes from the reasoning string or text details, never undefined", () => {
+  assert.equal(reasoningText({ reasoning: "plain", reasoning_details: [{ type: "x" }] }), "plain");
+  assert.equal(reasoningText({ reasoning_details: [{ type: "reasoning.text" }] }), "");
+  assert.equal(
+    reasoningText({
+      reasoning_details: [
+        { type: "reasoning.text", text: "a" },
+        { type: "reasoning.encrypted", data: "z" },
+        { type: "reasoning.text", text: "b" },
+      ],
+    }),
+    "a\nb",
+  );
+  assert.equal(reasoningText({}), "");
+});
+
+test("a chunk that cannot be handled cancels the stream and rethrows", async () => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("data: {not json\n\n"));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await assert.rejects(
+    collectStream(
+      body,
+      () => {},
+      async () => {},
+    ),
+    SyntaxError,
+  );
+  assert.equal(cancelled, true);
+  // A failing first-chunk id write is a handler failure too.
+  cancelled = false;
+  const identified = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame({ id: "gen-6", choices: [] })));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await assert.rejects(
+    collectStream(
+      identified,
+      () => {},
+      async () => {
+        throw new Error("id write failed");
+      },
+    ),
+    /id write failed/,
+  );
+  assert.equal(cancelled, true);
+});
+
+test("a monitor response that lost its tool call is described by lengths, never content", () => {
+  const call = (id: string, args: string) => ({
+    id,
+    type: "function",
+    function: { name: "query_transcripts", arguments: args },
+  });
+  assert.deepEqual(
+    lostToolCallShape("tool_calls", {
+      content: "secret words",
+      reasoning: "private thoughts",
+      tool_calls: [call("", '{"sql": "SELECT'), call("c2", "{}")],
+    }),
+    {
+      finishReason: "tool_calls",
+      textLength: 12,
+      reasoningLength: 16,
+      toolCalls: [
+        { index: 0, hasId: false, name: "query_transcripts", argumentsLength: 15 },
+        { index: 1, hasId: true, name: "query_transcripts", argumentsLength: 2 },
+      ],
+    },
+  );
+  const none = lostToolCallShape("stop", { content: "done" });
+  assert.deepEqual(none, {
+    finishReason: "stop",
+    textLength: 4,
+    reasoningLength: 0,
+    toolCalls: [],
+  });
+  assert.doesNotMatch(JSON.stringify([none]), /done/);
+  // A response cut off at the output limit is continued, whatever it holds.
+  assert.equal(lostToolCallShape("length", { tool_calls: [call("c", '{"sql": "SEL')] }), undefined);
+  assert.equal(lostToolCallShape("length", { reasoning: "thinking only" }), undefined);
+  assert.equal(lostToolCallShape("tool_calls", { tool_calls: [call("c", "{}")] }), undefined);
+});
+
+test("the shape log cuts and redacts a tool name and shows a lost call", () => {
+  const named = (name: string) => ({
+    id: "c",
+    type: "function",
+    function: { name, arguments: "{" },
+  });
+  const long = lostToolCallShape("tool_calls", { tool_calls: [named("x".repeat(200))] });
+  assert.equal(long?.toolCalls[0].name?.length, 64);
+  const flagged = lostToolCallShape("tool_calls", { tool_calls: [named("flag{secret}")] });
+  assert.equal(flagged?.toolCalls[0].name, "[redacted flag]");
+  // A gap in the call indexes is a lost call and is reported as missing.
+  const sparse: ReturnType<typeof named>[] = [];
+  sparse[1] = { ...named("finish_investigation"), function: { name: "f", arguments: "{}" } };
+  assert.deepEqual(lostToolCallShape("tool_calls", { tool_calls: sparse })?.toolCalls, [
+    { index: 0, missing: true },
+    { index: 1, hasId: true, name: "f", argumentsLength: 2 },
+  ]);
 });

@@ -4,11 +4,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { SpritesClient, ExecError, APIError, type Sprite } from "@fly/sprites";
 import { hashSecret } from "../lib/policy";
-import {
-  applySubmissionNetworkPolicy,
-  checkpointEnvironment,
-  restoreEnvironment,
-} from "../lib/sprites";
+import { applySubmissionNetworkPolicy } from "../lib/sprites";
 import { classifyControlDenial, parseSmokeConfig } from "./flag-submission-smoke-contract";
 
 type Result = { exitCode: number; output: string };
@@ -143,7 +139,7 @@ async function main() {
     await control.body?.cancel();
     report("outside-control", "ready");
 
-    stage = "sprite policy and restore";
+    stage = "sprite policy";
     requireActive();
     creationAttempted = true;
     sprite = await sprites.createSprite(spriteName, {
@@ -154,13 +150,9 @@ async function main() {
     await sprite.updateNetworkPolicy({ rules: [{ domain: "*", action: "deny" }] });
     assert.deepEqual((await sprite.getNetworkPolicy()).rules, [{ domain: "*", action: "deny" }]);
     requireActive();
-    const checkpoint = await checkpointEnvironment(spriteName);
-    requireActive();
     await applySubmissionNetworkPolicy(spriteName, config.hostname);
     await exactPolicy(sprite, config.hostname);
-    await restoreEnvironment(spriteName, checkpoint, config.endpoint);
-    await exactPolicy(sprite, config.hostname);
-    report("policy-restore", "passed");
+    report("policy", "passed");
 
     const allowedHost = await spriteCommand(sprite, [
       "curl",

@@ -2,9 +2,9 @@
 # ctf-monitor-worker-preview (see .github/workflows/preview-worker.yml).
 app = "ctf-monitor-worker"
 primary_region = "sjc"
-# The worker finishes its current review on SIGTERM; a review's claim lasts 90 seconds.
+# The worker finishes its current review on SIGTERM; 300 seconds is Fly's maximum wait before it is killed.
 kill_signal = "SIGTERM"
-kill_timeout = "100s"
+kill_timeout = "300s"
 
 [build]
 dockerfile = "Dockerfile"
@@ -15,3 +15,11 @@ policy = "always"
 [[vm]]
 size = "shared-cpu-1x"
 memory = "1gb"
+
+# The app wakes an idle worker here (POST /wake). The worker registers its own address in the database.
+[http_service]
+internal_port = 8080
+force_https = true
+auto_stop_machines = "off"
+auto_start_machines = false
+min_machines_running = 1

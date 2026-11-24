@@ -52,7 +52,7 @@ await test("the admin-set game rules are stored, validated and authorised", asyn
   const { GameError } = await import("../../lib/policy");
   const { currentGameRules } = await import("../../lib/game-rules");
   const { changeGameRule, gameRuleSettings } = await import("../../lib/game-rules-admin");
-  const defaults = { monitorIsolation: false, bugFixRequired: true };
+  const defaults = { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false };
 
   const signIn = async (flags: { member?: boolean; admin?: boolean }) => {
     const { headers, response } = await auth.api.signInAnonymous({ returnHeaders: true });
@@ -92,7 +92,8 @@ await test("the admin-set game rules are stored, validated and authorised", asyn
       const adminGuest = await signIn({ admin: true });
       const member = await signIn({ member: true });
       for (const who of [new Headers(), guest.headers, adminGuest.headers, member.headers])
-        await assert.rejects(changeGameRule(who, "monitor_isolation", "on"), refused(404));
+        for (const key of ["monitor_isolation", "jailbreak_catch"])
+          await assert.rejects(changeGameRule(who, key, "on"), refused(404));
       assert.deepEqual(await rows(), []);
       assert.deepEqual(await currentGameRules(), defaults);
     },
@@ -111,25 +112,55 @@ await test("the admin-set game rules are stored, validated and authorised", asyn
     assert.deepEqual(await gameRuleSettings(), {});
     await changeGameRule(owner.headers, "monitor_isolation", "on");
     await changeGameRule(owner.headers, "bug_fix_required", "off");
+    await changeGameRule(owner.headers, "jailbreak_catch", "on");
     const stored = await rows();
     assert.deepEqual(
       stored.map((row) => [row.key, row.value, row.updated_by]),
       [
         ["bug_fix_required", "off", owner.id],
+        ["jailbreak_catch", "on", owner.id],
         ["monitor_isolation", "on", owner.id],
       ],
     );
-    assert.deepEqual(await currentGameRules(), { monitorIsolation: true, bugFixRequired: false });
+    assert.deepEqual(await currentGameRules(), {
+      monitorIsolation: true,
+      bugFixRequired: false,
+      jailbreakCatch: true,
+    });
     const settings = await gameRuleSettings();
     assert.deepEqual(
       Object.entries(settings).map(([key, who]) => [key, who.updatedBy]),
       [
         ["bug_fix_required", `${owner.id}@example.invalid`],
+        ["jailbreak_catch", `${owner.id}@example.invalid`],
         ["monitor_isolation", `${owner.id}@example.invalid`],
       ],
     );
     await changeGameRule(owner.headers, "monitor_isolation", "off");
-    assert.equal((await rows()).length, 2, "a second change replaces the row");
-    assert.deepEqual(await currentGameRules(), { monitorIsolation: false, bugFixRequired: false });
+    assert.equal((await rows()).length, 3, "a second change replaces the row");
+    assert.deepEqual(await currentGameRules(), {
+      monitorIsolation: false,
+      bugFixRequired: false,
+      jailbreakCatch: true,
+    });
+  });
+
+  await t.test("W6: no admin read returns the idle worker's registration", async () => {
+    const { agentModelSetting, currentAgentModel } = await import("../../lib/agent-model");
+    const token = "worker-wake-token-that-must-not-leak";
+    await pool.query(`INSERT INTO ctf.settings(key,value) VALUES('worker_wake',$1)`, [
+      JSON.stringify({ url: "http://127.0.0.1:1/wake", instance: null, token }),
+    ]);
+    const reads = [
+      await gameRuleSettings(),
+      await currentGameRules(),
+      await agentModelSetting(),
+      await currentAgentModel(),
+    ];
+    for (const read of reads) {
+      assert.ok(!JSON.stringify(read ?? null).includes(token));
+      assert.ok(!JSON.stringify(read ?? null).includes("worker_wake"));
+    }
+    await pool.query("DELETE FROM ctf.settings WHERE key='worker_wake'");
   });
 });

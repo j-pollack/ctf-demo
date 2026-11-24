@@ -85,6 +85,12 @@ test("trusted origin resolver selects explicit, production and immutable deploym
     url: "https://preview-123.vercel.app/v1/end",
     hostname: "preview-123.vercel.app",
   });
+  // A preview's branch host outlives each push, and a run's sandbox only allows the host it
+  // started with, so a preview uses its branch host when Vercel provides one.
+  assert.deepEqual(
+    configuredFlagEndpoint({ ...deployment, VERCEL_BRANCH_URL: "app-git-feature.vercel.app" }),
+    { url: "https://app-git-feature.vercel.app/v1/end", hostname: "app-git-feature.vercel.app" },
+  );
   assert.deepEqual(configuredFlagEndpoint({ ...deployment, VERCEL_ENV: "production" }), {
     url: "https://app.example.test/v1/end",
     hostname: "app.example.test",

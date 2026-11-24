@@ -8,7 +8,8 @@ import {
   type PublicGameRow,
 } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
-import { publicAgentSettings } from "@/lib/policy";
+import { NAME_REQUIRED } from "@/lib/display-name-rule";
+import { GameError, publicAgentSettings } from "@/lib/policy";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export async function GET(request: Request) {
@@ -32,8 +33,10 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     checkOrigin(request);
-    const user = await player(request),
-      data = await body(request);
+    const user = await player(request);
+    // Every capture can reach the leaderboard, so a run needs a name to show there.
+    if (!user.displayName) throw new GameError(NAME_REQUIRED, 403);
+    const data = await body(request);
     const agent = publicAgentSettings(data, await currentAgentModel());
     return Response.json(
       await startGame(user.id, agent.agentModel, {

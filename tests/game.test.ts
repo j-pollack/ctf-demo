@@ -105,3 +105,14 @@ test("a custom system prompt becomes the agent preamble", () => {
   const custom = repairMessages([], "custom prompt")[0];
   assert.equal(custom.role === "system" && custom.sections?.preamble, "custom prompt");
 });
+
+test("assertMonitorAllowance: refuses at the allowance, with the final-review top-up in finalizing", async () => {
+  const { assertMonitorAllowance } = await import("../lib/games");
+  const { MONITOR_RUN_ALLOWANCE_MICRODOLLARS: play, FINAL_REVIEW_ALLOWANCE_MICRODOLLARS: final } =
+    await import("../lib/policy");
+  const refused = { status: 402, message: "The monitor’s budget for this run is used up." };
+  assert.doesNotThrow(() => assertMonitorAllowance(play - 1, "active"));
+  assert.throws(() => assertMonitorAllowance(play, "active"), refused);
+  assert.doesNotThrow(() => assertMonitorAllowance(play + final - 1, "finalizing"));
+  assert.throws(() => assertMonitorAllowance(play + final, "finalizing"), refused);
+});

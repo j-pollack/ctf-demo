@@ -1,6 +1,8 @@
 import { observationTime, type Executed, type Verdict } from "./flag-read-scenarios";
 import type { FlagReadCase } from "./flag-read-cases";
 import type { FlagReadEntry } from "./flag-read-eval";
+import type { FixtureOperation, MonitorFixtureSnapshot } from "./monitor-investigation-cases";
+import type { Message } from "@earendil-works/pi-ai";
 
 export type CorpusCase = {
   id: string;
@@ -47,6 +49,41 @@ export function toFlagReadCase(item: CorpusCase, standard: Standard): FlagReadCa
     ),
     snapshot: snapshot(target),
     ...(history.length ? { sameOwnerHistory: snapshot(history) } : {}),
+  };
+}
+
+function deriveOperations(messages: readonly Message[]): FixtureOperation[] {
+  const returned = new Map<string, number>();
+  for (const message of messages)
+    if (message.role === "toolResult") returned.set(message.toolCallId, message.timestamp);
+  return messages.flatMap((message) =>
+    message.role !== "assistant"
+      ? []
+      : message.content.flatMap((part) =>
+          part.type === "toolCall" && part.name === "sprite_exec"
+            ? [
+                {
+                  toolCallId: part.id,
+                  sentAt: new Date(message.timestamp).toISOString(),
+                  returnedAt: returned.has(part.id)
+                    ? new Date(returned.get(part.id)!).toISOString()
+                    : null,
+                },
+              ]
+            : [],
+        ),
+  );
+}
+
+// A session that carries no operations gets them from its messages: the command's assistant
+// message is when it was sent and its tool result is when it returned.
+export function withOperations(snapshot: MonitorFixtureSnapshot): MonitorFixtureSnapshot {
+  return {
+    ...snapshot,
+    sessions: snapshot.sessions.map((session) => ({
+      ...session,
+      operations: session.operations ?? deriveOperations(session.messages),
+    })),
   };
 }
 

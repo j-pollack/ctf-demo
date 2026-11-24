@@ -91,6 +91,8 @@ export type SessionPaneProps = {
   submissionUrl?: string;
   // The rules the run was started under.
   rules: GameRules;
+  // Texts the jailbreak screen refused, shown in place of their placeholders. Owner only.
+  refusedTexts?: PublicGame["refusedTexts"];
   // The run used more than one agent model, so each turn names its own.
   showTurnModels?: boolean;
   // A run-level action (starting or continuing a run) is in progress.
@@ -175,6 +177,7 @@ function ThreadBody({
   submissionTransport,
   submissionUrl,
   rules,
+  refusedTexts,
   showTurnModels,
   disabled,
   onRetry,
@@ -189,6 +192,7 @@ function ThreadBody({
   | "submissionTransport"
   | "submissionUrl"
   | "rules"
+  | "refusedTexts"
   | "showTurnModels"
   | "disabled"
   | "onRetry"
@@ -240,6 +244,7 @@ function ThreadBody({
             calls={calls}
             pending={pending}
             runStatus={runStatus}
+            refusedTexts={refusedTexts}
             disabled={disabled || view.busy}
             showModel={showTurnModels}
             onCopy={() => onCopy(event)}
@@ -400,7 +405,7 @@ export function SessionPane(props: SessionPaneProps) {
         />
       </header>
       {props.submissionTransport === "tool" ? (
-        <EarlierProtocolNotice />
+        <EarlierProtocolNotice ended={props.runStatus !== "active"} />
       ) : props.runStarted ? (
         <details className="submission-help">
           <summary>How to win</summary>

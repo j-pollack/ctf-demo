@@ -191,6 +191,59 @@ strong {
   background: var(--paper);
   overflow-wrap: anywhere;
 }
+/* The account menu: the header's type and rules, opened under its trigger. */
+.account-trigger {
+  gap: 6px;
+}
+.account-trigger::after {
+  content: "";
+  border-inline: 4px solid transparent;
+  border-top: 4px solid currentColor;
+  transition: transform 120ms;
+}
+.account-trigger[data-open]::after {
+  transform: rotate(180deg);
+}
+.top nav .account-trigger[data-current] {
+  text-decoration: underline;
+  text-underline-offset: 5px;
+}
+.account-menu {
+  min-width: 11rem;
+  margin: 0;
+  padding: 4px 0;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 12px 32px #13200a1f;
+}
+.account-menu [data-slot="menu-item"] {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+.account-menu [data-slot="menu-item"][data-highlighted] {
+  background: var(--panel);
+}
+.account-menu [data-slot="menu-item"]:focus-visible {
+  outline: 2px solid #557b1d;
+  outline-offset: -2px;
+}
+.account-menu [data-slot="menu-item"][aria-current="page"] {
+  font-weight: 600;
+}
+.account-menu [data-pending] {
+  opacity: 0.6;
+}
+@media (prefers-reduced-motion: reduce) {
+  .account-trigger::after {
+    transition: none;
+  }
+}
 .eyebrow {
   font-size: 10px;
   letter-spacing: 1.4px;
@@ -796,6 +849,76 @@ dialog::backdrop {
 .sign-in > .error {
   margin-top: 18px;
 }
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+.sign-in-form .hint {
+  margin: 14px 0 0;
+}
+/* The account page: the sign-in column, one ruled section per setting. */
+.account > :not(h2) {
+  max-width: 28rem;
+}
+.account section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.account h3 {
+  margin: 0 0 14px;
+  font-size: 15px;
+}
+.account-form label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+.account-form > p:not([class]) {
+  margin-bottom: 16px;
+}
+.account-form .hint {
+  margin-top: 2px;
+}
+.account-form input {
+  display: block;
+  width: 100%;
+  margin: 8px 0 6px;
+  padding: 13px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+.account-form input[aria-invalid="true"] {
+  border-color: var(--blocked);
+}
+.field-error {
+  min-height: 1.6em;
+  margin-bottom: 8px;
+  color: var(--blocked);
+  font-size: 12px;
+}
+.account-form button {
+  width: 100%;
+}
+.account .saved {
+  margin-top: 12px;
+  color: #426f30;
+}
+.account .saved:empty {
+  margin: 0;
+}
+.account .notice {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+}
+.account .notice.error {
+  display: block;
+  max-height: none;
+  border-left-color: var(--blocked);
+  background: #efe3d9;
+}
 .workspace > .error[role="alert"] {
   padding-inline: var(--gutter);
 }
@@ -805,6 +928,22 @@ dialog::backdrop {
   background: #e1ebd3;
   border: 1px solid #b7c79d;
   border-left: 4px solid #537524;
+}
+/* An instruction the jailbreak screen refused: what the player sent, then the refusal. */
+.entry.user.refused {
+  border-left-color: var(--blocked);
+}
+.entry.user.refused .speaker {
+  background: var(--blocked);
+}
+.entry.user.refused pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.refused-note {
+  margin: 12px 0 0;
+  color: var(--blocked);
+  font-weight: 600;
 }
 .entry.agent {
   margin: 16px 0;

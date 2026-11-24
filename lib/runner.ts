@@ -1,5 +1,4 @@
 import type { GameRow } from "./games";
-import { runGame as runLegacyGame } from "./runner-session";
 import { runAsyncGame } from "./runner-async";
 
 export function runGame(
@@ -7,10 +6,11 @@ export function runGame(
   prompt: string,
   signal: AbortSignal,
   send: (type: string, data: unknown) => void,
-  options: { deadlineSignal?: AbortSignal } = {},
+  options: {
+    deadlineSignal?: AbortSignal;
+    beforePrompt?: (signal: AbortSignal) => Promise<void>;
+  } = {},
 ) {
-  return game.monitor_mode === "async"
-    ? runAsyncGame(game, prompt, signal, send, options)
-    : runLegacyGame(game, prompt, signal, send, options);
+  return runAsyncGame(game, prompt, signal, send, options);
 }
 export { repairMessages } from "./transcript-repair";

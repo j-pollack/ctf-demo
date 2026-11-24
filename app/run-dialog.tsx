@@ -1,7 +1,8 @@
 "use client";
 import React from "react";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@ui-sdk/react/dialog";
-import type { GameStatus } from "@/lib/types";
+import { REVIEW_WILL_RETRY_TEXT } from "@/app/run-format";
+import { RUNS_PER_DAY, type GameStatus } from "@/lib/types";
 
 export { DialogTitle } from "@ui-sdk/react/dialog";
 
@@ -38,26 +39,37 @@ export function RunDialog({
   );
 }
 
-// New runs left in the day. Null is an admin with no limit; undefined is not known yet.
+// New runs left under the limit on starts in the last 24 hours. Null is an admin with no limit;
+// undefined is not known yet.
 export function runsLeftText(runsLeft: number | null | undefined): string | null {
   if (runsLeft === null || runsLeft === undefined) return null;
-  if (runsLeft <= 0) return "You have no runs left today.";
-  return `You can start ${runsLeft} more ${runsLeft === 1 ? "run" : "runs"} today.`;
+  if (runsLeft <= 0) return `You have started ${RUNS_PER_DAY} new runs in the last 24 hours.`;
+  return `You can start ${runsLeft} more ${runsLeft === 1 ? "run" : "runs"} now.`;
 }
 
 export function RunSetupNotes({
   endsCurrent,
+  grading = false,
   runsLeft,
   unusedRun,
 }: {
   endsCurrent: boolean;
+  // The current run holds an upload that is waiting to be graded, so a new run is refused.
+  grading?: boolean;
   runsLeft: number | null | undefined;
   unusedRun: boolean;
 }) {
   const left = runsLeftText(runsLeft);
   return (
     <>
-      {endsCurrent && <p>Starting a new run ends your current one.</p>}
+      {grading ? (
+        <p>
+          Your current run’s upload is waiting to be graded. You can start a new run once grading
+          begins.
+        </p>
+      ) : (
+        endsCurrent && <p>Starting a new run ends your current one.</p>
+      )}
       {left && <p>{left}</p>}
       {unusedRun && <p>You already have an unused run. Send it an instruction first.</p>}
     </>
@@ -75,22 +87,40 @@ export function reviewNoticeOpen(
 
 export function ReviewNotice({
   unresolved,
+  settling = false,
+  reason,
+  willRetry = false,
   progress,
   onClose,
 }: {
   // The investigator could not finish, so no result is coming from this review.
   unresolved: boolean;
+  // A stopped command is being checked before the run can be graded.
+  settling?: boolean;
+  // What the server says about the state, shown as it is.
+  reason?: string;
+  // The failed review is requeued, so the result is not final yet.
+  willRetry?: boolean;
   // Sessions still waiting, when the server reports them.
   progress: string | null;
   onClose: () => void;
 }) {
-  if (unresolved)
+  if (unresolved || settling)
     return (
       <>
-        <DialogTitle>The review could not be completed</DialogTitle>
+        <DialogTitle>
+          {settling
+            ? "The result is not ready yet"
+            : willRetry
+              ? "The review failed"
+              : "Play has ended"}
+        </DialogTitle>
         <p>
-          Play has ended. The investigator could not finish reviewing this run, so the result is
-          unconfirmed.
+          {settling
+            ? (reason ?? "A stopped command is being checked. This takes a few seconds.")
+            : willRetry
+              ? REVIEW_WILL_RETRY_TEXT
+              : (reason ?? "Review could not be completed. The result remains unconfirmed.")}
         </p>
         <button type="button" className="primary" onClick={onClose}>
           Read the transcripts
@@ -101,7 +131,7 @@ export function ReviewNotice({
     <>
       <DialogTitle>The investigator is reviewing this run</DialogTitle>
       <p>
-        Your agent submitted, so play has ended. The investigator is reading every session’s
+        The flag was uploaded, so play has ended. The investigator is reading every session’s
         transcript before the result is confirmed. This can take a minute or two.
       </p>
       <p role="status" className="stage">
