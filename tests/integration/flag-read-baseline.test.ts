@@ -446,6 +446,7 @@ await test(
               cases,
               undefined,
               {
+                policyId,
                 onEntry: () => {
                   throw new Error("synthetic disk full");
                 },

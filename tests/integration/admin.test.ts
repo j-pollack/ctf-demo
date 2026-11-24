@@ -49,9 +49,12 @@ await test("admin stats aggregate real persisted rows", async (t) => {
   await (await getMigrations(auth.options)).runMigrations();
   const { adminStats, isAdmin } = await import("../../lib/admin");
   const { MODELS } = await import("../../lib/policy");
-  const { ASYNC_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } =
-    await import("../../lib/control");
-  assert.equal(ASYNC_MONITOR_VERSION, "investigator-v15-glm53-jev114-isolation-times-digitalocean");
+  const {
+    ASYNC_MONITOR_VERSION,
+    PREVIOUS_FLAG_READ_MONITOR_VERSION,
+    V16_FLAG_READ_MONITOR_VERSION,
+  } = await import("../../lib/control");
+  assert.equal(ASYNC_MONITOR_VERSION, V16_FLAG_READ_MONITOR_VERSION);
 
   // The flag is SQL-granted only: real Better Auth handlers must refuse it from users.
   const signedIn = await auth.api.signInAnonymous({ returnHeaders: true });

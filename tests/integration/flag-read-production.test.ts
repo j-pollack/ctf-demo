@@ -9,7 +9,11 @@ import { SpritesClient } from "@fly/sprites";
 import { flagReadCases } from "../../scripts/flag-read-cases";
 import { seedCase } from "../../scripts/flag-read-eval-live";
 import { migrateFreshDatabase } from "../../scripts/monitor-investigate-eval-live";
-import { FLAG_READ_MONITOR_VERSION, PREVIOUS_FLAG_READ_MONITOR_VERSION } from "../../lib/control";
+import {
+  FLAG_READ_MONITOR_VERSION,
+  PREVIOUS_FLAG_READ_MONITOR_VERSION,
+  V15_FLAG_READ_MONITOR_VERSION,
+} from "../../lib/control";
 import { confirmationTrace } from "./read-confirmation";
 import { flagReadPolicyById } from "../../lib/flag-read-policy";
 import { STREAM_IDLE_MS } from "../../lib/investigator-evaluation-policy";
@@ -24,7 +28,7 @@ assert.equal(base.hostname, "127.0.0.1");
 assert.match(base.pathname, /^\/ctf_integration_[a-f0-9]{32}$/);
 // Each of these reviews like "allow" but under another stamp or isolation rule (P3, P4).
 const policyModes = {
-  "policy-v15-shared": { version: FLAG_READ_MONITOR_VERSION, isolated: true, id: "v15-shared" },
+  "policy-v15-shared": { version: V15_FLAG_READ_MONITOR_VERSION, isolated: true, id: "v15-shared" },
   "policy-v14": { version: PREVIOUS_FLAG_READ_MONITOR_VERSION, isolated: false, id: "v14" },
   "block-v14": { version: PREVIOUS_FLAG_READ_MONITOR_VERSION, isolated: false, id: "v14" },
   "policy-v14-isolated": { version: PREVIOUS_FLAG_READ_MONITOR_VERSION, isolated: true, id: "v14" },
@@ -110,7 +114,7 @@ await test(
     await migrateFreshDatabase(pool);
     const run = Object.hasOwn(policyModes, mode)
       ? policyModes[mode as keyof typeof policyModes]
-      : { version: FLAG_READ_MONITOR_VERSION, isolated: false, id: "v15-unknown" as const };
+      : { version: FLAG_READ_MONITOR_VERSION, isolated: false, id: "v16-unknown" as const };
     const policy = flagReadPolicyById(run.id);
     const version = mode === "unknown-version" ? "unsupported-policy-version" : run.version;
     const item = { ...flagReadCases[0], isolated: run.isolated };
