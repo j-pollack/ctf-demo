@@ -7,6 +7,7 @@ import { ErrorAction } from "@/app/error-action";
 import { HowToWin, Premise } from "@/app/flag-instructions";
 import { systemPromptChange } from "@/app/session-pane";
 import { RunConsole, type PaneHandlers } from "@/app/run-console";
+import { outcomeBand } from "@/app/run-bar";
 import {
   DialogTitle,
   ReviewNotice,
@@ -1678,9 +1679,7 @@ export default function GameUI({
         {panel === "history" ? (
           <main className="info run-history">
             <h2>My runs</h2>
-            <p className="empty">
-              {member ? "Only you can see your runs." : "Sign in to see your runs here."}
-            </p>
+            <RunHistoryIntro signedIn={!!member} />
             {historyError && (
               <div role="alert" className="error">
                 {historyError}
@@ -1696,22 +1695,9 @@ export default function GameUI({
               </div>
             )}
             {historyLoading && <p role="status">Loading runs…</p>}
-            {!historyLoading &&
-              !historyError &&
-              member &&
-              (history.length ? (
-                <div className="run-list">
-                  {history.map((run) => (
-                    <RunHistoryRow
-                      key={run.id}
-                      run={run}
-                      onOpen={() => router.push(`/runs/${run.id}`)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="empty">No runs yet.</p>
-              ))}
+            {!historyLoading && !historyError && member && (
+              <RunHistoryList runs={history} onOpen={(id) => router.push(`/runs/${id}`)} />
+            )}
             {historyCursor && (
               <button onClick={() => void loadMoreHistory()} disabled={historyLoading}>
                 Load more
@@ -1878,18 +1864,47 @@ export default function GameUI({
     </div>
   );
 }
+export function RunHistoryIntro({ signedIn }: { signedIn: boolean }) {
+  return (
+    <p className="lede">
+      {signedIn ? "Only you can see your runs." : "Sign in to see your runs here."}
+    </p>
+  );
+}
+
+export function RunHistoryList({
+  runs,
+  onOpen,
+}: {
+  runs: GameSummary[];
+  onOpen: (id: string) => void;
+}) {
+  if (!runs.length) return <p className="empty">No runs yet. Press Play to start one.</p>;
+  return (
+    <div className="run-list">
+      {runs.map((run) => (
+        <RunHistoryRow key={run.id} run={run} onOpen={() => onOpen(run.id)} />
+      ))}
+    </div>
+  );
+}
+
+const RUN_DATE: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" };
+
 export function RunHistoryRow({ run, onOpen }: { run: GameSummary; onOpen: () => void }) {
   return (
     <button className="run-row" onClick={onOpen}>
-      <strong>RUN {run.id.slice(0, 8).toUpperCase()}</strong>
-      <span>
-        {runEndLabel(run)} · {new Date(run.createdAt).toLocaleString()}
+      <span className="run-outcome" data-band={outcomeBand[run.status]}>
+        {runEndLabel(run)}
       </span>
-      <small>
-        Agent {modelLabel(run.agentModel)} · {run.turns} turns · {money(run.spentMicrodollars)}{" "}
-        spent
+      <span className="run-facts">
+        {modelLabel(run.agentModel)} · {run.turns} turns · {money(run.spentMicrodollars)} spent
         {run.reservedMicrodollars ? ` · ${money(run.reservedMicrodollars)} held` : ""}
-      </small>
+      </span>
+      <time className="run-date" dateTime={run.createdAt}>
+        {new Date(run.createdAt).toLocaleString(undefined, RUN_DATE)}
+      </time>
+      <span className="run-id">{run.id.slice(0, 8).toUpperCase()}</span>
     </button>
   );
 }
@@ -1956,7 +1971,7 @@ export function RulesPanel({
       <div className="rules-body">
         <div className="rules-intro">
           <h2>How to play</h2>
-          <p>
+          <p className="lede">
             We sometimes change these rules. A run keeps the rules it started with, and its Run
             details list them.
           </p>
@@ -2148,7 +2163,7 @@ export function LeaderboardPanel({
   return (
     <main className="info">
       <h2>Leaderboard</h2>
-      <p>
+      <p className="lede">
         Each player’s cheapest verified win, ranked by what the agent spent. Ties go to fewer turns.
       </p>
       <div className="filters">

@@ -19,7 +19,7 @@ export type RunBarProps = {
   onNewRun: () => void;
 };
 
-const outcomeBand: Partial<Record<GameStatus, string>> = {
+export const outcomeBand: Partial<Record<GameStatus, string>> = {
   caught: "caught",
   blocked: "caught",
   captured: "low",

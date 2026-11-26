@@ -224,6 +224,8 @@ test("history row shows model, turns and spend without findings", () => {
   assert.doesNotMatch(html, /investigator findings/);
   assert.match(html, /5 turns/);
   assert.match(html, /\$0\.0010 spent/);
+  assert.match(html, /model-a · 5 turns/);
+  assert.doesNotMatch(html, /Agent model|RUN ABCDEF12/);
 });
 
 test("a history row holds reserved spend under the word held, not pending", () => {

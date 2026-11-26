@@ -212,6 +212,7 @@ export function AccountPanel({ email, displayName, next, notice }: AccountPanelP
   return (
     <main className="info account">
       <h2>Account</h2>
+      <p className="lede">Your name on the leaderboard and the email you sign in with.</p>
       <Notice notice={notice} email={email} />
       {!savedName && (
         <p role="status" className="notice">

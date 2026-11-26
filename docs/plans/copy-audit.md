@@ -193,3 +193,23 @@ Evidence:
 
 - **Tests.** 4 tests failed first, then passed. `npm run check` passes, 619 of 619.
 - **Browser.** At 375x812, Play's bottom is at 620 px. Home, How to play, contact and Rank have no horizontal overflow at 375 and 1440 px. The section highlight still tracks clicks.
+
+## Round four: My runs, page headers and the hero face
+
+The user asked for these on 2026-11-26.
+
+- **My runs.** Each run is one ruled row: outcome first (green for a win, red for a catch, using the run bar's `outcomeBand`), then model, turns and spend, then the date to the minute, then the short id. On phones a row takes two lines. The intro is a subtitle, and the empty state says "No runs yet. Press Play to start one."
+- **Page headers.** Every app page opens the same way:
+  - a 30 px title;
+  - a muted 14 px `.lede` subtitle 8 px under it;
+  - 24 px before the content.
+
+  This covers How to play, Leaderboard, My runs, Sign in and Account. Account gains the subtitle "Your name on the leaderboard and the email you sign in with." Section titles on How to play and Account are both 20 px. `tests/page-headers.test.ts` checks the pattern.
+
+- **Hero face.** The hero, the play welcome headline and the contact heading move from Impact to the site's monospace at weight 700, the face of the wordmark and every heading. The home hero ends with the wordmark's green underscore.
+
+Evidence:
+
+- **Tests.** `npm run check` passes, 625 of 625.
+- **Signed in, 1440 px.** Measured in Chrome, Leaderboard, My runs and How to play share the title size, subtitle size, subtitle gap and content gap. My runs has no horizontal overflow with six runs.
+- **Phone, 375×812.** Play's bottom is at 642 px.
