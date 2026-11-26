@@ -368,6 +368,53 @@ await test("display names and account changes", { timeout: 120_000 }, async (t) 
     assert.equal(await storedName(second.id), null);
   });
 
+  await t.test(
+    "L5: a stored daily cap pauses name checks and a raised one admits them",
+    async () => {
+      fake.reset();
+      fake.controls.scores = (value): Record<string, number> =>
+        value === "rude_name" ? { offensive: 0.82 } : {};
+      const { DAILY_CAP_MICRODOLLARS } = await import("../../lib/policy");
+      const setLimit = (value: number) =>
+        pool.query(
+          `INSERT INTO ctf.settings(key,value) VALUES('daily_cap_microdollars',$1)
+         ON CONFLICT (key) DO UPDATE SET value=excluded.value`,
+          [String(value)],
+        );
+      const setSpend = (charged: string | number) =>
+        pool.query(
+          `INSERT INTO ctf.daily_spend(day,charged) VALUES((now() AT TIME ZONE 'UTC')::date,$1)
+         ON CONFLICT (day) DO UPDATE SET charged=$1`,
+          [charged],
+        );
+      const restored = (await today()).charged;
+      try {
+        for (const [cap, charged] of [
+          [5_000_000, 5_000_000],
+          [0, 0],
+        ]) {
+          await setLimit(cap);
+          await setSpend(charged);
+          const before = (await accountRows(second.id)).length;
+          assert.deepEqual(await save(second.cookie, { displayName: "rude_name" }), {
+            status: 503,
+            body: { error: "Name checks are paused until tomorrow (UTC). Try again then." },
+          });
+          assert.deepEqual(fake.names, [], "nothing is sent past the stored cap");
+          assert.equal((await accountRows(second.id)).length, before, "and nothing is reserved");
+        }
+        await setLimit(DAILY_CAP_MICRODOLLARS * 2);
+        await setSpend(DAILY_CAP_MICRODOLLARS);
+        assert.equal((await save(second.cookie, { displayName: "rude_name" })).status, 422);
+        assert.deepEqual(fake.names, ["rude_name"], "the check was admitted and sent");
+      } finally {
+        await pool.query("DELETE FROM ctf.settings WHERE key='daily_cap_microdollars'");
+        await setSpend(restored);
+      }
+      assert.equal(await storedName(second.id), null);
+    },
+  );
+
   await t.test("I6: names are unique ignoring case, and a race has one winner", async () => {
     const taken = await save(second.cookie, { displayName: "NIGHT_OWL-7" });
     assert.deepEqual(taken, { status: 409, body: { error: "That name is taken." } });

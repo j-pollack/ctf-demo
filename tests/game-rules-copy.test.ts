@@ -10,6 +10,7 @@ import { SessionPane } from "../app/session-pane";
 import { GameRulesCard } from "../app/admin/game-rules-card";
 import { fetched, run, session, transcript } from "./fixtures/console-runs";
 import type { GameRules } from "../lib/types";
+import { DEFAULT_LIMITS } from "../lib/limits";
 
 const COMBINATIONS: GameRules[] = [
   { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false },
@@ -26,11 +27,19 @@ const url = "https://upload.example.test/v1/end";
 const howToWin = (rules: GameRules) =>
   text(renderToStaticMarkup(createElement(HowToWin, { url, rules })));
 const landing = (rules: GameRules) =>
-  text(renderToStaticMarkup(createElement(LandingContent, { submissionUrl: url, rules })));
+  text(
+    renderToStaticMarkup(
+      createElement(LandingContent, { submissionUrl: url, rules, limits: DEFAULT_LIMITS }),
+    ),
+  );
 const welcome = (rules: GameRules) =>
   text(renderToStaticMarkup(createElement(WelcomeIntro, { submissionUrl: url, rules })));
 const rulesPage = (rules: GameRules) =>
-  text(renderToStaticMarkup(createElement(RulesPanel, { submissionUrl: url, rules })));
+  text(
+    renderToStaticMarkup(
+      createElement(RulesPanel, { submissionUrl: url, rules, limits: DEFAULT_LIMITS }),
+    ),
+  );
 const steps = (rules: GameRules) =>
   text(renderToStaticMarkup(createElement(RunInstructions, { rules })));
 

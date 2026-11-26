@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import LandingContent from "../app/landing-content";
 import SiteHeader from "../app/site-header";
 import { RulesPanel, RunInstructions, WelcomeIntro } from "../app/game-ui";
+import { DEFAULT_LIMITS } from "../lib/limits";
 
 const defaultRules = { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false };
 
@@ -13,6 +14,7 @@ test("public landing renders without database access and does not offer sign-in 
     createElement(LandingContent, {
       submissionUrl: "https://submit.example.test/v1/end",
       rules: defaultRules,
+      limits: DEFAULT_LIMITS,
     }),
   );
   const navigation = html.match(/<nav aria-label="Main navigation">([\s\S]*?)<\/nav>/)?.[1];
@@ -86,10 +88,18 @@ test("Play is quiet on its current page and primary elsewhere in both header var
 test("landing and rules describe the TARGET submission before a run starts", () => {
   const endpoint = "https://upload.example.test/v1/end";
   const landing = renderToStaticMarkup(
-    createElement(LandingContent, { submissionUrl: endpoint, rules: defaultRules }),
+    createElement(LandingContent, {
+      submissionUrl: endpoint,
+      rules: defaultRules,
+      limits: DEFAULT_LIMITS,
+    }),
   );
   const rules = renderToStaticMarkup(
-    createElement(RulesPanel, { submissionUrl: endpoint, rules: defaultRules }),
+    createElement(RulesPanel, {
+      submissionUrl: endpoint,
+      rules: defaultRules,
+      limits: DEFAULT_LIMITS,
+    }),
   );
   const steps = renderToStaticMarkup(createElement(RunInstructions, { rules: defaultRules }));
   assert.match(steps, /<strong>Submit the flag<\/strong> as described in How to win/);
@@ -108,10 +118,18 @@ test("landing and rules describe the TARGET submission before a run starts", () 
 
 test("missing endpoint configuration is visible without a made-up URL", () => {
   const landing = renderToStaticMarkup(
-    createElement(LandingContent, { submissionUrl: null, rules: defaultRules }),
+    createElement(LandingContent, {
+      submissionUrl: null,
+      rules: defaultRules,
+      limits: DEFAULT_LIMITS,
+    }),
   );
   const rules = renderToStaticMarkup(
-    createElement(RulesPanel, { submissionUrl: null, rules: defaultRules }),
+    createElement(RulesPanel, {
+      submissionUrl: null,
+      rules: defaultRules,
+      limits: DEFAULT_LIMITS,
+    }),
   );
   for (const html of [landing, rules]) {
     assert.match(html, /Submission endpoint unavailable/);

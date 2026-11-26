@@ -1,14 +1,16 @@
 import SiteHeader from "@/app/site-header";
-import { RUN_BUDGET } from "@/app/run-format";
+import { dollars, newRuns } from "@/app/run-format";
 import { HowToWin } from "@/app/flag-instructions";
-import { RUNS_PER_DAY, type GameRules } from "@/lib/types";
+import type { GameRules, Limits } from "@/lib/types";
 
 export default function LandingContent({
   submissionUrl,
   rules,
+  limits,
 }: {
   submissionUrl: string | null;
   rules: GameRules;
+  limits: Limits;
 }) {
   return (
     <div className="landing">
@@ -44,7 +46,8 @@ export default function LandingContent({
           Play
         </a>
         <small>
-          Sign in to play · {RUN_BUDGET} AI budget per run · {RUNS_PER_DAY} new runs every 24 hours
+          Sign in to play · {dollars(limits.runBudgetMicrodollars)} AI budget per run ·{" "}
+          {newRuns(limits.runsPerDay)} every 24 hours
         </small>
         <section className="landing-rules" aria-label="How to win">
           <h2>How to win</h2>

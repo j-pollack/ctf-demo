@@ -19,7 +19,8 @@ import {
   type GameRow,
 } from "./games";
 import { evaluate, TYPESAFE_MODEL, type TypesafeAnswer } from "./typesafe";
-import { DAILY_CAP_MICRODOLLARS, GameError, inputCeiling } from "./policy";
+import { GameError, inputCeiling } from "./policy";
+import { currentLimits } from "./limits";
 import { assertMonitorJobClaim, type MonitorJobClaim } from "./monitor-jobs";
 import type { GameStatus } from "./types";
 
@@ -54,12 +55,17 @@ async function assertDispatchAuthorization(input: {
       status: GameStatus;
     }>("SELECT execution_generation,status FROM ctf.games WHERE id=$1 FOR UPDATE", [input.game.id]);
     if (!rows[0]) throw new GameError("This response has stopped.", 409);
-    if (Number(spendRows[0].charged) + Number(spendRows[0].reserved) >= DAILY_CAP_MICRODOLLARS)
+    const limits = await currentLimits(client);
+    if (Number(spendRows[0].charged) + Number(spendRows[0].reserved) >= limits.dailyCapMicrodollars)
       throw new GameError(
         "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
         429,
       );
-    assertMonitorAllowance((await runSpend(client, input.game.id)).monitorSpent, rows[0].status);
+    assertMonitorAllowance(
+      (await runSpend(client, input.game.id)).monitorSpent,
+      rows[0].status,
+      limits,
+    );
     await assertMonitorJobClaim(client, input.jobClaim);
   });
 }

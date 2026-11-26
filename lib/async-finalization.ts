@@ -1,5 +1,6 @@
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import { db } from "./db";
+import { currentLimits } from "./limits";
 import { randomUUID } from "node:crypto";
 import { monitorAllowance, runSpend, transaction } from "./games";
 import { GameError, hasSecret } from "./policy";
@@ -445,7 +446,9 @@ export async function resolveUnverifiedRun(gameId: string): Promise<string | nul
     // A review that cannot finish once the monitor has spent its allowance was refused for it,
     // whatever error the last attempt left behind. Any other review failure is a plain "review".
     let cause: "review" | "scoring" | "allowance" =
-      unresolved && (await runSpend(client, gameId)).monitorSpent >= monitorAllowance("finalizing")
+      unresolved &&
+      (await runSpend(client, gameId)).monitorSpent >=
+        monitorAllowance("finalizing", await currentLimits(client))
         ? "allowance"
         : "review";
     let sessionId = unresolved?.session_id;

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { label, monitorStatusLabel, runEndLabel } from "../app/run-format";
+import { dollars, label, monitorStatusLabel, newRuns, runEndLabel } from "../app/run-format";
 
 test("a model label drops the provider, or keeps an id that has none", () => {
   assert.equal(label("z-ai/glm-5.3-flash"), "glm-5.3-flash");
@@ -34,4 +34,19 @@ test("My Runs says how an ended run ended, as the run page does", () => {
   ] as const)
     assert.equal(runEndLabel({ status: "ended", submissionCorrect: true, endReason }), "No result");
   assert.equal(runEndLabel({ status: "caught", submissionCorrect: false }), "Caught");
+});
+
+test("dollars prints whole amounts bare and anything else with cents", () => {
+  assert.equal(dollars(10_000_000), "$10");
+  assert.equal(dollars(0), "$0");
+  assert.equal(dollars(500_000), "$0.50");
+  assert.equal(dollars(1_250_000), "$1.25");
+  assert.equal(dollars(12_500_000), "$12.50");
+  assert.equal(dollars(10_000), "$0.01");
+});
+
+test("newRuns is singular only for one", () => {
+  assert.equal(newRuns(1), "1 new run");
+  assert.equal(newRuns(3), "3 new runs");
+  assert.equal(newRuns(0), "0 new runs");
 });

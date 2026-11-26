@@ -108,11 +108,32 @@ test("a custom system prompt becomes the agent preamble", () => {
 
 test("assertMonitorAllowance: refuses at the allowance, with the final-review top-up in finalizing", async () => {
   const { assertMonitorAllowance } = await import("../lib/games");
-  const { MONITOR_RUN_ALLOWANCE_MICRODOLLARS: play, FINAL_REVIEW_ALLOWANCE_MICRODOLLARS: final } =
-    await import("../lib/policy");
+  const { DEFAULT_LIMITS } = await import("../lib/limits");
+  const play = DEFAULT_LIMITS.monitorRunAllowanceMicrodollars;
+  const final = DEFAULT_LIMITS.finalReviewAllowanceMicrodollars;
   const refused = { status: 402, message: "The monitor’s budget for this run is used up." };
-  assert.doesNotThrow(() => assertMonitorAllowance(play - 1, "active"));
-  assert.throws(() => assertMonitorAllowance(play, "active"), refused);
-  assert.doesNotThrow(() => assertMonitorAllowance(play + final - 1, "finalizing"));
-  assert.throws(() => assertMonitorAllowance(play + final, "finalizing"), refused);
+  assert.doesNotThrow(() => assertMonitorAllowance(play - 1, "active", DEFAULT_LIMITS));
+  assert.throws(() => assertMonitorAllowance(play, "active", DEFAULT_LIMITS), refused);
+  assert.doesNotThrow(() => assertMonitorAllowance(play + final - 1, "finalizing", DEFAULT_LIMITS));
+  assert.throws(() => assertMonitorAllowance(play + final, "finalizing", DEFAULT_LIMITS), refused);
+});
+
+test("monitorAllowance and assertMonitorAllowance follow the limits they are given", async () => {
+  const { assertMonitorAllowance, monitorAllowance } = await import("../lib/games");
+  const { DEFAULT_LIMITS } = await import("../lib/limits");
+  const limits = {
+    ...DEFAULT_LIMITS,
+    monitorRunAllowanceMicrodollars: 200_000,
+    finalReviewAllowanceMicrodollars: 0,
+  };
+  const refused = { status: 402, message: "The monitor’s budget for this run is used up." };
+  assert.equal(monitorAllowance("active", limits), 200_000);
+  assert.equal(monitorAllowance("finalizing", limits), 200_000);
+  assert.equal(
+    monitorAllowance("finalizing", { ...limits, finalReviewAllowanceMicrodollars: 5 }),
+    200_005,
+  );
+  assert.doesNotThrow(() => assertMonitorAllowance(199_999, "active", limits));
+  assert.throws(() => assertMonitorAllowance(200_000, "active", limits), refused);
+  assert.throws(() => assertMonitorAllowance(200_000, "finalizing", limits), refused);
 });

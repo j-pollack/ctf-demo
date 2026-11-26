@@ -49,7 +49,9 @@ For a manual production rollback, identify the previous image with `flyctl relea
 
 ## Administrator access
 
-Members with `isAdmin` can view usage, signups and spend at `/admin`, select the attacker model and configure game rules. Other users receive a 404. An admin bypasses the personal new-run limit. Shared capacity and spending checks still apply.
+Members with `isAdmin` can view usage, signups and spend at `/admin`, select the attacker model, configure game rules and change the budgets and limits in the capacity table below. Other users receive a 404. An admin bypasses the personal new-run limit. Shared capacity and spending checks still apply.
+
+The Budgets and limits card at `/admin` holds six values: the shared daily cap, the run budget, new runs per member, new runs for all players, the monitor allowance per run and the final review allowance per run. The values in the capacity table are the defaults. Each field accepts a range fixed in code, so a form typo cannot remove a spending limit. A change applies from the next request, and a run keeps the budget it started with. The monitor worker reads the same settings live once it runs this release, so a change needs no worker redeploy. A worker built before this release keeps the defaults. Lowering a monitor allowance below what a run under final review has already spent ends that run with no result.
 
 To grant access, have the member sign in, add their email to comma-separated `ADMIN_EMAILS` in the setup environment, and rerun setup. Setup trims whitespace, ignores case and grants only existing non-guest accounts. For a manual grant or revocation, update `ctf."user"."isAdmin"` by email. Before revoking, remove the email from every setup environment so the next setup cannot re-grant it. To list all grants, including manual ones, run
 
@@ -62,12 +64,14 @@ ORDER BY email;
 
 ## Capacity, billing and investigation
 
-| Scope           | Admission rule                                                                                                                            |
+| Scope           | Admission rule, at the defaults                                                                                                           |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | Game creation   | Up to ten active environments and 100 new runs per rolling 24 hours. Each non-admin member can start three new runs in that window.       |
 | Player          | Each new run has $0.50 for agent inference and in-session text screening. Outstanding holds reduce the available balance.                 |
 | Monitor         | New monitor requests stop once settled monitor spend reaches $1.50. Finalizing a run allows another $1.00 of monitor spend.               |
 | Daily inference | All roles share a $10 cap per UTC day. Admission reserves an upper bound before dispatch. Infrastructure and email are billed separately. |
+
+An admin can change every figure in this table except the ten active environments. The bounds are $0 to $100 for the daily cap, $0.01 to $5 for the run budget, 1 to 50 for new runs per member, 0 to 10,000 for new runs for all players, $0.10 to $10 for the monitor allowance and $0 to $10 for the final review allowance.
 
 OpenRouter usage settles the actual charge and releases the unused reservation. Jev calls use reported input tokens at a fixed rate. Known unbilled rejections release the hold. For a pending call with a generation ID, cleanup queries OpenRouter for the final charge. A failed completion with no generation ID can settle at its ceiling immediately. Cleanup settles outstanding unverifiable holds at their ceiling after 24 hours and marks them estimated. [Budget policy](../lib/policy.ts) · [Settlement and cleanup](../lib/games.ts)
 

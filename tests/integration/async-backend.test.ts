@@ -64,6 +64,7 @@ await test(
       "migrations/013-agent-sessions.sql",
       "migrations/014-async-monitor.sql",
       "migrations/015-transcript-evidence.sql",
+      "migrations/017-settings.sql",
       "migrations/018-monitor-ready.sql",
       "migrations/019-session-stop.sql",
       "migrations/020-http-flag-submission.sql",

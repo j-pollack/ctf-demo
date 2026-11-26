@@ -5,6 +5,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { changeAgentModel } from "@/lib/agent-model";
 import { changeGameRule } from "@/lib/game-rules-admin";
+import { changeLimit } from "@/lib/limits-admin";
 import { GameError } from "@/lib/policy";
 
 // Every export of a "use server" file is a public endpoint, so each function checks the admin
@@ -40,6 +41,25 @@ export async function setGameRule(formData: FormData) {
         }),
       );
   }
+  revalidatePath("/admin");
+  redirect("/admin");
+}
+
+export async function setLimit(formData: FormData) {
+  let refused = false;
+  try {
+    await changeLimit(await headers(), formData.get("key"), formData.get("value"));
+  } catch (error) {
+    refused = true;
+    if (!(error instanceof GameError))
+      console.error(
+        JSON.stringify({
+          event: "limit_change_failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  }
+  if (refused) redirect("/admin?limit=refused");
   revalidatePath("/admin");
   redirect("/admin");
 }

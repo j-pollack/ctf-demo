@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 
+// Default for the shared daily cap. An admin can change it.
 export const DAILY_CAP_MICRODOLLARS = 10_000_000;
-// The monitor's own settled spend per run, apart from the player's run budget.
+// Default for the monitor's own settled spend per run, apart from the player's run budget.
 export const MONITOR_RUN_ALLOWANCE_MICRODOLLARS = 1_500_000;
-// What a run in `finalizing` may spend on its final reviews beyond that.
+// Default for what a run in `finalizing` may spend on its final reviews beyond that.
 export const FINAL_REVIEW_ALLOWANCE_MICRODOLLARS = 1_000_000;
 export const MONITOR_ALLOWANCE_USED_UP_TEXT = "The monitor’s budget for this run is used up.";
 const AGENT_MODELS = [

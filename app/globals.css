@@ -1418,6 +1418,15 @@ dialog::backdrop {
 .rule small {
   color: var(--muted);
 }
+.limit {
+  align-items: center;
+}
+.limit > div {
+  flex: 1;
+}
+.limit input[type="number"] {
+  width: 7em;
+}
 .rule button[role="switch"] {
   flex: none;
   display: flex;

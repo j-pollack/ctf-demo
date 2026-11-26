@@ -4,15 +4,13 @@ import type { PoolClient } from "pg";
 import { db } from "./db";
 import { isAdmin } from "./admin";
 import { currentGameRules } from "./game-rules";
+import { currentLimits } from "./limits";
 import { ASYNC_MONITOR_VERSION } from "./control";
 import {
   AGENT_MODEL,
   PLAYER_AGENT_EFFORT,
   MODELS,
-  DAILY_CAP_MICRODOLLARS,
-  FINAL_REVIEW_ALLOWANCE_MICRODOLLARS,
   MONITOR_ALLOWANCE_USED_UP_TEXT,
-  MONITOR_RUN_ALLOWANCE_MICRODOLLARS,
   GameError,
   makeSecret,
 } from "./policy";
@@ -20,14 +18,13 @@ import { TYPESAFE_MODEL } from "./typesafe";
 import {
   AGENT_EFFORTS,
   MONITOR_DIFFICULTIES,
-  RUN_BUDGET_MICRODOLLARS,
-  RUNS_PER_DAY,
   UNVERIFIED_SUBMISSION_STATUS,
   endReasonOf,
   runHasEnded,
   type AgentEffort,
   type GameEvent,
   type GameStatus,
+  type Limits,
   type MonitorDifficulty,
   type PublicGame,
 } from "./types";
@@ -192,12 +189,20 @@ const ORPHAN_COMMAND_TEXT = {
   ended: "A command lost contact with its response, so this run cannot be graded.",
 };
 const SETTLING_COMMAND_TEXT = "A stopped command is being checked. This takes a few seconds.";
-export const monitorAllowance = (status: GameStatus) =>
-  MONITOR_RUN_ALLOWANCE_MICRODOLLARS +
-  (status === "finalizing" ? FINAL_REVIEW_ALLOWANCE_MICRODOLLARS : 0);
+type MonitorAllowances = Pick<
+  Limits,
+  "monitorRunAllowanceMicrodollars" | "finalReviewAllowanceMicrodollars"
+>;
+export const monitorAllowance = (status: GameStatus, limits: MonitorAllowances) =>
+  limits.monitorRunAllowanceMicrodollars +
+  (status === "finalizing" ? limits.finalReviewAllowanceMicrodollars : 0);
 // A monitor request is admitted in full while the monitor's settled spend is below its allowance.
-export function assertMonitorAllowance(monitorSpent: number, status: GameStatus) {
-  if (monitorSpent >= monitorAllowance(status))
+export function assertMonitorAllowance(
+  monitorSpent: number,
+  status: GameStatus,
+  limits: MonitorAllowances,
+) {
+  if (monitorSpent >= monitorAllowance(status, limits))
     throw new GameError(MONITOR_ALLOWANCE_USED_UP_TEXT, 402);
 }
 // One read of a run's money, shared by publicGame and the runner's live `billing` frames.
@@ -551,7 +556,7 @@ export async function newRunsLeft(ownerId: string): Promise<number | null> {
     [ownerId],
   );
   if (isAdmin(rows[0])) return null;
-  return Math.max(0, RUNS_PER_DAY - rows[0].total);
+  return Math.max(0, (await currentLimits()).runsPerDay - rows[0].total);
 }
 const STOP_WAIT_MS = 20_000;
 const STOP_POLL_MS = 250;
@@ -597,10 +602,11 @@ export async function startGame(
   const game = await transaction(async (client) => {
     // Serialize admission across instances so simultaneous starts cannot exceed the Sprite limit.
     await client.query("SELECT pg_advisory_xact_lock(713901)");
+    const limits = await currentLimits(client);
     const spend = await client.query(
       "SELECT charged+reserved AS total FROM ctf.daily_spend WHERE day=(now() AT TIME ZONE 'UTC')::date",
     );
-    if (Number(spend.rows[0]?.total ?? 0) >= DAILY_CAP_MICRODOLLARS)
+    if (Number(spend.rows[0]?.total ?? 0) >= limits.dailyCapMicrodollars)
       throw new GameError(
         "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
         429,
@@ -650,7 +656,7 @@ export async function startGame(
       "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours'",
       [ownerId],
     );
-    if (starts.rows[0].total >= RUNS_PER_DAY) {
+    if (starts.rows[0].total >= limits.runsPerDay) {
       // Read current privileges inside admission; request/session hints cannot grant an exemption.
       const owner = await client.query<{ isAdmin: boolean | null; isAnonymous: boolean | null }>(
         'SELECT "isAdmin","isAnonymous" FROM ctf."user" WHERE id=$1',
@@ -658,14 +664,14 @@ export async function startGame(
       );
       if (!isAdmin(owner.rows[0]))
         throw new GameError(
-          `You have started ${RUNS_PER_DAY} new runs in the last 24 hours. Try again later.`,
+          `You have started ${starts.rows[0].total} new ${starts.rows[0].total === 1 ? "run" : "runs"} in the last 24 hours. Try again later.`,
           429,
         );
     }
     const totalStarts = await client.query(
       "SELECT count(*)::int AS total FROM ctf.games WHERE new_run AND created_at>now()-interval '24 hours'",
     );
-    if (totalStarts.rows[0].total >= 100)
+    if (totalStarts.rows[0].total >= limits.totalRunsPerDay)
       throw new GameError("No more new runs can start right now. Try again later.", 429);
     await client.query(
       "UPDATE ctf.games SET status='ended',lease=NULL,lease_until=NULL,state_revision=state_revision+CASE WHEN monitor_mode='async' THEN 1 ELSE 0 END WHERE owner_id=$1 AND status IN ('creating','active')",
@@ -685,7 +691,7 @@ export async function startGame(
         monitor.difficulty ?? "hard",
         ASYNC_MONITOR_VERSION,
         500000,
-        RUN_BUDGET_MICRODOLLARS,
+        limits.runBudgetMicrodollars,
         "",
         true,
         "creating",
@@ -826,6 +832,7 @@ export async function reserveInference(
     const spend = (
       await client.query("SELECT * FROM ctf.daily_spend WHERE day=$1 FOR UPDATE", [day])
     ).rows[0];
+    const limits = await currentLimits(client);
     const game = (
       await client.query<GameRow>("SELECT * FROM ctf.games WHERE id=$1 FOR UPDATE", [gameId])
     ).rows[0];
@@ -863,7 +870,7 @@ export async function reserveInference(
     }
     const run = await runSpend(client, gameId);
     const available = Number(game.budget_microdollars) - run.playerSpent - run.playerHeld;
-    if (role === "monitor") assertMonitorAllowance(run.monitorSpent, game.status);
+    if (role === "monitor") assertMonitorAllowance(run.monitorSpent, game.status, limits);
     const allowance =
       role === "monitor"
         ? { maxTokens: wantedOutput }
@@ -895,7 +902,7 @@ export async function reserveInference(
       allowance.maxTokens,
       inputRate,
       outputRate,
-      DAILY_CAP_MICRODOLLARS - Number(spend.charged) - Number(spend.reserved),
+      limits.dailyCapMicrodollars - Number(spend.charged) - Number(spend.reserved),
     );
     if (globalAllowance.maxTokens < 64)
       throw new GameError(
@@ -904,7 +911,7 @@ export async function reserveInference(
       );
     const { maxTokens, cost } = globalAllowance;
     const tokens = input + maxTokens;
-    if (Number(spend.charged) + Number(spend.reserved) + cost > DAILY_CAP_MICRODOLLARS)
+    if (Number(spend.charged) + Number(spend.reserved) + cost > limits.dailyCapMicrodollars)
       throw new GameError(
         "Today’s shared inference budget is used up. Come back tomorrow (UTC).",
         429,

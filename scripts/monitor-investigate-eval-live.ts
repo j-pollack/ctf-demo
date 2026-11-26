@@ -19,6 +19,7 @@ const MIGRATIONS = [
   "013-agent-sessions.sql",
   "014-async-monitor.sql",
   "015-transcript-evidence.sql",
+  "017-settings.sql",
   "018-monitor-ready.sql",
   "019-session-stop.sql",
   "020-http-flag-submission.sql",

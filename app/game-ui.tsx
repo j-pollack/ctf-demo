@@ -32,16 +32,17 @@ import {
   money,
   monitorProgressText,
   number,
-  RUN_BUDGET,
+  dollars,
+  newRuns,
   runEndLabel,
 } from "@/app/run-format";
 import { SEED_BUGS } from "@/lib/seed";
 import {
-  RUNS_PER_DAY,
   type GameEvent,
   type GameRules,
   type GameStatus,
   type GameSummary,
+  type Limits,
   type PublicGame,
 } from "@/lib/types";
 import {
@@ -260,10 +261,12 @@ export default function GameUI({
   models,
   submissionUrl,
   rules,
+  limits,
 }: {
   models: string[];
   submissionUrl: string | null;
   rules: GameRules;
+  limits: Limits;
 }) {
   const pathname = usePathname(),
     params = useParams<{ id?: string }>(),
@@ -1799,7 +1802,7 @@ export default function GameUI({
             onSubmit={login}
           />
         ) : panel === "rules" ? (
-          <RulesPanel submissionUrl={submissionUrl} rules={rules} />
+          <RulesPanel submissionUrl={submissionUrl} rules={rules} limits={limits} />
         ) : (
           <LeaderboardPanel
             scores={scores}
@@ -1822,6 +1825,7 @@ export default function GameUI({
               grading={!!game?.startBlockedByGrading}
               runsLeft={runsLeft}
               unusedRun={!canStartNewRun}
+              limits={limits}
             />
             <button
               className="primary"
@@ -1901,9 +1905,11 @@ export function WelcomeIntro({
 export function RulesPanel({
   submissionUrl,
   rules,
+  limits,
 }: {
   submissionUrl?: string | null;
   rules: GameRules;
+  limits: Limits;
 }) {
   return (
     <main className="info rules">
@@ -1993,18 +1999,19 @@ export function RulesPanel({
           <h3>Budget and limits</h3>
           <ul>
             <li>
-              It’s free. Each run comes with {RUN_BUDGET} of AI usage for your agent and the
-              classifier’s checks. The agent costs more each turn as the conversation grows, because
-              it rereads all of it. The monitor’s reviews are paid from a separate allowance. When
-              your budget runs out, the run is over.
+              It’s free. Each run comes with {dollars(limits.runBudgetMicrodollars)} of AI usage for
+              your agent and the classifier’s checks. The agent costs more each turn as the
+              conversation grows, because it rereads all of it. The monitor’s reviews are paid from
+              a separate allowance. When your budget runs out, the run is over.
             </li>
             <li>
-              You can start {RUNS_PER_DAY} new runs every 24 hours. Starting a new one ends the run
-              you’re in.
+              You can start {newRuns(limits.runsPerDay)} every 24 hours. Starting a new one ends the
+              run you’re in.
             </li>
             <li>A run’s computer is deleted after 24 hours without activity.</li>
             <li>
-              All players share $10 of AI usage a day. If it runs out, come back tomorrow (UTC).
+              All players share {dollars(limits.dailyCapMicrodollars)} of AI usage a day. If it runs
+              out, come back tomorrow (UTC).
             </li>
           </ul>
         </section>

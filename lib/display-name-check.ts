@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { MONITOR_TOKEN_MICRODOLLARS } from "./control";
 import { db } from "./db";
+import { currentLimits } from "./limits";
 import {
   DISPLAY_NAME_QUESTION_SET,
   DISPLAY_NAME_QUESTIONS,
@@ -11,7 +12,7 @@ import {
 } from "./display-name";
 import { settleInference, transaction } from "./games";
 import { diagnosticText } from "./inference";
-import { DAILY_CAP_MICRODOLLARS, GameError, inputCeiling } from "./policy";
+import { GameError, inputCeiling } from "./policy";
 import { evaluate, TYPESAFE_MODEL } from "./typesafe";
 
 export const NAME_CHECK_DEADLINE_MS = 3000;
@@ -43,7 +44,8 @@ async function reserveCheck(userId: string, ceiling: number) {
     ).rows[0].n as number;
     if (used >= NAME_CHECKS_PER_DAY) throw new GameError(LIMIT, 429);
     const cost = Math.ceil(ceiling * MONITOR_TOKEN_MICRODOLLARS);
-    if (Number(spend.charged) + Number(spend.reserved) + cost > DAILY_CAP_MICRODOLLARS)
+    const { dailyCapMicrodollars } = await currentLimits(client);
+    if (Number(spend.charged) + Number(spend.reserved) + cost > dailyCapMicrodollars)
       throw new GameError(PAUSED, 503);
     const id = randomUUID();
     await client.query("UPDATE ctf.daily_spend SET reserved=reserved+$2 WHERE day=$1", [day, cost]);

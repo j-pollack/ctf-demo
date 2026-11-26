@@ -1,7 +1,7 @@
 import type { Message } from "@earendil-works/pi-ai";
 
-// Every run's budget, and new runs a player may start per rolling 24 hours. Shared with
-// the client for the budget meter and the rules copy.
+// Defaults for every run's budget, and for the new runs a player may start per rolling 24 hours.
+// An admin can change both, see Limits.
 export const RUN_BUDGET_MICRODOLLARS = 500_000;
 export const RUNS_PER_DAY = 3;
 export type GameStatus =
@@ -293,6 +293,15 @@ export function endReasonOf(cause: string | null | undefined): PublicGame["endRe
   if (cause === "allowance") return "unverified-allowance";
   return cause === "review" ? "unverified-review" : undefined;
 }
+// Budgets and limits an admin can change. The defaults are the constants they replace.
+export type Limits = {
+  dailyCapMicrodollars: number;
+  runBudgetMicrodollars: number;
+  runsPerDay: number;
+  totalRunsPerDay: number;
+  monitorRunAllowanceMicrodollars: number;
+  finalReviewAllowanceMicrodollars: number;
+};
 // Rules a run is played under. Recorded on the run when it starts.
 export type GameRules = {
   monitorIsolation: boolean;
