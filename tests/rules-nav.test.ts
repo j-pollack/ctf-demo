@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { currentSection, markReadingShell, RulesNav } from "../app/rules-nav";
+import { currentSection, RulesNav } from "../app/rules-nav";
 
 const line = 200;
 
@@ -35,31 +35,4 @@ test("the nav renders one link per section with no current link before it mounts
     ["how-to-win", "glossary"],
   );
   assert.doesNotMatch(html, /aria-current/);
-});
-
-test("without :has() support the shell is marked for document scrolling, and unmarked on cleanup", () => {
-  const classes = new Set<string>();
-  const shell = {
-    classList: {
-      add: (name: string) => classes.add(name),
-      remove: (name: string) => classes.delete(name),
-    },
-  };
-  const cleanup = markReadingShell(shell, false);
-  assert.deepEqual([...classes], ["reading"]);
-  cleanup();
-  assert.deepEqual([...classes], []);
-});
-
-test("with :has() support or no shell, nothing is marked", () => {
-  const classes = new Set<string>();
-  const shell = {
-    classList: {
-      add: (name: string) => classes.add(name),
-      remove: (name: string) => classes.delete(name),
-    },
-  };
-  markReadingShell(shell, true)();
-  assert.deepEqual([...classes], []);
-  assert.doesNotThrow(() => markReadingShell(null, false)());
 });

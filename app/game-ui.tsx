@@ -17,6 +17,7 @@ import {
 import { SignInPanel } from "@/app/sign-in-panel";
 import SiteFooter from "@/app/site-footer";
 import { RulesNav } from "@/app/rules-nav";
+import { useFramedShell } from "@/app/framed-shell";
 import { accountPath, safeNextPath, signInPath } from "@/app/sign-in-path";
 import {
   deckLayout,
@@ -284,6 +285,7 @@ export default function GameUI({
             : routeRunId
               ? "detail"
               : "play";
+  useFramedShell(panel === "rules" || panel === "history" || panel === "rank");
   const account = authClient.useSession();
   const signedIn = !!account.data && !account.data.user.isAnonymous;
   // The game is members-only: a leftover guest session counts as signed out.
@@ -2150,7 +2152,7 @@ export function LeaderboardPanel({
   onAgentChange: (agent: string) => void;
 }) {
   return (
-    <main className="info">
+    <main className="info leaderboard">
       <p className="eyebrow">VERIFIED WINS</p>
       <h2>Leaderboard</h2>
       <div className="filters">
