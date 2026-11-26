@@ -35,7 +35,8 @@ jobs:
           node-version: 24
       - name: Install locked dependencies
         run: npm ci
-      # Migrations must stay additive: old code keeps serving until Vercel promotes the new build.
+      # Migrations must stay additive: the previous web release keeps serving until the promote job
+      # moves the domain, and a release that stops before then leaves it serving.
       - name: Apply schema and auth migrations to production
         run: node --import tsx scripts/setup.ts
         env:
@@ -91,3 +92,116 @@ jobs:
         run: flyctl deploy --ha=false --image "registry.fly.io/ctf-monitor-worker:$HEAD_SHA"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PROD }}
+
+  # The new web build reaches production only here, after the migration and the worker, and
+  # only once its own URL passes the checks. Vercel's automatic domain assignment must be off
+  # for this to hold, see deploy/operations.md. The step timeouts add up to 19 minutes, so 6 of the
+  # job's 25 are left for setup and the job's timeout never stops the rollback step.
+  promote:
+    name: promote web
+    needs: deploy-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      HUSKY: 0
+      VERCEL_CLI: vercel@67.0.0
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      PRODUCTION_ORIGIN: ${{ vars.PRODUCTION_ORIGIN }}
+    steps:
+      # The secret itself goes only to the steps that call Vercel, so this sees whether it is set.
+      - name: Check the configuration
+        env:
+          HAS_VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN != '' }}
+        run: |
+          missing=""
+          [ "$HAS_VERCEL_TOKEN" = true ] || missing="$missing secret VERCEL_TOKEN"
+          [ -n "$VERCEL_ORG_ID" ] || missing="$missing variable VERCEL_ORG_ID"
+          [ -n "$VERCEL_PROJECT_ID" ] || missing="$missing variable VERCEL_PROJECT_ID"
+          [ -n "$PRODUCTION_ORIGIN" ] || missing="$missing variable PRODUCTION_ORIGIN"
+          if [ -n "$missing" ]; then
+            echo "::error::Not set:$missing"
+            exit 1
+          fi
+      # The full history lets the decision ask whether the serving commit is an ancestor.
+      - name: Checkout the commit that passed ci
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Install locked dependencies
+        run: npm ci
+      # Fails on a serving deployment that is newer than this commit, or that cannot be read.
+      - name: Find the new deployment and decide
+        id: decide
+        timeout-minutes: 9
+        run: node --import tsx scripts/release-deployment.ts lookup
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      - name: Check the new deployment at its own URL
+        id: staged
+        timeout-minutes: 1
+        run: |
+          if node --import tsx scripts/release-check.ts "$DEPLOYMENT_URL" deployment; then exit 0; fi
+          if [ "$DECISION" = already-serving ]; then
+            echo "::error::The checks failed on deployment $SERVING_ID, which is already live and was not put there by this run. Treat the site as broken now. See 'Finishing, repeating or undoing a release' in deploy/operations.md."
+          fi
+          exit 1
+        env:
+          DEPLOYMENT_URL: ${{ steps.decide.outputs.new_url }}
+          DECISION: ${{ steps.decide.outputs.decision }}
+          SERVING_ID: ${{ steps.decide.outputs.serving_id }}
+      - name: Promote the new deployment
+        id: promote
+        if: steps.decide.outputs.decision == 'promote'
+        timeout-minutes: 3
+        run: npx --yes "$VERCEL_CLI" promote "$DEPLOYMENT_URL" --scope "$VERCEL_ORG_ID" --timeout 2m
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DEPLOYMENT_URL: ${{ steps.decide.outputs.new_url }}
+      - name: Verify the production domain moved
+        id: verify
+        if: steps.decide.outputs.decision == 'promote'
+        timeout-minutes: 1
+        run: node --import tsx scripts/release-deployment.ts verify "$NEW_ID"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          NEW_ID: ${{ steps.decide.outputs.new_id }}
+      - name: Check the live site
+        id: live
+        timeout-minutes: 1
+        run: |
+          if node --import tsx scripts/release-check.ts "$PRODUCTION_ORIGIN" live; then exit 0; fi
+          if [ "$DECISION" = already-serving ]; then
+            echo "::error::The live checks failed on deployment $SERVING_ID, which is already live and was not put there by this run. Treat the site as broken now. See 'Finishing, repeating or undoing a release' in deploy/operations.md."
+          fi
+          exit 1
+        env:
+          DECISION: ${{ steps.decide.outputs.decision }}
+          SERVING_ID: ${{ steps.decide.outputs.serving_id }}
+      # Runs after a failed or cancelled promote, verify or live check. Rolling back to the
+      # deployment that already served changes nothing. The job ends failed either way.
+      - name: Roll back to the previous deployment
+        if: >-
+          always() && steps.promote.outcome != 'skipped' &&
+          !(steps.promote.outcome == 'success' && steps.verify.outcome == 'success' && steps.live.outcome == 'success')
+        timeout-minutes: 4
+        run: |
+          npx --yes "$VERCEL_CLI" rollback "$PREVIOUS_ID" --scope "$VERCEL_ORG_ID" --timeout 2m \
+            || echo "::warning::The rollback command failed."
+          if out=$(node --import tsx scripts/release-deployment.ts verify "$PREVIOUS_ID"); then
+            echo "::error::Rolled back to $PREVIOUS_ID because the promotion did not finish or the live checks failed."
+          else
+            serving=$(printf '%s\n' "$out" | sed -n 's/^serving_id=//p')
+            echo "::error::The rollback to $PREVIOUS_ID did not take effect. The site is on deployment ${serving:-unknown} and needs attention now."
+          fi
+          exit 1
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PREVIOUS_ID: ${{ steps.decide.outputs.serving_id }}
