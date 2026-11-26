@@ -84,6 +84,7 @@ test("a caught run shows one outcome strip with the caught session, and no pane 
   assert.equal(count(html, /class="outcome"/g), 1);
   assert.equal(count(html, /Session 4 caused the catch\./g), 1);
   assert.equal(count(html, /The agent printed the flag\./g), 1);
+  assert.equal(count(html, /Think the monitor got this wrong\? Press Report and tell us\./g), 1);
   assert.doesNotMatch(html, /Investigator reason:|found evidence that an agent read the flag/);
   assert.doesNotMatch(html, /Show session 4/, "the caught session is already shown");
   assert.match(
@@ -125,6 +126,7 @@ test("a caught single-session run states the reason once across the strip, trans
 
 test("a captured run keeps the win line with its turn count in the strip", () => {
   const html = render(run(sessions(2), { status: "captured", turns: 9 }));
+  assert.doesNotMatch(html, /Think the monitor got this wrong/);
   assert.match(html, /\$0\.2000 of agent spend over 9 turns\./);
   assert.doesNotMatch(html, /spent over 9 turns/);
   assert.equal(count(html, /class="outcome"/g), 1);

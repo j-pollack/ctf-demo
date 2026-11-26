@@ -29,7 +29,7 @@ All coding agents must follow [the verification strategy](docs/verification.md).
 
 - Keep unit tests dependency-free: no database, network, SDK sessions or credentials. Test real owned logic, not mocks of that logic.
 - Integration tests must use real application orchestration, Postgres SQL/transactions, Better Auth, Pi SDK, validation and route handlers. Never mock ownership/auth decisions, leases, billing admission/settlement, monitor parsing or transcript repair to make a test pass.
-- Stub only external service boundaries (OpenRouter, Resend and Sprites). Use the existing transport interception where possible; add only a narrow injection seam when necessary. Do not build a fake database, parallel application or general shell emulator.
+- Stub only external service boundaries (OpenRouter, Resend, Fastmail and Sprites). Use the existing transport interception where possible; add only a narrow injection seam when necessary. Do not build a fake database, parallel application or general shell emulator.
 - Service fakes must validate requests, maintain the minimal state needed by the scenario and fail on unexpected calls. Never silently fall through to live services or return unconditional success. Exercise failures, timeouts, aborts and retries as well as happy paths.
 - Assert observable outcomes: persisted balances/events, denied execution, actual command arguments, HTTP/cookie/stream behavior and cleanup. Mock call counts alone are not proof. Concurrency checks must assert successful admission as well as upper bounds.
 - Pair each fake boundary with a small real-service deployment contract check. Fake Sprite tests prove orchestration, not Linux execution, VM isolation or network enforcement; those require real Sprite smoke tests.

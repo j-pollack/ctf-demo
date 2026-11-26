@@ -15,6 +15,7 @@ import {
   RunSetupNotes,
 } from "@/app/run-dialog";
 import { SignInPanel } from "@/app/sign-in-panel";
+import SiteFooter from "@/app/site-footer";
 import { accountPath, safeNextPath, signInPath } from "@/app/sign-in-path";
 import {
   deckLayout,
@@ -1712,6 +1713,7 @@ export default function GameUI({
                 Load more
               </button>
             )}
+            <SiteFooter />
           </main>
         ) : panel === "detail" && !displayGame ? (
           <main className="info run-detail">
@@ -2098,7 +2100,19 @@ export function RulesPanel({
           </dl>
         </section>
       </div>
+      <p>
+        If you think the monitor got a run wrong, or something is broken, press{" "}
+        <strong>Report</strong> in that run. The run goes with your report, and we read every one.
+      </p>
+      <p>
+        We want to hear what you think of the game.{" "}
+        <a className="link" href="/contact">
+          Tell us
+        </a>
+        .
+      </p>
       <p>Nobody may have won yet.</p>
+      <SiteFooter />
     </main>
   );
 }
@@ -2166,6 +2180,7 @@ export function LeaderboardPanel({
         once its billing settles. Pick an agent model to see only wins that used that model the
         whole way through.
       </small>
+      <SiteFooter />
     </main>
   );
 }

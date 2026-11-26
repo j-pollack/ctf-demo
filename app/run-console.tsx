@@ -236,6 +236,7 @@ export function RunConsole(props: RunConsoleProps) {
     <div className="console">
       <RunBar
         game={game}
+        focusedSessionId={focusedId}
         inspectorOpen={inspector !== "closed"}
         detailsRef={detailsRef}
         newRunDisabled={props.newRunDisabled}

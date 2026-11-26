@@ -368,6 +368,7 @@ export function BlockedNotice({
           )}
         </p>
       )}
+      {caught && <p>Think the monitor got this wrong? Press Report and tell us.</p>}
     </div>
   );
 }

@@ -1,7 +1,10 @@
 import { headers } from "next/headers";
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { adminStats, isAdmin } from "@/lib/admin";
+import { listFeedback, type FeedbackRow } from "@/lib/feedback";
+import { feedbackStates } from "@/lib/feedback-mail";
 import { agentModelSetting, currentAgentModel } from "@/lib/agent-model";
 import { currentGameRules, GAME_RULE_KEYS } from "@/lib/game-rules";
 import { gameRuleSettings, type GameRuleSetting } from "@/lib/game-rules-admin";
@@ -10,6 +13,7 @@ import { limitSettings, type LimitSetting } from "@/lib/limits-admin";
 import { MODELS } from "@/lib/policy";
 import { setAgentModel, setGameRule, setLimit } from "./actions";
 import { AgentModelCard } from "./agent-model-card";
+import { FeedbackCard } from "./feedback-card";
 import { GameRulesCard } from "./game-rules-card";
 import { LimitsCard } from "./limits-card";
 import {
@@ -67,6 +71,11 @@ function Card({
   );
 }
 
+// Fastmail answers slowly or not at all, so the states stream in after the rest of the page.
+async function FeedbackWithStates({ rows }: { rows: FeedbackRow[] }) {
+  return <FeedbackCard rows={rows} states={await feedbackStates(rows)} />;
+}
+
 async function requireAdmin() {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!isAdmin(session?.user)) notFound();
@@ -86,15 +95,17 @@ export default async function Admin({
   const params = await searchParams;
   const refused = params.model === "refused";
   const limitRefused = params.limit === "refused";
-  const [stats, setting, current, rules, ruleSettings, limits, limitChanges] = await Promise.all([
-    adminStats(),
-    agentModelSetting(),
-    currentAgentModel(),
-    currentGameRules(),
-    gameRuleSettings(),
-    currentLimits(),
-    limitSettings(),
-  ]);
+  const [stats, setting, current, rules, ruleSettings, limits, limitChanges, feedback] =
+    await Promise.all([
+      adminStats(),
+      agentModelSetting(),
+      currentAgentModel(),
+      currentGameRules(),
+      gameRuleSettings(),
+      currentLimits(),
+      limitSettings(),
+      listFeedback(),
+    ]);
   const { totals: t, daily, monthly, outcomes, models, monitors, spenders } = stats;
 
   const days = daily.map((d) => day(d.day));
@@ -310,6 +321,10 @@ export default async function Admin({
             }))}
           />
         </Card>
+
+        <Suspense fallback={<FeedbackCard rows={feedback} states={{}} />}>
+          <FeedbackWithStates rows={feedback} />
+        </Suspense>
       </div>
     </main>
   );

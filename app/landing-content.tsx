@@ -1,3 +1,4 @@
+import SiteFooter from "@/app/site-footer";
 import SiteHeader from "@/app/site-header";
 import { dollars, newRuns } from "@/app/run-format";
 import { HowToWin } from "@/app/flag-instructions";
@@ -83,6 +84,7 @@ export default function LandingContent({
           </p>
         </section>
       </main>
+      <SiteFooter />
     </div>
   );
 }
