@@ -111,10 +111,13 @@ test("feedback mail thread, reply and states", { timeout: 180_000 }, async (t) =
       assert.deepEqual(first.email.inReplyTo, [noteOf(id)]);
       assert.deepEqual(first.email.references, [noteOf(id)]);
       assert.equal(first.email.text, "First answer\n\nYou wrote:\n> Hello");
+      // A sender's mail client picks its own Message-ID, and many are longer than the 64 characters
+      // Fastmail accepts in the header form of In-Reply-To.
       const theirs = fake.seed({
         from: "ada@example.com",
         mailbox: "inbox",
         inReplyTo: [first.email.messageId],
+        messageId: `${"A".repeat(70)}@mail.outlook.example.com`,
       });
       await replyToFeedback(bossHeaders, id, "Second answer");
       const second = lastSent();

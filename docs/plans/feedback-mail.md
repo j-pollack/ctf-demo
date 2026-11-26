@@ -53,7 +53,7 @@ ALTER TABLE ctf.feedback ADD COLUMN IF NOT EXISTS mail_thread_id text;
 ALTER TABLE ctf.feedback ADD COLUMN IF NOT EXISTS closed_at timestamptz;
 ```
 
-The notification's Message-ID is not stored. The app sets it to `<feedback-<row id>@<domain of CONTACT_EMAIL>>`, so it can be derived from the row.
+The notification's Message-ID is not stored. The app sets it to `fb.<row id packed to 22 characters>@<domain of CONTACT_EMAIL>`, so it can be derived from the row. Fastmail refuses a Message-ID over 64 characters, which is why the row id is packed.
 
 ### `lib/fastmail.ts`: the JMAP client
 
@@ -64,7 +64,7 @@ Plain `fetch`, no new package. Every request carries `Authorization: Bearer <tok
   - A first request reads the mailboxes with roles `drafts` and `sent` and the identity whose email equals `CONTACT_EMAIL`. No such identity is an error.
   - A second request creates the email with `Email/set` in Drafts with `$draft`, then submits it with `EmailSubmission/set` using an explicit `envelope` with `mailFrom` the contact address and exactly one `rcptTo`. `onSuccessUpdateEmail` moves it to Sent and clears `$draft`.
   - `from`, `to` and `replyTo` are passed only as `{ email }` objects. No raw address header is written.
-  - `messageId`, when given, is set with `header:Message-ID:asMessageIds`. `inReplyTo` and `references` are set with `header:In-Reply-To:asMessageIds` and `header:References:asMessageIds`.
+  - `messageId`, when given, is set with `header:Message-ID:asMessageIds`. `inReplyTo` and `references` are set with the plain `inReplyTo` and `references` properties. Fastmail refuses the header form of In-Reply-To for an id over 64 characters, and senders' mail clients often make longer ones.
   - The thread id comes from the `created` entry of `Email/set`. It returns `{ threadId }`.
   - If `Email/set` succeeds and the submission is `notCreated`, the draft is destroyed with `Email/set` before the error is thrown.
   - A recipient or reply-to address is refused before any request unless its local part uses only letters, digits and ``.!#$%&'*+/=?^_`{|}~-``, and its domain only letters, digits, dots and hyphens. That set has no character with a meaning in a mail header.
@@ -76,7 +76,7 @@ Plain `fetch`, no new package. Every request carries `Authorization: Bearer <tok
 - `saveFeedback` in `lib/feedback.ts` returns the new row's id.
 - `notifyFeedback(id)`: loads the row and sends one email from `CONTACT_EMAIL` to `CONTACT_EMAIL` with the derived Message-ID. `replyTo` is the sender: the typed email for a contact message, the account email for a report. When that address fails the address rule, the notification is still sent, without a reply-to, and the address is given as a line of text in the body. The subject is `[CTF] Contact from <name>` or `[CTF] Report (<kind>) on run <first 8 of run id>`, with control characters replaced by spaces. The body is the message, and for a report the full run id and session id. It stores `mail_thread_id` on the row. It never throws: a failure is logged and leaves the column null.
 - The route starts `notifyFeedback(id)` after the row is saved and hands the promise to `afterResponse` exported from `lib/auth.ts`, so the form answers without waiting for Fastmail.
-- `feedbackThread(headers, id)`: admin only. Returns the row and its messages. The first entry is always the stored message from the row. The notification is left out by the start of its Message-ID, `feedback-<row id>@`, so a later change of `CONTACT_EMAIL` does not turn old notifications into replies. Every other email in the Fastmail thread follows in time order with its from address, marked ours when it is `sent`. If mail is not configured, the row has no thread, or the thread cannot be read, it returns the stored message and says which.
+- `feedbackThread(headers, id)`: admin only. Returns the row and its messages. The first entry is always the stored message from the row. The notification is left out by the start of its Message-ID, `fb.<packed row id>@`, so a later change of `CONTACT_EMAIL` does not turn old notifications into replies. Every other email in the Fastmail thread follows in time order with its from address, marked ours when it is `sent`. If mail is not configured, the row has no thread, or the thread cannot be read, it returns the stored message and says which.
 - `replyToFeedback(headers, id, text)`: admin only. The text is trimmed, 1 to 5,000 characters, no NUL. The recipient is the row's sender as above. The subject is `Re: ` plus the notification subject.
   - With a thread: `inReplyTo` is the newest message in the thread and `references` is every Message-ID in the thread in order, without repeats. Both are taken from the thread including the notification, so the first reply points at the notification.
   - Without a thread, which covers rows stored before this change and rows whose notification failed: the reply is sent with no threading headers, and the thread id that comes back is stored on the row.
@@ -195,6 +195,10 @@ Run on 2026-11-26 on a local server with a throwaway database and the real token
 
 - The first notification was refused by Fastmail with `invalidProperties` on `header:Message-ID`. A probe with drafts that were deleted at once showed a length limit: an id of 63 characters is accepted and 65 is refused, which matches a 78-character header line. The id was `feedback-<uuid>@<contact domain>`, 69 characters for the real domain. The earlier real-token check had used a shorter id and so passed. The id is now `fb.<the row id packed to 22 characters>@<contact domain>`, the fake refuses an id over 64 characters, and the smoke script uses an id of real length.
 - With that fixed: a contact form submission sent the notification and the row got its thread id. `/admin` showed the row as waiting with a link. The thread page showed the stored message. A reply sent from the page arrived as ours with the quote, and the state became answered. Close and Reopen set and cleared `closed_at`. The thread page signed out, and with a malformed id, answered 404.
+
+## What the third review pass found
+
+The reviewer confirming the shorter id asked whether the same length limit applies to the reply headers. A probe with drafts that were deleted at once showed it does for the header form of In-Reply-To: ids of 63, 73 and 93 characters were refused. The plain `inReplyTo` and `references` properties accepted ids of 93 and 203 characters. So a reply to a sender whose mail client made a long Message-ID would have been refused, which is the second turn of a conversation. The client now uses the plain properties, the fake refuses the long header form as Fastmail does, and the reply test seeds a sender message with a 95-character id. A new smoke phase, `reply <thread id> <outside address>`, sends a second reply after the outside reply. It was run on the real thread and passed.
 
 ## Not verified before the build
 

@@ -181,6 +181,8 @@ export function createFastmailFake() {
       "subject",
       "bodyValues",
       "textBody",
+      "inReplyTo",
+      "references",
       ...HEADERS,
     ]);
     for (const key of Object.keys(draft))
@@ -211,8 +213,8 @@ export function createFastmailFake() {
       subject: draft.subject,
       text: text as string,
       html: false,
-      inReplyTo: header("header:In-Reply-To:asMessageIds"),
-      references: header("header:References:asMessageIds"),
+      inReplyTo: [...header("inReplyTo"), ...header("header:In-Reply-To:asMessageIds")],
+      references: [...header("references"), ...header("header:References:asMessageIds")],
     });
   };
 
@@ -289,7 +291,11 @@ export function createFastmailFake() {
         // Real Fastmail refuses a Message-ID longer than 64 characters, as its header line would
         // pass 78. Found with the real account; a shorter id in the smoke check had hidden it.
         const own = args.create?.draft?.["header:Message-ID:asMessageIds"]?.[0];
-        if (controls.fail === "email-not-created" || (own && own.length > MESSAGE_ID_MAX))
+        // It refuses the header form of In-Reply-To the same way, and accepts a long id in the
+        // inReplyTo property. A sender's mail client often makes ids longer than the bound.
+        const answered = args.create?.draft?.["header:In-Reply-To:asMessageIds"]?.[0];
+        const tooLong = [own, answered].some((id) => id && id.length > MESSAGE_ID_MAX);
+        if (controls.fail === "email-not-created" || tooLong)
           result = { notCreated: { draft: { type: "invalidProperties" } } };
         else {
           const draft = createDraft(args);

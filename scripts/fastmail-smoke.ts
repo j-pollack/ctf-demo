@@ -5,11 +5,14 @@
 //     builds it, and prints the thread id. Reply to that mail from the outside account.
 //   npm run smoke:fastmail -- read <thread id>
 //     checks the thread once the outside reply has arrived.
+//   npm run smoke:fastmail -- reply <thread id> <outside address>
+//     sends a second reply after the outside reply, the way the panel does, and checks that it
+//     joined the thread. This is the second turn of a conversation.
 // The outside address must not be on this Fastmail account: a reply from inside it also has a
 // copy in Sent, so it would look like ours.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { isSafeAddress, sendMail } from "../lib/fastmail";
+import { isSafeAddress, readThreads, sendMail } from "../lib/fastmail";
 import { NOTIFICATION_MARK, notificationId, replyBody } from "../lib/feedback-mail-text";
 
 const SUBJECT = "[CTF] Smoke check";
@@ -115,7 +118,30 @@ async function read(threadId: string | undefined) {
   console.log("The Fastmail contract holds: copies, thread, Message-ID and outside reply.");
 }
 
-const [phase, argument] = process.argv.slice(2);
-if (phase === "send") await send(argument);
-else if (phase === "read") await read(argument);
-else throw new Error("Usage: send <outside address> | read <thread id>");
+async function reply(threadId: string | undefined, outside: string | undefined) {
+  assert.ok(threadId && outside && isSafeAddress(outside), "Usage: reply <thread id> <outside>");
+  const before = (await readThreads([threadId], { bodies: false })).get(threadId) ?? [];
+  const ids = before.flatMap((mail) => (mail.messageId ? [mail.messageId] : []));
+  assert.ok(before.at(-1) && !before.at(-1)!.sent, "The newest message is not an outside reply.");
+  const sent = await sendMail({
+    to: outside,
+    subject: `Re: ${SUBJECT}`,
+    text: "Smoke check second reply. No answer is needed.",
+    inReplyTo: ids.at(-1),
+    references: ids,
+  });
+  assert.equal(sent.threadId, threadId, "The second reply started a new thread.");
+  const after = (await readThreads([threadId], { bodies: false })).get(threadId) ?? [];
+  assert.equal(after.length, before.length + 1, "The second reply is not in the thread.");
+  assert.ok(after.at(-1)!.sent, "The second reply is not marked as ours.");
+  console.log(`The second turn holds: replied to an id of ${ids.at(-1)!.length} characters.`);
+}
+
+const [phase, first, second] = process.argv.slice(2);
+if (phase === "send") await send(first);
+else if (phase === "read") await read(first);
+else if (phase === "reply") await reply(first, second);
+else
+  throw new Error(
+    "Usage: send <outside address> | read <thread id> | reply <thread id> <outside address>",
+  );

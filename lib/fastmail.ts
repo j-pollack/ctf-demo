@@ -132,7 +132,6 @@ export async function sendMail(mail: OutgoingMail, { signal }: Options = {}) {
   if (!roles.drafts || !roles.sent || !identity)
     throw new FastmailError("Fastmail has no drafts, sent or identity for the contact address.");
 
-  const ids = (name: string, values: string[]) => ({ [name]: values });
   const draft = {
     mailboxIds: { [roles.drafts]: true },
     keywords: { $draft: true },
@@ -142,9 +141,11 @@ export async function sendMail(mail: OutgoingMail, { signal }: Options = {}) {
     subject: mail.subject,
     bodyValues: { body: { value: mail.text } },
     textBody: [{ partId: "body", type: "text/plain" }],
-    ...(mail.messageId && ids("header:Message-ID:asMessageIds", [mail.messageId])),
-    ...(mail.inReplyTo && ids("header:In-Reply-To:asMessageIds", [mail.inReplyTo])),
-    ...(mail.references?.length && ids("header:References:asMessageIds", mail.references)),
+    ...(mail.messageId && { "header:Message-ID:asMessageIds": [mail.messageId] }),
+    // The plain properties, not the header form: Fastmail refuses the header form of In-Reply-To
+    // for an id over 64 characters, and a sender's mail client often makes longer ones.
+    ...(mail.inReplyTo && { inReplyTo: [mail.inReplyTo] }),
+    ...(mail.references?.length && { references: mail.references }),
   };
   const sent = await invoke(session, token, [
     ["Email/set", { accountId, create: { draft } }, "e"],
