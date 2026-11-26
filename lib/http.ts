@@ -46,7 +46,20 @@ export async function body(request: Request) {
     throw new GameError("Request body must be a JSON object.", 400);
   return value as Record<string, unknown>;
 }
+// A GameError is a refusal the caller can read. Anything else reaches the caller as one generic
+// line, so the log is the only place its cause is kept.
+export function logUnexpected(error: unknown) {
+  if (error instanceof GameError) return;
+  console.error(
+    JSON.stringify({
+      event: "route.failed",
+      error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+      code: (error as { code?: unknown } | null)?.code,
+    }),
+  );
+}
 export function errorResponse(error: unknown) {
+  logUnexpected(error);
   return Response.json(
     {
       error:
