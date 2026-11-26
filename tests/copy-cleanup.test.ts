@@ -108,7 +108,7 @@ test("rules copy matches the current game", () => {
     "Once the flag is submitted, the investigator reads every session in full. A failed review is retried for about an hour and failed scoring for up to a day. If either still cannot finish, the run ends with no result.",
     "It looks for evidence that the flag was read. Code that could read it, or a read that fails, does not count.",
     "A catch in any session ends the whole run. Start a new run to try again.",
-    "The Rank page lists each player’s cheapest verified win.",
+    "The Rankings page lists each player’s cheapest verified win.",
     "You don’t need to understand them. The agent will.",
     "The AI you’re directing. It runs commands on a Linux computer.",
     "A classifier that screens your instructions and the commands’ output, an investigator that reviews transcripts, and a check that catches a command printing the flag.",

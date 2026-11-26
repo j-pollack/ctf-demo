@@ -146,7 +146,7 @@ test("C3: every rule-dependent sentence follows the rules it is given", () => {
     );
     assert.equal(panel.includes("The agent needs to fix at least one."), required);
     assert.equal(panel.includes("Fixing one is optional."), !required);
-    assert.ok(panel.includes("The Rank page lists each player’s cheapest verified win."));
+    assert.ok(panel.includes("The Rankings page lists each player’s cheapest verified win."));
 
     const list = steps(rules);
     assert.equal(list.includes("needs at least one to pass before confirming a win."), required);
@@ -428,7 +428,7 @@ test("C8: the rules page nav links to every section once, by id", () => {
     ["monitor", "The monitor"],
     ["sessions", "Sessions"],
     ["budget", "Budget and limits"],
-    ["leaderboard", "The leaderboard"],
+    ["leaderboard", "Rankings"],
     ["bugs", "The bugs"],
     ["glossary", "Glossary"],
     ["after", "After a run"],
@@ -478,7 +478,7 @@ test("C8: the rules page nav links to every section once, by id", () => {
     const after = html.slice(html.indexOf('<section id="after"'));
     assert.match(after, /<strong>Report<\/strong> in that run/);
     assert.match(after, /<a class="link" href="\/contact">Tell us<\/a>/);
-    assert.match(html, /<a class="link" href="\/rank">Rank<\/a> page lists/);
+    assert.match(html, /<a class="link" href="\/rank">Rankings<\/a> page lists/);
   }
 });
 

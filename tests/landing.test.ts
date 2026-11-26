@@ -19,11 +19,12 @@ test("public landing renders without database access and does not offer sign-in 
   );
   const navigation = html.match(/<nav aria-label="Main navigation">([\s\S]*?)<\/nav>/)?.[1];
   assert.ok(navigation, "landing has one main navigation row");
-  for (const item of ["How to play", "Rank", "My Runs", "Loading…", "Play"]) {
+  for (const item of ["How to play", "Rankings", "My Runs", "Loading…", "Play"]) {
     assert.ok(navigation.includes(item), `navigation contains ${item}`);
   }
-  assert.ok(navigation.indexOf("How to play") < navigation.indexOf("Rank"));
-  assert.ok(navigation.indexOf("Rank") < navigation.indexOf("My Runs"));
+  assert.ok(navigation.indexOf("How to play") < navigation.indexOf("Rankings"));
+  assert.ok(navigation.indexOf("Rankings") < navigation.indexOf("My Runs"));
+  assert.doesNotMatch(navigation, />Rank</, "the nav says Rankings");
   assert.ok(navigation.indexOf("My Runs") < navigation.indexOf("Play"));
   assert.ok(navigation.indexOf("Play") < navigation.indexOf("Loading…"), "sign in or out is last");
   assert.ok(navigation.indexOf('href="/rules"') < navigation.indexOf('href="/rank"'));
@@ -76,7 +77,7 @@ test("the rules link reads How to play, and below 360px its visible text shorten
     );
     assert.doesNotMatch(html, />Rules</);
     // The other links keep one plain label.
-    assert.match(html, /<a href="\/rank">Rank<\/a>/);
+    assert.match(html, /<a href="\/rank">Rankings<\/a>/);
   }
 });
 

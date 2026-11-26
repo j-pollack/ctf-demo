@@ -34,7 +34,7 @@ export default function SiteHeader({
         </Link>
         {(
           [
-            ["/rank", "Rank", "rank"],
+            ["/rank", "Rankings", "rank"],
             ["/runs", "My Runs", "history"],
           ] as const
         ).map(([href, label, key]) => (

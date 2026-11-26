@@ -1935,7 +1935,7 @@ const RULES_SECTIONS = [
   ["monitor", "The monitor"],
   ["sessions", "Sessions"],
   ["budget", "Budget and limits"],
-  ["leaderboard", "The leaderboard"],
+  ["leaderboard", "Rankings"],
   ["bugs", "The bugs"],
   ["glossary", "Glossary"],
   ["after", "After a run"],
@@ -2073,7 +2073,7 @@ export function RulesPanel({
             <p>
               The{" "}
               <a className="link" href="/rank">
-                Rank
+                Rankings
               </a>{" "}
               page lists each player’s cheapest verified win.
             </p>
@@ -2162,7 +2162,7 @@ export function LeaderboardPanel({
 }) {
   return (
     <main className="info">
-      <h2>Leaderboard</h2>
+      <h2>Rankings</h2>
       <p className="lede">
         Each player’s cheapest verified win, ranked by what the agent spent. Ties go to fewer turns.
       </p>

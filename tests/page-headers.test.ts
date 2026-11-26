@@ -16,7 +16,7 @@ const pages: Record<string, string> = {
       limits: playerLimits(DEFAULT_LIMITS),
     }),
   ),
-  Leaderboard: renderToStaticMarkup(
+  Rankings: renderToStaticMarkup(
     createElement(UI.LeaderboardPanel, {
       scores: [],
       models: [],
@@ -47,6 +47,7 @@ const pages: Record<string, string> = {
 test("every app page opens with its title and a subtitle directly under it", () => {
   for (const [title, html] of Object.entries(pages))
     assert.match(html, new RegExp(`<h2>${title}</h2><p class="lede">[^<]+`), title);
+  assert.doesNotMatch(pages.Rankings, /<h2>Leaderboard<\/h2>/);
   // My runs renders its title in GameUI and the subtitle through this component.
   assert.match(
     renderToStaticMarkup(createElement(UI.RunHistoryIntro, { signedIn: true })),
