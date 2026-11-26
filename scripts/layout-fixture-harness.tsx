@@ -230,7 +230,6 @@ export function Harness({ name, width, choice, dialog, review }: HarnessProps) {
       />
       {dialog && (
         <RunDialog open={dialogOpen} busy={dialogBusy} onClose={() => setDialogOpen(false)}>
-          <p className="eyebrow">NEW RUN</p>
           <DialogTitle>Start a run</DialogTitle>
           <button
             className="primary"

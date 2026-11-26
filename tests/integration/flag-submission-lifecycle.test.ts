@@ -1758,7 +1758,7 @@ await test(
         );
         assert.equal(
           (await publicGame(await getGame(id, owner))).monitor?.reason,
-          "A command lost contact with its response, so this run cannot be graded. Start a new run to replace it.",
+          "A command stopped reporting back, so this run can’t be graded. Start a new run to replace it.",
         );
         const replacement = await startRun(owner);
         assert.notEqual(replacement.id, id);

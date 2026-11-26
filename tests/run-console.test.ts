@@ -121,7 +121,11 @@ test("a caught single-session run states the reason once across the strip, trans
     /Investigator review|entry monitor blocked/,
     "the transcript does not repeat the end review",
   );
-  assert.match(html, /Flag read detected|Investigator blocked/, "run details list the decision");
+  assert.match(
+    html,
+    /<h3>Status<\/h3><strong>Caught<\/strong><small>Session 1\.<\/small>/,
+    "run details name the session of the catch",
+  );
 });
 
 test("a captured run keeps the win line with its turn count in the strip", () => {
@@ -177,9 +181,9 @@ test("an HTTP receipt with unknown command outcome stays visibly unconfirmed", (
   const orphaned = render({ ...game, startBlockedByGrading: false }, { editable: false });
   assert.match(
     orphaned,
-    /Flag upload received\. Play has ended\. A command lost contact with its response, so this run cannot be graded\. Start a new run to replace it\./,
+    /Flag upload received\. Play has ended\. A command stopped reporting back, so this run can’t be graded\. Start a new run to replace it\./,
   );
-  assert.doesNotMatch(orphaned, /Grading starts/);
+  assert.doesNotMatch(orphaned, /Grading starts|lost contact|cannot be graded/);
   assert.doesNotMatch(html, /<textarea id="prompt-|Wrong flag/);
 });
 

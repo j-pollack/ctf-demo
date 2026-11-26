@@ -10,6 +10,7 @@
   --panel: #e5e9de;
   /* The one inline inset shared by the header, run bar, outcome strip and deck. */
   --gutter: 24px;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
   color-scheme: light;
 }
 @media (max-width: 720px) {
@@ -24,11 +25,7 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font:
-    13px/1.6 ui-monospace,
-    SFMono-Regular,
-    Consolas,
-    monospace;
+  font: 13px/1.6 var(--font-mono);
 }
 button,
 input,
@@ -132,8 +129,18 @@ strong {
 .wordmark span {
   color: #557b1d;
 }
-.brand-short {
+.brand-short,
+.nav-short {
   display: none;
+}
+/* "How to play" gives way to "How to" where the nav would overflow. */
+@media (max-width: 359px) {
+  .nav-full {
+    display: none;
+  }
+  .nav-short {
+    display: inline;
+  }
 }
 .top nav {
   display: flex;
@@ -244,11 +251,6 @@ strong {
     transition: none;
   }
 }
-.eyebrow {
-  font-size: 10px;
-  letter-spacing: 1.4px;
-  color: var(--muted);
-}
 i {
   display: inline-block;
   width: 7px;
@@ -271,22 +273,8 @@ i {
   min-height: 0;
   overflow: hidden;
 }
-.welcome {
-  padding: 45px var(--gutter);
-  max-width: 700px;
-}
 .console > p[role="status"] {
   padding: 16px var(--gutter);
-}
-.welcome p {
-  font-size: 15px;
-  line-height: 1.9;
-}
-.welcome button {
-  margin: 25px 0 16px;
-}
-.welcome small {
-  display: block;
 }
 .primary {
   background: var(--accent);
@@ -504,17 +492,29 @@ form label {
   }
 }
 .spend-breakdown {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
+  display: grid;
+  gap: 2px;
   font-size: 11px;
 }
 .spend-breakdown p {
   display: flex;
+  justify-content: space-between;
   gap: 6px;
 }
 .spend-breakdown p + p {
   margin-top: 0;
+}
+.spend-breakdown .spend-total {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  font-weight: 600;
+}
+.spend-monitor {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 8px 0 0;
 }
 /* What the monitor saw: each session's reviews as a numbered timeline, then what crossed a
    threshold. The caught review's marker takes the blocked colour. */
@@ -527,28 +527,15 @@ form label {
 .saw-footer {
   font-size: 11px;
 }
-.monitor-saw h4 {
-  margin: 18px 0 8px;
-  font-size: 12px;
+.saw-session {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
-.monitor-saw h5 {
-  margin: 12px 0 2px;
-  font-size: 11px;
+.saw-session > summary {
+  cursor: pointer;
+  font-size: 14px;
   font-weight: 600;
-}
-.route-legend {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 2px 10px;
-  margin: 10px 0 0;
-  font-size: 11px;
-}
-.route-legend dt {
-  font-weight: 600;
-}
-.route-legend dd {
-  margin: 0;
-  color: var(--muted);
 }
 .review-timeline {
   position: relative;
@@ -749,10 +736,28 @@ form label {
   flex: 1;
   overflow: auto;
 }
+/* Every app page opens the same way: the page title, an optional muted subtitle right under it,
+   then 24px before the content. Section titles inside a page share one style too. */
 .info h2 {
   font-size: 30px;
   letter-spacing: -1px;
-  margin: 8px 0 24px;
+  margin: 8px 0 0;
+}
+.info h2 + * {
+  margin-top: 24px;
+}
+.info .lede {
+  margin-top: 8px;
+  max-width: 40rem;
+  color: var(--muted);
+  font-size: 14px;
+}
+.info .lede + * {
+  margin-top: 24px;
+}
+/* /play with no run: the button sits apart from the text above it, whatever that is. */
+.no-run > button {
+  margin-top: 24px;
 }
 .info ol {
   padding-left: 22px;
@@ -760,7 +765,7 @@ form label {
 .info li {
   padding: 0 0 18px 10px;
 }
-.info > p:not(.eyebrow) {
+.info > p {
   margin-top: 16px;
 }
 @media (max-width: 720px) {
@@ -772,7 +777,7 @@ form label {
   display: flex;
   gap: 20px;
   flex-wrap: wrap;
-  margin-bottom: 25px;
+  margin: 24px 0 25px;
 }
 .model-select {
   display: block;
@@ -796,28 +801,70 @@ form label {
 .table-wrap {
   overflow: auto;
 }
+/* My runs: a ruled list, one run per row, outcome first. */
+.run-history .empty {
+  padding: 24px 0;
+}
 .run-history .run-list {
-  display: grid;
-  gap: 0.75rem;
   margin: 1.5rem 0;
+  border-top: 1px solid var(--line);
 }
 .run-history .run-row {
   display: grid;
-  gap: 0.4rem;
+  grid-template-columns: 9rem minmax(0, 1fr) auto auto;
+  column-gap: 16px;
+  align-items: baseline;
   width: 100%;
-  padding: 1rem;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  padding: 14px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
 .run-history .run-row:hover {
-  border-color: var(--accent);
+  background: var(--panel);
 }
-.run-history .run-row span,
-.run-history .run-row small {
+.run-history .run-outcome {
+  font-weight: 600;
+}
+.run-history .run-outcome[data-band="caught"] {
+  color: var(--blocked);
+}
+.run-history .run-outcome[data-band="low"] {
+  color: #557b1d;
+}
+.run-history .run-facts {
+  font-size: 13px;
+}
+.run-history .run-date {
   color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.run-history .run-id {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 720px) {
+  .run-history .run-row {
+    grid-template-areas: "outcome date" "facts id";
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 16px;
+  }
+  .run-history .run-outcome {
+    grid-area: outcome;
+  }
+  .run-history .run-facts {
+    grid-area: facts;
+  }
+  .run-history .run-date {
+    grid-area: date;
+  }
+  .run-history .run-id {
+    grid-area: id;
+  }
 }
 .run-history .run-detail {
   margin-top: 1.5rem;
@@ -915,9 +962,6 @@ dialog::backdrop {
   font-size: 12px;
   margin: 18px 0 0;
 }
-.dialog-content .eyebrow {
-  padding-right: 24px;
-}
 /* The sign-in page: one readable column at the shared gutter. */
 .sign-in-form,
 .sign-in > [role="status"],
@@ -957,13 +1001,13 @@ dialog::backdrop {
   max-width: 28rem;
 }
 .account section {
-  margin-top: 24px;
-  padding-top: 20px;
+  margin-top: 32px;
+  padding-top: 24px;
   border-top: 1px solid var(--line);
 }
 .account h3 {
-  margin: 0 0 14px;
-  font-size: 15px;
+  margin: 0 0 12px;
+  font-size: 20px;
 }
 .account-form label {
   display: block;
@@ -1120,12 +1164,6 @@ dialog::backdrop {
     content: "…";
     font-size: 16px;
   }
-  .welcome {
-    padding-block: 30px;
-  }
-  .welcome p {
-    font-size: 13px;
-  }
   .info h2 {
     font-size: 26px;
   }
@@ -1264,24 +1302,20 @@ dialog::backdrop {
 .landing-main {
   padding: 80px var(--gutter);
 }
+/* The hero is set in the site's own monospace, like the wordmark and every heading. */
 .landing h1 {
-  font:
-    900 clamp(40px, 6vw, 76px)/1.05 Impact,
-    "Arial Narrow",
-    Arial,
-    sans-serif;
+  font: 700 clamp(32px, 5vw, 60px)/1.1 var(--font-mono);
+  letter-spacing: -0.03em;
   margin: 20px 0 32px;
 }
-.landing-main > p {
-  font-size: 16px;
+.landing-main:not(.contact) h1::after {
+  content: "_" / "";
+  color: #557b1d;
 }
 .landing-play {
   display: inline-block;
   padding: 12px 24px;
   margin: 32px 0 12px;
-}
-.landing-main > small {
-  display: block;
 }
 .landing-signin {
   padding: 10px 14px;
@@ -1289,14 +1323,11 @@ dialog::backdrop {
 }
 .landing-rules {
   border-top: 1px solid var(--line);
-  margin-top: 64px;
-  padding-top: 24px;
+  margin-top: 3em;
+  padding-top: 1.5em;
 }
 .landing-rules h2 {
   font-size: 20px;
-}
-.landing-rules li {
-  margin-block: 12px;
 }
 @media (max-width: 720px) {
   .landing-main {
@@ -1597,6 +1628,14 @@ dialog::backdrop {
 .run-stats > * {
   white-space: nowrap;
 }
+/* The empty status region adds no gap beside the visible label. */
+.run-stats > [role="status"]:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
 .run-id strong {
   letter-spacing: 0.5px;
 }
@@ -1871,9 +1910,6 @@ dialog::backdrop {
 .pane .mission-intro h2 {
   font-size: clamp(22px, 5cqi, 39px);
 }
-.pane .welcome h1 {
-  font-size: clamp(24px, 7cqi, 58px);
-}
 @container pane (max-width: 560px) {
   .pane .entry.user {
     margin-left: 20px;
@@ -1929,17 +1965,6 @@ dialog::backdrop {
 }
 .system-prompt[open] summary::before {
   content: "−" / "";
-}
-.visibility-tag {
-  padding: 2px 6px;
-  background: var(--ink);
-  color: var(--accent);
-  font-size: 10px;
-  white-space: nowrap;
-}
-.system-prompt-tray > .visibility-tag {
-  display: inline-block;
-  margin: 8px 12px;
 }
 .unsaved {
   color: #426f30;
@@ -2001,6 +2026,32 @@ dialog::backdrop {
   margin: 0;
   font-size: 13px;
 }
+/* Run details type: section headings 15px, session summaries 14px, list labels 12px, text 13px. */
+.inspector h3 {
+  font-size: 15px;
+}
+.inspector h4 {
+  margin: 12px 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.inspector
+  :is(
+    section > small,
+    section > p,
+    .run-model,
+    .spend-breakdown,
+    .receipt,
+    .saw-note,
+    .saw-item,
+    .review-timeline li
+  ) {
+  font-size: 13px;
+}
+.inspector .saw-footer {
+  font-size: 12px;
+}
 .inspector > section {
   margin-top: 12px;
   padding-top: 12px;
@@ -2028,7 +2079,6 @@ dialog::backdrop {
 .inspector .run-model {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 12px;
   overflow-wrap: anywhere;
 }
 /* One row needs the stats, about four chips with Add session, and the actions side by side. */
@@ -2064,8 +2114,7 @@ dialog::backdrop {
     column-gap: 8px;
   }
   .run-meter,
-  .run-total,
-  .run-status[data-active] {
+  .run-total {
     display: none;
   }
   .add-label {
@@ -2119,24 +2168,16 @@ dialog::backdrop {
   max-width: 720px;
   padding: 34px 0;
 }
-.mission-intro h2,
-.welcome h1 {
+.mission-intro h2 {
   margin: 8px 0 12px;
-  font:
-    800 clamp(25px, 3vw, 39px)/1.12 Impact,
-    "Arial Narrow",
-    Arial,
-    sans-serif;
-  letter-spacing: -0.6px;
+  font: 700 clamp(25px, 3vw, 39px)/1.12 var(--font-mono);
+  letter-spacing: -0.03em;
   color: var(--ink);
 }
 .mission-intro p {
   max-width: 620px;
   font-size: 13px;
   line-height: 1.7;
-}
-.welcome h1 {
-  font-size: clamp(34px, 5vw, 58px);
 }
 .composer {
   background: var(--paper);
@@ -2246,4 +2287,201 @@ dialog::backdrop {
 }
 .feedback-message {
   white-space: pre-wrap;
+}
+
+/* Reading pages: home, contact and rules set prose in a readable face. The type grows on wider
+   screens and the measure is in em, so lines stay near 80 characters at every size. */
+.landing-main,
+main.rules {
+  --measure: 34em;
+  font: 16px/1.5 var(--font-prose, system-ui, sans-serif);
+}
+@media (min-width: 720px) {
+  .landing-main,
+  main.rules {
+    font-size: 17px;
+  }
+}
+@media (min-width: 1280px) {
+  .landing-main,
+  main.rules {
+    font-size: 18px;
+  }
+}
+:is(.landing-main, main.rules)
+  :is(h2, h3, h4, .rules-nav, .landing-play, .site-footer, button, input, textarea, select, code) {
+  font-family: var(--font-mono);
+}
+:is(.landing-main, main.rules) code {
+  font-size: 0.875em;
+  padding: 1px 4px;
+  background: #dfe5d7;
+  border-radius: 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+/* Block flow: 0.75em between siblings. A heading binds to what follows it, so those gaps are set
+   below and left out here, which keeps every rule free of !important. */
+:is(main.rules section, .landing-rules, .landing-main .how-to-win, main.rules .how-to-win)
+  > *
+  + :not(h4, :is(h2, h3, h4) + *) {
+  margin-top: 0.75em;
+}
+:is(main.rules, .landing-main) :is(h2, h3) + * {
+  margin-top: 0.5em;
+}
+/* Lists in the text only: the section list beside it keeps its own spacing. */
+:is(main.rules section, .landing-rules) :is(ol, ul) li {
+  margin-block: 0;
+  padding-bottom: 0;
+}
+:is(main.rules section, .landing-rules) :is(ol, ul) li + li {
+  margin-top: 0.6em;
+}
+/* A prose link reads as part of its sentence. */
+:is(.landing-main, .info) p a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.landing-main small {
+  display: block;
+  font-size: 13px;
+}
+
+/* One frame for the header, content and footer of every page but the run console, so they share
+   a left edge. The header and footer borders still run the full width.
+   Browsers without container units keep the plain gutter. */
+@supports (width: 1cqw) {
+  .landing,
+  .app:is(:has(> .workspace > main.info), .framed) {
+    container-type: inline-size;
+    --frame: max(var(--gutter), calc((100cqw - 60rem) / 2));
+  }
+  :is(.landing, .app:is(:has(> .workspace > main.info), .framed))
+    :is(.top, .workspace > .error, .landing-main, main.info, .site-footer) {
+    padding-inline: var(--frame);
+  }
+  .app:is(:has(> .workspace > main.info), .framed) main.info > .site-footer {
+    margin-inline: calc(-1 * var(--frame));
+  }
+}
+.landing h1 {
+  text-wrap: balance;
+}
+.landing-main > :not(h1) {
+  max-width: var(--measure);
+}
+.landing-main > p {
+  font-size: 1.125em;
+}
+
+/* Rules: the section list sits beside the text from 960px and marks the section in view. */
+.rules-body {
+  max-width: var(--measure);
+}
+main.rules section {
+  border-top: 1px solid var(--line);
+  margin-top: 3.5em;
+  padding-top: 1.5em;
+  scroll-margin-top: 16px;
+}
+main.rules section h3 {
+  font-size: 20px;
+  margin: 0;
+}
+main.rules section h4 {
+  font-size: 1em;
+  margin: 2em 0 0;
+}
+main.rules section h4 + * {
+  margin-top: 0.3em;
+}
+main.rules summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+main.rules .rules-table tbody th {
+  font-size: 14px;
+}
+main.rules .link {
+  font-size: inherit;
+}
+.rules-nav {
+  margin-top: 24px;
+  font-size: 14px;
+}
+.rules-nav p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.rules-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rules-nav li {
+  padding: 0;
+}
+.rules-nav a {
+  display: inline-block;
+  padding-block: 4px;
+  text-underline-offset: 4px;
+}
+.rules-nav a:hover {
+  text-decoration: underline;
+}
+@media (min-width: 960px) {
+  .rules-body {
+    max-width: none;
+    display: grid;
+    grid-template-columns: 16rem minmax(0, var(--measure));
+    grid-template-areas:
+      "nav intro"
+      "nav sections";
+    column-gap: 3rem;
+  }
+  .rules-intro {
+    grid-area: intro;
+  }
+  .rules-sections {
+    grid-area: sections;
+  }
+  .rules-nav {
+    grid-area: nav;
+    margin-top: 0;
+    position: sticky;
+    top: 24px;
+    align-self: start;
+  }
+  .rules-nav ul {
+    flex-direction: column;
+    gap: 0;
+  }
+  /* A rail beside the list. The section in view is darker on the rail and in the text. */
+  .rules-nav a {
+    display: block;
+    padding: 5px 0 5px 12px;
+    border-left: 2px solid var(--line);
+    color: var(--muted);
+  }
+  .rules-nav a[aria-current] {
+    border-left-color: #557b1d;
+    color: var(--ink);
+    font-weight: 600;
+  }
+}
+/* Framed pages scroll the document, so the rules nav can stay put and the footer follows the
+   content. `:is()` drops a selector it cannot parse, so browsers without
+   :has() match `.framed`, which useFramedShell sets. */
+.app:is(:has(> .workspace > main.info), .framed) {
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
+}
+.app:is(:has(> .workspace > main.info), .framed) main.info {
+  overflow: visible;
 }

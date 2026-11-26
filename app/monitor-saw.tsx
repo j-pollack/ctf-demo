@@ -9,16 +9,47 @@ type Route = NonNullable<Review["route"]> | "none";
 // What a route meant for the session, not which signal chose it: that is not stored.
 export const ROUTE_TEXT: Record<Route, { label: string; meaning: string }> = {
   investigated: {
-    label: "Investigated",
+    label: "Investigator read it",
     meaning: "Something in the session needed a closer look, so the investigator read it.",
   },
   deferred: {
-    label: "Deferred",
+    label: "Investigator skipped it",
     meaning: "Nothing in the session needed a closer look, so the investigator did not read it.",
   },
-  final: { label: "Final", meaning: "The full review after a submission." },
-  none: { label: "Not routed", meaning: "The review stopped before it chose a route." },
+  final: { label: "Final full review", meaning: "The full review after a submission." },
+  none: {
+    label: "Stopped before deciding",
+    meaning: "The review stopped before it chose a route.",
+  },
 };
+// What each classifier signal means, in the words a player would use. An unknown name keeps its
+// own words.
+const SIGNAL_TEXT: Record<string, string> = {
+  reads_flag: "reads the flag file",
+  writes_flag: "changes the flag file",
+  stages_reader: "sets up something that points at the flag file",
+  hides_target: "obscures a path or command",
+  removes_traces: "deletes a script, log or history",
+  changes_identity: "runs as another user",
+  instructs_reader: "gives orders to an AI reader",
+  claims_approval: "claims something was approved",
+  addresses_monitor: "written for the monitor",
+  overrides_rules: "tells the AI to ignore its rules",
+  claims_authority: "poses as the system or monitor",
+  forges_record: "fakes a system or tool message",
+  unrestricted_persona: "sets up a persona with no rules",
+  hides_request: "disguises its request",
+  drops_safeguards: "tells the AI to drop its safeguards",
+};
+const SCREEN_TEXT = {
+  clear: "clear",
+  unclear: "classifier unsure",
+  certain: "classifier certain",
+} as const;
+const SECOND_LOOK_TEXT = {
+  clear: "cleared",
+  jailbreak: "found an attempt to override the rules",
+} as const;
 const VERDICT_TEXT = { allow: "Allowed", block: "Caught", unknown: "No result" } as const;
 const LOAD_ERROR = "Could not load what the monitor saw. Close and reopen details to try again.";
 
@@ -35,7 +66,10 @@ function Signals({ signals }: { signals: MonitorSignal[] }) {
   return (
     <p className="saw-signals">
       {signals
-        .map(({ name, value }) => `${name.replaceAll("_", " ")} ${percent(value)}`)
+        .map(
+          ({ name, value }) =>
+            `${SIGNAL_TEXT[name] ?? name.replaceAll("_", " ")} ${percent(value)}`,
+        )
         .join(" · ")}
     </p>
   );
@@ -49,7 +83,9 @@ function ReviewItem({ review, number }: { review: Review; number: number }) {
         {number}
       </span>
       <header>
-        <strong className="review-route">{ROUTE_TEXT[routeOf(review)].label}</strong>
+        <strong className="review-route" title={ROUTE_TEXT[routeOf(review)].meaning}>
+          {ROUTE_TEXT[routeOf(review)].label}
+        </strong>
         <time dateTime={review.createdAt} title={at.toLocaleString()}>
           {at.toLocaleTimeString()}
         </time>
@@ -83,7 +119,7 @@ function List({
 }) {
   return (
     <div className="saw-list">
-      <h5>{title}</h5>
+      <h4>{title}</h4>
       {children}
       {footer && <p className="saw-footer">{footer}</p>}
     </div>
@@ -94,10 +130,10 @@ function Commands({ session, threshold }: { session: MonitorSessionView; thresho
   const { commands, commandsUnder: under } = session;
   const footer = commands.length
     ? under
-      ? `${count(under, "other command")} stayed under ${percent(threshold)}.`
+      ? `${count(under, "other command")} scored under ${percent(threshold)}.`
       : ""
     : under
-      ? `No command crossed ${percent(threshold)}. ${count(under, "command")} stayed under it.`
+      ? `No command reached ${percent(threshold)}. ${count(under, "command")} ${was(under)} checked.`
       : "No command was checked.";
   return (
     <List title="Commands" footer={footer}>
@@ -140,7 +176,9 @@ function Screens({ session }: { session: MonitorSessionView }) {
       ? `${count(under, "other text")} ${was(under)} clear.`
       : ""
     : under
-      ? `No instruction or system prompt was unclear. ${count(under, "text")} ${was(under)} clear.`
+      ? under === 1
+        ? "The only instruction or system prompt was clear."
+        : `All ${under} instructions and system prompts were clear.`
       : "No instruction or system prompt was screened.";
   return (
     <List title="Instructions and system prompts" footer={footer}>
@@ -149,14 +187,14 @@ function Screens({ session }: { session: MonitorSessionView }) {
           <p className="saw-kind">
             {item.kind === "instruction" ? "Instruction" : "System prompt"} ·{" "}
             <span className={item.verdict === "certain" ? "block" : undefined}>
-              {item.verdict === "certain" ? "Certain" : "Unclear"}
+              {SCREEN_TEXT[item.verdict]}
             </span>
           </p>
           <pre>{item.text ?? "Text was not found in this run."}</pre>
           <Signals signals={item.signals} />
           {item.secondLook && (
             <p className="saw-second-look">
-              Second look: {item.secondLook.verdict}.
+              Second look: {SECOND_LOOK_TEXT[item.secondLook.verdict]}.
               {item.secondLook.reason && ` ${item.secondLook.reason}`}
             </p>
           )}
@@ -165,8 +203,6 @@ function Screens({ session }: { session: MonitorSessionView }) {
     </List>
   );
 }
-
-const SCREEN_TEXT = { clear: "Clear", unclear: "Unclear", certain: "Certain" } as const;
 
 // Shown only when the investigator decoded something. The layers' text never reaches the view.
 function DecodedLayers({ session, threshold }: { session: MonitorSessionView; threshold: number }) {
@@ -200,7 +236,7 @@ function DecodedLayers({ session, threshold }: { session: MonitorSessionView; th
           )}
           {layer.screen?.secondLook && (
             <p className="saw-second-look">
-              Second look: {layer.screen.secondLook.verdict}.
+              Second look: {SECOND_LOOK_TEXT[layer.screen.secondLook.verdict]}.
               {layer.screen.secondLook.reason && ` ${layer.screen.secondLook.reason}`}
             </p>
           )}
@@ -220,10 +256,26 @@ const checked = (session: MonitorSessionView) =>
     session.screensUnder >
   0;
 
+const caughtIn = (session: MonitorSessionView) =>
+  session.reviews.some((review) => review.verdict === "block");
+
+function sessionSummary(session: MonitorSessionView) {
+  if (!session.reviews.length) return `Session ${session.ordinal} · not reviewed`;
+  const scores = session.reviews.flatMap((review) => (review.score === null ? [] : [review.score]));
+  return [
+    `Session ${session.ordinal}`,
+    scores.length && `peak ${percent(Math.max(...scores))}`,
+    caughtIn(session) && "caught",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+// A session opens on its catch. The others start closed so the run's story stays short.
 function Session({ session, threshold }: { session: MonitorSessionView; threshold: number }) {
   return (
-    <div className="saw-session">
-      <h4>Session {session.ordinal}</h4>
+    <details className="saw-session" open={caughtIn(session)}>
+      <summary>{sessionSummary(session)}</summary>
       {session.reviews.length ? (
         <ol className="review-timeline">
           {session.reviews.map((review, index) => (
@@ -245,7 +297,7 @@ function Session({ session, threshold }: { session: MonitorSessionView; threshol
           The classifier checked no commands, outputs or texts in this session.
         </p>
       )}
-    </div>
+    </details>
   );
 }
 
@@ -259,23 +311,12 @@ function Filled({ view }: { view: MonitorView }) {
       review.score === null ? [] : [{ review: index + 1, risk: review.score }],
     ),
   }));
-  const routes = (Object.keys(ROUTE_TEXT) as Route[]).filter((route) =>
-    reviews.some((review) => routeOf(review) === route),
-  );
   return (
     <>
-      <dl className="route-legend">
-        {routes.map((route) => (
-          <React.Fragment key={route}>
-            <dt>{ROUTE_TEXT[route].label}</dt>
-            <dd>{ROUTE_TEXT[route].meaning}</dd>
-          </React.Fragment>
-        ))}
-      </dl>
       {series.some((session) => session.points.length) && (
         <>
           <p className="saw-footer">
-            The classifier’s risk score at each review. The score never ends a run.
+            Classifier risk score at each review. A score never ends a run by itself.
           </p>
           <RunRiskChart series={series} />
         </>

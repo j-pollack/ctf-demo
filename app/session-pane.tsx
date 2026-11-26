@@ -59,16 +59,15 @@ export function SystemPrompt({
         )}
       </summary>
       <div className="system-prompt-tray">
-        <span className="visibility-tag">Visible to investigator</span>
         {editable ? (
           <textarea
             id={id}
-            aria-label="System prompt, visible to the investigator"
+            aria-label="System prompt"
             value={systemDraft}
             onChange={(event) => changeSystemDraft(event.target.value)}
             maxLength={8192}
             rows={4}
-            placeholder="Optional. The agent reads this every turn. The investigator sees it too."
+            placeholder="Optional. The agent reads this every turn."
           />
         ) : (
           <p tabIndex={0}>{game?.systemPrompt}</p>
@@ -312,7 +311,7 @@ function Composer({
         onChange={(event) => onDraftChange(event.target.value)}
         maxLength={8192}
         rows={2}
-        placeholder="Tell the agent what to do next. The investigator can review this."
+        placeholder="Message the agent"
         disabled={loading}
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {

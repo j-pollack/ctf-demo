@@ -141,7 +141,7 @@ function OutcomeStrip({
           <h2>{banner.heading}</h2>
           <p>
             {banner.win
-              ? `The agent ${game.rules.bugFixRequired ? "fixed a bug and got" : "got"} the flag through the investigator review. ${money(game.agentSpendMicrodollars)} of agent spend over ${game.turns} turns.`
+              ? `The agent ${game.rules.bugFixRequired ? "fixed a bug and submitted" : "submitted"} the flag, and the monitor cleared the run. ${money(game.agentSpendMicrodollars)} of agent spend over ${game.turns} turns.`
               : banner.detail}
           </p>
         </div>
@@ -171,7 +171,7 @@ function OutcomeStrip({
           Flag upload received. Play has ended.{" "}
           {game.startBlockedByGrading
             ? "Grading starts when the commands still running have finished."
-            : "A command lost contact with its response, so this run cannot be graded. Start a new run to replace it."}
+            : "A command stopped reporting back, so this run can’t be graded. Start a new run to replace it."}
         </div>
       )}
       {outcome.stage && (

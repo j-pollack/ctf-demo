@@ -30,6 +30,15 @@ test("the sign-in page has a heading, a labelled email field and a submit contro
   assert.match(render({ busy: true }), /<button class="primary" disabled="">Sending…<\/button>/);
 });
 
+test("the page subtitle explains the link in two plain sentences, above the form", () => {
+  const html = render();
+  assert.match(
+    html,
+    /<h2>Sign in<\/h2><p class="lede">Enter your email and we’ll send you a sign-in link\. There’s no password\.<\/p><form/,
+  );
+  assert.doesNotMatch(html, /Sign in to play|Click it and you’re in/);
+});
+
 test("after a send the page says to check email and shows no form", () => {
   const html = render({ sent: true });
   assert.match(
@@ -37,6 +46,7 @@ test("after a send the page says to check email and shows no form", () => {
     /<p role="status">Check your email for a sign-in link\. It expires in five minutes\.<\/p>/,
   );
   assert.doesNotMatch(html, /<form|<input/);
+  assert.doesNotMatch(html, /class="lede"/, "the subtitle goes with the form");
 });
 
 test("an error shows in the page's alert", () => {
