@@ -9,6 +9,7 @@ import {
 import type { ReadConfirmation, ValidatedMonitorEvidence } from "../lib/monitor-evidence";
 import type { FlagReadPolicy, FlagReadPolicyId } from "../lib/flag-read-policy";
 import { MONITOR_RUN_ALLOWANCE_MICRODOLLARS } from "../lib/policy";
+import { closePool } from "./close-pool";
 import type { FlagReadEntry, LiveEvaluationConfig } from "./flag-read-eval";
 import {
   BOUNDED_INVESTIGATOR_POLICY,
@@ -514,7 +515,8 @@ export async function runFlagReadLiveEvaluation(
     }
     return entries;
   } finally {
-    await pool.end();
+    // Return only once every connection has closed, so a caller can drop the database.
+    await closePool(pool);
     delete (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool;
   }
 }

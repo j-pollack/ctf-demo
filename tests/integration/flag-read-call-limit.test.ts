@@ -24,7 +24,7 @@ await test(
     const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
     await admin.query(`CREATE DATABASE "${callLimitDatabase}"`);
     t.after(async () => {
-      await admin.query(`DROP DATABASE "${callLimitDatabase}" WITH (FORCE)`);
+      await admin.query(`DROP DATABASE "${callLimitDatabase}"`);
       await admin.end();
     });
     const databaseUrl = new URL(baseUrl);
@@ -135,11 +135,27 @@ await test(
       exportedCase("REFUSES", 1),
       exportedCase("SHORT", 1),
     ]);
+    // The evaluator owns its pool. Watch it through the global the evaluator sets while it runs.
+    const evaluatorPool = { opened: 0, closed: 0, watched: false };
     const entries = await runFlagReadLiveEvaluation(
       { databaseUrl: databaseUrl.toString(), budgetMicrodollars: 200_000 },
       cases,
       undefined,
-      { callLimit: 3 },
+      {
+        callLimit: 3,
+        onEntry: () => {
+          const pool = (globalThis as typeof globalThis & { ctfPool?: Pool }).ctfPool!;
+          if (!evaluatorPool.watched) pool.on("remove", () => evaluatorPool.closed++);
+          evaluatorPool.watched = true;
+          evaluatorPool.opened = evaluatorPool.closed + pool.totalCount;
+        },
+      },
+    );
+    assert.ok(evaluatorPool.opened > 0, "the evaluator opened connections");
+    assert.equal(
+      evaluatorPool.closed,
+      evaluatorPool.opened,
+      "the evaluator returns only after every connection has closed, so its caller can drop the database",
     );
     const byId = new Map(entries.map((entry) => [entry.caseId, entry]));
     // D5: with a limit of 3 the notice arrives on the third request.

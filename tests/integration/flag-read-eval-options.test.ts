@@ -154,7 +154,7 @@ async function evaluate(
   const inspect = new Pool({ connectionString: databaseUrl.toString(), max: 1 });
   t.after(async () => {
     await closePool(inspect);
-    await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`);
+    await admin.query(`DROP DATABASE "${database}"`);
     await admin.end();
   });
   return { entries, requests, inspect };
