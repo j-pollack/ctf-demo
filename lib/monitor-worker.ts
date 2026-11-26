@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db } from "./db";
+import { currentLimits } from "./limits";
 import {
   claimMonitorJob,
   finishMonitorJob,
@@ -113,10 +114,12 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
   // The snapshot's own isolation rule, so the prompt and the evidence manifest cannot disagree.
   const policy = flagReadPolicyForRun(game.monitor_version, snapshot.isolated);
   const reviewId = randomUUID();
+  // Read once, so every request of the review runs at the effort the row records.
+  const { investigatorEffort } = await currentLimits();
   await db.query(
     `INSERT INTO ctf.monitor_reviews
-     (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,prompt_hash,job_id,job_claim_token)
-     VALUES($1,$2,$3,$4,'transcript',$5,$6,$7,$8,$9)`,
+     (id,game_id,session_id,snapshot_revision,target_kind,model,prompt_version,prompt_hash,job_id,job_claim_token,investigator_effort)
+     VALUES($1,$2,$3,$4,'transcript',$5,$6,$7,$8,$9,$10)`,
     [
       reviewId,
       claim.gameId,
@@ -127,6 +130,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
       policy.promptHash,
       claim.jobId,
       claim.claimToken,
+      investigatorEffort,
     ],
   );
   // What the investigation reported once it returned, for a failure that comes after it.
@@ -199,6 +203,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
         signal,
         deadlineMs: timing.secondLookDeadlineMs ?? SECOND_LOOK_DEADLINE_MS,
         streamIdleMs: timing.streamIdleMs,
+        effort: investigatorEffort,
       });
       if (looks.asked) lookStarted = started;
       if (looks.jailbreakQuestions) {
@@ -250,6 +255,7 @@ async function reviewClaim(claim: MonitorJobClaim, timing: InvestigatorTiming) {
         deadlineAt: (lookStarted ?? Date.now()) + timing.deadlineMs,
         streamIdleMs: timing.streamIdleMs,
         forceDecisionMs: timing.forceDecisionMs,
+        effort: investigatorEffort,
       },
       policy,
     );

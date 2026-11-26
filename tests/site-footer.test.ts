@@ -5,14 +5,16 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ContactPage from "../app/contact/page";
 import { LeaderboardPanel, RulesPanel } from "../app/game-ui";
 import LandingContent from "../app/landing-content";
+import { DEFAULT_LIMITS, playerLimits } from "../lib/limits";
 
 const rules = { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false };
+const limits = playerLimits(DEFAULT_LIMITS);
 const LINKS = ["https://jonathanpollack.net", "https://github.com/j-pollack/ctf-demo", "/contact"];
 
 const pages = {
-  "/": () => createElement(LandingContent, { submissionUrl: null, rules }),
+  "/": () => createElement(LandingContent, { submissionUrl: null, rules, limits }),
   "/contact": () => createElement(ContactPage),
-  "/rules": () => createElement(RulesPanel, { rules }),
+  "/rules": () => createElement(RulesPanel, { rules, limits }),
   "/rank": () =>
     createElement(LeaderboardPanel, {
       scores: [],

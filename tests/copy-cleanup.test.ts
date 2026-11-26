@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import LandingContent from "../app/landing-content";
 import * as UI from "../app/game-ui";
 import { CAUGHT_NOTICE } from "../app/transcript";
+import { DEFAULT_LIMITS, playerLimits } from "../lib/limits";
 
 const NO_DIFFICULTY = /difficult|\bEasy\b|\bMedium\b|\bHard\b/i;
 const text = (html: string) =>
@@ -15,9 +16,19 @@ const text = (html: string) =>
 
 const defaultRules = { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false };
 const landing = text(
-  renderToStaticMarkup(createElement(LandingContent, { submissionUrl: null, rules: defaultRules })),
+  renderToStaticMarkup(
+    createElement(LandingContent, {
+      submissionUrl: null,
+      rules: defaultRules,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
+  ),
 );
-const rules = text(renderToStaticMarkup(createElement(UI.RulesPanel, { rules: defaultRules })));
+const rules = text(
+  renderToStaticMarkup(
+    createElement(UI.RulesPanel, { rules: defaultRules, limits: playerLimits(DEFAULT_LIMITS) }),
+  ),
+);
 const board = (scores: unknown[]) =>
   renderToStaticMarkup(
     createElement(UI.LeaderboardPanel, {
@@ -173,4 +184,33 @@ test("how to win says a win needs the monitor to clear the run", () => {
       assert.equal(page.split(sentence).length - 1, 1, `${name}: ${sentence}`);
     assert.doesNotMatch(page, /flagged for a human to review|See How to win/, name);
   }
+});
+
+test("player copy follows the stored limits and reads as before at the defaults", () => {
+  const limits = {
+    ...DEFAULT_LIMITS,
+    runBudgetMicrodollars: 1_250_000,
+    dailyCapMicrodollars: 12_500_000,
+    runsPerDay: 1,
+    sessionsPerRun: 1,
+  };
+  const landingText = text(
+    renderToStaticMarkup(
+      createElement(LandingContent, { submissionUrl: null, rules: defaultRules, limits }),
+    ),
+  );
+  assert.ok(
+    landingText.includes("Sign in to play · $1.25 AI budget per run · 1 new run every 24 hours"),
+  );
+  const rulesText = text(
+    renderToStaticMarkup(createElement(UI.RulesPanel, { rules: defaultRules, limits })),
+  );
+  assert.ok(rulesText.includes("Each run comes with $1.25 of AI usage"));
+  assert.ok(rulesText.includes("You can start 1 new run every 24 hours."));
+  assert.ok(rulesText.includes("All players share $12.50 of AI usage a day."));
+  assert.ok(rulesText.includes("A run can have up to 1 session."));
+  assert.ok(rules.includes("A run can have up to 8 sessions."));
+  assert.ok(rules.includes("Each run comes with $0.50 of AI usage"));
+  assert.ok(rules.includes("You can start 3 new runs every 24 hours."));
+  assert.ok(rules.includes("All players share $10 of AI usage a day."));
 });

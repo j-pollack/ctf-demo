@@ -8,11 +8,14 @@ import { feedbackStates } from "@/lib/feedback-mail";
 import { agentModelSetting, currentAgentModel } from "@/lib/agent-model";
 import { currentGameRules, GAME_RULE_KEYS } from "@/lib/game-rules";
 import { gameRuleSettings, type GameRuleSetting } from "@/lib/game-rules-admin";
+import { LIMIT_KEYS, currentLimits } from "@/lib/limits";
+import { limitSettings, type LimitSetting } from "@/lib/limits-admin";
 import { MODELS } from "@/lib/policy";
-import { setAgentModel, setGameRule } from "./actions";
+import { setAgentModel, setGameRule, setLimit } from "./actions";
 import { AgentModelCard } from "./agent-model-card";
 import { FeedbackCard } from "./feedback-card";
 import { GameRulesCard } from "./game-rules-card";
+import { LimitsCard } from "./limits-card";
 import {
   Area,
   Bars,
@@ -78,7 +81,7 @@ async function requireAdmin() {
   if (!isAdmin(session?.user)) notFound();
 }
 
-const changedBy = (setting: GameRuleSetting | null | undefined) =>
+const changedBy = (setting: GameRuleSetting | LimitSetting | null | undefined) =>
   setting
     ? `Changed by ${setting.updatedBy ?? "an admin"} · ${setting.updatedAt.toISOString().slice(0, 16).replace("T", " ")} UTC`
     : null;
@@ -89,15 +92,20 @@ export default async function Admin({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   await requireAdmin();
-  const refused = (await searchParams).model === "refused";
-  const [stats, setting, current, rules, ruleSettings, feedback] = await Promise.all([
-    adminStats(),
-    agentModelSetting(),
-    currentAgentModel(),
-    currentGameRules(),
-    gameRuleSettings(),
-    listFeedback(),
-  ]);
+  const params = await searchParams;
+  const refused = params.model === "refused";
+  const limitRefused = params.limit === "refused";
+  const [stats, setting, current, rules, ruleSettings, limits, limitChanges, feedback] =
+    await Promise.all([
+      adminStats(),
+      agentModelSetting(),
+      currentAgentModel(),
+      currentGameRules(),
+      gameRuleSettings(),
+      currentLimits(),
+      limitSettings(),
+      listFeedback(),
+    ]);
   const { totals: t, daily, monthly, outcomes, models, monitors, spenders } = stats;
 
   const days = daily.map((d) => day(d.day));
@@ -193,6 +201,14 @@ export default async function Admin({
           changedBy={Object.fromEntries(
             GAME_RULE_KEYS.map((key) => [key, changedBy(ruleSettings[key])]),
           )}
+        />
+        <LimitsCard
+          action={setLimit}
+          limits={limits}
+          changedBy={Object.fromEntries(
+            LIMIT_KEYS.map((key) => [key, changedBy(limitChanges[key])]),
+          )}
+          refused={limitRefused}
         />
         <Card title="Runs per day" note="Last 30 days">
           <Legend

@@ -25,7 +25,7 @@
 
 One table, one route, one library module.
 
-**`db/migrations/035-feedback.sql`**, additive and safe to apply twice, listed in `scripts/setup.ts` with the game migrations and in the `deploy/operations.md` migration table:
+**`db/migrations/036-feedback.sql`**, additive and safe to apply twice, listed in `scripts/setup.ts` with the game migrations and in the `deploy/operations.md` migration table:
 
 ```sql
 CREATE TABLE IF NOT EXISTS ctf.feedback (
@@ -87,7 +87,7 @@ CREATE INDEX IF NOT EXISTS feedback_created ON ctf.feedback(created_at DESC);
 | F9  | Given ten accepted reports from one member in the hour, when an eleventh is posted, then it gets 429.                                                                                                                                                                                                                                                                                                             |
 | F10 | Given 200 contact rows in the last day, when a contact message is posted, then it gets 429. A member's report is still accepted.                                                                                                                                                                                                                                                                                  |
 | F11 | Stored `sender` values never contain the raw client address.                                                                                                                                                                                                                                                                                                                                                      |
-| F12 | Migration 035 applies twice without error, and setup and the runbook name it.                                                                                                                                                                                                                                                                                                                                     |
+| F12 | Migration 036 applies twice without error, and setup and the runbook name it.                                                                                                                                                                                                                                                                                                                                     |
 | F13 | The footer renders the three links on `/`, `/contact`, `/rules`, `/rank` and `/runs`, and not in the run console.                                                                                                                                                                                                                                                                                                 |
 | F14 | The contact form and the report dialog render labelled, required, length-limited fields and empty live regions before anything is announced.                                                                                                                                                                                                                                                                      |
 | F15 | An admin sees the newest messages on `/admin` with run and session ids. A non-admin still gets the existing not-found response.                                                                                                                                                                                                                                                                                   |
@@ -147,3 +147,5 @@ The Rules copy promises that every report is read. It does not say that a wrong 
 - Whether to also email each message to the operators, and how to cap it.
 - Whether the rules should say that an unfair catch can be reported and may count as a win.
 - How long to keep names, emails and messages.
+
+Note added at the merge with `main` on 2026-11-26: `main` gained `035-review-effort.sql` first, so this migration was renumbered from 035 to 036.

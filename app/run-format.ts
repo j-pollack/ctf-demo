@@ -1,11 +1,5 @@
 import { endBanner } from "@/app/run-end";
-import {
-  RUN_BUDGET_MICRODOLLARS,
-  type AgentEffort,
-  type GameStatus,
-  type GameSummary,
-  type PublicGame,
-} from "@/lib/types";
+import { type AgentEffort, type GameStatus, type GameSummary, type PublicGame } from "@/lib/types";
 
 export const label = (model: string) => model.split("/")[1] ?? model;
 export const EFFORT_NAMES: Record<AgentEffort, string> = {
@@ -15,7 +9,12 @@ export const EFFORT_NAMES: Record<AgentEffort, string> = {
 };
 export const number = (value: number) => value.toLocaleString("en-US");
 export const money = (value: number) => `$${(value / 1_000_000).toFixed(4)}`;
-export const RUN_BUDGET = `$${(RUN_BUDGET_MICRODOLLARS / 1_000_000).toFixed(2)}`;
+// Whole dollars print bare and anything else with cents: 10,000,000 is "$10", 500,000 is "$0.50".
+export const dollars = (microdollars: number) => {
+  const value = microdollars / 1_000_000;
+  return `$${Number.isInteger(value) ? value : value.toFixed(2)}`;
+};
+export const newRuns = (count: number) => `${count} new ${count === 1 ? "run" : "runs"}`;
 export const statusLabel: Record<GameStatus, string> = {
   creating: "Starting",
   active: "In progress",

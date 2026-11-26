@@ -3,7 +3,13 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { PoolClient } from "pg";
 import { db } from "./db";
 import { GameError, MODELS } from "./policy";
-import type { AgentEffort, GameStatus, SessionSummary } from "./types";
+import { currentLimits } from "./limits";
+import {
+  sessionLimitRefusal,
+  type AgentEffort,
+  type GameStatus,
+  type SessionSummary,
+} from "./types";
 import type { ReadConfirmation } from "./monitor-evidence";
 import { persistTranscriptEvidence } from "./transcript-evidence";
 import { enqueueMonitorJob } from "./monitor-jobs";
@@ -120,6 +126,15 @@ export async function createSession(
       (await client.query("SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1", [gameId])).rowCount
     )
       throw new GameError("A flag has already been submitted.", 409);
+    const { sessionsPerRun } = await currentLimits(client);
+    const {
+      rows: [{ total }],
+    } = await client.query<{ total: number }>(
+      "SELECT count(*)::int AS total FROM ctf.agent_sessions WHERE game_id=$1",
+      [gameId],
+    );
+    const refusal = sessionLimitRefusal(total, sessionsPerRun);
+    if (refusal) throw new GameError(refusal, 429);
     const { rows: defaults } = await client.query<{
       agent_model: string;
       agent_effort: AgentEffort;

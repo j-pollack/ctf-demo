@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { SECOND_LOOK_PROMPT } from "../../lib/second-look";
 import { streamedCompletion } from "./completion-stream";
 
-export type SecondLookRequest = { kind: string; text: string; at: number };
+export type SecondLookRequest = { kind: string; text: string; effort: unknown; at: number };
 // "clear" and "jailbreak" answer through the tool; "invalid" answers with text and no call; "cut"
 // is cut off at the output limit; a number replies with that HTTP status.
 export type SecondLookBehaviour = "clear" | "jailbreak" | "invalid" | "cut" | number;
@@ -23,6 +23,8 @@ export function createSecondLookFake(issue: (id: string) => void) {
     barrier: 0,
     // Runs just before a request is answered.
     beforeAnswer: undefined as undefined | ((text: string) => Promise<void>),
+    // The reasoning effort every request must carry.
+    effort: "high",
   };
   const reset = () => {
     requests.length = 0;
@@ -31,6 +33,7 @@ export function createSecondLookFake(issue: (id: string) => void) {
     controls.delayMs = 0;
     controls.barrier = 0;
     controls.beforeAnswer = undefined;
+    controls.effort = "high";
   };
   const held = (ms: number, signal?: AbortSignal | null) =>
     new Promise<void>((resolve, reject) => {
@@ -56,7 +59,7 @@ export function createSecondLookFake(issue: (id: string) => void) {
     assert.deepEqual(Object.keys(properties).sort(), ["jailbreak", "reason"]);
     assert.equal(payload.stream, true);
     assert.equal(payload.max_tokens, 2048);
-    assert.equal(payload.reasoning?.effort, "high");
+    assert.equal(payload.reasoning?.effort, controls.effort);
     assert.equal(payload.model, "z-ai/glm-5.3");
     assert.equal(payload.messages.length, 2);
     const [system, user] = payload.messages;
@@ -67,7 +70,12 @@ export function createSecondLookFake(issue: (id: string) => void) {
     assert.ok(["instruction", "system_prompt"].includes(data.kind));
     assert.ok(controls.expected.has(data.text), "Unexpected text under judgment");
     assert.ok(!system.content.includes(data.text), "the text is not part of the instructions");
-    requests.push({ kind: data.kind, text: data.text, at: performance.now() });
+    requests.push({
+      kind: data.kind,
+      text: data.text,
+      effort: payload.reasoning?.effort,
+      at: performance.now(),
+    });
     if (controls.barrier) while (requests.length < controls.barrier) await held(20, options.signal);
     if (controls.delayMs) await held(controls.delayMs, options.signal);
     const behaviour = controls.behave(data.text);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CONTACT, EXPECTED, FAILURES, TOKEN, read, setupFeedbackMail } from "./feedback-mail-setup";
 
-const MIGRATION = "036-feedback-mail.sql";
+const MIGRATION = "037-feedback-mail.sql";
 
 test("feedback mail client and notification", { timeout: 180_000 }, async (t) => {
   const {
@@ -24,16 +24,16 @@ test("feedback mail client and notification", { timeout: 180_000 }, async (t) =>
   const { notifyFeedback, replyToFeedback } = await import("../../lib/feedback-mail");
   const { notificationId } = await import("../../lib/feedback-mail-text");
 
-  await t.test("M15: migration 036 applies twice and setup and runbook name it", async () => {
+  await t.test("M15: migration 037 applies twice and setup and runbook name it", async () => {
     const sql = await read(`../../db/migrations/${MIGRATION}`);
     await pool.query(sql);
     await pool.query(sql);
-    assert.ok(listed.includes(MIGRATION), "setup lists 036");
+    assert.ok(listed.includes(MIGRATION), "setup lists 037");
     assert.ok(
-      listed.indexOf(MIGRATION) === listed.indexOf("035-feedback.sql") + 1,
-      "036 follows 035",
+      listed.indexOf(MIGRATION) === listed.indexOf("036-feedback.sql") + 1,
+      "037 follows 036",
     );
-    assert.match(await read("../../deploy/operations.md"), /036-feedback-mail/);
+    assert.match(await read("../../deploy/operations.md"), /037-feedback-mail/);
   });
 
   const mail = {

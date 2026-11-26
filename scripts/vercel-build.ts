@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { limitEnvProblems } from "../lib/limits";
 
 // Neon `vercel-dev`: the shared Preview/Development database that local dev also uses.
 const SHARED_DATABASE_ENDPOINT = "ep-wild-bird-arrztsd4";
@@ -17,7 +18,31 @@ export function shouldMigrate(env: Record<string, string | undefined>) {
   return true;
 }
 
+// A production or preview deploy needs the twelve limit variables, so a missing one fails the
+// build instead of surfacing as a silent default.
+export function deployEnvProblems(env: Record<string, string | undefined>) {
+  const none = { missing: [], invalid: [] };
+  return env.VERCEL_ENV === "production" || env.VERCEL_ENV === "preview"
+    ? limitEnvProblems(env)
+    : none;
+}
+
+function assertDeployEnv(env: Record<string, string | undefined>) {
+  const { missing, invalid } = deployEnvProblems(env);
+  if (!missing.length && !invalid.length) return;
+  throw new Error(
+    [
+      missing.length && `Missing limit variables: ${missing.join(", ")}.`,
+      invalid.length && `Invalid limit variables: ${invalid.join(", ")}.`,
+      "Set them in Vercel for this environment, see .env.example for the allowed values.",
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
 if (import.meta.main) {
+  assertDeployEnv(process.env);
   if (shouldMigrate(process.env))
     execFileSync(process.execPath, ["--import", "tsx", "scripts/setup.ts"], { stdio: "inherit" });
   execFileSync("npm", ["run", "build"], { stdio: "inherit" });

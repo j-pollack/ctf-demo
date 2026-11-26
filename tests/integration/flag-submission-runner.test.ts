@@ -64,6 +64,7 @@ await test(
       "migrations/031-monitor-routing.sql",
       "migrations/032-second-look.sql",
       "migrations/034-investigator-requests.sql",
+      "migrations/035-review-effort.sql",
     ])
       await pool.query(await readFile(new URL(`../../db/${file}`, import.meta.url), "utf8"));
 

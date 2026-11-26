@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { shouldMigrate } from "../scripts/vercel-build";
+import { spawnSync } from "node:child_process";
+import { LIMITS, limitEnvName } from "../lib/limits";
+import { deployEnvProblems, shouldMigrate } from "../scripts/vercel-build";
 
 const own = "postgres://u:p@ep-own-branch-123.c-4.us-west-2.aws.neon.tech/neondb";
 const shared = "postgres://u:p@ep-wild-bird-arrztsd4.c-4.us-west-2.aws.neon.tech/neondb";
@@ -30,4 +32,47 @@ test("only previews on their own Neon branch migrate at build", () => {
     /shared vercel-dev/,
   );
   assert.throws(() => shouldMigrate({ VERCEL_ENV: "preview" }), /no database URL/);
+});
+
+const limitEnv = (): Record<string, string> =>
+  Object.fromEntries(LIMITS.map((limit) => [limitEnvName(limit.key), String(limit.default)]));
+
+test("only a production or preview deploy checks the twelve variables", () => {
+  const none = { missing: [], invalid: [] };
+  assert.deepEqual(deployEnvProblems({}), none);
+  assert.deepEqual(deployEnvProblems({ VERCEL_ENV: "development" }), none);
+  for (const VERCEL_ENV of ["production", "preview"]) {
+    assert.equal(deployEnvProblems({ VERCEL_ENV }).missing.length, 12, VERCEL_ENV);
+    assert.deepEqual(deployEnvProblems({ VERCEL_ENV, ...limitEnv() }), none, VERCEL_ENV);
+    assert.deepEqual(
+      deployEnvProblems({ VERCEL_ENV, ...limitEnv(), CTF_AGENT_EFFORT: "max" }).invalid,
+      ["CTF_AGENT_EFFORT"],
+    );
+  }
+});
+
+// A clean environment, so neither this shell nor the worktree's .env.local leaks in.
+const build = (env: Record<string, string>) =>
+  spawnSync(process.execPath, ["--import", "tsx", "scripts/vercel-build.ts"], {
+    cwd: new URL("..", import.meta.url),
+    env: { PATH: process.env.PATH ?? "", NODE_ENV: "test", ...env },
+    encoding: "utf8",
+  });
+
+test("the build script names every missing and invalid variable before it does anything else", () => {
+  const env: Record<string, string> = { ...limitEnv(), VERCEL_ENV: "preview" };
+  delete env.CTF_RUNS_PER_DAY;
+  env.CTF_ENVIRONMENTS_OPEN = "0";
+  const result = build(env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /CTF_RUNS_PER_DAY/);
+  assert.match(result.stderr, /CTF_ENVIRONMENTS_OPEN/);
+  assert.doesNotMatch(result.stderr, /no database URL/);
+});
+
+test("with all twelve valid the build script goes on to the database check", () => {
+  const result = build({ ...limitEnv(), VERCEL_ENV: "preview" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Preview has no database URL/);
+  assert.doesNotMatch(result.stderr, /CTF_/);
 });

@@ -13,7 +13,7 @@ const adminUrl = new URL(base);
 adminUrl.pathname = "/postgres";
 
 const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
-const MIGRATION = "035-feedback.sql";
+const MIGRATION = "036-feedback.sql";
 
 test("feedback messages and run reports", { timeout: 120_000 }, async (t) => {
   const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
@@ -46,16 +46,16 @@ test("feedback messages and run reports", { timeout: 120_000 }, async (t) => {
   await (await getMigrations(auth.options)).runMigrations();
   for (const file of afterAuth) await pool.query(await read(`../../db/migrations/${file}`));
 
-  await t.test("F12: migration 035 applies twice and setup and runbook name it", async () => {
+  await t.test("F12: migration 036 applies twice and setup and runbook name it", async () => {
     const sql = await read(`../../db/migrations/${MIGRATION}`);
     await pool.query(sql);
     await pool.query(sql);
-    assert.ok(listed.includes(MIGRATION), "setup lists 035");
+    assert.ok(listed.includes(MIGRATION), "setup lists 036");
     assert.ok(
       setup.indexOf(MIGRATION) < setup.indexOf("runMigrations()"),
-      "035 is a game migration and runs before Better Auth",
+      "036 is a game migration and runs before Better Auth",
     );
-    assert.match(await read("../../deploy/operations.md"), /035-feedback/);
+    assert.match(await read("../../deploy/operations.md"), /036-feedback/);
   });
 
   // The only external boundary is Resend, and this feature sends no email.

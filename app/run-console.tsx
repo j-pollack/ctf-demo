@@ -50,6 +50,8 @@ export type RunConsoleProps = {
   // Sessions with a local stream that Stop can abort.
   streamingIds: string[];
   creatingSession: boolean;
+  // Sessions a run may have, for the Add session control.
+  sessionLimit?: number;
   // The ordinal a session being created will get; its placeholder id is in `shownIds`.
   pendingOrdinal: number | null;
   newRunDisabled: boolean;
@@ -257,6 +259,7 @@ export function RunConsole(props: RunConsoleProps) {
             }}
             onCreate={props.onCreateSession}
             creating={props.creatingSession}
+            sessionLimit={props.sessionLimit}
             pendingOrdinal={props.pendingOrdinal}
           />
         }

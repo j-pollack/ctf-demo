@@ -79,3 +79,27 @@ test("Add session sits outside the scrolling chips and only when a session can b
   assert.match(render({ creating: true }), /class="session-add"[^>]*aria-disabled="true"/);
   assert.doesNotMatch(render({ onCreate: undefined }), /session-add/);
 });
+
+test("Add session is enabled below the run's session limit and disabled with the reason at it", () => {
+  const add = (html: string) => html.match(/<button type="button" class="session-add"[^>]*>/)![0];
+  const below = add(render({ sessionLimit: 5 }));
+  assert.doesNotMatch(below, /aria-disabled|title=/);
+  assert.match(add(render({ sessionLimit: undefined })), /aria-label="Add session"/);
+  for (const sessionLimit of [4, 3]) {
+    const at = add(render({ sessionLimit }));
+    assert.match(at, /aria-disabled="true"/);
+    assert.match(at, /title="This run has the maximum number of sessions\. You cannot add more\."/);
+    assert.doesNotMatch(
+      at,
+      / disabled=""/,
+      "it is not natively disabled, so it stays focusable and a click can explain",
+    );
+  }
+  const single = add(
+    render({ sessions: [session(1)], sessionLimit: 1, shownIds: [], focusedId: "session-1" }),
+  );
+  assert.match(
+    single,
+    /title="This run has the maximum number of sessions\. You cannot add more\."/,
+  );
+});

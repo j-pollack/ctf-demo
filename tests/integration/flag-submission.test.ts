@@ -131,6 +131,9 @@ test(
         "utf8",
       ),
     );
+    await pool.query(
+      await readFile(new URL("../../db/migrations/035-review-effort.sql", import.meta.url), "utf8"),
+    );
     const legacy = (
       await pool.query(
         `SELECT submission_transport,messages,tokens_used,blocks,reserved_microdollars

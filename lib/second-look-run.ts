@@ -23,6 +23,7 @@ import {
   SYSTEM_PROMPT_QUESTION_SET,
 } from "./text-screen";
 import type { Message } from "@earendil-works/pi-ai";
+import type { AgentEffort } from "./types";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const log = (event: string, fields: Record<string, unknown>) =>
@@ -114,6 +115,8 @@ export async function runSecondLooks(input: {
   signal: AbortSignal;
   deadlineMs: number;
   streamIdleMs?: number;
+  // The investigator's effort. Defaults to the constant.
+  effort?: AgentEffort;
   // Screened texts to judge instead of the session's instructions, such as decoded layers.
   texts?: readonly string[];
 }): Promise<SecondLooks> {
@@ -157,7 +160,7 @@ export async function runSecondLooks(input: {
           role: "monitor",
           sessionId: claim.sessionId,
           reviewId,
-          effort: INVESTIGATOR_EFFORT,
+          effort: input.effort ?? INVESTIGATOR_EFFORT,
           maxOutputTokens: SECOND_LOOK_OUTPUT_TOKENS,
           stage: "second_look",
           jobClaim: claim,

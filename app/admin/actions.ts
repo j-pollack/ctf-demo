@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { changeAgentModel } from "@/lib/agent-model";
 import { replyToFeedback, setFeedbackClosed } from "@/lib/feedback-mail";
 import { changeGameRule } from "@/lib/game-rules-admin";
+import { changeLimit } from "@/lib/limits-admin";
 import { GameError } from "@/lib/policy";
 
 // A GameError is a refusal the caller can see; anything else is a failure worth a log line.
@@ -37,6 +38,25 @@ export async function setGameRule(formData: FormData) {
   } catch (error) {
     logUnexpected("game_rule_change_failed", error);
   }
+  revalidatePath("/admin");
+  redirect("/admin");
+}
+
+export async function setLimit(formData: FormData) {
+  let refused = false;
+  try {
+    await changeLimit(await headers(), formData.get("key"), formData.get("value"));
+  } catch (error) {
+    refused = true;
+    if (!(error instanceof GameError))
+      console.error(
+        JSON.stringify({
+          event: "limit_change_failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  }
+  if (refused) redirect("/admin?limit=refused");
   revalidatePath("/admin");
   redirect("/admin");
 }

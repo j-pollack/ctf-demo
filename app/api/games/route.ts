@@ -1,3 +1,4 @@
+import { currentLimits } from "@/lib/limits";
 import { currentAgentModel } from "@/lib/agent-model";
 import { db } from "@/lib/db";
 import {
@@ -37,7 +38,11 @@ export async function POST(request: Request) {
     // Every capture can reach the leaderboard, so a run needs a name to show there.
     if (!user.displayName) throw new GameError(NAME_REQUIRED, 403);
     const data = await body(request);
-    const agent = publicAgentSettings(data, await currentAgentModel());
+    const agent = publicAgentSettings(
+      data,
+      await currentAgentModel(),
+      (await currentLimits()).agentEffort,
+    );
     return Response.json(
       await startGame(user.id, agent.agentModel, {
         monitorReasoning: data.monitorReasoning,

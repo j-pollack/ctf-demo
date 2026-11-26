@@ -1,8 +1,8 @@
 "use client";
 import React from "react";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@ui-sdk/react/dialog";
-import { REVIEW_WILL_RETRY_TEXT } from "@/app/run-format";
-import { RUNS_PER_DAY, type GameStatus } from "@/lib/types";
+import { newRuns, REVIEW_WILL_RETRY_TEXT } from "@/app/run-format";
+import type { GameStatus, PlayerLimits } from "@/lib/types";
 
 export { DialogTitle } from "@ui-sdk/react/dialog";
 
@@ -41,9 +41,12 @@ export function RunDialog({
 
 // New runs left under the limit on starts in the last 24 hours. Null is an admin with no limit;
 // undefined is not known yet.
-export function runsLeftText(runsLeft: number | null | undefined): string | null {
+export function runsLeftText(
+  runsLeft: number | null | undefined,
+  runsPerDay: number,
+): string | null {
   if (runsLeft === null || runsLeft === undefined) return null;
-  if (runsLeft <= 0) return `You have started ${RUNS_PER_DAY} new runs in the last 24 hours.`;
+  if (runsLeft <= 0) return `You have started ${newRuns(runsPerDay)} in the last 24 hours.`;
   return `You can start ${runsLeft} more ${runsLeft === 1 ? "run" : "runs"} now.`;
 }
 
@@ -52,14 +55,16 @@ export function RunSetupNotes({
   grading = false,
   runsLeft,
   unusedRun,
+  limits,
 }: {
   endsCurrent: boolean;
   // The current run holds an upload that is waiting to be graded, so a new run is refused.
   grading?: boolean;
   runsLeft: number | null | undefined;
   unusedRun: boolean;
+  limits: PlayerLimits;
 }) {
-  const left = runsLeftText(runsLeft);
+  const left = runsLeftText(runsLeft, limits.runsPerDay);
   return (
     <>
       {grading ? (

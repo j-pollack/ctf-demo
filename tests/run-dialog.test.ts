@@ -10,6 +10,7 @@ import {
   RunSetupNotes,
   runsLeftText,
 } from "../app/run-dialog";
+import { DEFAULT_LIMITS, playerLimits } from "../lib/limits";
 
 const render = (open: boolean, busy: boolean) =>
   renderToStaticMarkup(
@@ -36,33 +37,74 @@ test("the close button is disabled while a run-level action is busy, and nothing
 });
 
 test("the dialog says how many new runs are left under the limit on the last 24 hours", () => {
-  assert.equal(runsLeftText(3), "You can start 3 more runs now.");
-  assert.equal(runsLeftText(1), "You can start 1 more run now.");
-  assert.equal(runsLeftText(0), "You have started 3 new runs in the last 24 hours.");
-  assert.equal(runsLeftText(null), null, "an admin has no daily limit to report");
-  assert.equal(runsLeftText(undefined), null, "nothing is claimed before the count is known");
+  assert.equal(runsLeftText(3, 3), "You can start 3 more runs now.");
+  assert.equal(runsLeftText(1, 3), "You can start 1 more run now.");
+  assert.equal(runsLeftText(0, 3), "You have started 3 new runs in the last 24 hours.");
+  assert.equal(runsLeftText(0, 1), "You have started 1 new run in the last 24 hours.");
+  assert.equal(runsLeftText(null, 3), null, "an admin has no daily limit to report");
+  assert.equal(runsLeftText(undefined, 3), null, "nothing is claimed before the count is known");
 });
 
 test("the setup notes say what starting ends and what is left, and nothing else", () => {
   const notes = (props: Parameters<typeof RunSetupNotes>[0]) =>
     renderToStaticMarkup(createElement(RunSetupNotes, props));
   assert.equal(
-    notes({ endsCurrent: true, runsLeft: 1, unusedRun: false }),
+    notes({
+      endsCurrent: true,
+      runsLeft: 1,
+      unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     "<p>Starting a new run ends your current one.</p><p>You can start 1 more run now.</p>",
   );
   assert.equal(
-    notes({ endsCurrent: false, runsLeft: 0, unusedRun: false }),
+    notes({
+      endsCurrent: false,
+      runsLeft: 0,
+      unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     "<p>You have started 3 new runs in the last 24 hours.</p>",
   );
-  assert.equal(notes({ endsCurrent: false, runsLeft: undefined, unusedRun: false }), "");
+  assert.equal(
+    notes({
+      endsCurrent: false,
+      runsLeft: undefined,
+      unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
+    "",
+  );
   assert.match(
-    notes({ endsCurrent: true, runsLeft: 2, unusedRun: true }),
+    notes({
+      endsCurrent: true,
+      runsLeft: 2,
+      unusedRun: true,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     /You already have an unused run\. Send it an instruction first\./,
   );
   assert.doesNotMatch(
-    notes({ endsCurrent: true, runsLeft: 2, unusedRun: false }),
+    notes({
+      endsCurrent: true,
+      runsLeft: 2,
+      unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     /budget|investigator|difficulty/i,
   );
+});
+
+test("the setup notes name the stored runs per member limit", () => {
+  const html = renderToStaticMarkup(
+    createElement(RunSetupNotes, {
+      endsCurrent: false,
+      runsLeft: 0,
+      unusedRun: false,
+      limits: { ...DEFAULT_LIMITS, runsPerDay: 1 },
+    }),
+  );
+  assert.equal(html, "<p>You have started 1 new run in the last 24 hours.</p>");
 });
 
 test("a run waiting to be graded says so instead of promising it ends the run", () => {
@@ -72,6 +114,7 @@ test("a run waiting to be graded says so instead of promising it ends the run", 
       grading: true,
       runsLeft: 2,
       unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   );
   assert.match(

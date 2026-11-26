@@ -8,6 +8,7 @@ import { Entry, groupTurns } from "../app/transcript";
 import { MonitorSawPanel, parseMonitorView, ROUTE_TEXT, scoreBand } from "../app/monitor-saw";
 import * as UI from "../app/game-ui";
 import LandingContent from "../app/landing-content";
+import { DEFAULT_LIMITS, playerLimits } from "../lib/limits";
 import type { GameEvent, GameStatus, MonitorView, PublicGame } from "../lib/types";
 import { run, session, transcript } from "./fixtures/console-runs";
 
@@ -71,6 +72,7 @@ test("A3: the rules and landing pages drop the risk score and the rules describe
     renderToStaticMarkup(
       createElement(UI.RulesPanel, {
         rules: { monitorIsolation: false, bugFixRequired: true, jailbreakCatch },
+        limits: playerLimits(DEFAULT_LIMITS),
       }),
     );
   for (const jailbreakCatch of [false, true]) {
@@ -84,6 +86,7 @@ test("A3: the rules and landing pages drop the risk score and the rules describe
     createElement(LandingContent, {
       submissionUrl: null,
       rules: { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false },
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   );
   assert.doesNotMatch(landing, /risk/i);
