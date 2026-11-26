@@ -120,6 +120,18 @@ CREATE INDEX IF NOT EXISTS feedback_created ON ctf.feedback(created_at DESC);
 
 The independent review found no P0 or P1 and two P2 findings. Requests sent at once could pass the limits, and the confirmation replaced the form, which loses keyboard focus and is announced unreliably. Both were corrected in one cycle: the advisory lock and the always-present status region described above. The lead's browser recheck then showed focus still dropping to the page body, because the send button was disabled while busy. The button now uses `aria-disabled`. After that change a keyboard-only send left focus on the send button in both forms, with the status text present and the fields cleared. The re-review asked whether the parallel test proves the lock. With the lock line removed the test failed three runs of three with all eight messages admitted, and with it restored it passed three of three. Before the correction this contract's design text and F14 disagreed about the status region.
 
+## Changes after the owner's review
+
+The owner asked for three changes on 2026-11-26. They are in the second commit.
+
+| ID  | Given, when, then                                                                                                                                      | Check                                                                                                                                                                                                                               |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F18 | Given a page shorter than the screen, when it renders, then the footer sits at the bottom edge of the screen. On a longer page it follows the content. | Browser, at 1280 by 900 and 390 by 844: the footer's bottom edge equals the screen's bottom edge on Rank and My Runs, and on Contact at 1280 by 1100. On Rules and the landing page it is reached at the end of the scroll. Passed. |
+| F19 | The Rules page says how to report a wrong catch and asks for feedback with a link to Contact.                                                          | `tests/site-footer.test.ts`. Passed.                                                                                                                                                                                                |
+| F20 | A caught run's outcome strip ends with one line pointing at Report. A won run has no such line.                                                        | `tests/run-console.test.ts` and `tests/transcript.test.ts`. Passed.                                                                                                                                                                 |
+
+The Rules copy promises that every report is read. It does not say that a wrong catch counts as a win. These three changes were made by the lead and were not sent back to the independent reviewer.
+
 ## Deviations and limits
 
 - The length limits live in `lib/feedback-limits.ts`, so the client forms can import them without pulling `pg` into the browser bundle.

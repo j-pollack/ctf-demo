@@ -31,3 +31,16 @@ test("F13: the footer links to the author, the source and the contact page", () 
     assert.equal(html.split("<footer").length, 2, `${path} renders one footer`);
   }
 });
+
+test("the rules say how to report a wrong catch and ask for feedback", () => {
+  const html = renderToStaticMarkup(pages["/rules"]());
+  const body = html.replace(/<footer[\s\S]*<\/footer>/, "");
+  assert.match(
+    body,
+    /If you think the monitor got a run wrong, or something is broken, press <strong>Report<\/strong> in that run\. The run goes with your report, and we read every one\./,
+  );
+  assert.match(
+    body,
+    /We want to hear what you think of the game\. <a class="link" href="\/contact">Tell us<\/a>\./,
+  );
+});

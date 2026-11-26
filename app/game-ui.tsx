@@ -2083,6 +2083,17 @@ export function RulesPanel({
           </dl>
         </section>
       </div>
+      <p>
+        If you think the monitor got a run wrong, or something is broken, press{" "}
+        <strong>Report</strong> in that run. The run goes with your report, and we read every one.
+      </p>
+      <p>
+        We want to hear what you think of the game.{" "}
+        <a className="link" href="/contact">
+          Tell us
+        </a>
+        .
+      </p>
       <p>Nobody may have won yet.</p>
       <SiteFooter />
     </main>

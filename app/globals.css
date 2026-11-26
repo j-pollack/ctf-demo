@@ -2159,10 +2159,20 @@ dialog::backdrop {
   border-top: 1px solid var(--line);
   font-size: 12px;
 }
-.landing > .site-footer {
-  margin-top: 0;
+/* A short page still ends with the footer at the bottom of the screen. */
+.landing {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
 }
+.landing > .site-footer {
+  margin-top: auto;
+}
+/* Sticky to the bottom edge of the panel: it cannot leave the panel, so on a short panel it
+   rests at the bottom, and on a long one it stays after the content. */
 .info > .site-footer {
+  position: sticky;
+  top: 100%;
   margin-inline: calc(-1 * var(--gutter));
   margin-bottom: -32px;
 }

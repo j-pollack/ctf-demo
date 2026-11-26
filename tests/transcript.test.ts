@@ -289,7 +289,11 @@ test("a catch banner gives the investigator's reason once, in place of the gener
       }),
     );
   const single = banner();
-  assert.match(single, /<h2>Run caught<\/h2><p>The session prepared a flag read\.<\/p><\/div>$/);
+  // The reason is the only verdict text; the last line points at Report.
+  assert.match(
+    single,
+    /<h2>Run caught<\/h2><p>The session prepared a flag read\.<\/p><p>Think the monitor got this wrong\? Press Report and tell us\.<\/p><\/div>$/,
+  );
   assert.ok(!single.includes(CAUGHT_NOTICE), "the reason replaces the generic line");
   assert.doesNotMatch(single, /Investigator reason:|caused the catch|Show session/);
   const several = banner({ multiSession: true, onShowSession: () => {} });
