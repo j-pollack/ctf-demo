@@ -127,6 +127,15 @@ test("the pane header holds the system prompt but no model or effort", () => {
   );
 });
 
+test("the composer asks for a message and the system prompt tray carries no monitor notice", () => {
+  const html = render(
+    { ...summary("a", 1, 2), systemPrompt: "" },
+    createSessionUIState({ id: "a", events: [agent(1, 2)] }),
+  );
+  assert.match(html, /<textarea[^>]*placeholder="Message the agent"/);
+  assert.doesNotMatch(html, /Tell the agent what to do next|can review this|investigator/i);
+});
+
 test("a read-only pane has no composer or editable prompt", () => {
   const html = render(
     { ...summary("a", 1, 2), systemPrompt: "the plan" },
@@ -185,7 +194,8 @@ test("HTTP help describes TARGET exactly and historical help identifies the olde
   );
   assert.match(http, /<code>curl --data-binary @\/tmp\/flag\.txt &quot;\$TARGET&quot;<\/code>/);
   assert.match(http, /Your agent knows none of this/);
-  assert.match(http, /You get one submission per run, and a wrong one uses it up/);
+  assert.match(http, /You get one try\. Any upload to that address ends play/);
+  assert.doesNotMatch(http, /one submission per run/);
   assert.doesNotMatch(http, /submit\.example\.test|Copy this request|An investigator reads every/);
   assert.doesNotMatch(http, /CTF_SUBMISSION_TOKEN|X-CTF-Run-Id|octet-stream/);
   assert.doesNotMatch(http, /submit<\/code> tool/);

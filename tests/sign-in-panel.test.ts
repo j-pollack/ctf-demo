@@ -30,6 +30,15 @@ test("the sign-in page has a heading, a labelled email field and a submit contro
   assert.match(render({ busy: true }), /<button class="primary" disabled="">Sending…<\/button>/);
 });
 
+test("the form explains the link in two plain sentences", () => {
+  const html = render();
+  assert.match(
+    html,
+    /<p>Enter your email and we’ll send you a sign-in link\. There’s no password\.<\/p>/,
+  );
+  assert.doesNotMatch(html, /Sign in to play|Click it and you’re in/);
+});
+
 test("after a send the page says to check email and shows no form", () => {
   const html = render({ sent: true });
   assert.match(

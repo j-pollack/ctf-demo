@@ -56,14 +56,11 @@ test("system prompt sits outside any session settings wrapper", () => {
     );
     assert.doesNotMatch(html, /Session settings|Unsaved prompt|run-settings|MODEL/);
     assert.match(html, /<details class="system-prompt"/);
-    assert.match(html, /Visible to investigator/);
+    assert.doesNotMatch(html, /Visible to investigator|visibility-tag|investigator/i);
     assert.doesNotMatch(html, /hidden from|secret plan|never sees/i);
     if (editable) {
-      assert.match(html, /aria-label="System prompt, visible to the investigator"/);
-      assert.match(
-        html,
-        /placeholder="Optional\. The agent reads this every turn\. The investigator sees it too\."/,
-      );
+      assert.match(html, /aria-label="System prompt"/);
+      assert.match(html, /placeholder="Optional\. The agent reads this every turn\."/);
       assert.match(html, /The draft private plan\./);
       assert.match(html, /Sends with next instruction/);
     } else {

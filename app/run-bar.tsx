@@ -28,7 +28,9 @@ const outcomeBand: Partial<Record<GameStatus, string>> = {
 function runStatusText(game: PublicGame) {
   if (game.status !== "active") return statusLabel[game.status];
   if (game.monitorMode !== "async") return statusLabel.active;
-  return game.monitor ? monitorStatusLabel[game.monitor.status] : MONITOR_STATUS_LOADING;
+  return game.monitor
+    ? monitorStatusLabel(game.monitor.status, game.sessions)
+    : MONITOR_STATUS_LOADING;
 }
 
 export function RunBar({
@@ -42,6 +44,7 @@ export function RunBar({
   onToggleDetails,
   onNewRun,
 }: RunBarProps) {
+  const active = game.status === "active";
   const allowance = game.budgetMicrodollars,
     left = Math.max(0, allowance - game.spentMicrodollars - game.reservedMicrodollars);
   return (
@@ -65,17 +68,23 @@ export function RunBar({
           </Meter>
           <span className="run-total">of {money(allowance)}</span>
           {!!game.reservedMicrodollars && (
-            <small className="run-pending">{money(game.reservedMicrodollars)} pending</small>
+            <small
+              className="run-pending"
+              title="Set aside for model calls that have not finished."
+            >
+              {money(game.reservedMicrodollars)} held
+            </small>
           )}
         </span>
+        {active && <span className="run-status">{runStatusText(game)}</span>}
+        {/* An active run's label changes with every review, so it sits outside this region. The
+            region stays in the page, empty, so the outcome is announced when it arrives. */}
         <span
-          className="run-status"
+          className={active ? undefined : "run-status"}
           role="status"
           data-band={outcomeBand[game.status]}
-          // An active run's investigator status also lives in the inspector; narrow bars drop it.
-          data-active={game.status === "active" || undefined}
         >
-          {runStatusText(game)}
+          {active ? null : runStatusText(game)}
         </span>
       </div>
       {sessions}

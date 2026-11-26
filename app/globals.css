@@ -129,8 +129,18 @@ strong {
 .wordmark span {
   color: #557b1d;
 }
-.brand-short {
+.brand-short,
+.nav-short {
   display: none;
+}
+/* "How to play" gives way to "How to" where the nav would overflow. */
+@media (max-width: 359px) {
+  .nav-full {
+    display: none;
+  }
+  .nav-short {
+    display: inline;
+  }
 }
 .top nav {
   display: flex;
@@ -240,11 +250,6 @@ strong {
   .account-trigger::after {
     transition: none;
   }
-}
-.eyebrow {
-  font-size: 10px;
-  letter-spacing: 1.4px;
-  color: var(--muted);
 }
 i {
   display: inline-block;
@@ -501,17 +506,29 @@ form label {
   }
 }
 .spend-breakdown {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
+  display: grid;
+  gap: 2px;
   font-size: 11px;
 }
 .spend-breakdown p {
   display: flex;
+  justify-content: space-between;
   gap: 6px;
 }
 .spend-breakdown p + p {
   margin-top: 0;
+}
+.spend-breakdown .spend-total {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  font-weight: 600;
+}
+.spend-monitor {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 8px 0 0;
 }
 /* What the monitor saw: each session's reviews as a numbered timeline, then what crossed a
    threshold. The caught review's marker takes the blocked colour. */
@@ -524,28 +541,15 @@ form label {
 .saw-footer {
   font-size: 11px;
 }
-.monitor-saw h4 {
-  margin: 18px 0 8px;
-  font-size: 12px;
+.saw-session {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
-.monitor-saw h5 {
-  margin: 12px 0 2px;
-  font-size: 11px;
+.saw-session > summary {
+  cursor: pointer;
+  font-size: 14px;
   font-weight: 600;
-}
-.route-legend {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 2px 10px;
-  margin: 10px 0 0;
-  font-size: 11px;
-}
-.route-legend dt {
-  font-weight: 600;
-}
-.route-legend dd {
-  margin: 0;
-  color: var(--muted);
 }
 .review-timeline {
   position: relative;
@@ -757,7 +761,7 @@ form label {
 .info li {
   padding: 0 0 18px 10px;
 }
-.info > p:not(.eyebrow) {
+.info > p {
   margin-top: 16px;
 }
 @media (max-width: 720px) {
@@ -911,9 +915,6 @@ dialog::backdrop {
 .dialog-content .error {
   font-size: 12px;
   margin: 18px 0 0;
-}
-.dialog-content .eyebrow {
-  padding-right: 24px;
 }
 /* The sign-in page: one readable column at the shared gutter. */
 .sign-in-form,
@@ -1588,6 +1589,14 @@ dialog::backdrop {
 .run-stats > * {
   white-space: nowrap;
 }
+/* The empty status region adds no gap beside the visible label. */
+.run-stats > [role="status"]:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
 .run-id strong {
   letter-spacing: 0.5px;
 }
@@ -1921,17 +1930,6 @@ dialog::backdrop {
 .system-prompt[open] summary::before {
   content: "−" / "";
 }
-.visibility-tag {
-  padding: 2px 6px;
-  background: var(--ink);
-  color: var(--accent);
-  font-size: 10px;
-  white-space: nowrap;
-}
-.system-prompt-tray > .visibility-tag {
-  display: inline-block;
-  margin: 8px 12px;
-}
 .unsaved {
   color: #426f30;
   font-size: 10px;
@@ -1992,6 +1990,32 @@ dialog::backdrop {
   margin: 0;
   font-size: 13px;
 }
+/* Run details type: section headings 15px, session summaries 14px, list labels 12px, text 13px. */
+.inspector h3 {
+  font-size: 15px;
+}
+.inspector h4 {
+  margin: 12px 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.inspector
+  :is(
+    section > small,
+    section > p,
+    .run-model,
+    .spend-breakdown,
+    .receipt,
+    .saw-note,
+    .saw-item,
+    .review-timeline li
+  ) {
+  font-size: 13px;
+}
+.inspector .saw-footer {
+  font-size: 12px;
+}
 .inspector > section {
   margin-top: 12px;
   padding-top: 12px;
@@ -2019,7 +2043,6 @@ dialog::backdrop {
 .inspector .run-model {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 12px;
   overflow-wrap: anywhere;
 }
 /* One row needs the stats, about four chips with Add session, and the actions side by side. */
@@ -2055,8 +2078,7 @@ dialog::backdrop {
     column-gap: 8px;
   }
   .run-meter,
-  .run-total,
-  .run-status[data-active] {
+  .run-total {
     display: none;
   }
   .add-label {
@@ -2259,19 +2281,7 @@ main.rules {
   }
 }
 :is(.landing-main, main.rules)
-  :is(
-    h2,
-    h3,
-    .eyebrow,
-    .rules-nav,
-    .landing-play,
-    .site-footer,
-    button,
-    input,
-    textarea,
-    select,
-    code
-  ) {
+  :is(h2, h3, h4, .rules-nav, .landing-play, .site-footer, button, input, textarea, select, code) {
   font-family: var(--font-mono);
 }
 :is(.landing-main, main.rules) code {
@@ -2331,12 +2341,16 @@ main.rules section h3 {
   font-size: 1.25em;
   margin: 0;
 }
+main.rules section h4 {
+  font-size: 1em;
+  margin: 24px 0 0;
+}
+main.rules section h4 + p {
+  margin-top: 4px;
+}
 main.rules summary {
   cursor: pointer;
   font-weight: 600;
-}
-main.rules .eyebrow {
-  font-size: 12px;
 }
 main.rules .rules-table tbody th {
   font-size: 14px;
@@ -2422,10 +2436,4 @@ main.rules .link {
 }
 .app:is(:has(> .workspace > main.info), .framed) main.info {
   overflow: visible;
-}
-/* The closing notes are set off from the last section the way sections are from each other. */
-.rules-sections > section + p {
-  border-top: 1px solid var(--line);
-  margin-top: 40px;
-  padding-top: 24px;
 }

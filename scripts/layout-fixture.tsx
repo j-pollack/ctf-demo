@@ -115,9 +115,8 @@ const INFO_PAGES: Record<string, { nav: string; body: React.ReactNode }> = {
     nav: "history",
     body: (
       <main className="info run-history">
-        <p className="eyebrow">PRIVATE TO YOUR ACCOUNT</p>
         <h2>My runs</h2>
-        <p className="empty">Your runs are saved to your account.</p>
+        <p className="empty">Only you can see your runs.</p>
         <div className="run-list">
           {RUNS.map((run) => (
             <RunHistoryRow key={run.id} run={run} onOpen={noop} />
@@ -130,9 +129,8 @@ const INFO_PAGES: Record<string, { nav: string; body: React.ReactNode }> = {
     nav: "history",
     body: (
       <main className="info run-history">
-        <p className="eyebrow">PRIVATE TO YOUR ACCOUNT</p>
         <h2>My runs</h2>
-        <p className="empty">Your runs are saved to your account.</p>
+        <p className="empty">Only you can see your runs.</p>
         <div role="alert" className="error">
           Could not load your runs.
           <button className="link">Retry</button>
