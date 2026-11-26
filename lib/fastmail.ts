@@ -87,10 +87,12 @@ async function invoke(session: Session, token: string, calls: Call[]) {
   if (!Array.isArray(body?.methodResponses))
     throw new FastmailError("Fastmail answered without method responses.");
   // A call can have more than one response under its id: a submission with onSuccessUpdateEmail is
-  // followed by an implicit Email/set. Only the response named after the call, or its error, counts.
+  // followed by an implicit Email/set. The call's own response or error comes first and is the one
+  // that counts, so a later error from the implicit step cannot undo a send that succeeded.
   const named = new Map(calls.map(([name, , callId]) => [callId, name]));
   const results: Record<string, Json> = {};
   for (const [name, result, callId] of body.methodResponses) {
+    if (callId in results) continue;
     if (name === "error")
       results[callId] = new FastmailError(`Fastmail method error ${result?.type}.`);
     else if (name === named.get(callId)) results[callId] = result;

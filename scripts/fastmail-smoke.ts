@@ -8,11 +8,11 @@
 // The outside address must not be on this Fastmail account: a reply from inside it also has a
 // copy in Sent, so it would look like ours.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { isSafeAddress, sendMail } from "../lib/fastmail";
-import { notificationId, replyBody } from "../lib/feedback-mail-text";
+import { NOTIFICATION_MARK, notificationId, replyBody } from "../lib/feedback-mail-text";
 
 const SUBJECT = "[CTF] Smoke check";
-const PREFIX = "feedback-smoke-";
 const token = process.env.FASTMAIL_API_TOKEN;
 const contact = process.env.CONTACT_EMAIL;
 assert.ok(token && contact, "Set FASTMAIL_API_TOKEN and CONTACT_EMAIL in .env.local.");
@@ -44,7 +44,8 @@ async function send(outside: string | undefined) {
     contact!.toLowerCase(),
     "The outside address must not be the contact address.",
   );
-  const messageId = notificationId(`smoke-${Date.now()}`, contact!);
+  // A random row id, so the Message-ID has the length a real notification's has.
+  const messageId = notificationId(randomUUID(), contact!);
   const note = await sendMail({
     to: contact!,
     replyTo: outside,
@@ -88,7 +89,7 @@ async function read(threadId: string | undefined) {
   const inRole = (email: any, wanted: string) =>
     Object.keys(email.mailboxIds).some((box) => role.get(box) === wanted);
   const emails: any[] = results.e?.list ?? [];
-  const notification = (email: any) => String(email.messageId?.[0]).startsWith(PREFIX);
+  const notification = (email: any) => String(email.messageId?.[0]).startsWith(NOTIFICATION_MARK);
   const fromContact = (email: any) => email.from?.[0]?.email === contact;
   assert.ok(
     emails.some((email) => notification(email) && inRole(email, "inbox")),

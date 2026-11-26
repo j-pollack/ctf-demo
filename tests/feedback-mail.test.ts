@@ -8,6 +8,7 @@ import {
 } from "../lib/feedback-mail-text";
 
 const GAME = "11111111-2222-4333-8444-555555555555";
+const ROW = "0f8fad5b-d9cb-469f-a165-70867728950e";
 const mail = (messageId: string | null, sent: boolean) => ({
   messageId,
   from: "x@example.com",
@@ -32,25 +33,31 @@ test("the report subject names the kind and the first eight characters of the ru
   );
 });
 
-test("the notification's Message-ID is derived from the row and the contact domain", () => {
+test("the notification's Message-ID is derived from the row and fits Fastmail's limit", () => {
+  const id = notificationId(ROW, "contact@ctf.example.test");
+  assert.match(id, /^fb\.[A-Za-z0-9_-]{22}@ctf\.example\.test$/);
   assert.equal(
-    notificationId("row-1", "contact@ctf.example.test"),
-    "feedback-row-1@ctf.example.test",
+    id,
+    notificationId(ROW, "contact@ctf.example.test"),
+    "the same row gives the same id",
   );
+  assert.notEqual(id, notificationId(GAME, "contact@ctf.example.test"));
+  // Fastmail refuses a Message-ID longer than 64 characters: the header line may not pass 78.
+  assert.ok(notificationId(ROW, `contact@${"d".repeat(34)}.net`).length <= 64);
 });
 
 test("M13: the state rule", () => {
-  const note = mail("feedback-row-1@ctf.example.test", true);
-  assert.equal(threadState([note], "row-1"), "waiting");
-  assert.equal(threadState([note, mail("a", true)], "row-1"), "answered");
-  assert.equal(threadState([note, mail("a", true), mail("b", false)], "row-1"), "waiting");
-  assert.equal(threadState([], "row-1"), "waiting");
+  const note = mail(notificationId(ROW, "contact@ctf.example.test"), true);
+  assert.equal(threadState([note], ROW), "waiting");
+  assert.equal(threadState([note, mail("a", true)], ROW), "answered");
+  assert.equal(threadState([note, mail("a", true), mail("b", false)], ROW), "waiting");
+  assert.equal(threadState([], ROW), "waiting");
   assert.equal(
-    threadState([mail("feedback-row-1@moved.example.test", true)], "row-1"),
+    threadState([mail(notificationId(ROW, "contact@moved.example.test"), true)], ROW),
     "waiting",
     "a notification sent from an earlier contact address is still the notification",
   );
-  assert.equal(threadState([note, { ...mail("x", true), messageId: null }], "row-1"), "answered");
+  assert.equal(threadState([note, { ...mail("x", true), messageId: null }], ROW), "answered");
 });
 
 test("M9: the first reply quotes the stored message, a later one does not", () => {

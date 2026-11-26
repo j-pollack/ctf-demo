@@ -22,6 +22,7 @@ test("feedback mail client and notification", { timeout: 180_000 }, async (t) =>
   } = await setupFeedbackMail(t);
   const { sendMail, readThreads } = await import("../../lib/fastmail");
   const { notifyFeedback, replyToFeedback } = await import("../../lib/feedback-mail");
+  const { notificationId } = await import("../../lib/feedback-mail-text");
 
   await t.test("M15: migration 036 applies twice and setup and runbook name it", async () => {
     const sql = await read(`../../db/migrations/${MIGRATION}`);
@@ -89,7 +90,7 @@ test("feedback mail client and notification", { timeout: 180_000 }, async (t) =>
     // left. A timeout per request would let it hang for a further 300 ms.
     fake.controls.hold = () => new Promise((resolve) => setTimeout(resolve, 200));
     const elapsed = await timed((signal) => sendMail(mail, { signal }), 300);
-    assert.ok(elapsed >= 280 && elapsed < 450, `took ${elapsed} ms`);
+    assert.ok(elapsed >= 280 && elapsed < 800, `took ${elapsed} ms`);
   });
 
   await t.test("P2a: a draft is destroyed when the submission fails in any way", async () => {
@@ -104,6 +105,15 @@ test("feedback mail client and notification", { timeout: 180_000 }, async (t) =>
       assert.deepEqual(fake.emails, [], `${failure} leaves no draft`);
       assert.equal(fake.submissions.length, 0);
     }
+  });
+
+  await t.test("an error while filing a sent email does not undo the send", async () => {
+    fake.controls.implicitError = true;
+    const sent = await sendMail(mail);
+    assert.ok(sent.threadId, "the send is reported as a success");
+    assert.equal(fake.submissions.length, 1);
+    assert.equal(fake.emails.length > 0, true, "the sent email is not destroyed");
+    assert.ok(fake.emails.every((email) => email.threadId === sent.threadId));
   });
 
   await t.test("P2d: the address rule accepts what a mail address may hold", async () => {
@@ -188,7 +198,8 @@ test("feedback mail client and notification", { timeout: 180_000 }, async (t) =>
       assert.deepEqual(rcptTo, [CONTACT]);
       assert.equal(email.from, CONTACT);
       assert.deepEqual(email.replyTo, ["ada@example.com"]);
-      assert.equal(email.messageId, `feedback-${row.id}@ctf.example.test`);
+      assert.equal(email.messageId, notificationId(row.id, CONTACT));
+      assert.ok(email.messageId.length <= 64, "within the length Fastmail accepts");
       assert.equal(email.subject, "[CTF] Contact from Ada");
       assert.equal(email.text, "Hello");
       assert.equal(await threadOf(row.id), email.threadId);

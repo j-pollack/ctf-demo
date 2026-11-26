@@ -264,7 +264,7 @@ test("feedback mail thread, reply and states", { timeout: 180_000 }, async (t) =
         "First answer\n\nYou wrote:\n> Hello",
         "the first reply still quotes",
       );
-      assert.deepEqual(lastSent().inReplyTo, [`feedback-${id}@ctf.example.test`]);
+      assert.deepEqual(lastSent().inReplyTo, [noteOf(id)]);
       assert.equal(lastSent().threadId, thread);
     },
   );

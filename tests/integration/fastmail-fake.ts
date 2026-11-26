@@ -79,6 +79,7 @@ const HEADERS = new Set([
   "header:References:asMessageIds",
 ]);
 const CONTROL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const MESSAGE_ID_MAX = 64;
 const ID_ROLES = Object.fromEntries(ROLES.map((role) => [role, `mailbox-${role}`])) as Record<
   Role,
   string
@@ -91,6 +92,8 @@ export function createFastmailFake() {
   const submissions: { mailFrom: string; rcptTo: string[]; email: FakeEmail }[] = [];
   const controls = {
     fail: undefined as Failure | undefined,
+    // The submission succeeds, then the implicit Email/set that files the email answers with an error.
+    implicitError: false,
     // Holds a request, after it is logged, until the returned promise settles.
     hold: undefined as undefined | (() => Promise<void>),
   };
@@ -101,6 +104,7 @@ export function createFastmailFake() {
     requests.length = 0;
     submissions.length = 0;
     controls.fail = undefined;
+    controls.implicitError = false;
     controls.hold = undefined;
   };
   // Deliberate failures (a hang the test asked for) are not violations; every other error thrown
@@ -282,7 +286,10 @@ export function createFastmailFake() {
         if (args.accountId !== ACCOUNT) bad("accountId");
         result = { list: [{ id: IDENTITY, email: contact() }] };
       } else if (name === "Email/set" && args.create) {
-        if (controls.fail === "email-not-created")
+        // Real Fastmail refuses a Message-ID longer than 64 characters, as its header line would
+        // pass 78. Found with the real account; a shorter id in the smoke check had hidden it.
+        const own = args.create?.draft?.["header:Message-ID:asMessageIds"]?.[0];
+        if (controls.fail === "email-not-created" || (own && own.length > MESSAGE_ID_MAX))
           result = { notCreated: { draft: { type: "invalidProperties" } } };
         else {
           const draft = createDraft(args);
@@ -340,7 +347,19 @@ export function createFastmailFake() {
       // Email/set and return its response after the submission's, under the same call id.
       const implicit =
         name === "EmailSubmission/set" && result.created && args.onSuccessUpdateEmail
-          ? [["Email/set", { accountId: ACCOUNT, updated: {}, notUpdated: null }, callId]]
+          ? [
+              controls.implicitError
+                ? ["error", { type: "serverFail" }, callId]
+                : [
+                    "Email/set",
+                    {
+                      accountId: ACCOUNT,
+                      updated: { [created.get(args.create.send.emailId)!.id]: null },
+                      notUpdated: null,
+                    },
+                    callId,
+                  ],
+            ]
           : [];
       return [response, ...implicit];
     });

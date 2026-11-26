@@ -31,9 +31,16 @@ export function replyBody(text: string, stored: string, quote: boolean) {
   return `${text}\n\nYou wrote:\n${quoted}`;
 }
 
+// Fastmail refuses a Message-ID longer than 64 characters, because its header line would pass 78.
+// The row's UUID is packed into 22 characters so a contact domain of up to 38 characters fits.
+// ponytail: a longer contact domain makes every notification fail; hash the domain if one appears.
+const packed = (rowId: string) =>
+  Buffer.from(rowId.replaceAll("-", ""), "hex").toString("base64url");
+
 // The notification is found by this prefix alone, so moving CONTACT_EMAIL does not turn a
 // notification sent from the old address into a reply.
-export const notificationPrefix = (rowId: string) => `feedback-${rowId}@`;
+export const NOTIFICATION_MARK = "fb.";
+export const notificationPrefix = (rowId: string) => `${NOTIFICATION_MARK}${packed(rowId)}@`;
 
 export const isNotification = (mail: ThreadMail, rowId: string) =>
   mail.messageId?.startsWith(notificationPrefix(rowId)) ?? false;
