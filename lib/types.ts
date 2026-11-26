@@ -293,6 +293,13 @@ export function endReasonOf(cause: string | null | undefined): PublicGame["endRe
   if (cause === "allowance") return "unverified-allowance";
   return cause === "review" ? "unverified-review" : undefined;
 }
+export const sessionCount = (count: number) => `${count} ${count === 1 ? "session" : "sessions"}`;
+export const sessionLimitText = (count: number) =>
+  `This run has ${sessionCount(count)} and cannot add another.`;
+// What the server refuses with when a run is at its session limit, and what the play UI says
+// when a click would be refused. Null when the run may add a session or the limit is unknown.
+export const sessionLimitRefusal = (count: number, limit: number | undefined) =>
+  limit !== undefined && count >= limit ? sessionLimitText(count) : null;
 // Budgets and limits an admin can change. The defaults are the constants they replace.
 export type Limits = {
   dailyCapMicrodollars: number;
@@ -301,7 +308,22 @@ export type Limits = {
   totalRunsPerDay: number;
   monitorRunAllowanceMicrodollars: number;
   finalReviewAllowanceMicrodollars: number;
+  environmentsOpen: number;
+  nameChecksPerDay: number;
+  sessionsPerRun: number;
+  autoContinueTurns: number;
+  agentEffort: AgentEffort;
+  investigatorEffort: AgentEffort;
 };
+// The part of Limits the browser receives: what player copy and the play UI use.
+export type PlayerLimits = Pick<
+  Limits,
+  | "runBudgetMicrodollars"
+  | "runsPerDay"
+  | "dailyCapMicrodollars"
+  | "sessionsPerRun"
+  | "autoContinueTurns"
+>;
 // Rules a run is played under. Recorded on the run when it starts.
 export type GameRules = {
   monitorIsolation: boolean;

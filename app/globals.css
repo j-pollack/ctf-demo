@@ -1424,7 +1424,8 @@ dialog::backdrop {
 .limit > div {
   flex: 1;
 }
-.limit input[type="number"] {
+.limit input[type="number"],
+.limit select {
   width: 7em;
 }
 .rule button[role="switch"] {

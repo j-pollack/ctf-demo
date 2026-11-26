@@ -1,3 +1,4 @@
+import { currentLimits } from "@/lib/limits";
 import { currentAgentModel } from "@/lib/agent-model";
 import { createSession } from "@/lib/sessions";
 import { getPublicGameRow, publicGame } from "@/lib/games";
@@ -12,7 +13,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     checkOrigin(request);
     const user = await player(request);
     const data = await body(request);
-    const agent = publicAgentSettings(data, await currentAgentModel());
+    const agent = publicAgentSettings(
+      data,
+      await currentAgentModel(),
+      (await currentLimits()).agentEffort,
+    );
     const { id } = await params;
     await getPublicGameRow(id, user.id);
     await getModel(agent.agentModel);

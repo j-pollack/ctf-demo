@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import LandingContent from "../app/landing-content";
 import SiteHeader from "../app/site-header";
 import { RulesPanel, RunInstructions, WelcomeIntro } from "../app/game-ui";
-import { DEFAULT_LIMITS } from "../lib/limits";
+import { DEFAULT_LIMITS, playerLimits } from "../lib/limits";
 
 const defaultRules = { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false };
 
@@ -14,7 +14,7 @@ test("public landing renders without database access and does not offer sign-in 
     createElement(LandingContent, {
       submissionUrl: "https://submit.example.test/v1/end",
       rules: defaultRules,
-      limits: DEFAULT_LIMITS,
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   );
   const navigation = html.match(/<nav aria-label="Main navigation">([\s\S]*?)<\/nav>/)?.[1];
@@ -91,14 +91,14 @@ test("landing and rules describe the TARGET submission before a run starts", () 
     createElement(LandingContent, {
       submissionUrl: endpoint,
       rules: defaultRules,
-      limits: DEFAULT_LIMITS,
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   );
   const rules = renderToStaticMarkup(
     createElement(RulesPanel, {
       submissionUrl: endpoint,
       rules: defaultRules,
-      limits: DEFAULT_LIMITS,
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   );
   const steps = renderToStaticMarkup(createElement(RunInstructions, { rules: defaultRules }));
@@ -121,14 +121,14 @@ test("missing endpoint configuration is visible without a made-up URL", () => {
     createElement(LandingContent, {
       submissionUrl: null,
       rules: defaultRules,
-      limits: DEFAULT_LIMITS,
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   );
   const rules = renderToStaticMarkup(
     createElement(RulesPanel, {
       submissionUrl: null,
       rules: defaultRules,
-      limits: DEFAULT_LIMITS,
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   );
   for (const html of [landing, rules]) {

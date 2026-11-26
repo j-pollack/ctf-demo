@@ -2,7 +2,7 @@
 import React from "react";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@ui-sdk/react/dialog";
 import { newRuns, REVIEW_WILL_RETRY_TEXT } from "@/app/run-format";
-import type { GameStatus, Limits } from "@/lib/types";
+import type { GameStatus, PlayerLimits } from "@/lib/types";
 
 export { DialogTitle } from "@ui-sdk/react/dialog";
 
@@ -62,7 +62,7 @@ export function RunSetupNotes({
   grading?: boolean;
   runsLeft: number | null | undefined;
   unusedRun: boolean;
-  limits: Limits;
+  limits: PlayerLimits;
 }) {
   const left = runsLeftText(runsLeft, limits.runsPerDay);
   return (

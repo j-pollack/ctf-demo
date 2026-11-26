@@ -8,7 +8,7 @@ import { renderToStaticMarkup, renderToString } from "react-dom/server";
 import { build } from "esbuild";
 import SiteHeader from "@/app/site-header";
 import { LeaderboardPanel, RulesPanel, RunHistoryRow } from "@/app/game-ui";
-import { DEFAULT_LIMITS } from "@/lib/limits";
+import { DEFAULT_LIMITS, playerLimits } from "@/lib/limits";
 import {
   FIXTURES,
   Harness,
@@ -96,7 +96,7 @@ const INFO_PAGES: Record<string, { nav: string; body: React.ReactNode }> = {
     body: (
       <RulesPanel
         rules={{ monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false }}
-        limits={DEFAULT_LIMITS}
+        limits={playerLimits(DEFAULT_LIMITS)}
       />
     ),
   },

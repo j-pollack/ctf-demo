@@ -10,7 +10,7 @@ import {
   RunSetupNotes,
   runsLeftText,
 } from "../app/run-dialog";
-import { DEFAULT_LIMITS } from "../lib/limits";
+import { DEFAULT_LIMITS, playerLimits } from "../lib/limits";
 
 const render = (open: boolean, busy: boolean) =>
   renderToStaticMarkup(
@@ -49,23 +49,48 @@ test("the setup notes say what starting ends and what is left, and nothing else"
   const notes = (props: Parameters<typeof RunSetupNotes>[0]) =>
     renderToStaticMarkup(createElement(RunSetupNotes, props));
   assert.equal(
-    notes({ endsCurrent: true, runsLeft: 1, unusedRun: false, limits: DEFAULT_LIMITS }),
+    notes({
+      endsCurrent: true,
+      runsLeft: 1,
+      unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     "<p>Starting a new run ends your current one.</p><p>You can start 1 more run now.</p>",
   );
   assert.equal(
-    notes({ endsCurrent: false, runsLeft: 0, unusedRun: false, limits: DEFAULT_LIMITS }),
+    notes({
+      endsCurrent: false,
+      runsLeft: 0,
+      unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     "<p>You have started 3 new runs in the last 24 hours.</p>",
   );
   assert.equal(
-    notes({ endsCurrent: false, runsLeft: undefined, unusedRun: false, limits: DEFAULT_LIMITS }),
+    notes({
+      endsCurrent: false,
+      runsLeft: undefined,
+      unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     "",
   );
   assert.match(
-    notes({ endsCurrent: true, runsLeft: 2, unusedRun: true, limits: DEFAULT_LIMITS }),
+    notes({
+      endsCurrent: true,
+      runsLeft: 2,
+      unusedRun: true,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     /You already have an unused run\. Send it an instruction first\./,
   );
   assert.doesNotMatch(
-    notes({ endsCurrent: true, runsLeft: 2, unusedRun: false, limits: DEFAULT_LIMITS }),
+    notes({
+      endsCurrent: true,
+      runsLeft: 2,
+      unusedRun: false,
+      limits: playerLimits(DEFAULT_LIMITS),
+    }),
     /budget|investigator|difficulty/i,
   );
 });
@@ -89,7 +114,7 @@ test("a run waiting to be graded says so instead of promising it ends the run", 
       grading: true,
       runsLeft: 2,
       unusedRun: false,
-      limits: DEFAULT_LIMITS,
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   );
   assert.match(

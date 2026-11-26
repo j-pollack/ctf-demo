@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { AgentEffort } from "./types";
 
 // Default for the shared daily cap. An admin can change it.
 export const DAILY_CAP_MICRODOLLARS = 10_000_000;
@@ -27,6 +28,14 @@ const AGENT_MODELS = [
 export const AGENT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 export const PLAYER_AGENT_EFFORT = "low" as const;
 export const INVESTIGATOR_MODEL = "z-ai/glm-5.3";
+// Defaults for the investigator's reasoning effort. An admin can change it.
+export const INVESTIGATOR_EFFORT = "high" as const;
+// Defaults for limits an admin can change. The environment can set a deploy-level default.
+export const ENVIRONMENTS_OPEN = 10;
+export const NAME_CHECKS_PER_DAY = 20;
+export const SESSIONS_PER_RUN = 8;
+// Turns the play UI continues on its own after a stopped response, per run session.
+export const AUTO_CONTINUE_TURNS = 8;
 // Sorted by the name shown in selectors (the part after the provider).
 export const MODELS = [...AGENT_MODELS].sort((a, b) =>
   a.split("/")[1].localeCompare(b.split("/")[1]),
@@ -67,10 +76,14 @@ export class GameError extends Error {
   }
 }
 
-export function publicAgentSettings(data: Record<string, unknown>, agentModel: string) {
+export function publicAgentSettings(
+  data: Record<string, unknown>,
+  agentModel: string,
+  agentEffort: AgentEffort,
+) {
   if (data.agentModel !== undefined && data.agentModel !== agentModel)
     throw new GameError("The agent model cannot be changed.");
-  if (data.agentEffort !== undefined && data.agentEffort !== PLAYER_AGENT_EFFORT)
+  if (data.agentEffort !== undefined && data.agentEffort !== agentEffort)
     throw new GameError("The agent reasoning effort cannot be changed.");
-  return { agentModel, agentEffort: PLAYER_AGENT_EFFORT };
+  return { agentModel, agentEffort };
 }

@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
-import type { GameStatus, SessionSummary } from "@/lib/types";
+import { sessionLimitRefusal, type GameStatus, type SessionSummary } from "@/lib/types";
 import type { SessionUIMap } from "@/app/session-ui-state";
 import {
   chipLabel,
@@ -23,6 +23,8 @@ export type SessionChipsProps = {
   onActivate: (id: string) => void;
   onCreate?: () => void;
   creating: boolean;
+  // Sessions a run may have. The server still decides; this only explains a disabled control.
+  sessionLimit?: number;
   // The ordinal of a session being created, shown as a chip that cannot be activated yet.
   pendingOrdinal: number | null;
 };
@@ -38,6 +40,7 @@ export function SessionChips({
   onActivate,
   onCreate,
   creating,
+  sessionLimit,
   pendingOrdinal,
 }: SessionChipsProps) {
   const chips = useRef<(HTMLButtonElement | null)[]>([]),
@@ -78,6 +81,7 @@ export function SessionChips({
     observer.observe(strip.current);
     return () => observer.disconnect();
   }, [focusedIndex, sessions.length, pendingOrdinal]);
+  const limitReason = sessionLimitRefusal(sessions.length, sessionLimit);
   return (
     <div className="run-sessions">
       <div className="chips-frame">
@@ -179,9 +183,11 @@ export function SessionChips({
           type="button"
           className="session-add"
           aria-label={creating ? "Adding session" : "Add session"}
+          // At the limit the click still reaches the play UI, which shows the reason.
           onClick={creating ? undefined : onCreate}
-          // Not natively disabled while busy, so keyboard focus stays on it.
-          aria-disabled={creating || undefined}
+          title={limitReason ?? undefined}
+          // Not natively disabled while busy or at the limit, so keyboard focus stays on it.
+          aria-disabled={creating || !!limitReason || undefined}
           aria-busy={creating || undefined}
         >
           +<span className="add-label"> Add session</span>

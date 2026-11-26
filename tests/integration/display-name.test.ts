@@ -457,7 +457,7 @@ await test("display names and account changes", { timeout: 120_000 }, async (t) 
     "I7: the per-account daily limit refuses the 21st check without asking Jev",
     async () => {
       const busy = await signUp("busy@example.invalid");
-      const { NAME_CHECKS_PER_DAY } = await import("../../lib/display-name-check");
+      const { NAME_CHECKS_PER_DAY } = await import("../../lib/policy");
       assert.equal(NAME_CHECKS_PER_DAY, 20);
       for (let index = 0; index < NAME_CHECKS_PER_DAY; index++)
         assert.equal((await save(busy.cookie, { displayName: `busy_${index}` })).status, 200);
@@ -470,6 +470,33 @@ await test("display names and account changes", { timeout: 120_000 }, async (t) 
       assert.equal(await storedName(busy.id), `busy_${NAME_CHECKS_PER_DAY - 1}`);
     },
   );
+
+  await t.test("M5: the stored name check count refuses at it and admits below it", async () => {
+    const checker = await signUp("checker@example.invalid");
+    const store = (value: number) =>
+      pool.query(
+        `INSERT INTO ctf.settings(key,value) VALUES('name_checks_per_day',$1)
+         ON CONFLICT (key) DO UPDATE SET value=excluded.value`,
+        [String(value)],
+      );
+    try {
+      await store(2);
+      for (const index of [0, 1])
+        assert.equal((await save(checker.cookie, { displayName: `check_${index}` })).status, 200);
+      const sent = fake.names.length;
+      assert.deepEqual(await save(checker.cookie, { displayName: "check_over" }), {
+        status: 429,
+        body: { error: "You've checked too many names today. Try again tomorrow." },
+      });
+      assert.equal(fake.names.length, sent, "a refused check is not sent to Jev");
+      await store(3);
+      assert.equal((await save(checker.cookie, { displayName: "check_two" })).status, 200);
+      assert.equal(await storedName(checker.id), "check_two");
+      await pool.query("DELETE FROM ctf.settings WHERE key='name_checks_per_day'");
+    } finally {
+      await pool.query("DELETE FROM ctf.settings WHERE key='name_checks_per_day'");
+    }
+  });
 
   await t.test("I8: only a signed-in member can change a name, and only their own", async () => {
     assert.equal((await save(null, { displayName: "anon_name" })).status, 401);

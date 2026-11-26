@@ -650,7 +650,7 @@ export async function startGame(
          AND (owner_id<>$1 OR (status='finalizing' AND monitor_mode='async'))`,
       [ownerId],
     );
-    if (count.rows[0].total >= 10)
+    if (count.rows[0].total >= limits.environmentsOpen)
       throw new GameError("All environments are busy. Try again in a few minutes.", 429);
     const starts = await client.query(
       "SELECT count(*)::int AS total FROM ctf.games WHERE owner_id=$1 AND new_run AND created_at > now()-interval '24 hours'",

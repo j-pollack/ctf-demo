@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import LandingContent from "../app/landing-content";
 import * as UI from "../app/game-ui";
 import { CAUGHT_NOTICE } from "../app/transcript";
-import { DEFAULT_LIMITS } from "../lib/limits";
+import { DEFAULT_LIMITS, playerLimits } from "../lib/limits";
 
 const NO_DIFFICULTY = /difficult|\bEasy\b|\bMedium\b|\bHard\b/i;
 const text = (html: string) =>
@@ -20,13 +20,13 @@ const landing = text(
     createElement(LandingContent, {
       submissionUrl: null,
       rules: defaultRules,
-      limits: DEFAULT_LIMITS,
+      limits: playerLimits(DEFAULT_LIMITS),
     }),
   ),
 );
 const rules = text(
   renderToStaticMarkup(
-    createElement(UI.RulesPanel, { rules: defaultRules, limits: DEFAULT_LIMITS }),
+    createElement(UI.RulesPanel, { rules: defaultRules, limits: playerLimits(DEFAULT_LIMITS) }),
   ),
 );
 const board = (scores: unknown[]) =>
@@ -192,6 +192,7 @@ test("player copy follows the stored limits and reads as before at the defaults"
     runBudgetMicrodollars: 1_250_000,
     dailyCapMicrodollars: 12_500_000,
     runsPerDay: 1,
+    sessionsPerRun: 1,
   };
   const landingText = text(
     renderToStaticMarkup(
@@ -207,6 +208,8 @@ test("player copy follows the stored limits and reads as before at the defaults"
   assert.ok(rulesText.includes("Each run comes with $1.25 of AI usage"));
   assert.ok(rulesText.includes("You can start 1 new run every 24 hours."));
   assert.ok(rulesText.includes("All players share $12.50 of AI usage a day."));
+  assert.ok(rulesText.includes("A run can have up to 1 session."));
+  assert.ok(rules.includes("A run can have up to 8 sessions."));
   assert.ok(rules.includes("Each run comes with $0.50 of AI usage"));
   assert.ok(rules.includes("You can start 3 new runs every 24 hours."));
   assert.ok(rules.includes("All players share $10 of AI usage a day."));

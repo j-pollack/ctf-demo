@@ -16,7 +16,6 @@ import { GameError, inputCeiling } from "./policy";
 import { evaluate, TYPESAFE_MODEL } from "./typesafe";
 
 export const NAME_CHECK_DEADLINE_MS = 3000;
-export const NAME_CHECKS_PER_DAY = 20;
 const TAKEN = "That name is taken.";
 const REFUSED = "That name can't be used on the leaderboard. Try another.";
 const UNAVAILABLE = "We couldn't check that name right now. Try again.";
@@ -42,10 +41,10 @@ async function reserveCheck(userId: string, ceiling: number) {
         [userId, day],
       )
     ).rows[0].n as number;
-    if (used >= NAME_CHECKS_PER_DAY) throw new GameError(LIMIT, 429);
+    const limits = await currentLimits(client);
+    if (used >= limits.nameChecksPerDay) throw new GameError(LIMIT, 429);
     const cost = Math.ceil(ceiling * MONITOR_TOKEN_MICRODOLLARS);
-    const { dailyCapMicrodollars } = await currentLimits(client);
-    if (Number(spend.charged) + Number(spend.reserved) + cost > dailyCapMicrodollars)
+    if (Number(spend.charged) + Number(spend.reserved) + cost > limits.dailyCapMicrodollars)
       throw new GameError(PAUSED, 503);
     const id = randomUUID();
     await client.query("UPDATE ctf.daily_spend SET reserved=reserved+$2 WHERE day=$1", [day, cost]);

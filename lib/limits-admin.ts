@@ -24,7 +24,7 @@ export async function changeLimit(headers: Headers, key: unknown, value: unknown
   if (typeof key !== "string" || !LIMIT_KEYS.some((known) => known === key))
     throw new GameError("Unknown limit.");
   const parsed = parseLimitInput(key, value);
-  if (parsed === null) throw new GameError("Enter a value inside the limit's bounds.");
+  if (parsed === null) throw new GameError("Enter a value the limit allows.");
   await db.query(
     `INSERT INTO ctf.settings(key,value,updated_by,updated_at) VALUES($1,$2,$3,now())
      ON CONFLICT (key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,

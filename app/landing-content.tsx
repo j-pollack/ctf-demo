@@ -1,7 +1,7 @@
 import SiteHeader from "@/app/site-header";
 import { dollars, newRuns } from "@/app/run-format";
 import { HowToWin } from "@/app/flag-instructions";
-import type { GameRules, Limits } from "@/lib/types";
+import type { GameRules, PlayerLimits } from "@/lib/types";
 
 export default function LandingContent({
   submissionUrl,
@@ -10,7 +10,7 @@ export default function LandingContent({
 }: {
   submissionUrl: string | null;
   rules: GameRules;
-  limits: Limits;
+  limits: PlayerLimits;
 }) {
   return (
     <div className="landing">

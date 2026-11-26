@@ -53,12 +53,17 @@ await test("admin-set limits are read with defaults, validated, authorised and s
       .join("; ");
     return { id, headers: new Headers({ cookie }) };
   };
+  const restoreEnv = (saved: Record<string, string | undefined>) => {
+    for (const [name, value] of Object.entries(saved))
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+  };
   const rows = async () => (await pool.query("SELECT * FROM ctf.settings ORDER BY key")).rows;
   const refused = (status: number) => (error: unknown) =>
     error instanceof GameError && error.status === status;
 
-  await t.test("L1 with no rows the six defaults hold", async () => {
-    assert.equal(LIMIT_KEYS.length, 6);
+  await t.test("L1 with no rows and no environment the twelve defaults hold", async () => {
+    assert.equal(LIMIT_KEYS.length, 12);
     assert.deepEqual(await currentLimits(), DEFAULT_LIMITS);
     assert.deepEqual(await limitSettings(), {});
   });
@@ -156,6 +161,7 @@ await test("admin-set limits are read with defaults, validated, authorised and s
     }
     assert.equal((await rows()).length, 6, "a repeated change replaces the row");
     assert.deepEqual(await currentLimits(), {
+      ...DEFAULT_LIMITS,
       dailyCapMicrodollars: 2_010_000,
       runBudgetMicrodollars: 10_000,
       runsPerDay: 7,
@@ -164,8 +170,140 @@ await test("admin-set limits are read with defaults, validated, authorised and s
       finalReviewAllowanceMicrodollars: 0,
     });
     const settings = await limitSettings();
-    assert.deepEqual(Object.keys(settings).sort(), [...LIMIT_KEYS].sort());
+    assert.deepEqual(
+      Object.keys(settings).sort(),
+      Object.keys(stored).sort(),
+      "only the limits that were changed report who and when",
+    );
     assert.equal(settings.runs_per_day?.updatedBy, `${owner.id}@example.invalid`);
     assert.deepEqual(settings.runs_per_day?.updatedAt, stored.runs_per_day.updated_at);
   });
+
+  await t.test(
+    "M2 a stored value wins over the environment, which wins over the default",
+    async () => {
+      await pool.query("DELETE FROM ctf.settings");
+      const names = ["CTF_RUNS_PER_DAY", "CTF_AGENT_EFFORT", "CTF_NAME_CHECKS_PER_DAY"];
+      const before = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+      process.env.CTF_RUNS_PER_DAY = "5";
+      process.env.CTF_AGENT_EFFORT = "high";
+      process.env.CTF_NAME_CHECKS_PER_DAY = "abc";
+      try {
+        const fromEnv = await currentLimits();
+        assert.equal(fromEnv.runsPerDay, 5, "no row: the environment");
+        assert.equal(fromEnv.agentEffort, "high");
+        assert.equal(fromEnv.nameChecksPerDay, DEFAULT_LIMITS.nameChecksPerDay, "invalid: default");
+        await pool.query(
+          `INSERT INTO ctf.settings(key,value) VALUES('runs_per_day','7'),('agent_effort','medium')`,
+        );
+        const stored = await currentLimits();
+        assert.equal(stored.runsPerDay, 7, "a stored value wins");
+        assert.equal(stored.agentEffort, "medium");
+        await pool.query(
+          `UPDATE ctf.settings SET value='0' WHERE key='runs_per_day';
+         UPDATE ctf.settings SET value='max' WHERE key='agent_effort'`,
+        );
+        const invalid = await currentLimits();
+        assert.equal(invalid.runsPerDay, 5, "an invalid stored value falls to the environment");
+        assert.equal(invalid.agentEffort, "high");
+        delete process.env.CTF_RUNS_PER_DAY;
+        assert.equal((await currentLimits()).runsPerDay, DEFAULT_LIMITS.runsPerDay);
+      } finally {
+        restoreEnv(before);
+        await pool.query("DELETE FROM ctf.settings");
+      }
+    },
+  );
+
+  await t.test("M10 a choice is stored only when it is one of the options", async () => {
+    for (const bad of ["max", "", "Low", "toString", 1, undefined, null])
+      await assert.rejects(changeLimit(owner.headers, "agent_effort", bad), refused(400));
+    await assert.rejects(
+      changeLimit(owner.headers, "investigator_effort", "extreme"),
+      refused(400),
+    );
+    assert.deepEqual(await rows(), []);
+    await changeLimit(owner.headers, "investigator_effort", "low");
+    await changeLimit(owner.headers, "agent_effort", "medium");
+    await changeLimit(owner.headers, "sessions_per_run", "12");
+    const limits = await currentLimits();
+    assert.equal(limits.investigatorEffort, "low");
+    assert.equal(limits.agentEffort, "medium");
+    assert.equal(limits.sessionsPerRun, 12);
+    assert.equal((await rows()).length, 3);
+    assert.deepEqual((await rows()).map((row) => row.value).sort(), ["12", "low", "medium"]);
+    await pool.query("DELETE FROM ctf.settings");
+  });
+
+  const PLAYER_KEYS = [
+    "autoContinueTurns",
+    "dailyCapMicrodollars",
+    "runBudgetMicrodollars",
+    "runsPerDay",
+    "sessionsPerRun",
+  ];
+  const { default: Home } = await import("../../app/page");
+  const { default: GameLayout } = await import("../../app/(game)/layout");
+  const propsOf = (element: unknown) => (element as { props: Record<string, unknown> }).props;
+  const gameUiProps = async () => {
+    const layout = await GameLayout({ children: null });
+    return propsOf((propsOf(layout).children as unknown[])[0]);
+  };
+
+  await t.test("M11 the browser receives exactly the five player limits", async () => {
+    await pool.query("INSERT INTO ctf.settings(key,value) VALUES('total_runs_per_day','5')");
+    try {
+      for (const props of [propsOf(await Home()), await gameUiProps()])
+        assert.deepEqual(Object.keys(props.limits as object).sort(), PLAYER_KEYS);
+    } finally {
+      await pool.query("DELETE FROM ctf.settings");
+    }
+  });
+
+  await t.test(
+    "M3 the two pages render from the environment when settings cannot be read",
+    async (s) => {
+      const logged: string[] = [];
+      s.mock.method(console, "error", (line: unknown) => logged.push(String(line)));
+      const before = {
+        CTF_RUN_BUDGET_MICRODOLLARS: process.env.CTF_RUN_BUDGET_MICRODOLLARS,
+        CTF_AUTO_CONTINUE_TURNS: process.env.CTF_AUTO_CONTINUE_TURNS,
+      };
+      process.env.CTF_RUN_BUDGET_MICRODOLLARS = "750000";
+      process.env.CTF_AUTO_CONTINUE_TURNS = "5";
+      await pool.query("ALTER TABLE ctf.settings RENAME TO settings_away");
+      try {
+        await assert.rejects(currentLimits());
+        const { currentGameRules, DEFAULT_GAME_RULES } = await import("../../lib/game-rules");
+        await assert.rejects(currentGameRules());
+        const landing = propsOf(await Home());
+        const layout = await gameUiProps();
+        for (const props of [landing, layout]) {
+          assert.equal(
+            (props.limits as { runBudgetMicrodollars: number }).runBudgetMicrodollars,
+            750_000,
+          );
+          assert.deepEqual(Object.keys(props.limits as object).sort(), PLAYER_KEYS);
+          assert.equal(
+            (props.limits as { autoContinueTurns: number }).autoContinueTurns,
+            0,
+            "a page that could not read the settings never auto-continues",
+          );
+          assert.deepEqual(props.rules, DEFAULT_GAME_RULES);
+        }
+        const events = logged.flatMap((line) => {
+          try {
+            return [JSON.parse(line).event];
+          } catch {
+            return [];
+          }
+        });
+        assert.equal(events.filter((event) => event === "limits_read_failed").length, 2);
+        assert.equal(events.filter((event) => event === "game_rules_read_failed").length, 2);
+      } finally {
+        await pool.query("ALTER TABLE ctf.settings_away RENAME TO settings");
+        restoreEnv(before);
+      }
+    },
+  );
 });

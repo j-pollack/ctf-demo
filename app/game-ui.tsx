@@ -42,7 +42,9 @@ import {
   type GameRules,
   type GameStatus,
   type GameSummary,
-  type Limits,
+  type PlayerLimits,
+  sessionCount,
+  sessionLimitRefusal,
   type PublicGame,
 } from "@/lib/types";
 import {
@@ -64,14 +66,10 @@ import {
   type SessionUIMap,
 } from "@/app/session-ui-state";
 
-// A response that reaches its server-side time limit may continue automatically, up to this limit.
-export const AUTO_CONTINUE_MAX = 8;
+// A response that reaches its server-side time limit may continue automatically, up to the
+// stored number of turns. Zero turns disables it.
 const AUTO_CONTINUE_TEXT = "Continue.";
-export function shouldAutoContinue(
-  game: PublicGame | null,
-  autoUsed: number,
-  max = AUTO_CONTINUE_MAX,
-) {
+export function shouldAutoContinue(game: PublicGame | null, autoUsed: number, max: number) {
   return (
     !!game &&
     game.status === "active" &&
@@ -266,7 +264,7 @@ export default function GameUI({
   models: string[];
   submissionUrl: string | null;
   rules: GameRules;
-  limits: Limits;
+  limits: PlayerLimits;
 }) {
   const pathname = usePathname(),
     params = useParams<{ id?: string }>(),
@@ -1045,13 +1043,17 @@ export default function GameUI({
         sessionControllers.current.has(id) ||
         userStopped.current.has(id) ||
         sessionPending.current.has(id) ||
-        !shouldAutoContinue({ ...game, events: view.events }, autoContinues.current.get(id) ?? 0)
+        !shouldAutoContinue(
+          { ...game, events: view.events },
+          autoContinues.current.get(id) ?? 0,
+          limits.autoContinueTurns,
+        )
       )
         continue;
       autoContinues.current.set(id, (autoContinues.current.get(id) ?? 0) + 1);
       void send(id, AUTO_CONTINUE_TEXT);
     }
-  }, [game, busy, isExecutionView, sessionViews, shownIds.join(",")]);
+  }, [game, busy, isExecutionView, sessionViews, shownIds.join(","), limits.autoContinueTurns]);
   // Shown sessions without a local stream poll; hidden sessions rely on the run's summaries.
   const shownKey = shownIds.join(","),
     shownBusy = shownIds.map((id) => (sessionViews[id]?.busy ? 1 : 0)).join(""),
@@ -1436,7 +1438,8 @@ export default function GameUI({
           unconfirmed: false,
           draft: auto ? current.draft : submitted.text,
         }));
-        if (auto) autoContinues.current.set(sessionId, AUTO_CONTINUE_MAX);
+        // No stored maximum can be reached from Infinity, so a failed send ends the chain.
+        if (auto) autoContinues.current.set(sessionId, Infinity);
         updateSessionViews((currentViews) => {
           const entry = currentViews[sessionId];
           return entry
@@ -1492,6 +1495,12 @@ export default function GameUI({
   }
   async function createSession() {
     if (!game || !member || creatingSession || game.status !== "active") return;
+    // The server still decides. This explains the refusal without a request.
+    const atLimit = sessionLimitRefusal(summariesFor(game).length, limits.sessionsPerRun);
+    if (atLimit) {
+      setError(atLimit);
+      return;
+    }
     const runId = game.id,
       owner = historyOwner.current,
       epoch = accountEpoch.current,
@@ -1743,6 +1752,7 @@ export default function GameUI({
               busy={busy}
               streamingIds={shownIds.filter((id) => sessionControllers.current.has(id))}
               creatingSession={creatingSession}
+              sessionLimit={limits.sessionsPerRun}
               pendingOrdinal={pendingOrdinal}
               newRunDisabled={busy || !canStartNewRun}
               newRunTitle={
@@ -1909,7 +1919,7 @@ export function RulesPanel({
 }: {
   submissionUrl?: string | null;
   rules: GameRules;
-  limits: Limits;
+  limits: PlayerLimits;
 }) {
   return (
     <main className="info rules">
@@ -1992,7 +2002,7 @@ export function RulesPanel({
             Create multiple sessions in one run to work in parallel or keep separate agent
             conversations. Sessions have independent transcripts and settings. They share the same
             computer, flag, and run budget. A catch in any session ends the run and stops all of
-            them.
+            them. A run can have up to {sessionCount(limits.sessionsPerRun)}.
           </p>
         </section>
         <section>
