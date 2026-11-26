@@ -115,7 +115,9 @@ test("missing endpoint configuration is visible without a made-up URL", () => {
   );
   for (const html of [landing, rules]) {
     assert.match(html, /Submission endpoint unavailable/);
-    assert.doesNotMatch(html, /https:\/\/|example\.test|<code>submit<\/code>/);
+    // The footer's own links are real addresses, not a made-up submission URL.
+    const body = html.replace(/<footer[\s\S]*<\/footer>/, "");
+    assert.doesNotMatch(body, /https:\/\/|example\.test|<code>submit<\/code>/);
   }
 });
 

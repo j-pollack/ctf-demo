@@ -2,12 +2,14 @@ import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { adminStats, isAdmin } from "@/lib/admin";
+import { listFeedback } from "@/lib/feedback";
 import { agentModelSetting, currentAgentModel } from "@/lib/agent-model";
 import { currentGameRules, GAME_RULE_KEYS } from "@/lib/game-rules";
 import { gameRuleSettings, type GameRuleSetting } from "@/lib/game-rules-admin";
 import { MODELS } from "@/lib/policy";
 import { setAgentModel, setGameRule } from "./actions";
 import { AgentModelCard } from "./agent-model-card";
+import { FeedbackCard } from "./feedback-card";
 import { GameRulesCard } from "./game-rules-card";
 import {
   Area,
@@ -81,12 +83,13 @@ export default async function Admin({
 }) {
   await requireAdmin();
   const refused = (await searchParams).model === "refused";
-  const [stats, setting, current, rules, ruleSettings] = await Promise.all([
+  const [stats, setting, current, rules, ruleSettings, feedback] = await Promise.all([
     adminStats(),
     agentModelSetting(),
     currentAgentModel(),
     currentGameRules(),
     gameRuleSettings(),
+    listFeedback(),
   ]);
   const { totals: t, daily, monthly, outcomes, models, monitors, spenders } = stats;
 
@@ -295,6 +298,8 @@ export default async function Admin({
             }))}
           />
         </Card>
+
+        <FeedbackCard rows={feedback} />
       </div>
     </main>
   );

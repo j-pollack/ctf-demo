@@ -2,12 +2,15 @@
 import React from "react";
 import type { GameStatus, PublicGame } from "@/lib/types";
 import { Meter, MeterIndicator } from "@ui-sdk/react/meter";
+import { ReportProblem } from "@/app/report-problem";
 import { money, MONITOR_STATUS_LOADING, monitorStatusLabel, statusLabel } from "@/app/run-format";
 
 export type RunBarProps = {
   game: PublicGame;
   // The session chips and Add session control.
   sessions?: React.ReactNode;
+  // The session the player is looking at, named in a report.
+  focusedSessionId?: string | null;
   inspectorOpen: boolean;
   detailsRef?: React.Ref<HTMLButtonElement>;
   newRunDisabled: boolean;
@@ -31,6 +34,7 @@ function runStatusText(game: PublicGame) {
 export function RunBar({
   game,
   sessions,
+  focusedSessionId = null,
   inspectorOpen,
   detailsRef,
   newRunDisabled,
@@ -76,6 +80,7 @@ export function RunBar({
       </div>
       {sessions}
       <div className="run-actions">
+        <ReportProblem gameId={game.id} focusedId={focusedSessionId} />
         <button
           type="button"
           className="details"

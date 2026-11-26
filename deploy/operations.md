@@ -32,6 +32,7 @@ Use `npm run setup` for a designated local database. The deployment jobs invoke 
 | `032-second-look.sql`              | Adds the fields that store second-look decisions.                                                                                                                              |
 | `033-display-name.sql`             | Runs after Better Auth creates its tables. Adds unique display names and account-level inference records.                                                                      |
 | `034-investigator-requests.sql`    | Stores each investigator request for transcript inspection.                                                                                                                    |
+| `035-feedback.sql`                 | Stores contact messages and in-run reports. The contact route and the Report button need it.                                                                                   |
 
 If a migration fails, fix it before promoting. For a code regression, select a compatible previous Vercel deployment and Fly image. Reserve Neon point-in-time restore for data recovery. Check the following boundaries before rolling back.
 
