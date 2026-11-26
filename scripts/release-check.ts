@@ -14,23 +14,26 @@ type Spec = {
   problem: (reply: Reply, mode: Mode) => string | null;
 };
 
-// Each marker is text that only that page renders in its server HTML.
-const PAGES: [path: string, marker: string][] = [
-  ["/", "Capture the flag without getting caught"],
-  ["/rules", "If a word is new to you, there is a glossary at the bottom."],
-  ["/rank", "VERIFIED WINS"],
-  ["/contact", "Questions, ideas or problems with the game? Write to us."],
-  ["/signin", "Email me a link"],
+// Each page's root element carries its own test id in the server HTML. Copy is not checked, so
+// a reworded page does not stop a release.
+export const PAGES: [path: string, testId: string][] = [
+  ["/", "page-home"],
+  ["/rules", "page-rules"],
+  ["/rank", "page-rank"],
+  ["/contact", "page-contact"],
+  ["/signin", "page-signin"],
 ];
 
-const page = ([path, marker]: [string, string]): Spec => ({
+const page = ([path, testId]: [string, string]): Spec => ({
   method: "GET",
   path,
-  expected: () => `200 text/html containing "${marker}"`,
+  expected: () => `200 text/html with the test id ${testId}`,
   problem: (reply) => {
     if (reply.status !== 200) return `${reply.status}`;
     if (!reply.type.startsWith("text/html")) return `200 ${reply.type || "no content type"}`;
-    return reply.body.includes(marker) ? null : "200 text/html without the marker";
+    return reply.body.includes(`data-testid="${testId}"`)
+      ? null
+      : "200 text/html without the test id";
   },
 });
 

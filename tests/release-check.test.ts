@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
-import { releaseMismatches, type Mode } from "../scripts/release-check";
+import { PAGES as CHECKED_PAGES, releaseMismatches, type Mode } from "../scripts/release-check";
 
 const BASE = "https://ctf-abc123.vercel.app";
 const PAGES: Record<string, string> = {
-  "/": "Capture the flag without getting caught",
-  "/rules": "If a word is new to you, there is a glossary at the bottom.",
-  "/rank": "VERIFIED WINS",
-  "/contact": "Questions, ideas or problems with the game? Write to us.",
-  "/signin": "Email me a link",
+  "/": "page-home",
+  "/rules": "page-rules",
+  "/rank": "page-rank",
+  "/contact": "page-contact",
+  "/signin": "page-signin",
 };
+const root = (id: string) => `<html><div class="app" data-testid="${id}"></div></html>`;
 
 type Seen = { method: string; url: string; init: RequestInit | undefined };
 type Reply = { status: number; type?: string; body?: string };
@@ -18,9 +21,9 @@ type Replies = Record<string, One | One[]>;
 
 const good = (mode: Mode): Replies => ({
   ...Object.fromEntries(
-    Object.entries(PAGES).map(([path, marker]) => [
+    Object.entries(PAGES).map(([path, id]) => [
       `GET ${path}`,
-      { status: 200, type: "text/html; charset=utf-8", body: `<html><h1>${marker}</h1></html>` },
+      { status: 200, type: "text/html; charset=utf-8", body: root(id) },
     ]),
   ),
   "GET /api/leaderboard": { status: 200, type: "application/json", body: '{"entries":[]}' },
@@ -65,14 +68,37 @@ test("a wrong status names the request with expected and actual", async () => {
   assert.match(found[0].actual, /500/);
 });
 
-test("a page without its marker, or not html, is a mismatch", async () => {
+test("a page without its test id, with another page's, or not html, is a mismatch", async () => {
   const { fetchFn } = stub({
     ...good("live"),
-    "GET /rank": { status: 200, type: "text/html", body: "<html>another page</html>" },
-    "GET /contact": { status: 200, type: "application/json", body: PAGES["/contact"] },
+    "GET /rank": {
+      status: 200,
+      type: "text/html",
+      body: "<html>page-rank in the text only</html>",
+    },
+    "GET /rules": { status: 200, type: "text/html", body: root("page-rank") },
+    "GET /contact": { status: 200, type: "application/json", body: root("page-contact") },
   });
   const found = await releaseMismatches(BASE, "live", fetchFn);
-  assert.deepEqual(found.map((m) => m.request).sort(), ["GET /contact", "GET /rank"]);
+  assert.deepEqual(found.map((m) => m.request).sort(), ["GET /contact", "GET /rank", "GET /rules"]);
+});
+
+const appFiles = (dir = "app"): string[] =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return appFiles(path);
+    return path.endsWith(".tsx") ? [path] : [];
+  });
+
+// A renamed page id would fail every release on a healthy site, so it fails here first.
+test("each checked page's test id is one the app renders", () => {
+  assert.deepEqual(Object.fromEntries(CHECKED_PAGES), PAGES);
+  const sources = appFiles().map((path) => readFileSync(path, "utf8"));
+  for (const [path, id] of CHECKED_PAGES)
+    assert.ok(
+      sources.some((source) => source.includes(`"${id}"`)),
+      `${path}: nothing under app/ has the test id ${id}`,
+    );
 });
 
 test("the leaderboard needs JSON with an entries array", async () => {
@@ -159,7 +185,7 @@ test("each request is logged with its status", async () => {
 test("a request that fails to connect is tried once more before it is a mismatch", async () => {
   const { fetchFn, seen } = stub({
     ...good("live"),
-    "GET /": ["fail", { status: 200, type: "text/html", body: PAGES["/"] }],
+    "GET /": ["fail", { status: 200, type: "text/html", body: root(PAGES["/"]) }],
   });
   assert.deepEqual(await releaseMismatches(BASE, "live", fetchFn), []);
   assert.equal(seen.filter((call) => call.url.endsWith("/")).length, 2);

@@ -51,7 +51,7 @@ From the repository, Vercel's documentation and read-only requests the lead made
    | `GET /v1/end`                                     | 405                                  | 405      |
    | `POST /v1/end` with no token and no body          | 400                                  | 401      |
 
-   A page's marker is a string that only that page renders, such as its heading. Each request has a timeout, follows no redirect, and sends no `Origin` header, no query string and no credentials. A timeout or a connection failure is a mismatch. Run as a script, it prints each request with its status and exits non-zero on any mismatch.
+   A page's marker is the `data-testid` on its root element, such as `page-rules`, as the attribute appears in the server HTML. Each request has a timeout, follows no redirect, and sends no `Origin` header, no query string and no credentials. A timeout or a connection failure is a mismatch. Run as a script, it prints each request with its status and exits non-zero on any mismatch.
 
 2. **Deployment state** `scripts/release-deployment.ts`. Exported functions take the ids, a token, a `fetch` and a clock.
    - **Lookup.** It polls the list endpoint with a stated `limit` until the newest production deployment for the commit, by creation time, is `READY`. It returns that deployment's id, URL and creation time. It throws when that newest deployment is `ERROR` or `CANCELED`, and when none is ready within ten minutes. Deployments for other commits and older deployments for the same commit are ignored.
@@ -142,11 +142,11 @@ Owned paths: `scripts/release-check.ts`, `scripts/release-deployment.ts`, their 
 
 Not owned: `app/`, `lib/`, `db/`, the other workflows, `package.json`.
 
-## Change pending before this is committed
+## Changes after the first review
 
-The page markers are sentences of copy. On 2026-11-26 `main` gained new copy in `953c9ad`, production moved to that commit, and the live check then failed on `/`, `/rules` and `/rank` with "200 text/html without the marker". The site was healthy. A copy edit must not stop a release.
+**Page markers are test ids.** The markers were sentences of copy. On 2026-11-26 `main` gained new copy in `953c9ad`, production moved to that commit, and the live check then failed on `/`, `/rules` and `/rank` with the site healthy. Pull request 50 put a `data-testid` on each page's root. This branch took `main` at `5d7c652`, and each page check now looks for `data-testid="<id>"` in the HTML. An offline test fails when a checked id is missing from the files under `app/`. The lead saw it fail with `page-rules` misspelled, and ran both modes against production on 2026-11-26 at `5d7c652`: every request matched.
 
-Pull request 50 adds a `data-testid` to each page's root, such as `page-rules`, at the user's request. After it merges, this branch takes `main`, the markers become those test ids, and an offline test fails when a marker's id is missing from the files under `app/`. The code review's one corrective cycle is done and passed the lead's checks at 628 of 628. The re-review happens after the marker change.
+**The ancestry test cleared no Git variables.** `tests/release-deployment.test.ts` builds a temporary repository with `git init` and `git commit`. A commit hook exports `GIT_DIR` and `GIT_INDEX_FILE`, so on the first commit of this branch those commands acted on this repository: they wrote eleven commits to the feature branch and set `core.bare` to true in the shared config, which stopped Git in the primary checkout. The lead set `core.bare` back to false, moved the branch back with a soft reset so no file changed, and the test file now deletes every `GIT_` variable before it runs, as `tests/seed.test.ts` does. Run with `GIT_DIR` pointing at a throwaway repository, the file failed 4 of 24 before the fix and passed 24 of 24 after it, with the throwaway repository untouched.
 
 ## Risks and open questions
 
