@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { MODELS } from "../../lib/policy";
 import { journey, signIn } from "./browser";
-import { grantAdmin, newEmail, pool } from "./stack";
+import { contactEmail, grantAdmin, mailTo, newEmail, pool, threadIdOf } from "./stack";
 
 // A finished run with no lease and no spend, owned by one member. The run journeys will replace
 // it with a run started through the app.
@@ -45,6 +45,13 @@ journey("E7: a member reports their own run and an admin sees it", async ({ page
     [message],
   );
   assert.deepEqual(rows, [{ kind: "monitor", game_id: runId, session_id: runId }]);
+
+  const notification = await mailTo(
+    contactEmail,
+    `[CTF] Report (monitor) on run ${runId.slice(0, 8)}`,
+  );
+  assert.equal(notification.replyTo, email);
+  await threadIdOf(message);
 
   const adminPage = await fresh();
   const admin = newEmail("e7-admin");

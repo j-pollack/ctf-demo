@@ -1,21 +1,21 @@
 import { appendFileSync, writeSync } from "node:fs";
 import { isMainThread, threadId } from "node:worker_threads";
 import { createAccountFake } from "../integration/display-name-fake";
+import { createFastmailFake } from "../integration/fastmail-fake";
 
-type Fake = Pick<ReturnType<typeof createAccountFake>, "fetch" | "mail">;
 type Entry = Record<string, unknown>;
+// A fake external service: its answers, and every mail it has captured so far.
+export type Fake = {
+  fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  mail: () => Entry[];
+};
 export type GuardOptions = {
   real: typeof fetch;
-  fake: Fake;
+  // The exact URLs that are faked, each with the fake that answers it.
+  fakes: Record<string, Fake>;
   violation: (entry: Entry) => void;
   mail: (entry: Entry) => void;
 };
-
-// The two hosts the faked account boundary answers. Everything else off this machine is refused.
-const FAKED_URLS = new Set([
-  "https://api.resend.com/emails",
-  "https://openrouter.ai/api/v1/systemone",
-]);
 
 function isLoopback(url: string) {
   if (!URL.canParse(url)) return false;
@@ -23,23 +23,25 @@ function isLoopback(url: string) {
   return protocol === "http:" && hostname === "127.0.0.1" && !username && !password;
 }
 
-// Loopback goes through, Resend and the display-name check go to the fake, anything else rejects.
-// Every rejection, including one the fake itself makes, leaves a violation for the runner.
+// Loopback goes through, a faked URL goes to its fake, anything else rejects. Every rejection,
+// including one a fake itself makes, leaves a violation for the runner.
 export function guardedFetch(options: GuardOptions): typeof fetch {
-  let captured = 0;
-  const recordNewMail = () => {
-    for (; captured < options.fake.mail.length; captured++)
-      options.mail({ ...options.fake.mail[captured] });
+  const captured = new Map<Fake, number>();
+  const recordNewMail = (fake: Fake) => {
+    const all = fake.mail();
+    for (let i = captured.get(fake) ?? 0; i < all.length; i++) options.mail({ ...all[i] });
+    captured.set(fake, all.length);
   };
   return async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
     if (isLoopback(url)) return options.real(input, init);
-    if (!FAKED_URLS.has(url)) {
+    const fake = Object.hasOwn(options.fakes, url) ? options.fakes[url] : undefined;
+    if (!fake) {
       options.violation({ kind: "unexpected-request", url });
       throw new Error(`Unexpected external request: ${url}`);
     }
     try {
-      return await options.fake.fetch(input, init);
+      return await fake.fetch(input, init);
     } catch (error) {
       options.violation({
         kind: "fake-refused",
@@ -48,10 +50,25 @@ export function guardedFetch(options: GuardOptions): typeof fetch {
       });
       throw error;
     } finally {
-      recordNewMail();
+      recordNewMail(fake);
     }
   };
 }
+
+// Each submission the app sent through Fastmail, as the plain strings a journey reads.
+export const fastmailFake = (fake: ReturnType<typeof createFastmailFake>): Fake => ({
+  fetch: fake.fetch,
+  mail: () =>
+    fake.submissions.map(({ rcptTo, email }) => ({
+      to: rcptTo[0],
+      replyTo: email.replyTo[0] ?? "",
+      subject: email.subject,
+      text: email.text,
+      messageId: email.messageId,
+      inReplyTo: email.inReplyTo[0] ?? "",
+      references: email.references,
+    })),
+});
 
 export const leakedNames = (names: string[], env: Record<string, string | undefined>) =>
   names.filter((name) => env[name]);
@@ -85,9 +102,17 @@ function install() {
         record({ kind: "name-not-empty", name });
       }
   };
+  const account = createAccountFake();
+  const accountFake: Fake = { fetch: account.fetch, mail: () => account.mail };
+  const fastmail = fastmailFake(createFastmailFake());
   const guarded = guardedFetch({
     real: globalThis.fetch,
-    fake: createAccountFake(),
+    fakes: {
+      "https://api.resend.com/emails": accountFake,
+      "https://openrouter.ai/api/v1/systemone": accountFake,
+      "https://api.fastmail.com/jmap/session": fastmail,
+      "https://api.fastmail.com/jmap/api/": fastmail,
+    },
     violation: record,
     mail: append(mail),
   });

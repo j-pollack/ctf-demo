@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { journey, signIn } from "./browser";
-import { grantAdmin, newEmail, pool } from "./stack";
+import { contactEmail, grantAdmin, mailTo, newEmail, pool, threadIdOf } from "./stack";
 
 journey("E6: a contact message is stored and listed for an admin", async ({ page, fresh }) => {
   const message = `Hello from the browser suite ${randomUUID()}`;
@@ -18,6 +18,10 @@ journey("E6: a contact message is stored and listed for an admin", async ({ page
     [message],
   );
   assert.deepEqual(rows, [{ kind: "contact", name: "E2E Visitor", email: sender }]);
+
+  const notification = await mailTo(contactEmail, "[CTF] Contact from E2E Visitor");
+  assert.equal(notification.replyTo, sender);
+  await threadIdOf(message);
 
   const adminPage = await fresh();
   const admin = newEmail("e6-admin");

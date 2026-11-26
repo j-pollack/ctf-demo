@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { test } from "node:test";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import { baseUrl, signInLink, takeViolations, visitorHeaders } from "./stack";
+import { baseUrl, signInLink, takeServerFailures, takeViolations, visitorHeaders } from "./stack";
 
 const EVIDENCE = ".artifacts/e2e";
 const TIMEOUT = 15_000;
@@ -13,6 +13,8 @@ export type Session = {
   fresh: () => Promise<Page>;
   // A response the journey causes on purpose: left out of the failed-response check.
   expectFailure: (status: number, path: string) => void;
+  // A failure event the journey makes the server log on purpose: left out of the log check.
+  expectServerFailure: (event: string) => void;
 };
 
 type Tracked = { context: BrowserContext; page: Page; problems: string[] };
@@ -57,6 +59,7 @@ export function journey(name: string, body: (session: Session) => Promise<void>)
   return test(name, { timeout: 90_000 }, async () => {
     const browser = await chromium.launch();
     const expected: { status: number; path: string }[] = [];
+    const expectedEvents: string[] = [];
     const tracked: Tracked[] = [await track(browser, expected)];
     const session: Session = {
       page: tracked[0].page,
@@ -65,6 +68,7 @@ export function journey(name: string, body: (session: Session) => Promise<void>)
         return tracked[tracked.length - 1].page;
       },
       expectFailure: (status, path) => expected.push({ status, path }),
+      expectServerFailure: (event) => expectedEvents.push(event),
     };
     try {
       await body(session);
@@ -74,10 +78,18 @@ export function journey(name: string, body: (session: Session) => Promise<void>)
         "the browser reported problems",
       );
       assert.deepEqual(takeViolations(), [], "the server recorded violations");
+      const failures = takeServerFailures();
+      assert.deepEqual(
+        failures.map((entry) => entry.event),
+        expectedEvents,
+        `the server logged failures: ${JSON.stringify(failures)}`,
+      );
     } catch (error) {
-      // Violations this journey caused must not fail the next one.
+      // Violations and failures this journey caused must not fail the next one.
       for (const violation of takeViolations())
         console.error(`${name}: server violation ${JSON.stringify(violation)}`);
+      for (const failure of takeServerFailures())
+        console.error(`${name}: server failure ${JSON.stringify(failure)}`);
       mkdirSync(EVIDENCE, { recursive: true });
       await Promise.all(
         tracked.flatMap(({ context, page }, index) => [

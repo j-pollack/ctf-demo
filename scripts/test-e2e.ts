@@ -28,7 +28,7 @@ const INHERITED = [
   "NODE_V8_COVERAGE",
   "PLAYWRIGHT_BROWSERS_PATH",
 ];
-// Names that stay empty in every child, whether or not an env file defines them.
+// Names that are empty in a child unless its stage sets one, whether or not an env file defines them.
 const ALWAYS_EMPTY = [
   "DATABASE_URL",
   "DATABASE_URL_UNPOOLED",
@@ -40,11 +40,14 @@ const ALWAYS_EMPTY = [
 ];
 // The build reads the database module but never connects, as in the ci workflow.
 const UNREACHABLE_DATABASE = "postgresql://unavailable:unavailable@127.0.0.1:1/ctf";
+// The address contact mail goes to. A fixed value, so the tests can name it.
+const CONTACT_EMAIL = "contact@ctf.example.test";
 const ARTIFACTS = resolve(".artifacts/e2e");
 export const VIOLATIONS_FILE = resolve(ARTIFACTS, "violations.jsonl");
 export const MAIL_FILE = resolve(ARTIFACTS, "mail.jsonl");
 export const VISITOR_FILE = resolve(ARTIFACTS, "visitors.txt");
-const SERVER_LOG = resolve(ARTIFACTS, "server.log");
+export const SERVER_LOG = resolve(ARTIFACTS, "server.log");
+export const LOG_CURSOR_FILE = resolve(ARTIFACTS, "server-log.cursor");
 const PRELOAD = resolve("tests/e2e/preload.ts");
 
 // Each file is read whole and only the names are kept. The pattern is the key and separator part
@@ -84,10 +87,21 @@ function synthetic(stage: Stage, stack: Stack): Record<string, string> {
     return {
       ...database,
       ...files,
+      CONTACT_EMAIL,
       E2E_VISITOR_FILE: VISITOR_FILE,
+      E2E_SERVER_LOG: SERVER_LOG,
+      E2E_LOG_CURSOR: LOG_CURSOR_FILE,
       E2E_BASE_URL: origin(stack.port),
     };
-  return { ...database, ...app, ...files, NODE_OPTIONS: `--import tsx --import ${PRELOAD}` };
+  // Mail is configured for the server alone: the build and the migration send none.
+  const mail = { FASTMAIL_API_TOKEN: "e2e-fastmail-token", CONTACT_EMAIL };
+  return {
+    ...database,
+    ...app,
+    ...files,
+    ...mail,
+    NODE_OPTIONS: `--import tsx --import ${PRELOAD}`,
+  };
 }
 
 // A child's whole environment: an allow-list of this process's variables, every name an env file
@@ -122,18 +136,31 @@ export function emptyNames(env: NodeJS.ProcessEnv, fileNames: string[]): string[
   return [...new Set([...fileNames, ...ALWAYS_EMPTY])].filter((name) => env[name] === "");
 }
 
-// A failed route or settings read is logged and answered gracefully, so only the log shows it.
-export function serverLogProblems(lines: string[]): string[] {
-  return lines.filter((line) => {
+// A route that throws, a settings read that falls back and a task that fails are logged and
+// answered gracefully, so only the log shows them. The unawaited-task event is logged when
+// scheduling a task with `after()` throws outside a request scope, and the task then runs with
+// nothing awaiting it.
+const FAILURE_EVENTS = new Set(["auth.background_task_unawaited"]);
+export function failureEvents(lines: string[]): Record<string, unknown>[] {
+  return lines.flatMap((line) => {
     try {
-      const event = (JSON.parse(line) as { event?: unknown }).event;
-      return (
-        typeof event === "string" && (event === "route.failed" || event.endsWith("_read_failed"))
-      );
+      const entry = JSON.parse(line) as Record<string, unknown> | null;
+      const event = entry?.event;
+      const failed =
+        typeof event === "string" && (event.endsWith("failed") || FAILURE_EVENTS.has(event));
+      return failed ? [entry!] : [];
     } catch {
-      return false;
+      return [];
     }
   });
+}
+
+// The whole lines in the log after a byte offset, and the offset after the last of them. A line the
+// server is still writing has no newline yet, so it is left for the next read.
+export function newLines(log: Buffer, offset: number): { lines: string[]; offset: number } {
+  const end = log.lastIndexOf("\n") + 1;
+  if (end <= offset) return { lines: [], offset };
+  return { lines: log.subarray(offset, end).toString().split("\n").filter(Boolean), offset: end };
 }
 
 async function freePort() {
@@ -191,12 +218,14 @@ async function main() {
   const next = (...args: string[]) => ["node_modules/next/dist/bin/next", ...args];
   let server: ChildProcess | undefined;
   let serverLog: number | undefined;
+  let testCode: number | undefined;
   try {
     rmSync(ARTIFACTS, { recursive: true, force: true });
     mkdirSync(ARTIFACTS, { recursive: true });
     writeFileSync(VIOLATIONS_FILE, "");
     writeFileSync(MAIL_FILE, "");
     writeFileSync(VISITOR_FILE, "");
+    writeFileSync(LOG_CURSOR_FILE, "0");
     const port = Number(process.env.PORT) || (await freePort());
     const noDatabase = { port, dbPort: "", database: "" };
     if (await run("build", noDatabase, next("build"))) throw new Error("The build failed.");
@@ -218,21 +247,29 @@ async function main() {
     current = server;
     await waitForServer(server, port);
     // `node --test` with no files would discover tests anywhere, so an empty selection stops here.
-    const code = files.length
+    testCode = files.length
       ? await run("test", stack, ["--import", "tsx", "--test", "--test-concurrency=1", ...files])
       : 0;
-    if (stopped) return;
-    // These lines explain a failed run as often as a passing one, so they are always shown.
-    const problems = endOfRunProblems();
-    for (const problem of problems) console.error(problem);
-    process.exitCode = code || (problems.length ? 1 : 0);
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode ||= 1;
   } finally {
-    if (server) await stopServer(server);
-    if (serverLog !== undefined) closeSync(serverLog);
-    postgres?.remove();
+    try {
+      if (server) await stopServer(server);
+      // Read only once the server has stopped, so the log is complete. A run stopped by a signal
+      // skips it. These lines explain a failed run as often as a passing one, so they are always shown.
+      if (testCode !== undefined && !stopped) {
+        const problems = endOfRunProblems();
+        for (const problem of problems) console.error(problem);
+        process.exitCode = testCode || (problems.length ? 1 : 0);
+      }
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error);
+      process.exitCode ||= 1;
+    } finally {
+      if (serverLog !== undefined) closeSync(serverLog);
+      postgres?.remove();
+    }
   }
 }
 
@@ -272,11 +309,17 @@ async function waitForServer(server: ChildProcess, port: number) {
 
 function endOfRunProblems() {
   // The preload recreates the violations file on its next append, so a missing file is empty.
-  const text = (file: string) =>
-    existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+  const violations = existsSync(VIOLATIONS_FILE)
+    ? readFileSync(VIOLATIONS_FILE, "utf8").split("\n").filter(Boolean)
+    : [];
+  // The journeys have taken the log up to the cursor; what is left came after the last of them.
+  const { lines } = newLines(
+    readFileSync(SERVER_LOG),
+    Number(readFileSync(LOG_CURSOR_FILE, "utf8")),
+  );
   return [
-    ...text(VIOLATIONS_FILE).map((line) => `Unexpected violation left after the tests: ${line}`),
-    ...serverLogProblems(text(SERVER_LOG)).map((line) => `Server log: ${line}`),
+    ...violations.map((line) => `Unexpected violation left after the tests: ${line}`),
+    ...failureEvents(lines).map((entry) => `Server log: ${JSON.stringify(entry)}`),
   ];
 }
 

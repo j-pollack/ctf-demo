@@ -3,28 +3,40 @@ import { test } from "node:test";
 import { DISPLAY_NAME_QUESTIONS } from "../lib/display-name";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { createAccountFake } from "./integration/display-name-fake";
-import { guardedFetch, leakedNames } from "./e2e/preload";
+import { createFastmailFake } from "./integration/fastmail-fake";
+import { readThreads, sendMail } from "../lib/fastmail";
+import { fastmailFake, guardedFetch, leakedNames } from "./e2e/preload";
 
 process.env.RESEND_API_KEY = "preload-test-resend";
 process.env.RESEND_FROM = "preload@example.invalid";
 process.env.OPENROUTER_API_KEY = "preload-test-router";
+process.env.FASTMAIL_API_TOKEN = "preload-test-fastmail";
+process.env.CONTACT_EMAIL = "contact@preload.example.test";
 
 function setup() {
   const seen: string[] = [];
   const violations: Record<string, unknown>[] = [];
   const mail: Record<string, unknown>[] = [];
-  const fake = createAccountFake();
+  const account = createAccountFake();
+  const fake = { fetch: account.fetch, mail: () => account.mail };
+  const jmap = createFastmailFake();
+  const fastmail = fastmailFake(jmap);
   const real = (async (input: string | URL | Request) => {
     seen.push(String(input));
     return new Response("real");
   }) as typeof fetch;
   const guarded = guardedFetch({
     real,
-    fake,
+    fakes: {
+      "https://api.resend.com/emails": fake,
+      "https://openrouter.ai/api/v1/systemone": fake,
+      "https://api.fastmail.com/jmap/session": fastmail,
+      "https://api.fastmail.com/jmap/api/": fastmail,
+    },
     violation: (entry) => violations.push(entry),
     mail: (entry) => mail.push(entry),
   });
-  return { seen, violations, mail, guarded };
+  return { seen, violations, mail, guarded, jmap };
 }
 const resend = (text: string, to = "member@example.invalid") => ({
   method: "POST",
@@ -119,4 +131,56 @@ test("E1: only names that carry a value are reported as leaked", () => {
     }),
     ["SITE_URL"],
   );
+});
+
+test("A8: mail sent through Fastmail is recorded once, with the ids that thread it", async (t) => {
+  const { seen, violations, mail, guarded, jmap } = setup();
+  t.mock.method(globalThis, "fetch", guarded);
+  const first = await sendMail({
+    to: "contact@preload.example.test",
+    replyTo: "visitor@example.invalid",
+    subject: "[CTF] Contact from Ada",
+    text: "Hello",
+    messageId: "fb.abc@preload.example.test",
+  });
+  await sendMail({
+    to: "visitor@example.invalid",
+    subject: "Re: [CTF] Contact from Ada",
+    text: "Thanks",
+    inReplyTo: "fb.abc@preload.example.test",
+    references: ["fb.abc@preload.example.test"],
+  });
+  assert.deepEqual(seen, []);
+  assert.deepEqual(violations, []);
+  assert.deepEqual(jmap.violations, []);
+  assert.deepEqual(mail, [
+    {
+      to: "contact@preload.example.test",
+      replyTo: "visitor@example.invalid",
+      subject: "[CTF] Contact from Ada",
+      text: "Hello",
+      messageId: "fb.abc@preload.example.test",
+      inReplyTo: "",
+      references: [],
+    },
+    {
+      to: "visitor@example.invalid",
+      replyTo: "",
+      subject: "Re: [CTF] Contact from Ada",
+      text: "Thanks",
+      messageId: mail[1].messageId,
+      inReplyTo: "fb.abc@preload.example.test",
+      references: ["fb.abc@preload.example.test"],
+    },
+  ]);
+  assert.match(String(mail[1].messageId), /@fastmail\.invalid$/);
+  // Reading a thread sends nothing, so it records nothing more.
+  await readThreads([first.threadId], { bodies: true });
+  assert.equal(mail.length, 2);
+});
+
+test("A8: a Fastmail URL outside the two the fake answers is refused", async () => {
+  const { violations, guarded } = setup();
+  await assert.rejects(() => guarded("https://api.fastmail.com/jmap/download"), /Unexpected/);
+  assert.equal(violations.length, 1);
 });

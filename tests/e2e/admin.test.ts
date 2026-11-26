@@ -43,6 +43,7 @@ journey("E8: a member who is not an admin gets the not-found page", async (sessi
 
 journey("E2: a model change needs the catalogue, which the suite refuses", async (session) => {
   const page = await adminPage(session, "e2-admin");
+  session.expectServerFailure("agent_model_change_failed");
   await page.getByRole("button", { name: "Save" }).first().waitFor();
   const select = page.getByLabel("Model");
   const current = await select.inputValue();
