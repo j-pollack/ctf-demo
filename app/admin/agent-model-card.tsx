@@ -1,3 +1,5 @@
+import { SaveButton } from "./save-button";
+
 export function AgentModelCard({
   action,
   models,
@@ -26,7 +28,7 @@ export function AgentModelCard({
             </option>
           ))}
         </select>{" "}
-        <button type="submit">Save</button>
+        <SaveButton />
       </form>
       {changedBy && <small>{changedBy}</small>}
       {refused && (

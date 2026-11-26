@@ -1428,6 +1428,10 @@ dialog::backdrop {
 .limit select {
   width: 7em;
 }
+/* Wide enough for "Saving…", so the row does not shift while a save is pending. */
+.card button[type="submit"]:not([role="switch"]) {
+  min-width: 6.5em;
+}
 .rule button[role="switch"] {
   flex: none;
   display: flex;

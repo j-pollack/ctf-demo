@@ -1,6 +1,7 @@
 import { dollars, EFFORT_NAMES } from "@/app/run-format";
 import { LIMITS, type LimitKey } from "@/lib/limits";
 import type { Limits } from "@/lib/types";
+import { SaveButton } from "./save-button";
 
 const LABELS: Record<LimitKey, string> = {
   daily_cap_microdollars: "Shared daily cap",
@@ -88,7 +89,7 @@ export function LimitsCard({
               {changedBy[limit.key] && <small>{changedBy[limit.key]}</small>}
             </div>
             <Field limit={limit} limits={limits} id={id} />
-            <button type="submit">Save</button>
+            <SaveButton />
           </form>
         );
       })}
