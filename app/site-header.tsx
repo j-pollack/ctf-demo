@@ -21,10 +21,20 @@ export default function SiteHeader({
         <span aria-hidden="true">_</span>
       </Link>
       <nav aria-label="Main navigation">
+        <Link
+          href="/rules"
+          // The visible text shortens on the narrowest screens, so the name says it in full.
+          aria-label="How to play"
+          aria-current={current === "rules" ? "page" : undefined}
+        >
+          <span className="nav-full">How to play</span>
+          <span className="nav-short" aria-hidden="true">
+            How to
+          </span>
+        </Link>
         {(
           [
-            ["/rules", "Rules", "rules"],
-            ["/rank", "Rank", "rank"],
+            ["/rank", "Rankings", "rank"],
             ["/runs", "My Runs", "history"],
           ] as const
         ).map(([href, label, key]) => (

@@ -111,7 +111,7 @@ export function RunRiskChart({ series }: { series: SessionRiskSeries[] }) {
           );
         })}
       </svg>
-      <p className="risk-axis-title">Review per session</p>
+      <p className="risk-axis-title">Review number</p>
       <div className="risk-legend" aria-label="Session risk scores">
         {series.map((session) => {
           const color = colors[(session.ordinal - 1) % colors.length];

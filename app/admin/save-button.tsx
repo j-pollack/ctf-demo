@@ -12,7 +12,7 @@ export function SaveButton() {
   const { pending } = useFormStatus();
   const { label, disabled } = saveButtonState(pending);
   return (
-    <button type="submit" disabled={disabled} aria-busy={pending}>
+    <button type="submit" disabled={disabled} aria-busy={pending} data-testid="admin-save">
       {label}
     </button>
   );

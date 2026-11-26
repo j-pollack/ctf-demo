@@ -23,7 +23,7 @@ export default async function FeedbackPage({
   if (!thread) notFound();
   const { error } = await searchParams;
   return (
-    <main className="admin">
+    <main className="admin" data-testid="page-admin-feedback">
       <header className="admin-head">
         <a href="/admin" className="wordmark">
           Capture the flag<span>_</span>

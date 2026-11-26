@@ -13,8 +13,14 @@ test("step-by-step rules describe starting a run without the removed difficulty 
   );
   assert.match(html, /Start a run/);
   assert.doesNotMatch(html, /difficulty|\bEasy\b|\bMedium\b|\bHard\b/i);
-  assert.match(html, /investigator can read the agent’s reasoning/);
   assert.match(html, /system prompt box/);
+  assert.match(html, /<em>turn<\/em>/);
+  assert.match(
+    html,
+    /When the agent finishes responding, the monitor reviews the session\. The status in the run bar shows what the monitor is doing\./,
+  );
+  // The monitor reading everything is said once, on How to play under The monitor.
+  assert.doesNotMatch(html, /investigator|monitor at a frontier lab|be clear about the work/i);
 });
 
 test("the inspector keeps each session's historical agent label and effort without difficulty", () => {
@@ -31,7 +37,7 @@ test("the inspector keeps each session's historical agent label and effort witho
     }),
   );
   assert.match(html, /model-kept-for-this-session/);
-  assert.match(html, /High/);
+  assert.match(html, /high effort/);
   assert.equal((html.match(/<select\b/g) ?? []).length, 0);
   assert.doesNotMatch(html, /DIFFICULTY|>Medium</);
   assert.doesNotMatch(html, />EFFORT<|>MODEL<\/span><select/);

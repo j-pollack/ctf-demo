@@ -35,15 +35,18 @@ test("the name field is labelled, says it is for the leaderboard, and ties its h
   assert.match(input, /value="Night_Owl-7"/);
   assert.match(input, /aria-invalid="false"/);
   assert.match(html, /<p id="display-name-error" role="alert" class="field-error"><\/p>/);
-  assert.match(html, /<button class="primary">Save name<\/button>/);
+  assert.match(
+    html,
+    /<button class="primary" data-testid="account-name-submit">Save name<\/button>/,
+  );
   // Live regions exist, empty, before they announce anything.
   assert.match(
     html,
-    /<button class="primary">Save name<\/button><p role="status" class="saved"><\/p><\/form>/,
+    /<button class="primary" data-testid="account-name-submit">Save name<\/button><p role="status" class="saved" data-testid="account-name-status" data-state="idle"><\/p><\/form>/,
   );
   assert.match(
     html,
-    /<button>Send confirmation link<\/button><p role="status" class="saved"><\/p><\/form>/,
+    /<button data-testid="account-email-submit">Send confirmation link<\/button><p role="status" class="saved" data-testid="account-email-status" data-state="idle"><\/p><\/form>/,
   );
 });
 
@@ -51,10 +54,13 @@ test("a nameless account is told a name finishes setup and is needed to play", (
   const html = render({ displayName: null, next: "/play" });
   assert.match(
     html,
-    /<p role="status" class="notice">Choose a display name to finish setting up your account\. You need one to start a run\.<\/p>/,
+    /<p role="status" class="notice" data-testid="account-setup-notice">Choose a display name to finish setting up your account\. You need one to start a run\.<\/p>/,
   );
   assert.match(html, /<input id="display-name"[^>]*autofocus=""[^>]*value=""/i);
-  assert.match(html, /<button class="primary">Save name and play<\/button>/);
+  assert.match(
+    html,
+    /<button class="primary" data-testid="account-name-submit">Save name and play<\/button>/,
+  );
   assert.doesNotMatch(render(), /finish setting up/);
 });
 
@@ -69,21 +75,21 @@ test("the email form shows the current address and explains both links", () => {
     html,
     /<p id="new-email-hint" class="hint">We send a link to your current address first, then one to the new address\. Your email is never shown on the leaderboard\.<\/p>/,
   );
-  assert.match(html, /<button>Send confirmation link<\/button>/);
+  assert.match(html, /<button data-testid="account-email-submit">Send confirmation link<\/button>/);
 });
 
 test("a finished or failed email link is reported at the top", () => {
   assert.match(
     render({ notice: "changed" }),
-    /<p role="status" class="notice">Your email is now me@example\.com\.<\/p>/,
+    /<p role="status" class="notice" data-testid="account-notice" data-state="changed">Your email is now me@example\.com\.<\/p>/,
   );
   assert.match(
     render({ notice: "confirmed" }),
-    /<p role="status" class="notice">Confirmed\. Open the link we sent to your new address to finish the change\.<\/p>/,
+    /<p role="status" class="notice" data-testid="account-notice" data-state="confirmed">Confirmed\. Open the link we sent to your new address to finish the change\.<\/p>/,
   );
   assert.match(
     render({ notice: "link-error" }),
-    /<p role="alert" class="notice error">That link has expired or was already used\. Ask for a new one below\.<\/p>/,
+    /<p role="alert" class="notice error" data-testid="account-notice" data-state="link-error">That link has expired or was already used\. Ask for a new one below\.<\/p>/,
   );
 });
 
@@ -106,12 +112,19 @@ test("after a link is sent the address is cleared and the same address cannot be
   assert.match(sent, /<input id="new-email"[^>]*value=""/);
   assert.match(
     sent,
-    /<p role="status" class="saved">Check me@example\.com and open the link there\. We then send a link to moved@example\.com to finish the change\.<\/p>/,
+    /<p role="status" class="saved" data-testid="account-email-status" data-state="sent">Check me@example\.com and open the link there\. We then send a link to moved@example\.com to finish the change\.<\/p>/,
   );
-  assert.match(sent, /<button>Send confirmation link<\/button>/, "a different address can go");
+  assert.match(
+    sent,
+    /<button data-testid="account-email-submit">Send confirmation link<\/button>/,
+    "a different address can go",
+  );
   assert.match(
     emailFields({ sentTo: "moved@example.com", value: "moved@example.com" }),
-    /<button disabled="">Send confirmation link<\/button>/,
+    /<button disabled="" data-testid="account-email-submit">Send confirmation link<\/button>/,
   );
-  assert.match(emailFields({ busy: true }), /<button disabled="">Sending…<\/button>/);
+  assert.match(
+    emailFields({ busy: true }),
+    /<button disabled="" data-testid="account-email-submit">Sending…<\/button>/,
+  );
 });

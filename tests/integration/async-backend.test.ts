@@ -1621,7 +1621,7 @@ await test(
           publicRun.monitor?.reason,
           status === "unknown"
             ? "A stopped command is being checked. This takes a few seconds."
-            : "A command lost contact with its response, so this run cannot be graded.",
+            : "A command stopped reporting back, so this run can’t be graded.",
         );
         await pool.query("UPDATE ctf.agent_sessions SET lease=NULL,lease_until=NULL WHERE id=$1", [
           id,
@@ -1801,7 +1801,7 @@ await test(
         assert.equal(orphaned?.status, "unresolved");
         assert.equal(
           orphaned?.reason,
-          "A command lost contact with its response, so this run cannot be graded.",
+          "A command stopped reporting back, so this run can’t be graded.",
         );
         assert.equal(await claimAsyncFinalization(), null);
       },

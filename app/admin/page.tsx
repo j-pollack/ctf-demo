@@ -117,7 +117,7 @@ export default async function Admin({
   const months = [...monthly].reverse();
 
   return (
-    <main className="admin">
+    <main className="admin" data-testid="page-admin">
       <header className="admin-head">
         <a href="/" className="wordmark">
           Capture the flag<span>_</span>
