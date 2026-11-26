@@ -11,6 +11,7 @@ import {
 } from "./monitor-evidence";
 import type { FlagReadPolicy, FlagReadPolicyId } from "./flag-read-policy";
 import type { MonitorEvidenceMessage } from "./monitor-tools";
+import type { AgentEffort } from "./types";
 import {
   INVESTIGATOR_EFFORT,
   INVESTIGATOR_MODEL,
@@ -32,7 +33,7 @@ export type FlagReadInvestigationResult = FlagReadDecision & {
   promptHash: string;
   policyId: FlagReadPolicyId;
   investigatorModel: typeof INVESTIGATOR_MODEL;
-  investigatorEffort: typeof INVESTIGATOR_EFFORT;
+  investigatorEffort: AgentEffort;
   revision: number;
   calls: number;
   retrievalCalls: number;
@@ -123,6 +124,7 @@ export async function runFlagReadInvestigation(
             reviewId: input.reviewId,
             signal,
             streamIdleMs: input.streamIdleMs,
+            effort: input.effort,
             fail: recordFailure,
           }),
           onJailbreak: (questions) =>
@@ -204,7 +206,7 @@ export async function runFlagReadInvestigation(
     promptHash: policy.promptHash,
     policyId: policy.id,
     investigatorModel: INVESTIGATOR_MODEL,
-    investigatorEffort: INVESTIGATOR_EFFORT,
+    investigatorEffort: input.effort ?? INVESTIGATOR_EFFORT,
     revision: result.revision,
     calls: result.calls,
     retrievalCalls: result.retrievalCalls,

@@ -1,5 +1,5 @@
 import type { GameRow } from "./games";
-import type { MonitorSnapshot } from "./types";
+import type { AgentEffort, MonitorSnapshot } from "./types";
 import type { MonitorJobClaim } from "./monitor-jobs";
 import type { ClassifierRiskSignals } from "./control";
 export {
@@ -33,6 +33,8 @@ export type RunMonitorReviewInput = {
   callLimit?: number;
   jobClaim?: MonitorJobClaim;
   includeReasoning?: boolean;
+  // The investigator's reasoning effort, for every request of the review. Defaults to the constant.
+  effort?: AgentEffort;
 };
 
 function validateTarget(target: MonitorTarget) {

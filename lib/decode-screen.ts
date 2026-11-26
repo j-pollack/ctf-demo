@@ -4,6 +4,7 @@
 // command questions every command gets. Encoding is a known way to hide a prompt injection.
 import { createHash } from "node:crypto";
 import { db } from "./db";
+import type { AgentEffort } from "./types";
 import type { GameRow } from "./games";
 import type { MonitorJobClaim } from "./monitor-jobs";
 import type { LayerScreen } from "./decode-layers";
@@ -56,6 +57,8 @@ export function createDecodedScreen(input: {
   reviewId: string;
   signal: AbortSignal;
   streamIdleMs?: number;
+  // The investigator's effort, for the decoded layers' second looks.
+  effort?: AgentEffort;
   // Fails the review, as the worker fails a final review whose second look gave no answer.
   fail: (error: unknown) => void;
 }) {
@@ -124,6 +127,7 @@ export function createDecodedScreen(input: {
         signal,
         deadlineMs: SECOND_LOOK_DEADLINE_MS,
         streamIdleMs: input.streamIdleMs,
+        effort: input.effort,
         texts: unclear,
       });
       // A text could tell the model not to answer, so a final review does not go on without one.

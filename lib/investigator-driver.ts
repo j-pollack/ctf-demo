@@ -12,7 +12,7 @@ import {
   type AgentTool,
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
-import { INVESTIGATOR_MODEL } from "./policy";
+import { INVESTIGATOR_EFFORT, INVESTIGATOR_MODEL } from "./policy";
 import {
   agentStream,
   getModel,
@@ -20,6 +20,7 @@ import {
   type TrustedInferenceOptions,
 } from "./inference";
 import { MONITOR_OUTPUT_TOKENS } from "./monitor-evidence";
+import type { AgentEffort } from "./types";
 import { notifyInvestigationObserver, type InvestigationObserver } from "./investigation-trace";
 import type { RunMonitorReviewInput } from "./monitor-review";
 import {
@@ -38,8 +39,7 @@ import {
 } from "./investigator-force";
 
 export { MONITOR_CALL_LIMIT };
-export { INVESTIGATOR_MODEL } from "./policy";
-export const INVESTIGATOR_EFFORT = "high" as const;
+export { INVESTIGATOR_EFFORT, INVESTIGATOR_MODEL } from "./policy";
 
 const failureFacts = new WeakMap<
   object,
@@ -86,9 +86,10 @@ export function createInvestigatorAgent(
   tools: AgentTool[],
   streamFn: StreamFn,
   systemPrompt: string,
+  effort: AgentEffort = INVESTIGATOR_EFFORT,
 ) {
   return new Agent({
-    initialState: { systemPrompt, model, thinkingLevel: INVESTIGATOR_EFFORT, tools },
+    initialState: { systemPrompt, model, thinkingLevel: effort, tools },
     streamFn,
   });
 }
@@ -281,7 +282,7 @@ export async function runInvestigatorDriver<T>(
       role: "monitor",
       sessionId: input.currentSessionId,
       reviewId: input.reviewId,
-      effort: INVESTIGATOR_EFFORT,
+      effort: input.effort ?? INVESTIGATOR_EFFORT,
       maxOutputTokens: MONITOR_OUTPUT_TOKENS,
       stage: "investigator",
       jobClaim: input.jobClaim,
@@ -340,6 +341,7 @@ export async function runInvestigatorDriver<T>(
       forcedAtStart ? [setup.finishTool] : setup.tools,
       streamFn,
       config.systemPrompt,
+      input.effort,
     );
     // A response that ends at the output limit is continued, and the loop does not end on it.
     investigator.finishTurn = ({ message }) =>

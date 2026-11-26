@@ -106,6 +106,15 @@ jobs:
           node-version: 24
       - name: Install locked dependencies
         run: npm ci
+      # Secret values cannot be read here, so this proves the twelve names are set. It runs
+      # before the drain so a missing one leaves the running worker untouched.
+      - name: Check the preview worker's limit variables
+        run: |
+          set -euo pipefail
+          list=$(flyctl secrets list --app "$FLY_APP")
+          printf '%s' "$list" | node --import tsx scripts/check-limit-env.ts
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PREVIEW }}
       # The branch's database can still hold production's row; the script drains only this app's.
       - name: Drain the branch's running worker
         run: node --import tsx scripts/drain-worker.ts https://ctf-monitor-worker-preview.fly.dev

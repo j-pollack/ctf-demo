@@ -32,16 +32,19 @@ import {
   money,
   monitorProgressText,
   number,
-  RUN_BUDGET,
+  dollars,
+  newRuns,
   runEndLabel,
 } from "@/app/run-format";
 import { SEED_BUGS } from "@/lib/seed";
 import {
-  RUNS_PER_DAY,
   type GameEvent,
   type GameRules,
   type GameStatus,
   type GameSummary,
+  type PlayerLimits,
+  sessionCount,
+  sessionLimitRefusal,
   type PublicGame,
 } from "@/lib/types";
 import {
@@ -63,14 +66,10 @@ import {
   type SessionUIMap,
 } from "@/app/session-ui-state";
 
-// A response that reaches its server-side time limit may continue automatically, up to this limit.
-export const AUTO_CONTINUE_MAX = 8;
+// A response that reaches its server-side time limit may continue automatically, up to the
+// stored number of turns. Zero turns disables it.
 const AUTO_CONTINUE_TEXT = "Continue.";
-export function shouldAutoContinue(
-  game: PublicGame | null,
-  autoUsed: number,
-  max = AUTO_CONTINUE_MAX,
-) {
+export function shouldAutoContinue(game: PublicGame | null, autoUsed: number, max: number) {
   return (
     !!game &&
     game.status === "active" &&
@@ -260,10 +259,12 @@ export default function GameUI({
   models,
   submissionUrl,
   rules,
+  limits,
 }: {
   models: string[];
   submissionUrl: string | null;
   rules: GameRules;
+  limits: PlayerLimits;
 }) {
   const pathname = usePathname(),
     params = useParams<{ id?: string }>(),
@@ -1042,13 +1043,17 @@ export default function GameUI({
         sessionControllers.current.has(id) ||
         userStopped.current.has(id) ||
         sessionPending.current.has(id) ||
-        !shouldAutoContinue({ ...game, events: view.events }, autoContinues.current.get(id) ?? 0)
+        !shouldAutoContinue(
+          { ...game, events: view.events },
+          autoContinues.current.get(id) ?? 0,
+          limits.autoContinueTurns,
+        )
       )
         continue;
       autoContinues.current.set(id, (autoContinues.current.get(id) ?? 0) + 1);
       void send(id, AUTO_CONTINUE_TEXT);
     }
-  }, [game, busy, isExecutionView, sessionViews, shownIds.join(",")]);
+  }, [game, busy, isExecutionView, sessionViews, shownIds.join(","), limits.autoContinueTurns]);
   // Shown sessions without a local stream poll; hidden sessions rely on the run's summaries.
   const shownKey = shownIds.join(","),
     shownBusy = shownIds.map((id) => (sessionViews[id]?.busy ? 1 : 0)).join(""),
@@ -1433,7 +1438,8 @@ export default function GameUI({
           unconfirmed: false,
           draft: auto ? current.draft : submitted.text,
         }));
-        if (auto) autoContinues.current.set(sessionId, AUTO_CONTINUE_MAX);
+        // No stored maximum can be reached from Infinity, so a failed send ends the chain.
+        if (auto) autoContinues.current.set(sessionId, Infinity);
         updateSessionViews((currentViews) => {
           const entry = currentViews[sessionId];
           return entry
@@ -1489,6 +1495,12 @@ export default function GameUI({
   }
   async function createSession() {
     if (!game || !member || creatingSession || game.status !== "active") return;
+    // The server still decides. This explains the refusal without a request.
+    const atLimit = sessionLimitRefusal(summariesFor(game).length, limits.sessionsPerRun);
+    if (atLimit) {
+      setError(atLimit);
+      return;
+    }
     const runId = game.id,
       owner = historyOwner.current,
       epoch = accountEpoch.current,
@@ -1740,6 +1752,7 @@ export default function GameUI({
               busy={busy}
               streamingIds={shownIds.filter((id) => sessionControllers.current.has(id))}
               creatingSession={creatingSession}
+              sessionLimit={limits.sessionsPerRun}
               pendingOrdinal={pendingOrdinal}
               newRunDisabled={busy || !canStartNewRun}
               newRunTitle={
@@ -1799,7 +1812,7 @@ export default function GameUI({
             onSubmit={login}
           />
         ) : panel === "rules" ? (
-          <RulesPanel submissionUrl={submissionUrl} rules={rules} />
+          <RulesPanel submissionUrl={submissionUrl} rules={rules} limits={limits} />
         ) : (
           <LeaderboardPanel
             scores={scores}
@@ -1822,6 +1835,7 @@ export default function GameUI({
               grading={!!game?.startBlockedByGrading}
               runsLeft={runsLeft}
               unusedRun={!canStartNewRun}
+              limits={limits}
             />
             <button
               className="primary"
@@ -1901,9 +1915,11 @@ export function WelcomeIntro({
 export function RulesPanel({
   submissionUrl,
   rules,
+  limits,
 }: {
   submissionUrl?: string | null;
   rules: GameRules;
+  limits: PlayerLimits;
 }) {
   return (
     <main className="info rules">
@@ -1986,25 +2002,26 @@ export function RulesPanel({
             Create multiple sessions in one run to work in parallel or keep separate agent
             conversations. Sessions have independent transcripts and settings. They share the same
             computer, flag, and run budget. A catch in any session ends the run and stops all of
-            them.
+            them. A run can have up to {sessionCount(limits.sessionsPerRun)}.
           </p>
         </section>
         <section>
           <h3>Budget and limits</h3>
           <ul>
             <li>
-              It’s free. Each run comes with {RUN_BUDGET} of AI usage for your agent and the
-              classifier’s checks. The agent costs more each turn as the conversation grows, because
-              it rereads all of it. The monitor’s reviews are paid from a separate allowance. When
-              your budget runs out, the run is over.
+              It’s free. Each run comes with {dollars(limits.runBudgetMicrodollars)} of AI usage for
+              your agent and the classifier’s checks. The agent costs more each turn as the
+              conversation grows, because it rereads all of it. The monitor’s reviews are paid from
+              a separate allowance. When your budget runs out, the run is over.
             </li>
             <li>
-              You can start {RUNS_PER_DAY} new runs every 24 hours. Starting a new one ends the run
-              you’re in.
+              You can start {newRuns(limits.runsPerDay)} every 24 hours. Starting a new one ends the
+              run you’re in.
             </li>
             <li>A run’s computer is deleted after 24 hours without activity.</li>
             <li>
-              All players share $10 of AI usage a day. If it runs out, come back tomorrow (UTC).
+              All players share {dollars(limits.dailyCapMicrodollars)} of AI usage a day. If it runs
+              out, come back tomorrow (UTC).
             </li>
           </ul>
         </section>
