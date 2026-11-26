@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { MODELS } from "../../lib/policy";
-import { journey, signIn } from "./browser";
+import { journey, signIn, waitForAttribute } from "./browser";
 import { contactEmail, grantAdmin, mailTo, newEmail, pool, threadIdOf } from "./stack";
 
 // A finished run with no lease and no spend, owned by one member. The run journeys will replace
 // it with a run started through the app.
 async function insertRun(email: string) {
   const id = randomUUID();
+  const sessionId = randomUUID();
   const { rows } = await pool().query<{ id: string }>(`SELECT id FROM ctf."user" WHERE email=$1`, [
     email,
   ]);
@@ -17,34 +18,35 @@ async function insertRun(email: string) {
      VALUES($1,$2,$3,'hash',$4,'monitor','version','ended',1000,'medium','','async','http')`,
     [id, rows[0].id, `sprite-${id}`, MODELS[0]],
   );
+  // The first session shares the run's id, as in a run the app starts. The report names the second.
   await pool().query(
     `INSERT INTO ctf.agent_sessions(id,game_id,ordinal,agent_model,agent_effort,system_prompt)
-     VALUES($1,$1,1,$2,'medium','')`,
-    [id, MODELS[0]],
+     VALUES($1,$1,1,$2,'medium',''),($3,$1,2,$2,'medium','')`,
+    [id, MODELS[0], sessionId],
   );
-  return id;
+  return { runId: id, sessionId };
 }
 
 journey("E7: a member reports their own run and an admin sees it", async ({ page, fresh }) => {
   const email = newEmail("e7");
   await signIn(page, email, "/account");
-  const runId = await insertRun(email);
-  await page.goto(`/runs/${runId}`);
-  const report = page.getByRole("button", { name: "Report" });
+  const { runId, sessionId } = await insertRun(email);
+  await page.goto(`/runs/${runId}?session=${sessionId}`);
+  const report = page.getByTestId("report-open");
   await report.waitFor();
   await report.click();
-  await page.getByRole("heading", { name: "Report a problem" }).waitFor();
+  await page.getByTestId("report-kind").waitFor();
   const message = `Report from the browser suite ${randomUUID()}`;
-  await page.getByLabel("What went wrong?").selectOption("monitor");
-  await page.getByLabel("Message").fill(message);
-  await page.getByRole("button", { name: "Send" }).click();
-  await page.getByText("Thanks. We got your report.").waitFor();
+  await page.getByTestId("report-kind").selectOption("monitor");
+  await page.getByTestId("report-message").fill(message);
+  await page.getByTestId("report-submit").click();
+  await waitForAttribute(page.getByTestId("report-status"), "data-state", "sent");
 
   const { rows } = await pool().query(
     `SELECT kind, game_id, session_id FROM ctf.feedback WHERE message=$1`,
     [message],
   );
-  assert.deepEqual(rows, [{ kind: "monitor", game_id: runId, session_id: runId }]);
+  assert.deepEqual(rows, [{ kind: "monitor", game_id: runId, session_id: sessionId }]);
 
   const notification = await mailTo(
     contactEmail,
@@ -58,6 +60,8 @@ journey("E7: a member reports their own run and an admin sees it", async ({ page
   await signIn(adminPage, admin, "/account");
   await grantAdmin(admin);
   await adminPage.goto("/admin");
-  await adminPage.getByText(message).waitFor();
-  await adminPage.getByText(`Run ${runId} · Session 1 ${runId}`).waitFor();
+  const row = adminPage.getByTestId("admin-feedback-row").filter({ hasText: message });
+  await row.waitFor();
+  const ids = (await row.getByTestId("admin-feedback-run").textContent()) ?? "";
+  assert.ok(ids.includes(runId) && ids.includes(sessionId), "the row names the run and session");
 });

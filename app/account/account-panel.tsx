@@ -19,19 +19,19 @@ const message = (cause: unknown, fallback: string) =>
 function Notice({ notice, email }: { notice: AccountNotice; email: string }) {
   if (notice === "link-error")
     return (
-      <p role="alert" className="notice error">
+      <p role="alert" className="notice error" data-testid="account-notice" data-state={notice}>
         That link has expired or was already used. Ask for a new one below.
       </p>
     );
   if (notice === "confirmed")
     return (
-      <p role="status" className="notice">
+      <p role="status" className="notice" data-testid="account-notice" data-state={notice}>
         Confirmed. Open the link we sent to your new address to finish the change.
       </p>
     );
   if (notice === "changed")
     return (
-      <p role="status" className="notice">
+      <p role="status" className="notice" data-testid="account-notice" data-state={notice}>
         Your email is now {email}.
       </p>
     );
@@ -101,14 +101,20 @@ function NameForm({
           setName(event.target.value);
           setSaved(false);
         }}
+        data-testid="account-name-input"
       />
       <p id="display-name-error" role="alert" className="field-error">
         {error}
       </p>
-      <button className="primary" disabled={busy}>
+      <button className="primary" disabled={busy} data-testid="account-name-submit">
         {busy ? "Checking…" : next === "/play" ? "Save name and play" : "Save name"}
       </button>
-      <p role="status" className="saved">
+      <p
+        role="status"
+        className="saved"
+        data-testid="account-name-status"
+        data-state={saved ? "saved" : "idle"}
+      >
         {saved ? `Saved. The leaderboard now shows ${name}.` : ""}
       </p>
     </form>
@@ -155,15 +161,21 @@ export function EmailFields({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="you@example.com"
+        data-testid="account-email-input"
       />
       <p id="new-email-error" role="alert" className="field-error">
         {error}
       </p>
       {/* Sends finish after the response, so the same request must not go twice. */}
-      <button disabled={busy || (!!sentTo && value === sentTo)}>
+      <button disabled={busy || (!!sentTo && value === sentTo)} data-testid="account-email-submit">
         {busy ? "Sending…" : "Send confirmation link"}
       </button>
-      <p role="status" className="saved">
+      <p
+        role="status"
+        className="saved"
+        data-testid="account-email-status"
+        data-state={sentTo ? "sent" : "idle"}
+      >
         {sentTo
           ? `Check ${email} and open the link there. We then send a link to ${sentTo} to finish the change.`
           : ""}
@@ -215,7 +227,7 @@ export function AccountPanel({ email, displayName, next, notice }: AccountPanelP
       <p className="lede">Your name on the leaderboard and the email you sign in with.</p>
       <Notice notice={notice} email={email} />
       {!savedName && (
-        <p role="status" className="notice">
+        <p role="status" className="notice" data-testid="account-setup-notice">
           Choose a display name to finish setting up your account. You need one to start a run.
         </p>
       )}

@@ -56,8 +56,10 @@ test("M16: mail text, names and addresses render as escaped plain text", () => {
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(html, /stored &lt;script&gt;/);
   assert.doesNotMatch(html, /<img|<script|<b>|<i>|href="https:|<a href="(?!\/admin)/);
-  assert.match(html, /theirs/);
-  assert.match(html, /ours/);
+  // The side as shown in the text. The data-state attribute repeats it and is left out.
+  const shown = html.replace(/ data-state="[^"]*"/g, "");
+  assert.match(shown, /theirs/);
+  assert.match(shown, /ours/);
 });
 
 test("M16: the reply field is labelled, required and length limited, and the typed address is unverified", () => {

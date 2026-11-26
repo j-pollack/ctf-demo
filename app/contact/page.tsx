@@ -6,7 +6,7 @@ export const metadata = { title: "Contact | Capture the flag" };
 
 export default function ContactPage() {
   return (
-    <div className="landing">
+    <div className="landing" data-testid="page-contact">
       <SiteHeader />
       <main className="landing-main contact">
         <h1>Contact</h1>

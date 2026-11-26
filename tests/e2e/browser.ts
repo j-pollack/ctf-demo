@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { test } from "node:test";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { setTimeout as sleep } from "node:timers/promises";
+import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import { baseUrl, signInLink, takeServerFailures, takeViolations, visitorHeaders } from "./stack";
 
 const EVIDENCE = ".artifacts/e2e";
@@ -105,12 +106,33 @@ export function journey(name: string, body: (session: Session) => Promise<void>)
   });
 }
 
+// Polls until the element's attribute has the value, within the suite's timeout. The page
+// re-renders after a form action, so the element may be replaced while this waits.
+export async function waitForAttribute(locator: Locator, name: string, value: string) {
+  const deadline = Date.now() + TIMEOUT;
+  let actual: string | null = null;
+  let failure: unknown;
+  while (Date.now() < deadline) {
+    try {
+      actual = await locator.getAttribute(name, { timeout: Math.max(1, deadline - Date.now()) });
+      failure = undefined;
+    } catch (error) {
+      failure = error;
+    }
+    if (!failure && actual === value) return;
+    await sleep(100);
+  }
+  throw new Error(`${name} is ${JSON.stringify(actual)}, not ${JSON.stringify(value)}`, {
+    cause: failure,
+  });
+}
+
 // Signs the page in with the emailed magic link and waits for the page it lands on.
 export async function signIn(page: Page, email: string, next = "/play") {
   await page.goto(`/signin?next=${encodeURIComponent(next)}`);
-  await page.getByLabel("Email address").fill(email);
-  await page.getByRole("button", { name: "Email me a link" }).click();
-  await page.getByText("Check your email for a sign-in link.").waitFor();
+  await page.getByTestId("signin-email").fill(email);
+  await page.getByTestId("signin-submit").click();
+  await page.getByTestId("signin-sent").waitFor();
   await page.goto(await signInLink(email));
   await page.waitForURL((url) => url.pathname === next);
 }

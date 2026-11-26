@@ -48,6 +48,9 @@ test("F14: the report form has labelled fields and empty live regions", () => {
   assert.match(html, /<p [^>]*role="alert"[^>]*><\/p>/);
   assert.match(html, /<button[^>]*>Send<\/button>/);
   // A disabled button drops keyboard focus, so a busy send is marked with aria-disabled only.
-  assert.match(html, /<button class="primary" aria-disabled="false">Send<\/button>/);
+  assert.match(
+    html,
+    /<button class="primary" aria-disabled="false" data-testid="report-submit">Send<\/button>/,
+  );
   assert.match(html, /<p [^>]*role="status"[^>]*><\/p>/);
 });

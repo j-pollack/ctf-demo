@@ -7,7 +7,7 @@ journey("E3: a magic link signs the visitor in once", async ({ page, fresh }) =>
   await signIn(page, email, "/account");
   const session = await (await page.request.get("/api/auth/get-session")).json();
   assert.equal(session?.user?.email, email);
-  await page.getByRole("heading", { name: "Account" }).waitFor();
+  await page.getByTestId("page-account").waitFor();
 
   const other = await fresh();
   await other.goto(await signInLink(email));

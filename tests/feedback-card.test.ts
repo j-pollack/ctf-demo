@@ -60,8 +60,11 @@ test("F15: an empty list says so", () => {
 
 test("M16: each row links to its thread and shows the state when one is known", () => {
   const html = render([base, { ...base, id: "2" }], { "1": "answered" });
-  assert.match(html, /<a href="\/admin\/feedback\/1">/);
-  assert.match(html, /<a href="\/admin\/feedback\/2">/);
-  assert.match(html, /answered/);
-  assert.equal(html.match(/waiting|answered|closed/g)?.length, 1);
+  assert.match(html, /<a href="\/admin\/feedback\/1" data-testid="admin-feedback-open">/);
+  assert.match(html, /<a href="\/admin\/feedback\/2" data-testid="admin-feedback-open">/);
+  assert.match(html, /<li data-testid="admin-feedback-row" data-state="answered">/);
+  // The state words in the visible text, with the attribute that repeats one left out.
+  const shown = html.replace(/ data-state="[^"]*"/g, "");
+  assert.match(shown, /answered/);
+  assert.equal(shown.match(/waiting|answered|closed/g)?.length, 1);
 });

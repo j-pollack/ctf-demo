@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { journey, signIn } from "./browser";
+import { journey, signIn, waitForAttribute } from "./browser";
 import { mailTo, newEmail, pool } from "./stack";
 
 const CONFIRM = "Confirm your Capture the flag email change";
@@ -18,22 +18,25 @@ journey("A1: a member moves their account to a new address in two steps", async 
   const [before] = await accountOf(email);
   await page.reload();
 
-  await page.getByLabel("New email address").fill(next);
-  await page.getByRole("button", { name: "Send confirmation link" }).click();
-  await page.getByText(`Check ${email} and open the link there.`).waitFor();
+  await page.getByTestId("account-email-input").fill(next);
+  await page.getByTestId("account-email-submit").click();
+  const sent = page.getByTestId("account-email-status");
+  await waitForAttribute(sent, "data-state", "sent");
+  const sentText = (await sent.textContent()) ?? "";
+  assert.ok(sentText.includes(email) && sentText.includes(next), "the status names both addresses");
 
   // The first link only confirms: the address stays until the second one is opened.
   await page.goto((await mailTo(email, CONFIRM)).link as string);
   await page.waitForURL((url) => url.pathname === "/account" && url.search === "?email=confirmed");
-  await page
-    .getByText("Confirmed. Open the link we sent to your new address to finish the change.")
-    .waitFor();
+  await waitForAttribute(page.getByTestId("account-notice"), "data-state", "confirmed");
   assert.deepEqual(await accountOf(email), [before]);
   assert.deepEqual(await accountOf(next), []);
 
   await page.goto((await mailTo(next, VERIFY)).link as string);
   await page.waitForURL((url) => url.pathname === "/account" && url.search === "?email=changed");
-  await page.getByText(`Your email is now ${next}.`).waitFor();
+  const changed = page.getByTestId("account-notice");
+  await waitForAttribute(changed, "data-state", "changed");
+  assert.ok((await changed.textContent())?.includes(next), "the notice names the new address");
   assert.deepEqual(await accountOf(email), []);
   assert.deepEqual(await accountOf(next), [{ ...before, email: next }]);
   const session = await (await page.request.get("/api/auth/get-session")).json();

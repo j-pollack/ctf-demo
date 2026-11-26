@@ -24,7 +24,7 @@ export default async function Account({ searchParams }: { searchParams: Promise<
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session || session.user.isAnonymous) redirect(accountSignInPath(search));
   return (
-    <div className="app">
+    <div className="app" data-testid="page-account">
       <div className="workspace">
         <SiteHeader current="account" />
         <AccountPanel
