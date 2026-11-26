@@ -73,6 +73,15 @@ import {
 // A response that reaches its server-side time limit may continue automatically, up to the
 // stored number of turns. Zero turns disables it.
 const AUTO_CONTINUE_TEXT = "Continue.";
+// The browser stories wait for the page they opened by this id on the outer element.
+const PAGE_TEST_IDS = {
+  history: "page-history",
+  rank: "page-rank",
+  rules: "page-rules",
+  signin: "page-signin",
+  detail: "page-detail",
+  play: "page-play",
+} as const;
 export function shouldAutoContinue(game: PublicGame | null, autoUsed: number, max: number) {
   return (
     !!game &&
@@ -1647,7 +1656,7 @@ export default function GameUI({
     }
   }
   return (
-    <div className="app">
+    <div className="app" data-testid={PAGE_TEST_IDS[panel]}>
       <div className="workspace">
         <SiteHeader
           current={selectedNavItem(pathname, routeRunId ? displayGame : null)}
@@ -1785,7 +1794,7 @@ export default function GameUI({
                 // Play opens the setup dialog over this; it's what's left if the player closes
                 // it, so it only offers the way back in. Signed out, /play redirects to the
                 // sign-in page.
-                <div className="info no-run">
+                <div className="info no-run" data-testid="play-no-run">
                   <NoRunYet submissionUrl={submissionUrl} />
                   <button className="primary" onClick={() => setModal("setup")}>
                     Start a run

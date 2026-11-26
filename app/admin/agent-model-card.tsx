@@ -19,9 +19,14 @@ export function AgentModelCard({
         <h2>Attacker model</h2>
         <span>Applies to every player&rsquo;s next instruction</span>
       </header>
-      <form action={action}>
+      <form action={action} data-testid="admin-model-form">
         <label htmlFor="agent-model">Model</label>{" "}
-        <select id="agent-model" name="model" defaultValue={current}>
+        <select
+          id="agent-model"
+          name="model"
+          defaultValue={current}
+          data-testid="admin-model-select"
+        >
           {models.map((model) => (
             <option key={model} value={model}>
               {model}
@@ -32,7 +37,7 @@ export function AgentModelCard({
       </form>
       {changedBy && <small>{changedBy}</small>}
       {refused && (
-        <p role="alert">
+        <p role="alert" data-testid="admin-model-refused">
           That model was not saved. It must be on the allowlist and served by the catalog.
         </p>
       )}

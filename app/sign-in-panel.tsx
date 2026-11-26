@@ -28,7 +28,9 @@ export function SignInPanel({
         </p>
       )}
       {sent ? (
-        <p role="status">Check your email for a sign-in link. It expires in five minutes.</p>
+        <p role="status" data-testid="signin-sent">
+          Check your email for a sign-in link. It expires in five minutes.
+        </p>
       ) : (
         <form className="sign-in-form" onSubmit={onSubmit}>
           <label htmlFor="email">Email address</label>
@@ -42,8 +44,9 @@ export function SignInPanel({
             value={email}
             onChange={(event) => onEmailChange(event.target.value)}
             placeholder="you@example.com"
+            data-testid="signin-email"
           />
-          <button className="primary" disabled={busy}>
+          <button className="primary" disabled={busy} data-testid="signin-submit">
             {busy ? "Sending…" : "Email me a link"}
           </button>
           <p className="hint">

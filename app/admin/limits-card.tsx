@@ -28,7 +28,12 @@ type Limit = (typeof LIMITS)[number];
 function Field({ limit, limits, id }: { limit: Limit; limits: Limits; id: string }) {
   if (limit.kind === "choice")
     return (
-      <select id={id} name="value" defaultValue={limits[limit.field]}>
+      <select
+        id={id}
+        name="value"
+        defaultValue={limits[limit.field]}
+        data-testid="admin-limit-field"
+      >
         {limit.options.map((option) => (
           <option key={option} value={option}>
             {EFFORT_NAMES[option]}
@@ -48,6 +53,7 @@ function Field({ limit, limits, id }: { limit: Limit; limits: Limits; id: string
       max={unit(limit.max)}
       step={money ? "0.01" : "1"}
       required
+      data-testid="admin-limit-field"
     />
   );
 }
@@ -80,7 +86,12 @@ export function LimitsCard({
         const id = `limit-${limit.key}`;
         const hint = rangeHint(limit);
         return (
-          <form key={limit.key} action={action} className="rule limit">
+          <form
+            key={limit.key}
+            action={action}
+            className="rule limit"
+            data-testid={`admin-limit-row-${limit.key}`}
+          >
             <input type="hidden" name="key" value={limit.key} />
             <div>
               <label htmlFor={id}>{LABELS[limit.key]}</label>

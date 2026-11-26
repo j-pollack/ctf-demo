@@ -51,6 +51,7 @@ export function ContactForm() {
         maxLength={NAME_MAX}
         aria-describedby="contact-error"
         aria-invalid={!!error}
+        data-testid="contact-name"
       />
       <label htmlFor="contact-email">Email</label>
       <input
@@ -62,6 +63,7 @@ export function ContactForm() {
         maxLength={EMAIL_MAX}
         aria-describedby="contact-error"
         aria-invalid={!!error}
+        data-testid="contact-email"
       />
       <label htmlFor="contact-message">Message</label>
       <textarea
@@ -72,14 +74,20 @@ export function ContactForm() {
         maxLength={MESSAGE_MAX}
         aria-describedby="contact-error"
         aria-invalid={!!error}
+        data-testid="contact-message"
       />
       <p id="contact-error" role="alert" className="field-error">
         {error}
       </p>
-      <button className="primary" aria-disabled={busy}>
+      <button className="primary" aria-disabled={busy} data-testid="contact-submit">
         {busy ? "Sending…" : "Send"}
       </button>
-      <p role="status" className="saved">
+      <p
+        role="status"
+        className="saved"
+        data-testid="contact-status"
+        data-state={sent ? "sent" : "idle"}
+      >
         {sent ? "Thanks. We got your message." : ""}
       </p>
       <p className="hint">We keep your name, email and message so we can reply.</p>

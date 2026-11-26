@@ -60,7 +60,7 @@ export function ReportForm({ gameId, focusedId }: { gameId: string; focusedId: s
   return (
     <form className="report-form" onSubmit={send}>
       <label htmlFor="report-kind">What went wrong?</label>
-      <select id="report-kind" name="kind" defaultValue="bug">
+      <select id="report-kind" name="kind" defaultValue="bug" data-testid="report-kind">
         <option value="bug">Something is broken</option>
         <option value="monitor">The monitor got it wrong</option>
         <option value="other">Something else</option>
@@ -74,15 +74,21 @@ export function ReportForm({ gameId, focusedId }: { gameId: string; focusedId: s
         maxLength={MESSAGE_MAX}
         aria-describedby="report-error"
         aria-invalid={!!error}
+        data-testid="report-message"
       />
       <p className="hint">Your run and session IDs are sent with the report.</p>
       <p id="report-error" role="alert" className="field-error">
         {error}
       </p>
-      <button className="primary" aria-disabled={busy}>
+      <button className="primary" aria-disabled={busy} data-testid="report-submit">
         {busy ? "Sending…" : "Send"}
       </button>
-      <p role="status" className="saved">
+      <p
+        role="status"
+        className="saved"
+        data-testid="report-status"
+        data-state={sent ? "sent" : "idle"}
+      >
         {sent ? "Thanks. We got your report." : ""}
       </p>
     </form>
@@ -93,7 +99,7 @@ export function ReportProblem({ gameId, focusedId }: { gameId: string; focusedId
   const [open, setOpen] = useState(false);
   return (
     <>
-      <button type="button" onClick={() => setOpen(true)}>
+      <button type="button" onClick={() => setOpen(true)} data-testid="report-open">
         Report
       </button>
       <RunDialog open={open} busy={false} onClose={() => setOpen(false)}>

@@ -25,7 +25,10 @@ test("F14: the contact form has labelled, required, length-limited fields", () =
   assert.match(tag("contact-name")!, /autoComplete="name"/);
   assert.match(html, /<button[^>]*>Send<\/button>/);
   // A disabled button drops keyboard focus, so a busy send is marked with aria-disabled only.
-  assert.match(html, /<button class="primary" aria-disabled="false">Send<\/button>/);
+  assert.match(
+    html,
+    /<button class="primary" aria-disabled="false" data-testid="contact-submit">Send<\/button>/,
+  );
 });
 
 test("F14: the live regions are present and empty before anything is announced", () => {

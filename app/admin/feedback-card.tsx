@@ -20,7 +20,7 @@ export function FeedbackCard({
       {rows.length ? (
         <ul className="feedback">
           {rows.map((row) => (
-            <li key={row.id}>
+            <li key={row.id} data-testid="admin-feedback-row" data-state={states[row.id]}>
               <p>
                 <strong>{row.kind}</strong> · {when(row.createdAt)} ·{" "}
                 {row.kind === "contact"
@@ -28,14 +28,16 @@ export function FeedbackCard({
                   : (row.accountEmail ?? "unknown account")}
               </p>
               {row.gameId && (
-                <p>
+                <p data-testid="admin-feedback-run">
                   Run {row.gameId}
                   {row.sessionId && ` · Session ${row.ordinal ?? "?"} ${row.sessionId}`}
                 </p>
               )}
               <p className="feedback-message">{row.message}</p>
               <p>
-                <a href={`/admin/feedback/${row.id}`}>Open thread</a>
+                <a href={`/admin/feedback/${row.id}`} data-testid="admin-feedback-open">
+                  Open thread
+                </a>
                 {states[row.id] && ` · ${states[row.id]}`}
               </p>
             </li>

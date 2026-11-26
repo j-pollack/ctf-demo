@@ -374,7 +374,7 @@ test("C7c: the brief How to win keeps each title and adds one sentence", () => {
   };
   for (const rules of COMBINATIONS) {
     const html = renderToStaticMarkup(createElement(HowToWin, { url, rules, brief: true }));
-    const items = [...html.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((match) => text(match[1]));
+    const items = [...html.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/g)].map((match) => text(match[1]));
     const expected = [...(rules.bugFixRequired ? [BRIEF.bug] : []), BRIEF.flag, BRIEF.monitor].map(
       ([title, sentence]) => `${title} ${sentence}`,
     );

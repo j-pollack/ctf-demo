@@ -31,7 +31,12 @@ export function FeedbackThreadView({
     <section className="card wide">
       <header>
         <h2>{row.kind === "contact" ? "Contact message" : `Report: ${row.kind}`}</h2>
-        <span>{closed ? "closed" : answered ? "answered" : "waiting"}</span>
+        <span
+          data-testid="feedback-thread-state"
+          data-state={closed ? "closed" : answered ? "answered" : "waiting"}
+        >
+          {closed ? "closed" : answered ? "answered" : "waiting"}
+        </span>
       </header>
       <p>
         {when(row.createdAt)} ·{" "}
@@ -51,13 +56,17 @@ export function FeedbackThreadView({
       )}
       {note && <p>{NOTES[note]}</p>}
       {error && (
-        <p role="alert" className="field-error">
+        <p role="alert" className="field-error" data-testid="feedback-thread-error">
           {ERRORS[error]}
         </p>
       )}
       <ul className="feedback">
         {messages.map((message, index) => (
-          <li key={index}>
+          <li
+            key={index}
+            data-testid="feedback-thread-entry"
+            data-state={message.ours ? "ours" : "theirs"}
+          >
             <p>
               <strong>{message.from}</strong> · {message.ours ? "ours" : "theirs"} ·{" "}
               {when(message.at)}
@@ -72,14 +81,21 @@ export function FeedbackThreadView({
         <form action={reply} className="account-form">
           <input type="hidden" name="id" value={row.id} />
           <label htmlFor="reply-text">Reply</label>
-          <textarea id="reply-text" name="text" rows={6} required maxLength={MESSAGE_MAX} />
+          <textarea
+            id="reply-text"
+            name="text"
+            rows={6}
+            required
+            maxLength={MESSAGE_MAX}
+            data-testid="feedback-thread-reply"
+          />
           <ReplyButton />
         </form>
       )}
       <form action={close}>
         <input type="hidden" name="id" value={row.id} />
         <input type="hidden" name="closed" value={closed ? "off" : "on"} />
-        <button>{closed ? "Reopen" : "Close"}</button>
+        <button data-testid="feedback-thread-toggle">{closed ? "Reopen" : "Close"}</button>
       </form>
     </section>
   );
