@@ -44,3 +44,22 @@ test("the rules say how to report a wrong catch and ask for feedback", () => {
     /We want to hear what you think of the game\. <a class="link" href="\/contact">Tell us<\/a>\./,
   );
 });
+
+test("footer links that leave the site open a new tab and say so; the contact link does not", () => {
+  const footer = renderToStaticMarkup(pages["/contact"]()).match(
+    /<footer[^>]*>([\s\S]*?)<\/footer>/,
+  )![1];
+  const links = [...footer.matchAll(/<a [^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/g)];
+  assert.equal(links.length, 3);
+  for (const [html, href] of links) {
+    const external = href.startsWith("https://");
+    assert.equal(/target="_blank"/.test(html), external, href);
+    assert.equal(/rel="noopener noreferrer"/.test(html), external, href);
+    assert.equal(/<span aria-hidden="true"> ↗<\/span>/.test(html), external, href);
+    assert.equal(
+      /<span class="visually-hidden"> \(opens in a new tab\)<\/span>/.test(html),
+      external,
+      href,
+    );
+  }
+});

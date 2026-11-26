@@ -130,6 +130,8 @@ The owner asked for three changes on 2026-11-26. They are in the second commit.
 | F19 | The Rules page says how to report a wrong catch and asks for feedback with a link to Contact.                                                          | `tests/site-footer.test.ts`. Passed.                                                                                                                                                                                                |
 | F20 | A caught run's outcome strip ends with one line pointing at Report. A won run has no such line.                                                        | `tests/run-console.test.ts` and `tests/transcript.test.ts`. Passed.                                                                                                                                                                 |
 
+A fourth change followed the same day: footer links are underlined on hover, and the two links that leave the site open a new tab and show an arrow, with "opens in a new tab" for screen readers. `tests/site-footer.test.ts` covers the markup. The hover underline was confirmed in a browser with a real pointer move. It is in the third commit.
+
 The Rules copy promises that every report is read. It does not say that a wrong catch counts as a win. These three changes were made by the lead and were not sent back to the independent reviewer.
 
 ## Deviations and limits
