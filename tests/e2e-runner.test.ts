@@ -1,0 +1,145 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+  assertSafeEnv,
+  e2eEnv,
+  emptyNames,
+  envFileNames,
+  serverLogProblems,
+  type Stage,
+} from "../scripts/test-e2e";
+
+const stack = { port: 3123, dbPort: "55432", database: "ctf_e2e_0123456789abcdef0123456789abcdef" };
+const stages: Stage[] = ["build", "migrate", "server", "test"];
+const REAL = "REAL-SECRET-VALUE";
+const files = {
+  ".env.local": `DATABASE_URL=${REAL}\nexport OPENROUTER_API_KEY=${REAL}\n# COMMENTED=1\nSITE_URL = ${REAL}\n`,
+  ".env.production.local": `ADMIN_EMAILS=${REAL}\nONLY_IN_PRODUCTION=${REAL}\n`,
+  ".env.example": "FASTMAIL_API_TOKEN=\n",
+  "notes.txt": `NOT_AN_ENV_FILE=${REAL}\n`,
+};
+const names = envFileNames(files);
+const inherited = {
+  PATH: "/usr/bin",
+  HOME: "/home/tester",
+  AWS_SECRET_ACCESS_KEY: REAL,
+  DATABASE_URL: REAL,
+  ONLY_IN_PRODUCTION: REAL,
+  NODE_ENV: "test",
+};
+const env = (stage: Stage) => e2eEnv(stage, { inherited, fileNames: names, stack });
+
+test("E1: names come from every .env* file and nothing else", () => {
+  assert.deepEqual(names, [
+    "ADMIN_EMAILS",
+    "DATABASE_URL",
+    "FASTMAIL_API_TOKEN",
+    "ONLY_IN_PRODUCTION",
+    "OPENROUTER_API_KEY",
+    "SITE_URL",
+  ]);
+});
+
+test("E1: no stage sees a real value, an unlisted variable or the test mode", () => {
+  for (const stage of stages) {
+    const built = env(stage);
+    assert.equal(
+      Object.values(built).some((value) => value?.includes(REAL)),
+      false,
+      stage,
+    );
+    assert.equal(built.AWS_SECRET_ACCESS_KEY, undefined, stage);
+    assert.equal(built.NODE_ENV, undefined, stage);
+    assert.equal(built.PATH, "/usr/bin", stage);
+    assert.equal(built.ONLY_IN_PRODUCTION, "", stage);
+    assert.equal(built.NEXT_TELEMETRY_DISABLED, "1", stage);
+    assert.doesNotThrow(() => assertSafeEnv(stage, built), stage);
+  }
+});
+
+test("E1: the server, migration and tests reach only the loopback database", () => {
+  for (const stage of ["migrate", "server", "test"] as const) {
+    const built = env(stage);
+    assert.equal(built.DATABASE_URL, "", stage);
+    assert.equal(built.DATABASE_URL_UNPOOLED, "", stage);
+    assert.equal(built.PGHOST, "127.0.0.1", stage);
+    assert.equal(built.PGPORT, stack.dbPort, stage);
+    assert.equal(built.PGDATABASE, stack.database, stage);
+  }
+  const build = env("build");
+  assert.equal(build.DATABASE_URL, "");
+  assert.equal(build.DATABASE_URL_UNPOOLED, "postgresql://unavailable:unavailable@127.0.0.1:1/ctf");
+});
+
+test("E1: only the server loads the preload, and the auth origin is the browser's origin", () => {
+  assert.match(
+    env("server").NODE_OPTIONS ?? "",
+    /--import tsx --import \S+tests\/e2e\/preload\.ts/,
+  );
+  for (const stage of ["build", "migrate", "test"] as const)
+    assert.equal(env(stage).NODE_OPTIONS, undefined, stage);
+  for (const stage of ["build", "server"] as const)
+    assert.equal(env(stage).BETTER_AUTH_URL, "http://127.0.0.1:3123", stage);
+  assert.equal(env("test").E2E_BASE_URL, "http://127.0.0.1:3123");
+  for (const name of ["SITE_URL", "TRIPWIRE_COOKIE_PREFIX", "FASTMAIL_API_TOKEN", "CONTACT_EMAIL"])
+    assert.equal(env("server")[name], "", name);
+});
+
+test("E1: the spawn guard refuses a reachable or remote database", () => {
+  const good = env("server");
+  for (const bad of [
+    { DATABASE_URL: "postgresql://real.example/db" },
+    { DATABASE_URL_UNPOOLED: "postgresql://real.example/db" },
+    { PGHOST: "db.example.com" },
+    { PGHOST: undefined },
+  ])
+    assert.throws(
+      () => assertSafeEnv("server", { ...good, ...bad }),
+      /database/i,
+      JSON.stringify(bad),
+    );
+  assert.throws(
+    () => assertSafeEnv("build", { ...env("build"), DATABASE_URL_UNPOOLED: "postgresql://x/y" }),
+    /database/i,
+  );
+});
+
+test("E1: the preload is told which names must stay empty", () => {
+  const built = env("server");
+  const empty = emptyNames(built, names);
+  for (const name of ["DATABASE_URL", "SITE_URL", "ADMIN_EMAILS", "FASTMAIL_API_TOKEN"])
+    assert.ok(empty.includes(name), name);
+  assert.ok(empty.includes("ONLY_IN_PRODUCTION"));
+  assert.ok(!empty.includes("OPENROUTER_API_KEY"), "a synthetic value is not a blank");
+});
+
+test("a server log fails the run on a route failure or a failed settings read", () => {
+  assert.deepEqual(
+    serverLogProblems([
+      "ready in 100ms",
+      '{"event":"auth.email.sent","purpose":"sign-in"}',
+      '{"event":"route.failed","error":"boom"}',
+      '{"event":"limits_read_failed","error":"down"}',
+      "not json {",
+    ]),
+    ['{"event":"route.failed","error":"boom"}', '{"event":"limits_read_failed","error":"down"}'],
+  );
+});
+
+test("E1: names follow the grammar of the dotenv that Next loads", () => {
+  const text = [
+    "FLY_API_TOKEN: colon-form",
+    "DOTTED.NAME=1",
+    "HYPHEN-NAME=1",
+    "export EXPORTED_NAME=1",
+    "SPACE_BEFORE_COLON : x",
+    "NO_SPACE_AFTER_COLON:x",
+    "# COMMENTED=1",
+  ].join("\n");
+  assert.deepEqual(envFileNames({ ".env.preview": text }), [
+    "DOTTED.NAME",
+    "EXPORTED_NAME",
+    "FLY_API_TOKEN",
+    "HYPHEN-NAME",
+  ]);
+});

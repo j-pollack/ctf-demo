@@ -1,0 +1,63 @@
+import assert from "node:assert/strict";
+import { journey, signIn, type Session } from "./browser";
+import { grantAdmin, newEmail, pool, takeViolations } from "./stack";
+
+const LIMIT = "sessions_per_run";
+
+async function adminPage(session: Session, label: string) {
+  const email = newEmail(label);
+  await signIn(session.page, email, "/account");
+  await grantAdmin(email);
+  await session.page.goto("/admin");
+  return session.page;
+}
+
+journey("E8: an admin changes a limit and it survives a reload", async (session) => {
+  const page = await adminPage(session, "e8-admin");
+  const field = page.getByLabel("Sessions per run");
+  const before = await field.inputValue();
+  const next = before === "7" ? "8" : "7";
+  try {
+    await field.fill(next);
+    // The action posts to /admin and redirects back to it, so the URL cannot show it finished.
+    const saved = page.waitForResponse((r) => r.request().method() === "POST");
+    await page.locator("form", { has: field }).getByRole("button", { name: "Save" }).click();
+    await saved;
+    await page.reload();
+    assert.equal(await page.getByLabel("Sessions per run").inputValue(), next);
+    const { rows } = await pool().query(`SELECT value FROM ctf.settings WHERE key=$1`, [LIMIT]);
+    assert.deepEqual(rows, [{ value: next }]);
+  } finally {
+    await pool().query(`DELETE FROM ctf.settings WHERE key=$1`, [LIMIT]);
+  }
+});
+
+journey("E8: a member who is not an admin gets the not-found page", async (session) => {
+  const { page } = session;
+  await signIn(page, newEmail("e8-member"), "/account");
+  session.expectFailure(404, "/admin");
+  const response = await page.goto("/admin");
+  assert.equal(response?.status(), 404);
+  await page.getByText("This page could not be found.").waitFor();
+});
+
+journey("E2: a model change needs the catalogue, which the suite refuses", async (session) => {
+  const page = await adminPage(session, "e2-admin");
+  await page.getByRole("button", { name: "Save" }).first().waitFor();
+  const select = page.getByLabel("Model");
+  const current = await select.inputValue();
+  const other = (
+    await select
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value))
+  ).find((value) => value !== current);
+  assert.ok(other, "the allowlist has a second model");
+  await select.selectOption(other);
+  await page.locator("form", { has: select }).getByRole("button", { name: "Save" }).click();
+  await page.getByText("That model was not saved.").waitFor();
+  const violations = takeViolations();
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].url, "https://openrouter.ai/api/v1/models");
+  const { rows } = await pool().query(`SELECT 1 FROM ctf.settings WHERE key='agent_model'`);
+  assert.equal(rows.length, 0, "the refused model was not stored");
+});
