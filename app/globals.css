@@ -10,6 +10,7 @@
   --panel: #e5e9de;
   /* The one inline inset shared by the header, run bar, outcome strip and deck. */
   --gutter: 24px;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
   color-scheme: light;
 }
 @media (max-width: 720px) {
@@ -24,11 +25,7 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font:
-    13px/1.6 ui-monospace,
-    SFMono-Regular,
-    Consolas,
-    monospace;
+  font: 13px/1.6 var(--font-mono);
 }
 button,
 input,
@@ -1272,16 +1269,10 @@ dialog::backdrop {
     sans-serif;
   margin: 20px 0 32px;
 }
-.landing-main > p {
-  font-size: 16px;
-}
 .landing-play {
   display: inline-block;
   padding: 12px 24px;
   margin: 32px 0 12px;
-}
-.landing-main > small {
-  display: block;
 }
 .landing-signin {
   padding: 10px 14px;
@@ -2246,4 +2237,195 @@ dialog::backdrop {
 }
 .feedback-message {
   white-space: pre-wrap;
+}
+
+/* Reading pages: home, contact and rules set prose in a readable face. The type grows on wider
+   screens and the measure is in em, so lines stay near 80 characters at every size. */
+.landing-main,
+main.rules {
+  --measure: 34em;
+  font: 16px/1.6 var(--font-prose, system-ui, sans-serif);
+}
+@media (min-width: 720px) {
+  .landing-main,
+  main.rules {
+    font-size: 17px;
+  }
+}
+@media (min-width: 1280px) {
+  .landing-main,
+  main.rules {
+    font-size: 18px;
+  }
+}
+:is(.landing-main, main.rules)
+  :is(
+    h2,
+    h3,
+    .eyebrow,
+    .rules-nav,
+    .landing-play,
+    .site-footer,
+    button,
+    input,
+    textarea,
+    select,
+    code
+  ) {
+  font-family: var(--font-mono);
+}
+:is(.landing-main, main.rules) code {
+  font-size: 0.875em;
+  padding: 1px 4px;
+  background: #dfe5d7;
+  border-radius: 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+:is(main.rules section, .landing-rules, .landing-main .how-to-win, main.rules .how-to-win) > * + * {
+  margin-top: 14px;
+}
+.landing-main small {
+  display: block;
+  font-size: 13px;
+}
+
+/* One frame for the header, text and footer of the reading pages, so they share a left edge.
+   The header and footer borders still run the full width. The play console stays full width.
+   Browsers without container units keep the plain gutter. */
+@supports (width: 1cqw) {
+  .landing,
+  .app:is(:has(> .workspace > main.rules), .reading) {
+    container-type: inline-size;
+    --frame: max(var(--gutter), calc((100cqw - 60rem) / 2));
+  }
+  :is(.landing, .app:is(:has(> .workspace > main.rules), .reading))
+    :is(.top, .landing-main, main.rules, .site-footer) {
+    padding-inline: var(--frame);
+  }
+  main.rules > .site-footer {
+    margin-inline: calc(-1 * var(--frame));
+  }
+}
+.landing h1 {
+  text-wrap: balance;
+}
+.landing-main > :not(h1) {
+  max-width: var(--measure);
+}
+.landing-main > p {
+  font-size: 1.125em;
+}
+
+/* Rules: the section list sits beside the text from 960px and marks the section in view. */
+.rules-body {
+  max-width: var(--measure);
+}
+main.rules section {
+  border-top: 1px solid var(--line);
+  margin-top: 40px;
+  padding-top: 24px;
+  scroll-margin-top: 16px;
+}
+main.rules section h3 {
+  font-size: 1.25em;
+  margin: 0;
+}
+main.rules summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+main.rules .eyebrow {
+  font-size: 12px;
+}
+main.rules .rules-table tbody th {
+  font-size: 14px;
+}
+main.rules .link {
+  font-size: inherit;
+}
+.rules-nav {
+  margin-top: 24px;
+  font-size: 14px;
+}
+.rules-nav p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.rules-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rules-nav li {
+  padding: 0;
+}
+.rules-nav a {
+  display: inline-block;
+  padding-block: 4px;
+  text-underline-offset: 4px;
+}
+.rules-nav a:hover {
+  text-decoration: underline;
+}
+@media (min-width: 960px) {
+  .rules-body {
+    max-width: none;
+    display: grid;
+    grid-template-columns: 16rem minmax(0, var(--measure));
+    grid-template-areas:
+      "nav intro"
+      "nav sections";
+    column-gap: 3rem;
+  }
+  .rules-intro {
+    grid-area: intro;
+  }
+  .rules-sections {
+    grid-area: sections;
+  }
+  .rules-nav {
+    grid-area: nav;
+    margin-top: 0;
+    position: sticky;
+    top: 24px;
+    align-self: start;
+  }
+  .rules-nav ul {
+    flex-direction: column;
+    gap: 0;
+  }
+  /* A rail beside the list. The section in view is darker on the rail and in the text. */
+  .rules-nav a {
+    display: block;
+    padding: 5px 0 5px 12px;
+    border-left: 2px solid var(--line);
+    color: var(--muted);
+  }
+  .rules-nav a[aria-current] {
+    border-left-color: #557b1d;
+    color: var(--ink);
+    font-weight: 600;
+  }
+}
+/* The rules page scrolls the document, so the nav can stay put and the footer follows the text.
+   `:is()` drops a selector it cannot parse, so browsers without :has() match `.reading`, which
+   RulesNav sets. */
+.app:is(:has(> .workspace > main.rules), .reading) {
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
+}
+.app:is(:has(> .workspace > main.rules), .reading) main.rules {
+  overflow: visible;
+}
+/* The closing notes are set off from the last section the way sections are from each other. */
+.rules-sections > section + p {
+  border-top: 1px solid var(--line);
+  margin-top: 40px;
+  padding-top: 24px;
 }
