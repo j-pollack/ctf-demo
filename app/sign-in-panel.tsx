@@ -22,14 +22,15 @@ export function SignInPanel({
   return (
     <main className="info sign-in">
       <h2>Sign in</h2>
+      {!sent && (
+        <p className="lede">
+          Enter your email and we’ll send you a sign-in link. There’s no password.
+        </p>
+      )}
       {sent ? (
         <p role="status">Check your email for a sign-in link. It expires in five minutes.</p>
       ) : (
         <form className="sign-in-form" onSubmit={onSubmit}>
-          <p>
-            Sign in to play. Enter your email and we’ll send you a link. Click it and you’re in, no
-            password needed.
-          </p>
           <label htmlFor="email">Email address</label>
           <input
             id="email"

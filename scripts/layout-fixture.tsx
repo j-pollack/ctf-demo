@@ -7,7 +7,7 @@ import React from "react";
 import { renderToStaticMarkup, renderToString } from "react-dom/server";
 import { build } from "esbuild";
 import SiteHeader from "@/app/site-header";
-import { LeaderboardPanel, RulesPanel, RunHistoryRow } from "@/app/game-ui";
+import { LeaderboardPanel, RulesPanel, RunHistoryIntro, RunHistoryList } from "@/app/game-ui";
 import { DEFAULT_LIMITS, playerLimits } from "@/lib/limits";
 import {
   FIXTURES,
@@ -115,14 +115,19 @@ const INFO_PAGES: Record<string, { nav: string; body: React.ReactNode }> = {
     nav: "history",
     body: (
       <main className="info run-history">
-        <p className="eyebrow">PRIVATE TO YOUR ACCOUNT</p>
         <h2>My runs</h2>
-        <p className="empty">Your runs are saved to your account.</p>
-        <div className="run-list">
-          {RUNS.map((run) => (
-            <RunHistoryRow key={run.id} run={run} onOpen={noop} />
-          ))}
-        </div>
+        <RunHistoryIntro signedIn />
+        <RunHistoryList runs={RUNS} onOpen={noop} />
+      </main>
+    ),
+  },
+  "runs-empty": {
+    nav: "history",
+    body: (
+      <main className="info run-history">
+        <h2>My runs</h2>
+        <RunHistoryIntro signedIn />
+        <RunHistoryList runs={[]} onOpen={noop} />
       </main>
     ),
   },
@@ -130,9 +135,8 @@ const INFO_PAGES: Record<string, { nav: string; body: React.ReactNode }> = {
     nav: "history",
     body: (
       <main className="info run-history">
-        <p className="eyebrow">PRIVATE TO YOUR ACCOUNT</p>
         <h2>My runs</h2>
-        <p className="empty">Your runs are saved to your account.</p>
+        <RunHistoryIntro signedIn />
         <div role="alert" className="error">
           Could not load your runs.
           <button className="link">Retry</button>

@@ -185,8 +185,8 @@ const ORPHAN_COMMAND = `EXISTS(SELECT 1 FROM ctf.sprite_operations o
 // Nothing settles such a command. Starting a new run replaces an open run, but not one under review.
 const ORPHAN_COMMAND_TEXT = {
   active:
-    "A command lost contact with its response, so this run cannot be graded. Start a new run to replace it.",
-  ended: "A command lost contact with its response, so this run cannot be graded.",
+    "A command stopped reporting back, so this run can’t be graded. Start a new run to replace it.",
+  ended: "A command stopped reporting back, so this run can’t be graded.",
 };
 const SETTLING_COMMAND_TEXT = "A stopped command is being checked. This takes a few seconds.";
 type MonitorAllowances = Pick<

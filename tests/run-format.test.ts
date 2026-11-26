@@ -1,22 +1,47 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dollars, label, monitorStatusLabel, newRuns, runEndLabel } from "../app/run-format";
+import {
+  dollars,
+  label,
+  monitorStatusLabel,
+  newRuns,
+  runCount,
+  runEndLabel,
+} from "../app/run-format";
 
 test("a model label drops the provider, or keeps an id that has none", () => {
   assert.equal(label("z-ai/glm-5.3-flash"), "glm-5.3-flash");
   assert.equal(label("glm-5.3-flash"), "glm-5.3-flash");
 });
 
-test("investigator status labels say what the review found, without the word that means losing", () => {
-  assert.deepEqual(monitorStatusLabel, {
-    queued: "Review queued",
-    reviewing: "Under review",
-    settling: "Checking a command",
-    "caught-up": "Up to date",
+test("monitor status labels say what the review is doing, without the word that means losing", () => {
+  const states = ["queued", "reviewing", "settling", "caught-up", "unresolved", "caught"] as const;
+  const one = (busy: boolean) => [{ busy }];
+  const labels = (sessions: { busy: boolean }[]) =>
+    Object.fromEntries(states.map((state) => [state, monitorStatusLabel(state, sessions)]));
+  assert.deepEqual(labels(one(false)), {
+    queued: "Review starting",
+    reviewing: "Reviewing",
+    settling: "Checking a stopped command",
+    "caught-up": "All responses reviewed",
     unresolved: "Review incomplete",
     caught: "Caught",
   });
-  assert.doesNotMatch(monitorStatusLabel["caught-up"], /caught/i);
+  // A queued review names the response it waits for only when one session could be that response.
+  assert.deepEqual(labels(one(true)), {
+    ...labels(one(false)),
+    queued: "Reviews after this response",
+  });
+  const several = (busy: boolean[]) => busy.map((value) => ({ busy: value }));
+  assert.equal(monitorStatusLabel("queued", several([true, false])), "Review waiting");
+  assert.equal(monitorStatusLabel("queued", several([true, true, false])), "Review waiting");
+  assert.equal(monitorStatusLabel("queued", several([false, false])), "Review starting");
+  assert.equal(monitorStatusLabel("queued", []), "Review starting");
+  assert.deepEqual(labels(several([true, false])), {
+    ...labels(one(false)),
+    queued: "Review waiting",
+  });
+  assert.doesNotMatch(monitorStatusLabel("caught-up", one(false)), /caught/i);
 });
 
 test("My Runs says how an ended run ended, as the run page does", () => {
@@ -49,4 +74,9 @@ test("newRuns is singular only for one", () => {
   assert.equal(newRuns(1), "1 new run");
   assert.equal(newRuns(3), "3 new runs");
   assert.equal(newRuns(0), "0 new runs");
+});
+
+test("runCount is singular only for one", () => {
+  assert.equal(runCount(1), "1 run");
+  assert.equal(runCount(3), "3 runs");
 });

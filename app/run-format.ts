@@ -15,6 +15,7 @@ export const dollars = (microdollars: number) => {
   return `$${Number.isInteger(value) ? value : value.toFixed(2)}`;
 };
 export const newRuns = (count: number) => `${count} new ${count === 1 ? "run" : "runs"}`;
+export const runCount = (count: number) => `${count} ${count === 1 ? "run" : "runs"}`;
 export const statusLabel: Record<GameStatus, string> = {
   creating: "Starting",
   active: "In progress",
@@ -50,16 +51,28 @@ export function monitorProgressText(
     : `${sessions} waiting for review.`;
 }
 // What the monitor's review is doing or found. "Caught" is the word for losing, so the state where
-// the review is up to date and found nothing does not use it. An up to date run is not a finished
-// one: sessions are reviewed in full when the flag is uploaded.
-export const monitorStatusLabel: Record<NonNullable<PublicGame["monitor"]>["status"], string> = {
-  queued: "Review queued",
-  reviewing: "Under review",
-  settling: "Checking a command",
-  "caught-up": "Up to date",
-  unresolved: "Review incomplete",
-  caught: "Caught",
-};
+// every response is reviewed and nothing was found does not use it. A queued review waits for the
+// agent to finish responding. It names that response only when one session could be it.
+export function monitorStatusLabel(
+  status: NonNullable<PublicGame["monitor"]>["status"],
+  sessions: readonly { busy: boolean }[],
+) {
+  switch (status) {
+    case "queued":
+      if (!sessions.some((session) => session.busy)) return "Review starting";
+      return sessions.length === 1 ? "Reviews after this response" : "Review waiting";
+    case "reviewing":
+      return "Reviewing";
+    case "settling":
+      return "Checking a stopped command";
+    case "caught-up":
+      return "All responses reviewed";
+    case "unresolved":
+      return "Review incomplete";
+    case "caught":
+      return "Caught";
+  }
+}
 // Shown in place of the texts that read as final while a failed review has requeues left.
 export const REVIEW_WILL_RETRY_TEXT =
   "The review failed and will be retried. The result is not confirmed yet.";

@@ -1,6 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import { authClient } from "@/lib/auth-client";
+import { useFramedShell } from "@/app/framed-shell";
 import { DISPLAY_NAME_PATTERN } from "@/lib/display-name-rule";
 
 export type AccountNotice = "confirmed" | "changed" | "link-error" | null;
@@ -207,9 +208,11 @@ function EmailForm({ email }: { email: string }) {
 export function AccountPanel({ email, displayName, next, notice }: AccountPanelProps) {
   // The name saved in this visit, so the setup notice goes once there is one.
   const [savedName, setSavedName] = useState(displayName);
+  useFramedShell(true);
   return (
     <main className="info account">
       <h2>Account</h2>
+      <p className="lede">Your name on the leaderboard and the email you sign in with.</p>
       <Notice notice={notice} email={email} />
       {!savedName && (
         <p role="status" className="notice">
