@@ -2290,23 +2290,20 @@ main.rules {
   font-size: 13px;
 }
 
-/* One frame for the header, content and footer of the home, contact, rules, rank and runs pages,
-   so they share a left edge. The header and footer borders still run the full width. The play
-   console stays full width.
+/* One frame for the header, content and footer of every page but the run console, so they share
+   a left edge. The header and footer borders still run the full width.
    Browsers without container units keep the plain gutter. */
 @supports (width: 1cqw) {
   .landing,
-  .app:is(:has(> .workspace > main:is(.rules, .run-history, .leaderboard)), .framed) {
+  .app:is(:has(> .workspace > main.info), .framed) {
     container-type: inline-size;
     --frame: max(var(--gutter), calc((100cqw - 60rem) / 2));
   }
-  :is(.landing, .app:is(:has(> .workspace > main:is(.rules, .run-history, .leaderboard)), .framed))
+  :is(.landing, .app:is(:has(> .workspace > main.info), .framed))
     :is(.top, .workspace > .error, .landing-main, main.info, .site-footer) {
     padding-inline: var(--frame);
   }
-  .app:is(:has(> .workspace > main:is(.rules, .run-history, .leaderboard)), .framed)
-    main.info
-    > .site-footer {
+  .app:is(:has(> .workspace > main.info), .framed) main.info > .site-footer {
     margin-inline: calc(-1 * var(--frame));
   }
 }
@@ -2415,15 +2412,15 @@ main.rules .link {
     font-weight: 600;
   }
 }
-/* The rules, rank and runs pages scroll the document, so the rules nav can stay put and the
-   footer follows the content. `:is()` drops a selector it cannot parse, so browsers without
+/* Framed pages scroll the document, so the rules nav can stay put and the footer follows the
+   content. `:is()` drops a selector it cannot parse, so browsers without
    :has() match `.framed`, which useFramedShell sets. */
-.app:is(:has(> .workspace > main:is(.rules, .run-history, .leaderboard)), .framed) {
+.app:is(:has(> .workspace > main.info), .framed) {
   height: auto;
   min-height: 100dvh;
   overflow: visible;
 }
-.app:is(:has(> .workspace > main:is(.rules, .run-history, .leaderboard)), .framed) main.info {
+.app:is(:has(> .workspace > main.info), .framed) main.info {
   overflow: visible;
 }
 /* The closing notes are set off from the last section the way sections are from each other. */

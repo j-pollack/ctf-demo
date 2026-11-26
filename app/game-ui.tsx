@@ -285,7 +285,6 @@ export default function GameUI({
             : routeRunId
               ? "detail"
               : "play";
-  useFramedShell(panel === "rules" || panel === "history" || panel === "rank");
   const account = authClient.useSession();
   const signedIn = !!account.data && !account.data.user.isAnonymous;
   // The game is members-only: a leftover guest session counts as signed out.
@@ -966,6 +965,9 @@ export default function GameUI({
         displaySessionView?.events ?? baseDisplayGame.events,
       )
     : null;
+  // Every panel but the run console sits in the page frame: play, and a run's detail once loaded,
+  // use the full width.
+  useFramedShell(panel !== "play" && !(panel === "detail" && displayGame));
   const currentRunStarted = game ? runHasStarted(game, sessionViewsRef.current) : false;
   const displayRunStarted = displayGame
     ? runHasStarted(displayGame, sessionViewsRef.current)
@@ -2152,7 +2154,7 @@ export function LeaderboardPanel({
   onAgentChange: (agent: string) => void;
 }) {
   return (
-    <main className="info leaderboard">
+    <main className="info">
       <p className="eyebrow">VERIFIED WINS</p>
       <h2>Leaderboard</h2>
       <div className="filters">

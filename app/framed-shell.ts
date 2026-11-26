@@ -3,9 +3,9 @@ import { useLayoutEffect } from "react";
 
 type Shell = { classList: { add(name: string): unknown; remove(name: string): unknown } };
 
-// The CSS frames the app shell on the rules, rank and runs pages with :has(). A browser without
-// :has() cannot see which page the shell holds, so mark the shell with a class it can match.
-// Returns the cleanup, so leaving those pages restores the full-width shell for play.
+// The CSS frames the app shell with :has() whenever it holds a `main.info` page, which is every
+// page but the run console. A browser without :has() cannot see that, so mark the shell with a
+// class it can match. Returns the cleanup, so going to the console restores the full width.
 export function markFramedShell(shell: Shell | null, supportsHas: boolean) {
   if (supportsHas || !shell) return () => {};
   shell.classList.add("framed");
