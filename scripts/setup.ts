@@ -45,6 +45,7 @@ try {
     "032-second-look.sql",
     "034-investigator-requests.sql",
     "035-feedback.sql",
+    "036-feedback-mail.sql",
   ])
     await db.query(
       await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), "utf8"),

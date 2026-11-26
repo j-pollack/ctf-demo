@@ -12,6 +12,7 @@
     "monitor:worker": "node --env-file=.env.local --import tsx scripts/monitor-worker.ts",
     "smoke": "node --env-file=.env.local --import tsx scripts/smoke.ts",
     "smoke:display-name": "node --env-file=.env.local --import tsx scripts/display-name-smoke.ts",
+    "smoke:fastmail": "node --env-file=.env.local --import tsx scripts/fastmail-smoke.ts",
     "check:auth": "node --env-file=.env.local --import tsx scripts/auth-check.ts",
     "check:budget": "node --env-file=.env.local --import tsx scripts/budget-check.ts",
     "prepare": "husky",

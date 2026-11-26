@@ -1,9 +1,16 @@
 import type { FeedbackRow } from "@/lib/feedback";
+import type { FeedbackState } from "@/lib/feedback-mail-text";
 
-const when = (date: Date) => `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+import { when } from "./when";
 
 // Everything here is member input: it renders as text, never as markdown, a link or an href.
-export function FeedbackCard({ rows }: { rows: FeedbackRow[] }) {
+export function FeedbackCard({
+  rows,
+  states,
+}: {
+  rows: FeedbackRow[];
+  states: Record<string, FeedbackState>;
+}) {
   return (
     <section className="card wide">
       <header>
@@ -27,6 +34,10 @@ export function FeedbackCard({ rows }: { rows: FeedbackRow[] }) {
                 </p>
               )}
               <p className="feedback-message">{row.message}</p>
+              <p>
+                <a href={`/admin/feedback/${row.id}`}>Open thread</a>
+                {states[row.id] && ` · ${states[row.id]}`}
+              </p>
             </li>
           ))}
         </ul>
