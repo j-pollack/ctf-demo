@@ -294,12 +294,12 @@ export function endReasonOf(cause: string | null | undefined): PublicGame["endRe
   return cause === "review" ? "unverified-review" : undefined;
 }
 export const sessionCount = (count: number) => `${count} ${count === 1 ? "session" : "sessions"}`;
-export const sessionLimitText = (count: number) =>
-  `This run has ${sessionCount(count)} and cannot add another.`;
+export const SESSION_LIMIT_TEXT =
+  "This run has the maximum number of sessions. You cannot add more.";
 // What the server refuses with when a run is at its session limit, and what the play UI says
 // when a click would be refused. Null when the run may add a session or the limit is unknown.
 export const sessionLimitRefusal = (count: number, limit: number | undefined) =>
-  limit !== undefined && count >= limit ? sessionLimitText(count) : null;
+  limit !== undefined && count >= limit ? SESSION_LIMIT_TEXT : null;
 // Budgets and limits an admin can change. The defaults are the constants they replace.
 export type Limits = {
   dailyCapMicrodollars: number;

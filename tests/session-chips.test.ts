@@ -88,7 +88,7 @@ test("Add session is enabled below the run's session limit and disabled with the
   for (const sessionLimit of [4, 3]) {
     const at = add(render({ sessionLimit }));
     assert.match(at, /aria-disabled="true"/);
-    assert.match(at, /title="This run has 4 sessions and cannot add another\."/);
+    assert.match(at, /title="This run has the maximum number of sessions\. You cannot add more\."/);
     assert.doesNotMatch(
       at,
       / disabled=""/,
@@ -98,5 +98,8 @@ test("Add session is enabled below the run's session limit and disabled with the
   const single = add(
     render({ sessions: [session(1)], sessionLimit: 1, shownIds: [], focusedId: "session-1" }),
   );
-  assert.match(single, /title="This run has 1 session and cannot add another\."/);
+  assert.match(
+    single,
+    /title="This run has the maximum number of sessions\. You cannot add more\."/,
+  );
 });

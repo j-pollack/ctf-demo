@@ -6709,21 +6709,27 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     assert.equal((await addSession(who, game.id)).status, 200, "the second session is below");
     const refused = await addSession(who, game.id);
     assert.equal(refused.status, 429);
-    assert.equal((await refused.json()).error, "This run has 2 sessions and cannot add another.");
+    assert.equal(
+      (await refused.json()).error,
+      "This run has the maximum number of sessions. You cannot add more.",
+    );
     assert.equal(await sessionCount(game.id), 2, "a refusal stores nothing");
     await setLimit("sessions_per_run", 1);
     const over = await addSession(who, game.id);
     assert.equal(over.status, 429);
     assert.equal(
       (await over.json()).error,
-      "This run has 2 sessions and cannot add another.",
+      "This run has the maximum number of sessions. You cannot add more.",
       "a run over the limit keeps its sessions and names its real count",
     );
     const other = await member();
     const solo = await productionStartGame(other.id);
     const singular = await addSession(other, solo.id);
     assert.equal(singular.status, 429);
-    assert.equal((await singular.json()).error, "This run has 1 session and cannot add another.");
+    assert.equal(
+      (await singular.json()).error,
+      "This run has the maximum number of sessions. You cannot add more.",
+    );
     assert.equal(await sessionCount(solo.id), 1);
     await setLimit("sessions_per_run", 3);
     assert.equal((await addSession(other, solo.id)).status, 200);
@@ -6738,7 +6744,10 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     const statuses = responses.map((response) => response.status).sort();
     assert.deepEqual(statuses, [200, 200, 200, 429, 429, 429], "three fit under a limit of four");
     for (const refused of responses.filter((response) => response.status === 429))
-      assert.equal((await refused.json()).error, "This run has 4 sessions and cannot add another.");
+      assert.equal(
+        (await refused.json()).error,
+        "This run has the maximum number of sessions. You cannot add more.",
+      );
     assert.equal(await sessionCount(game.id), 4);
   });
 

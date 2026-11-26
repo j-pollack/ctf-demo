@@ -332,7 +332,7 @@ test("Add session explains the session limit when the run is at it", () => {
   const props = { onCreateSession: noop, sessionLimit: 2 };
   const at = add(render(run(sessions(2)), props));
   assert.match(at, /aria-disabled="true"/);
-  assert.match(at, /title="This run has 2 sessions and cannot add another\."/);
+  assert.match(at, /title="This run has the maximum number of sessions\. You cannot add more\."/);
   assert.doesNotMatch(add(render(run(sessions(1)), props)), /aria-disabled|title=/);
 });
 
