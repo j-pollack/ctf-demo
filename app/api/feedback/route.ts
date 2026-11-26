@@ -1,4 +1,5 @@
-import { auth } from "@/lib/auth";
+import { afterResponse, auth } from "@/lib/auth";
+import { notifyFeedback } from "@/lib/feedback-mail";
 import { contactSender, parseFeedback, reportSender, saveFeedback } from "@/lib/feedback";
 import { getPublicGameRow } from "@/lib/games";
 import { body, checkOrigin, errorResponse, player } from "@/lib/http";
@@ -14,14 +15,15 @@ export async function POST(request: Request) {
       // Signed-out visitors may write, so this reads the session without requiring one.
       const session = await auth.api.getSession({ headers: request.headers });
       const userId = session && !session.user.isAnonymous ? session.user.id : null;
-      await saveFeedback(feedback, userId, contactSender(request.headers, secret()));
+      const id = await saveFeedback(feedback, userId, contactSender(request.headers, secret()));
+      afterResponse(notifyFeedback(id));
       return Response.json({ ok: true });
     }
     const user = await player(request);
     // Both lookups check that the run belongs to the caller.
     if (feedback.sessionId) await getSession(feedback.gameId, feedback.sessionId, user.id);
     else await getPublicGameRow(feedback.gameId, user.id);
-    await saveFeedback(feedback, user.id, reportSender(user.id));
+    afterResponse(notifyFeedback(await saveFeedback(feedback, user.id, reportSender(user.id))));
     return Response.json({ ok: true });
   } catch (error) {
     return errorResponse(error);

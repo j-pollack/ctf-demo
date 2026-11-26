@@ -1,8 +1,10 @@
 import { headers } from "next/headers";
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { adminStats, isAdmin } from "@/lib/admin";
-import { listFeedback } from "@/lib/feedback";
+import { listFeedback, type FeedbackRow } from "@/lib/feedback";
+import { feedbackStates } from "@/lib/feedback-mail";
 import { agentModelSetting, currentAgentModel } from "@/lib/agent-model";
 import { currentGameRules, GAME_RULE_KEYS } from "@/lib/game-rules";
 import { gameRuleSettings, type GameRuleSetting } from "@/lib/game-rules-admin";
@@ -64,6 +66,11 @@ function Card({
       {children}
     </section>
   );
+}
+
+// Fastmail answers slowly or not at all, so the states stream in after the rest of the page.
+async function FeedbackWithStates({ rows }: { rows: FeedbackRow[] }) {
+  return <FeedbackCard rows={rows} states={await feedbackStates(rows)} />;
 }
 
 async function requireAdmin() {
@@ -299,7 +306,9 @@ export default async function Admin({
           />
         </Card>
 
-        <FeedbackCard rows={feedback} />
+        <Suspense fallback={<FeedbackCard rows={feedback} states={{}} />}>
+          <FeedbackWithStates rows={feedback} />
+        </Suspense>
       </div>
     </main>
   );

@@ -46,11 +46,12 @@ const landing = (url: string, step: "confirmed" | "changed") => {
   link.searchParams.set("callbackURL", `/account?email=${step}`);
   return link.toString();
 };
-// Better Auth sends email-change links in the background. Running them after the response means a
-// new address and one that is already taken answer at the same speed, so timing reveals no account.
-// Outside a Next request, in scripts and tests, `after` throws: the send is already running and
-// Better Auth logs its failure. In production that means nothing keeps the function alive for it.
-function afterResponse(task: Promise<unknown>) {
+// Background work that runs after the response: Better Auth's email-change links, and the contact
+// mail notification. For the links, running after the response means a new address and one that is
+// already taken answer at the same speed, so timing reveals no account.
+// Outside a Next request, in scripts and tests, `after` throws: the task is already running and its
+// own code logs a failure. In production that means nothing keeps the function alive for it.
+export function afterResponse(task: Promise<unknown>) {
   try {
     after(() => task);
   } catch (error) {

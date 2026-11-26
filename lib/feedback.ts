@@ -31,8 +31,10 @@ function text(value: unknown, field: string, max: number) {
     throw new GameError(`Enter a valid ${field}.`);
   return trimmed;
 }
+export const isUuid = (value: unknown): value is string =>
+  typeof value === "string" && UUID.test(value);
 function uuid(value: unknown, field: string) {
-  if (typeof value !== "string" || !UUID.test(value)) throw new GameError(`Invalid ${field}.`);
+  if (!isUuid(value)) throw new GameError(`Invalid ${field}.`);
   return value;
 }
 
@@ -68,14 +70,15 @@ export function contactSender(headers: Headers, secret: string) {
 // One global lock makes the count and the insert atomic, so parallel requests cannot exceed a limit.
 export async function saveFeedback(feedback: Feedback, userId: string | null, sender: string) {
   const contact = feedback.kind === "contact";
-  const rowCount = await transaction(async (client) => {
+  const id = await transaction(async (client) => {
     await client.query("SELECT pg_advisory_xact_lock($1)", [FEEDBACK_LOCK]);
     const result = await client.query(
       `INSERT INTO ctf.feedback(kind,name,email,message,user_id,game_id,session_id,sender)
      SELECT $1,$2,$3,$4,$5,$6,$7,$8
      WHERE (SELECT count(*) FROM ctf.feedback WHERE sender=$8 AND created_at>now()-interval '1 hour') < $9
        AND ($1<>'contact' OR
-         (SELECT count(*) FROM ctf.feedback WHERE kind='contact' AND created_at>now()-interval '1 day') < $10)`,
+         (SELECT count(*) FROM ctf.feedback WHERE kind='contact' AND created_at>now()-interval '1 day') < $10)
+     RETURNING id`,
       [
         feedback.kind,
         contact ? feedback.name : null,
@@ -89,9 +92,10 @@ export async function saveFeedback(feedback: Feedback, userId: string | null, se
         CONTACTS_PER_DAY,
       ],
     );
-    return result.rowCount;
+    return result.rows[0]?.id as string | undefined;
   });
-  if (!rowCount) throw new GameError("Too many messages. Try again later.", 429);
+  if (!id) throw new GameError("Too many messages. Try again later.", 429);
+  return id;
 }
 
 export type FeedbackRow = {
@@ -105,18 +109,29 @@ export type FeedbackRow = {
   sessionId: string | null;
   ordinal: number | null;
   createdAt: Date;
+  mailThreadId: string | null;
+  closedAt: Date | null;
 };
 
-// The first session's id equals the run id, so the ordinal is what makes a session readable.
-export async function listFeedback() {
-  const { rows } = await db.query<FeedbackRow>(
-    `SELECT f.id,f.kind,f.name,f.email,u.email AS "accountEmail",f.message,
-       f.game_id AS "gameId",f.session_id AS "sessionId",s.ordinal,f.created_at AS "createdAt"
+const SELECT_FEEDBACK = `SELECT f.id,f.kind,f.name,f.email,u.email AS "accountEmail",f.message,
+       f.game_id AS "gameId",f.session_id AS "sessionId",s.ordinal,f.created_at AS "createdAt",
+       f.mail_thread_id AS "mailThreadId",f.closed_at AS "closedAt"
      FROM ctf.feedback f
      LEFT JOIN ctf."user" u ON u.id=f.user_id
-     LEFT JOIN ctf.agent_sessions s ON s.id=f.session_id
-     ORDER BY f.created_at DESC LIMIT $1`,
+     LEFT JOIN ctf.agent_sessions s ON s.id=f.session_id`;
+
+// The first session's id equals the run id, so the ordinal is what makes a session readable.
+// Open rows come first, so newer closed ones cannot push them off the list.
+export async function listFeedback() {
+  const { rows } = await db.query<FeedbackRow>(
+    `${SELECT_FEEDBACK} ORDER BY (f.closed_at IS NOT NULL), f.created_at DESC LIMIT $1`,
     [LIST_LIMIT],
   );
   return rows;
+}
+
+export async function getFeedback(id: string) {
+  if (!isUuid(id)) return null;
+  const { rows } = await db.query<FeedbackRow>(`${SELECT_FEEDBACK} WHERE f.id=$1`, [id]);
+  return rows[0] ?? null;
 }
