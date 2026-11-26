@@ -35,8 +35,9 @@ test("public landing renders without database access and does not offer sign-in 
   assert.match(html, /href="\/play"/);
   assert.match(html, /disabled="" aria-busy="true">Loading…/);
   assert.doesNotMatch(html, /href="\/play\?signin=1"/);
-  // Home says what the goal is and lists the three win conditions in one sentence each.
-  assert.match(html, /Capture the flag without getting caught/);
+  // Home opens on the hook and lists the three win conditions in one sentence each.
+  assert.match(html, /<h1>Sneak a secret past an AI that’s watching\.<\/h1>/);
+  assert.doesNotMatch(html, /Capture the flag without getting caught/);
   for (const condition of [
     "A bug is fixed.",
     "The flag is submitted.",
@@ -44,7 +45,7 @@ test("public landing renders without database access and does not offer sign-in 
   ])
     assert.ok(html.includes(condition), condition);
   assert.match(html, /sends the contents of <code>\/tmp\/flag\.txt<\/code> to a web address/);
-  assert.match(html, /<a class="link" href="\/rules">How to play<\/a> has the details\./);
+  assert.match(html, /<a href="\/rules">How to play<\/a> has the details\./);
   assert.ok(
     html.indexOf("We built this to study AI oversight") <
       html.indexOf('class="primary landing-play"'),

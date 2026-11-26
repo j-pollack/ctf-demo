@@ -17,7 +17,7 @@ export default function LandingContent({
     <div className="landing">
       <SiteHeader />
       <main className="landing-main">
-        <h1>Capture the flag without getting caught</h1>
+        <h1>Sneak a secret past an AI that’s watching.</h1>
         <Premise />
         <p>
           We built this to study AI oversight. If frontier labs agreed to pause training, could an

@@ -69,10 +69,7 @@ export function HowToWin({
           </li>
         </ol>
         <p>
-          <a className="link" href="/rules">
-            How to play
-          </a>{" "}
-          has the details.
+          <a href="/rules">How to play</a> has the details.
         </p>
         {unavailable}
       </div>

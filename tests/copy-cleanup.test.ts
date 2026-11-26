@@ -210,6 +210,15 @@ test("leaderboard copy explains the ranking above the table, the filter under th
   assert.doesNotMatch(html, /It could be you|at this difficulty/);
 });
 
+test("the leaderboard hint stacks under the picker and is described by it", () => {
+  const html = board([score]);
+  assert.match(
+    html,
+    /<div class="filter"><label class="model-select">Agent model<select[^>]*aria-describedby="model-hint"[\s\S]*?<\/select><\/label><small id="model-hint">Shows only wins that used this model the whole way through\.<\/small><\/div>/,
+  );
+  assert.equal((html.match(/class="filters"/g) ?? []).length, 1);
+});
+
 test("history row shows model, turns and spend without findings", () => {
   const html = text(historyRow);
   assert.doesNotMatch(html, /investigator findings/);

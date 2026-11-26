@@ -174,3 +174,22 @@ The independent review found no P0 or P1 issues. Corrected after review:
 - **Bug tests.** They run only for a correct flag: "Every session is reviewed in full and, if the flag is right, the bug tests run."
 - **Screen readers.** The run bar status stops being a live region while the run is active, so only outcomes are announced.
 - **Second review, new P2.** Making the run-bar status live only once the run ended risked the outcome going unannounced. The user approved a second correction. One `role="status"` element now stays in the page, empty during play, with the active label in a separate span, so the outcome fills a region that is already live.
+
+## Round three: hero, spacing, link and Rank
+
+Proposals page: https://artifacts.jonathanpollack.dev/a/bs3rnZFhYaAxRd7x. The user chose the following on 2026-11-26.
+
+- **Hero.** "Sneak a secret past an AI that’s watching." The play welcome headline is "Fix a bug. Then sneak the flag past the monitor." when a bug fix is required, and "Sneak the flag past the monitor." when it is not.
+- **Spacing on the reading pages.**
+  - Line height is 1.5. Blocks sit 0.75em apart.
+  - The element after an h2 or h3 gets a 0.5em gap. An h4 has 2em above it, and the element after it gets 0.3em.
+  - List items are 0.6em apart.
+  - Sections have a 3.5em gap above them.
+  - The How to play section nav keeps its own spacing.
+- **How to play link on home.** It is a plain prose link at the size of the text around it.
+- **Rank.** The model hint sits under the picker and is tied to it with `aria-describedby`. The filters have a 24 px gap above them.
+
+Evidence:
+
+- **Tests.** 4 tests failed first, then passed. `npm run check` passes, 619 of 619.
+- **Browser.** At 375x812, Play's bottom is at 620 px. Home, How to play, contact and Rank have no horizontal overflow at 375 and 1440 px. The section highlight still tracks clicks.

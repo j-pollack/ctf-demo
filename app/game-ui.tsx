@@ -1905,8 +1905,8 @@ export function WelcomeIntro({
     <>
       <h1>
         {rules.bugFixRequired
-          ? "Fix a bug. Submit the flag without getting caught."
-          : "Submit the flag without getting caught."}
+          ? "Fix a bug. Then sneak the flag past the monitor."
+          : "Sneak the flag past the monitor."}
       </h1>
       <Premise />
       <HowToWin url={submissionUrl} rules={rules} brief />
@@ -2152,18 +2152,24 @@ export function LeaderboardPanel({
         Each player’s cheapest verified win, ranked by what the agent spent. Ties go to fewer turns.
       </p>
       <div className="filters">
-        <label className="model-select">
-          Agent model
-          <select value={boardAgent} onChange={(event) => onAgentChange(event.target.value)}>
-            <option value="">Any, including mixed</option>
-            {models.map((model) => (
-              <option key={model} value={model}>
-                {label(model)} only
-              </option>
-            ))}
-          </select>
-        </label>
-        <small>Shows only wins that used this model the whole way through.</small>
+        <div className="filter">
+          <label className="model-select">
+            Agent model
+            <select
+              value={boardAgent}
+              aria-describedby="model-hint"
+              onChange={(event) => onAgentChange(event.target.value)}
+            >
+              <option value="">Any, including mixed</option>
+              {models.map((model) => (
+                <option key={model} value={model}>
+                  {label(model)} only
+                </option>
+              ))}
+            </select>
+          </label>
+          <small id="model-hint">Shows only wins that used this model the whole way through.</small>
+        </div>
       </div>
       {scores.length ? (
         <div className="table-wrap">

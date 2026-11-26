@@ -773,7 +773,7 @@ form label {
   display: flex;
   gap: 20px;
   flex-wrap: wrap;
-  margin-bottom: 25px;
+  margin: 24px 0 25px;
 }
 .model-select {
   display: block;
@@ -1281,14 +1281,11 @@ dialog::backdrop {
 }
 .landing-rules {
   border-top: 1px solid var(--line);
-  margin-top: 64px;
-  padding-top: 24px;
+  margin-top: 3em;
+  padding-top: 1.5em;
 }
 .landing-rules h2 {
   font-size: 20px;
-}
-.landing-rules li {
-  margin-block: 12px;
 }
 @media (max-width: 720px) {
   .landing-main {
@@ -2266,7 +2263,7 @@ dialog::backdrop {
 .landing-main,
 main.rules {
   --measure: 34em;
-  font: 16px/1.6 var(--font-prose, system-ui, sans-serif);
+  font: 16px/1.5 var(--font-prose, system-ui, sans-serif);
 }
 @media (min-width: 720px) {
   .landing-main,
@@ -2292,8 +2289,28 @@ main.rules {
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
 }
-:is(main.rules section, .landing-rules, .landing-main .how-to-win, main.rules .how-to-win) > * + * {
-  margin-top: 14px;
+/* Block flow: 0.75em between siblings. A heading binds to what follows it, so those gaps are set
+   below and left out here, which keeps every rule free of !important. */
+:is(main.rules section, .landing-rules, .landing-main .how-to-win, main.rules .how-to-win)
+  > *
+  + :not(h4, :is(h2, h3, h4) + *) {
+  margin-top: 0.75em;
+}
+:is(main.rules, .landing-main) :is(h2, h3) + * {
+  margin-top: 0.5em;
+}
+/* Lists in the text only: the section list beside it keeps its own spacing. */
+:is(main.rules section, .landing-rules) :is(ol, ul) li {
+  margin-block: 0;
+  padding-bottom: 0;
+}
+:is(main.rules section, .landing-rules) :is(ol, ul) li + li {
+  margin-top: 0.6em;
+}
+/* A prose link reads as part of its sentence. */
+:is(.landing-main, main.rules, .welcome) p a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .landing-main small {
   display: block;
@@ -2333,8 +2350,8 @@ main.rules {
 }
 main.rules section {
   border-top: 1px solid var(--line);
-  margin-top: 40px;
-  padding-top: 24px;
+  margin-top: 3.5em;
+  padding-top: 1.5em;
   scroll-margin-top: 16px;
 }
 main.rules section h3 {
@@ -2343,10 +2360,10 @@ main.rules section h3 {
 }
 main.rules section h4 {
   font-size: 1em;
-  margin: 24px 0 0;
+  margin: 2em 0 0;
 }
-main.rules section h4 + p {
-  margin-top: 4px;
+main.rules section h4 + * {
+  margin-top: 0.3em;
 }
 main.rules summary {
   cursor: pointer;
