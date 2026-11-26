@@ -376,4 +376,30 @@ test("feedback messages and run reports", { timeout: 120_000 }, async (t) => {
       assert.equal((await listFeedback()).length, 50);
     },
   );
+
+  await t.test(
+    "an unexpected route failure is logged with its cause; a refusal is not",
+    async () => {
+      const { errorResponse } = await import("../../lib/http");
+      const { GameError } = await import("../../lib/policy");
+      const lines: string[] = [];
+      const logError = console.error;
+      console.error = (line: unknown) => void lines.push(String(line));
+      try {
+        const failed = errorResponse(Object.assign(new Error("sandbox refused"), { code: "E42" }));
+        assert.equal(failed.status, 503);
+        assert.deepEqual(await failed.json(), {
+          error: "The service could not complete this request. Try again.",
+        });
+        assert.equal(errorResponse(new GameError("Not found.", 404)).status, 404);
+      } finally {
+        console.error = logError;
+      }
+      assert.equal(lines.length, 1);
+      const logged = JSON.parse(lines[0]);
+      assert.equal(logged.event, "route.failed");
+      assert.match(logged.error, /sandbox refused/);
+      assert.equal(logged.code, "E42");
+    },
+  );
 });

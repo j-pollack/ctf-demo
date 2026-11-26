@@ -2,7 +2,7 @@ import { currentLimits } from "@/lib/limits";
 import { currentAgentModel } from "@/lib/agent-model";
 import { claimGameSession, getGame } from "@/lib/games";
 import { getSession } from "@/lib/sessions";
-import { body, checkOrigin, errorResponse, player } from "@/lib/http";
+import { body, checkOrigin, errorResponse, logUnexpected, player } from "@/lib/http";
 import { GameError, publicAgentSettings } from "@/lib/policy";
 import { runGame } from "@/lib/runner";
 import { getModel } from "@/lib/inference";
@@ -58,7 +58,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           await runGame(game, data.prompt as string, signal, send, {
             deadlineSignal: responseDeadline,
           });
-        } catch {
+        } catch (error) {
+          // A stop, a closed tab and the deadline all abort the signal: those are not failures.
+          if (!signal.aborted) logUnexpected(error);
           send("error", "This response was interrupted. Reload to recover your run.");
         } finally {
           clearInterval(heartbeat);
