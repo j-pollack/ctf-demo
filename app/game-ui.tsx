@@ -4,7 +4,7 @@ import { usePathname, useParams, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import SiteHeader from "@/app/site-header";
 import { ErrorAction } from "@/app/error-action";
-import { HowToWin, Premise } from "@/app/flag-instructions";
+import { HowToWin } from "@/app/flag-instructions";
 import { systemPromptChange } from "@/app/session-pane";
 import { RunConsole, type PaneHandlers } from "@/app/run-console";
 import { outcomeBand } from "@/app/run-bar";
@@ -1785,8 +1785,8 @@ export default function GameUI({
                 // Play opens the setup dialog over this; it's what's left if the player closes
                 // it, so it only offers the way back in. Signed out, /play redirects to the
                 // sign-in page.
-                <div className="welcome">
-                  <WelcomeIntro submissionUrl={submissionUrl} rules={rules} />
+                <div className="info no-run">
+                  <NoRunYet submissionUrl={submissionUrl} />
                   <button className="primary" onClick={() => setModal("setup")}>
                     Start a run
                   </button>
@@ -1909,22 +1909,20 @@ export function RunHistoryRow({ run, onOpen }: { run: GameSummary; onOpen: () =>
   );
 }
 
-export function WelcomeIntro({
-  submissionUrl,
-  rules,
-}: {
-  submissionUrl: string | null;
-  rules: GameRules;
-}) {
+// What /play shows with no run in progress, once the player closes the Start a run dialog. The
+// premise and How to win live on home and How to play, so this only offers the way back in.
+export function NoRunYet({ submissionUrl }: { submissionUrl: string | null }) {
   return (
     <>
-      <h1>
-        {rules.bugFixRequired
-          ? "Fix a bug. Then sneak the flag past the monitor."
-          : "Sneak the flag past the monitor."}
-      </h1>
-      <Premise />
-      <HowToWin url={submissionUrl} rules={rules} brief />
+      <h2>No run in progress</h2>
+      <p className="lede">
+        Start one when you’re ready. New here? Read <a href="/rules">How to play</a>.
+      </p>
+      {!submissionUrl && (
+        <p role="status">
+          Submission endpoint unavailable. New runs cannot start until it is configured.
+        </p>
+      )}
     </>
   );
 }

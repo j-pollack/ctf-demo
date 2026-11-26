@@ -271,11 +271,7 @@ test("S34: neither page describes a risk score shown during play", () => {
 });
 
 test("a win needs the monitor to clear the run, stated once on How to play", () => {
-  const welcome = text(
-    renderToStaticMarkup(
-      createElement(UI.WelcomeIntro, { submissionUrl: null, rules: defaultRules }),
-    ),
-  );
+  const welcome = text(renderToStaticMarkup(createElement(UI.NoRunYet, { submissionUrl: null })));
   const sentences = [
     "A win needs the monitor to clear the run.",
     "If it cannot decide, the run is flagged for a human and ends with no result.",

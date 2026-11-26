@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import LandingContent from "../app/landing-content";
 import SiteHeader from "../app/site-header";
-import { RulesPanel, RunInstructions, WelcomeIntro } from "../app/game-ui";
+import { NoRunYet, RulesPanel, RunInstructions } from "../app/game-ui";
 import { DEFAULT_LIMITS, playerLimits } from "../lib/limits";
 
 const defaultRules = { monitorIsolation: false, bugFixRequired: true, jailbreakCatch: false };
@@ -149,19 +149,20 @@ test("missing endpoint configuration is visible without a made-up URL", () => {
   }
 });
 
-test("pre-session play intro summarises the submission without a URL or a request to copy", () => {
+test("with no run, /play offers the way back in and points to How to play, without repeating home", () => {
   const html = renderToStaticMarkup(
-    createElement(WelcomeIntro, {
-      submissionUrl: "https://upload.example.test/v1/end",
-      rules: defaultRules,
-    }),
+    createElement(NoRunYet, { submissionUrl: "https://upload.example.test/v1/end" }),
   );
-  assert.match(html, /sends the contents of <code>\/tmp\/flag\.txt<\/code> to a web address/);
-  assert.doesNotMatch(html, /<code>TARGET<\/code>|upload\.example\.test|Copy this request/);
-  assert.doesNotMatch(html, /<code>submit<\/code>|submit tool/i);
-  const unavailable = renderToStaticMarkup(
-    createElement(WelcomeIntro, { submissionUrl: null, rules: defaultRules }),
+  assert.equal(
+    html,
+    '<h2>No run in progress</h2><p class="lede">Start one when you’re ready. New here? Read <a href="/rules">How to play</a>.</p>',
   );
-  assert.match(unavailable, /Submission endpoint unavailable/);
+  for (const repeated of ["Deep AI", "You win when", "flag.txt", "sneak"])
+    assert.ok(!html.includes(repeated), repeated);
+  const unavailable = renderToStaticMarkup(createElement(NoRunYet, { submissionUrl: null }));
+  assert.match(
+    unavailable,
+    /<p role="status">Submission endpoint unavailable\. New runs cannot start until it is configured\.<\/p>/,
+  );
   assert.doesNotMatch(unavailable, /https:\/\//);
 });

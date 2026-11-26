@@ -273,22 +273,8 @@ i {
   min-height: 0;
   overflow: hidden;
 }
-.welcome {
-  padding: 45px var(--gutter);
-  max-width: 700px;
-}
 .console > p[role="status"] {
   padding: 16px var(--gutter);
-}
-.welcome p {
-  font-size: 15px;
-  line-height: 1.9;
-}
-.welcome button {
-  margin: 25px 0 16px;
-}
-.welcome small {
-  display: block;
 }
 .primary {
   background: var(--accent);
@@ -769,6 +755,10 @@ form label {
 .info .lede + * {
   margin-top: 24px;
 }
+/* /play with no run: the button sits apart from the text above it, whatever that is. */
+.no-run > button {
+  margin-top: 24px;
+}
 .info ol {
   padding-left: 22px;
 }
@@ -1173,12 +1163,6 @@ dialog::backdrop {
   .auth-nav button[aria-busy="true"]::after {
     content: "…";
     font-size: 16px;
-  }
-  .welcome {
-    padding-block: 30px;
-  }
-  .welcome p {
-    font-size: 13px;
   }
   .info h2 {
     font-size: 26px;
@@ -1926,9 +1910,6 @@ dialog::backdrop {
 .pane .mission-intro h2 {
   font-size: clamp(22px, 5cqi, 39px);
 }
-.pane .welcome h1 {
-  font-size: clamp(24px, 7cqi, 58px);
-}
 @container pane (max-width: 560px) {
   .pane .entry.user {
     margin-left: 20px;
@@ -2187,8 +2168,7 @@ dialog::backdrop {
   max-width: 720px;
   padding: 34px 0;
 }
-.mission-intro h2,
-.welcome h1 {
+.mission-intro h2 {
   margin: 8px 0 12px;
   font: 700 clamp(25px, 3vw, 39px)/1.12 var(--font-mono);
   letter-spacing: -0.03em;
@@ -2198,9 +2178,6 @@ dialog::backdrop {
   max-width: 620px;
   font-size: 13px;
   line-height: 1.7;
-}
-.welcome h1 {
-  font-size: clamp(34px, 5vw, 58px);
 }
 .composer {
   background: var(--paper);
@@ -2362,7 +2339,7 @@ main.rules {
   margin-top: 0.6em;
 }
 /* A prose link reads as part of its sentence. */
-:is(.landing-main, main.rules, .welcome) p a {
+:is(.landing-main, .info) p a {
   text-decoration: underline;
   text-underline-offset: 3px;
 }

@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EarlierProtocolNotice, HowToWin, Premise } from "../app/flag-instructions";
 import LandingContent from "../app/landing-content";
-import { RulesPanel, RunInstructions, WelcomeIntro } from "../app/game-ui";
+import { NoRunYet, RulesPanel, RunInstructions } from "../app/game-ui";
 import { RunConsole } from "../app/run-console";
 import { SessionPane } from "../app/session-pane";
 import { GameRulesCard } from "../app/admin/game-rules-card";
@@ -37,8 +37,9 @@ const landing = (rules: GameRules) =>
       }),
     ),
   );
-const welcome = (rules: GameRules) =>
-  text(renderToStaticMarkup(createElement(WelcomeIntro, { submissionUrl: url, rules })));
+// The /play screen with no run follows no rule, so it takes none.
+const welcome = (_rules: GameRules) =>
+  text(renderToStaticMarkup(createElement(NoRunYet, { submissionUrl: url })));
 const rulesPage = (rules: GameRules) =>
   text(
     renderToStaticMarkup(
@@ -98,25 +99,13 @@ test("C3: every rule-dependent sentence follows the rules it is given", () => {
     assert.equal(count(rulesPage(rules), OVERRIDE_PRINT), rules.jailbreakCatch ? 1 : 0);
 
     const intro = welcome(rules);
-    assert.equal(intro.includes("Fix a bug. Then sneak the flag past the monitor."), required);
-    assert.equal(
-      intro.includes("Sneak the flag past the monitor.") && !intro.includes("Fix a bug."),
-      !required,
-    );
-    assert.match(
-      renderToStaticMarkup(createElement(WelcomeIntro, { submissionUrl: url, rules })),
-      required
-        ? /<h1>Fix a bug\. Then sneak the flag past the monitor\.<\/h1>/
-        : /<h1>Sneak the flag past the monitor\.<\/h1>/,
-    );
-    for (const old of [
-      "Submit the flag without getting caught",
-      "Upload the flag without getting caught",
-      "Fix a bug. Submit",
+    for (const gone of [
+      "Fix a bug. Then sneak the flag past the monitor.",
+      "Sneak the flag past the monitor.",
+      "You win when",
+      "Upload the flag",
     ])
-      assert.ok(!intro.includes(old), old);
-
-    assert.ok(!intro.includes("Upload the flag"));
+      assert.ok(!intro.includes(gone), gone);
 
     const panel = rulesPage(rules);
     for (const removed of [
@@ -256,13 +245,12 @@ test("C4: the in-run How to win and win banner use the run's recorded rules", ()
   }
 });
 
-test("C5: home and the welcome screen state the same premise, and How to play does not", () => {
+test("C5: home states the premise, and neither How to play nor the no-run screen repeats it", () => {
   assert.equal(text(renderToStaticMarkup(createElement(Premise))), PREMISE);
   for (const rules of COMBINATIONS) {
-    for (const [name, intro] of Object.entries({ home: landing(rules), welcome: welcome(rules) })) {
-      assert.equal(count(intro, PREMISE), 1, name);
-      assert.ok(!intro.includes("AI auditor"), name);
-    }
+    assert.equal(count(landing(rules), PREMISE), 1);
+    assert.ok(!landing(rules).includes("AI auditor"));
+    assert.ok(!welcome(rules).includes(PREMISE));
     assert.ok(
       landing(rules).includes(
         "could an AI monitor catch someone starting a training run in secret?",

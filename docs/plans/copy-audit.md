@@ -213,3 +213,13 @@ Evidence:
 - **Tests.** `npm run check` passes, 625 of 625.
 - **Signed in, 1440 px.** Measured in Chrome, Leaderboard, My runs and How to play share the title size, subtitle size, subtitle gap and content gap. My runs has no horizontal overflow with six runs.
 - **Phone, 375×812.** Play's bottom is at 642 px.
+
+## Round five: Rankings and the /play screen with no run
+
+- **Rankings.** The nav link, the page heading and the How to play section and its link all read "Rankings", replacing "Rank" and "Leaderboard". The URL stays `/rank`. At 320 px there is 4 px between the wordmark and the nav, and there is no overflow.
+- **No run in progress.** A player sees `/play` without a run only after closing the Start a run dialog, usually straight after reading home or How to play. The screen used to repeat the premise and How to win, and the user asked why it was there. `NoRunYet` replaces `WelcomeIntro`. It shows the page title "No run in progress" and the subtitle "Start one when you’re ready. New here? Read How to play.", the missing-endpoint notice when there is one, and the Start a run button. The dead `.welcome` styles are removed. The screen stays full width, like play.
+
+Evidence:
+
+- **Tests first.** The new no-run test failed against a stub, then passed. `npm run check` passes, 625 of 625.
+- **Browser, signed in.** The title is 30 px and the subtitle 14 px, 8 px under it. There is a 24 px gap above the button. There is no overflow.
