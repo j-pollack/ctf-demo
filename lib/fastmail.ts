@@ -143,7 +143,7 @@ export async function sendMail(mail: OutgoingMail, { signal }: Options = {}) {
     textBody: [{ partId: "body", type: "text/plain" }],
     ...(mail.messageId && { "header:Message-ID:asMessageIds": [mail.messageId] }),
     // The plain properties, not the header form: Fastmail refuses the header form of In-Reply-To
-    // for an id over 64 characters, and a sender's mail client often makes longer ones.
+    // for a long id (63 characters was refused), and a sender's mail client often makes such ids.
     ...(mail.inReplyTo && { inReplyTo: [mail.inReplyTo] }),
     ...(mail.references?.length && { references: mail.references }),
   };

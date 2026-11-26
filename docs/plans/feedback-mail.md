@@ -64,7 +64,7 @@ Plain `fetch`, no new package. Every request carries `Authorization: Bearer <tok
   - A first request reads the mailboxes with roles `drafts` and `sent` and the identity whose email equals `CONTACT_EMAIL`. No such identity is an error.
   - A second request creates the email with `Email/set` in Drafts with `$draft`, then submits it with `EmailSubmission/set` using an explicit `envelope` with `mailFrom` the contact address and exactly one `rcptTo`. `onSuccessUpdateEmail` moves it to Sent and clears `$draft`.
   - `from`, `to` and `replyTo` are passed only as `{ email }` objects. No raw address header is written.
-  - `messageId`, when given, is set with `header:Message-ID:asMessageIds`. `inReplyTo` and `references` are set with the plain `inReplyTo` and `references` properties. Fastmail refuses the header form of In-Reply-To for an id over 64 characters, and senders' mail clients often make longer ones.
+  - `messageId`, when given, is set with `header:Message-ID:asMessageIds`. `inReplyTo` and `references` are set with the plain `inReplyTo` and `references` properties. Fastmail refuses the header form of In-Reply-To for a long id. The exact limit was not measured: 47 characters was accepted and 63 was refused. Senders' mail clients often make ids that long.
   - The thread id comes from the `created` entry of `Email/set`. It returns `{ threadId }`.
   - If `Email/set` succeeds and the submission is `notCreated`, the draft is destroyed with `Email/set` before the error is thrown.
   - A recipient or reply-to address is refused before any request unless its local part uses only letters, digits and ``.!#$%&'*+/=?^_`{|}~-``, and its domain only letters, digits, dots and hyphens. That set has no character with a meaning in a mail header.
@@ -198,7 +198,9 @@ Run on 2026-11-26 on a local server with a throwaway database and the real token
 
 ## What the third review pass found
 
-The reviewer confirming the shorter id asked whether the same length limit applies to the reply headers. A probe with drafts that were deleted at once showed it does for the header form of In-Reply-To: ids of 63, 73 and 93 characters were refused. The plain `inReplyTo` and `references` properties accepted ids of 93 and 203 characters. So a reply to a sender whose mail client made a long Message-ID would have been refused, which is the second turn of a conversation. The client now uses the plain properties, the fake refuses the long header form as Fastmail does, and the reply test seeds a sender message with a 95-character id. A new smoke phase, `reply <thread id> <outside address>`, sends a second reply after the outside reply. It was run on the real thread and passed.
+The reviewer confirming the shorter id asked whether the same length limit applies to the reply headers. A probe with drafts that were deleted at once showed it does for the header form of In-Reply-To: ids of 63, 73 and 93 characters were refused. The plain `inReplyTo` and `references` properties accepted ids of 93 and 203 characters. So a reply to a sender whose mail client made a long Message-ID would have been refused, which is the second turn of a conversation. The client now uses the plain properties, the fake accepts reply threading only through the plain properties, and the reply test seeds a sender message with a 95-character id. A new smoke phase, `reply <thread id> <outside address>`, sends a second reply after the outside reply. It was run on the real thread and passed.
+
+The reviewer confirmed the fix with no P0 to P2 findings and suggested the stricter fake rule above, which was taken.
 
 ## Not verified before the build
 

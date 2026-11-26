@@ -73,11 +73,9 @@ const EMAIL_PROPERTIES = [
   "receivedAt",
 ];
 const BODY_PROPERTIES = ["textBody", "bodyValues"];
-const HEADERS = new Set([
-  "header:Message-ID:asMessageIds",
-  "header:In-Reply-To:asMessageIds",
-  "header:References:asMessageIds",
-]);
+// The only header form the app may use. Real Fastmail refuses a long id in the header form of
+// In-Reply-To, so reply threading must go through the plain inReplyTo and references properties.
+const HEADERS = new Set(["header:Message-ID:asMessageIds"]);
 const CONTROL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 const MESSAGE_ID_MAX = 64;
 const ID_ROLES = Object.fromEntries(ROLES.map((role) => [role, `mailbox-${role}`])) as Record<
@@ -213,8 +211,8 @@ export function createFastmailFake() {
       subject: draft.subject,
       text: text as string,
       html: false,
-      inReplyTo: [...header("inReplyTo"), ...header("header:In-Reply-To:asMessageIds")],
-      references: [...header("references"), ...header("header:References:asMessageIds")],
+      inReplyTo: header("inReplyTo"),
+      references: header("references"),
     });
   };
 
@@ -291,11 +289,7 @@ export function createFastmailFake() {
         // Real Fastmail refuses a Message-ID longer than 64 characters, as its header line would
         // pass 78. Found with the real account; a shorter id in the smoke check had hidden it.
         const own = args.create?.draft?.["header:Message-ID:asMessageIds"]?.[0];
-        // It refuses the header form of In-Reply-To the same way, and accepts a long id in the
-        // inReplyTo property. A sender's mail client often makes ids longer than the bound.
-        const answered = args.create?.draft?.["header:In-Reply-To:asMessageIds"]?.[0];
-        const tooLong = [own, answered].some((id) => id && id.length > MESSAGE_ID_MAX);
-        if (controls.fail === "email-not-created" || tooLong)
+        if (controls.fail === "email-not-created" || (own && own.length > MESSAGE_ID_MAX))
           result = { notCreated: { draft: { type: "invalidProperties" } } };
         else {
           const draft = createDraft(args);
