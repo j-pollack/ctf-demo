@@ -5,7 +5,7 @@ import { TYPESAFE_MODEL } from "../lib/typesafe";
 import { createAccountFake } from "./integration/display-name-fake";
 import { createFastmailFake } from "./integration/fastmail-fake";
 import { readThreads, sendMail } from "../lib/fastmail";
-import { fastmailFake, guardedFetch, leakedNames } from "./e2e/preload";
+import { fastmailFake, guardedFetch, leakedNames, openRouterFakes } from "./e2e/preload";
 
 process.env.RESEND_API_KEY = "preload-test-resend";
 process.env.RESEND_FROM = "preload@example.invalid";
@@ -183,4 +183,28 @@ test("A8: a Fastmail URL outside the two the fake answers is refused", async () 
   const { violations, guarded } = setup();
   await assert.rejects(() => guarded("https://api.fastmail.com/jmap/download"), /Unexpected/);
   assert.equal(violations.length, 1);
+});
+
+test("the OpenRouter fakes answer the catalogue, completions and screens, and not the generation endpoint", async () => {
+  const violations: Record<string, unknown>[] = [];
+  const display = async () => Response.json({ answers: {}, usage: { input_tokens: 1 } });
+  const guarded = guardedFetch({
+    real: (async () => new Response("real")) as typeof fetch,
+    fakes: openRouterFakes(display),
+    violation: (entry) => violations.push(entry),
+    mail: () => {},
+  });
+  const models = await guarded("https://openrouter.ai/api/v1/models");
+  assert.ok((await models.json()).data.length > 0);
+  await assert.rejects(
+    () => guarded("https://openrouter.ai/api/v1/generation?id=gen-1"),
+    /Unexpected/,
+  );
+  await assert.rejects(() =>
+    guarded("https://openrouter.ai/api/v1/chat/completions", { method: "POST" }),
+  );
+  assert.deepEqual(
+    violations.map((entry) => entry.kind),
+    ["unexpected-request", "fake-refused"],
+  );
 });

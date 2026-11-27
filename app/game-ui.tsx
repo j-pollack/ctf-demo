@@ -1669,7 +1669,7 @@ export default function GameUI({
           }}
         />
         {error && panel !== "signin" && (
-          <div role="alert" className="error">
+          <div role="alert" className="error" data-testid="run-error">
             {error}
             <ErrorAction message={error} />
             <button className="link" aria-label="Dismiss error" onClick={() => setError("")}>
@@ -1796,7 +1796,11 @@ export default function GameUI({
                 // sign-in page.
                 <div className="info no-run" data-testid="play-no-run">
                   <NoRunYet submissionUrl={submissionUrl} />
-                  <button className="primary" onClick={() => setModal("setup")}>
+                  <button
+                    className="primary"
+                    onClick={() => setModal("setup")}
+                    data-testid="play-start"
+                  >
                     Start a run
                   </button>
                 </div>
@@ -1842,6 +1846,7 @@ export default function GameUI({
               className="primary"
               disabled={busy || !canStartNewRun || runsLeft === 0 || !!game?.startBlockedByGrading}
               onClick={() => void start()}
+              data-testid="run-start-confirm"
             >
               {busy ? "Setting up…" : "Start run"}
             </button>
@@ -1865,7 +1870,7 @@ export default function GameUI({
           />
         ) : null}
         {error && (
-          <p role="alert" className="error">
+          <p role="alert" className="error" data-testid="run-dialog-error">
             {error}
           </p>
         )}

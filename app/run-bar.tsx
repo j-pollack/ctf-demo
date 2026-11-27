@@ -83,6 +83,8 @@ export function RunBar({
           className={active ? undefined : "run-status"}
           role="status"
           data-band={outcomeBand[game.status]}
+          data-testid="run-status"
+          data-state={game.status}
         >
           {active ? null : runStatusText(game)}
         </span>
@@ -106,6 +108,7 @@ export function RunBar({
           onClick={onNewRun}
           disabled={newRunDisabled}
           title={newRunTitle}
+          data-testid="run-new"
         >
           New run
         </button>

@@ -9,7 +9,7 @@ import { failureEvents, newLines } from "../../scripts/test-e2e";
 // Everything a journey needs from the stack it runs against. This is the faked stack: the app
 // started by scripts/test-e2e.ts, mail read from the file its preload writes, and the runner's
 // disposable Postgres.
-function required(name: string) {
+export function required(name: string) {
   const value = process.env[name];
   assert.ok(value, `${name} is not set. Use npm run test:e2e.`);
   return value;

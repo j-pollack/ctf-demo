@@ -300,6 +300,8 @@ function Composer({
         event.preventDefault();
         onSend();
       }}
+      data-testid="session-composer"
+      data-state={view?.busy ? "busy" : "idle"}
     >
       <label htmlFor={id} className="visually-hidden">
         Instruction for session {session.ordinal}
@@ -319,13 +321,14 @@ function Composer({
             onSend();
           }
         }}
+        data-testid="session-instruction"
       />
       {view?.busy ? (
-        <button type="button" onClick={onStop} disabled={stopping}>
+        <button type="button" onClick={onStop} disabled={stopping} data-testid="session-stop">
           {stopping ? "Stopping…" : "Stop"}
         </button>
       ) : (
-        <button className="primary" disabled={loading || !draft.trim()}>
+        <button className="primary" disabled={loading || !draft.trim()} data-testid="session-send">
           Send
         </button>
       )}
@@ -380,6 +383,7 @@ export function SessionPane(props: SessionPaneProps) {
       data-focused={focused || undefined}
       onFocus={onFocus}
       onPointerDown={onFocus}
+      data-testid="session-pane"
     >
       <header className="pane-head">
         <h2 id={title}>Session {session.ordinal}</h2>
@@ -418,6 +422,7 @@ export function SessionPane(props: SessionPaneProps) {
           tabIndex={0}
           aria-label={`Session ${session.ordinal} transcript`}
           aria-busy={!view?.fetched || !!view?.busy}
+          data-testid="session-transcript"
         >
           <ScrollAreaContent>
             <ThreadBody {...props} />

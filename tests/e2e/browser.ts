@@ -6,7 +6,7 @@ import { chromium, type Browser, type BrowserContext, type Locator, type Page } 
 import { baseUrl, signInLink, takeServerFailures, takeViolations, visitorHeaders } from "./stack";
 
 const EVIDENCE = ".artifacts/e2e";
-const TIMEOUT = 15_000;
+export const TIMEOUT = 15_000;
 
 export type Session = {
   page: Page;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { MODELS } from "../../lib/policy";
 import { journey, signIn, type Session } from "./browser";
+import { cleanup, waitFor } from "./run";
 import { grantAdmin, newEmail, pool, takeViolations } from "./stack";
 
 const LIMIT = "sessions_per_run";
@@ -44,21 +45,46 @@ journey("E8: a member who is not an admin gets the not-found page", async (sessi
   assert.equal(await page.getByTestId("page-admin").count(), 0);
 });
 
-journey("E2: a model change needs the catalogue, which the suite refuses", async (session) => {
-  const page = await adminPage(session, "e2-admin");
-  session.expectServerFailure("agent_model_change_failed");
-  const form = page.getByTestId("admin-model-form");
-  const select = form.getByTestId("admin-model-select");
-  await select.waitFor();
-  const current = await select.inputValue();
-  const other = MODELS.find((model) => model !== current);
-  assert.ok(other, "the allowlist has a second model");
-  await select.selectOption(other);
-  await form.getByTestId("admin-save").click();
-  await page.getByTestId("admin-model-refused").waitFor();
-  const violations = takeViolations();
-  assert.equal(violations.length, 1);
-  assert.equal(violations[0].url, "https://openrouter.ai/api/v1/models");
-  const { rows } = await pool().query(`SELECT 1 FROM ctf.settings WHERE key='agent_model'`);
-  assert.equal(rows.length, 0, "the refused model was not stored");
-});
+journey(
+  "R10: an admin changes the model, and a wake request to an unfaked host fails closed",
+  async (session) => {
+    const page = await adminPage(session, "e2-admin");
+    session.expectServerFailure("worker.wake.failed");
+    const form = page.getByTestId("admin-model-form");
+    const select = form.getByTestId("admin-model-select");
+    await select.waitFor();
+    const current = await select.inputValue();
+    const other = MODELS.find((model) => model !== current);
+    assert.ok(other, "the allowlist has a second model");
+    try {
+      await select.selectOption(other);
+      await form.getByTestId("admin-save").click();
+      await waitFor("the model to be stored", async () => {
+        const { rows } = await pool().query(
+          `SELECT value FROM ctf.settings WHERE key='agent_model'`,
+        );
+        return rows[0]?.value === other;
+      });
+
+      await pool().query(
+        `INSERT INTO ctf.settings(key,value) VALUES('worker_wake',$1)
+       ON CONFLICT (key) DO UPDATE SET value=excluded.value`,
+        [
+          JSON.stringify({
+            url: "https://wake.e2e.test/wake",
+            instance: null,
+            token: "e2e-wake-token",
+          }),
+        ],
+      );
+      await cleanup();
+      const violations = takeViolations();
+      assert.equal(violations.length, 1);
+      assert.equal(violations[0].url, "https://wake.e2e.test/wake");
+    } finally {
+      await pool().query(`DELETE FROM ctf.settings WHERE key=ANY($1)`, [
+        ["agent_model", "worker_wake"],
+      ]);
+    }
+  },
+);

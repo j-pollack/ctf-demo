@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup } from "./markup";
 import { CAUGHT_BY, RunInspector } from "../app/run-inspector";
 import { DECODED_JAILBREAK_CATCH_TEXT } from "../lib/text-screen";
 import type { PublicGame } from "../lib/types";

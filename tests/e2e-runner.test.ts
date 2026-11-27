@@ -7,6 +7,8 @@ import {
   envFileNames,
   failureEvents,
   newLines,
+  runProblems,
+  SPRITE_DIR,
   SERVER_LOG,
   LOG_CURSOR_FILE,
   type Stage,
@@ -192,4 +194,43 @@ test("E1: names follow the grammar of the dotenv that Next loads", () => {
     "FLY_API_TOKEN",
     "HYPHEN-NAME",
   ]);
+});
+
+test("C6: the server and tests share the Sprite directory, and the server names the submission host", () => {
+  assert.equal(env("server").E2E_SPRITE_DIR, SPRITE_DIR);
+  assert.equal(env("test").E2E_SPRITE_DIR, SPRITE_DIR);
+  assert.equal(env("server").VERCEL_URL, "ctf.e2e.test");
+  assert.equal(env("server").SITE_URL, "");
+  assert.equal(env("test").CRON_SECRET, env("server").CRON_SECRET);
+  assert.match(env("test").CRON_SECRET ?? "", /^e2e-/);
+  for (const stage of ["build", "migrate"] as const)
+    assert.equal(env(stage).E2E_SPRITE_DIR, undefined, stage);
+});
+
+test("C6: a screen that timed out is a failure event", () => {
+  const timeout = '{"event":"text_screen.request_timed_out","kind":"instruction"}';
+  assert.deepEqual(
+    failureEvents([timeout]).map((entry) => JSON.stringify(entry)),
+    [timeout],
+  );
+});
+
+test("C6: after the stories no run is open and the Sprite directories are the undeleted runs' Sprites", () => {
+  const run = (id: string, status: string, deleted: boolean) => ({
+    id,
+    sprite_name: `ctf-${id}`,
+    status,
+    sprite_deleted_at: deleted ? new Date() : null,
+  });
+  const clean = [run("a", "ended", true), run("b", "caught", false)];
+  assert.deepEqual(runProblems(clean, ["ctf-b"], true), []);
+  assert.equal(
+    runProblems([run("a", "active", false), ...clean], ["ctf-a", "ctf-b"], true).length,
+    1,
+  );
+  assert.equal(runProblems([run("c", "creating", true)], [], true).length, 1);
+  assert.equal(runProblems(clean, [], true).length, 1, "an undeleted Sprite has no directory");
+  assert.equal(runProblems(clean, ["ctf-a", "ctf-b"], true).length, 1, "a deleted Sprite is left");
+  assert.equal(runProblems([], [], true).length, 1, "no run at all proves nothing");
+  assert.deepEqual(runProblems([], [], false), []);
 });
