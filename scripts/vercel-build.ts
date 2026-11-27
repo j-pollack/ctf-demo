@@ -18,7 +18,7 @@ export function shouldMigrate(env: Record<string, string | undefined>) {
   return true;
 }
 
-// A production or preview deploy needs the twelve limit variables, so a missing one fails the
+// A production or preview deploy needs the limit variables, so a missing one fails the
 // build instead of surfacing as a silent default.
 export function deployEnvProblems(env: Record<string, string | undefined>) {
   const none = { missing: [], invalid: [] };

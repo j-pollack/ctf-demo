@@ -19,6 +19,7 @@ const LABELS = [
   "Name checks per member per day",
   "Sessions per run",
   "Auto-continue turns",
+  "Response time limit (seconds)",
   "Attacker reasoning effort",
   "Investigator reasoning effort",
 ];
@@ -46,8 +47,8 @@ test("the card has a form per limit with a label, hidden key, field and Save but
   const html = render();
   assert.match(html, /Budgets and limits/);
   assert.ok(html.includes(NOTE));
-  assert.equal(LIMITS.length, 12);
-  assert.equal((html.match(/<form/g) ?? []).length, 12);
+  assert.equal(LIMITS.length, 13);
+  assert.equal((html.match(/<form/g) ?? []).length, 13);
   LIMITS.forEach((limit, index) => {
     const markup = form(html, limit.key);
     assert.ok(markup, limit.key);
@@ -81,6 +82,7 @@ test("money shows in dollars and counts as whole numbers, with bounds in the sam
     name_checks_per_day: ["20", "1", "200", "1"],
     sessions_per_run: ["8", "1", "32", "1"],
     auto_continue_turns: ["8", "0", "50", "1"],
+    response_seconds: ["230", "5", "230", "1"],
   };
   for (const [key, [value, min, max, step]] of Object.entries(expected)) {
     const markup = form(html, key);
@@ -98,6 +100,7 @@ test("a money row and a count row state their exact range", () => {
   assert.ok(form(html, "daily_cap_microdollars").includes("<small>$0 to $100</small>"));
   assert.ok(form(html, "runs_per_day").includes("<small>1 to 50</small>"));
   assert.ok(form(html, "total_runs_per_day").includes("<small>0 to 10000</small>"));
+  assert.ok(form(html, "response_seconds").includes("<small>5 to 230</small>"));
 });
 
 test("a non-default limit shows its own value", () => {

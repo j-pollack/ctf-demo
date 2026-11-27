@@ -14,6 +14,7 @@ const LABELS: Record<LimitKey, string> = {
   name_checks_per_day: "Name checks per member per day",
   sessions_per_run: "Sessions per run",
   auto_continue_turns: "Auto-continue turns",
+  response_seconds: "Response time limit (seconds)",
   agent_effort: "Attacker reasoning effort",
   investigator_effort: "Investigator reasoning effort",
 };

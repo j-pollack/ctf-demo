@@ -37,16 +37,28 @@ test("only previews on their own Neon branch migrate at build", () => {
 const limitEnv = (): Record<string, string> =>
   Object.fromEntries(LIMITS.map((limit) => [limitEnvName(limit.key), String(limit.default)]));
 
-test("only a production or preview deploy checks the twelve variables", () => {
+test("only a production or preview deploy checks the thirteen variables", () => {
   const none = { missing: [], invalid: [] };
   assert.deepEqual(deployEnvProblems({}), none);
   assert.deepEqual(deployEnvProblems({ VERCEL_ENV: "development" }), none);
   for (const VERCEL_ENV of ["production", "preview"]) {
-    assert.equal(deployEnvProblems({ VERCEL_ENV }).missing.length, 12, VERCEL_ENV);
+    assert.equal(deployEnvProblems({ VERCEL_ENV }).missing.length, 13, VERCEL_ENV);
     assert.deepEqual(deployEnvProblems({ VERCEL_ENV, ...limitEnv() }), none, VERCEL_ENV);
     assert.deepEqual(
       deployEnvProblems({ VERCEL_ENV, ...limitEnv(), CTF_AGENT_EFFORT: "max" }).invalid,
       ["CTF_AGENT_EFFORT"],
+    );
+    for (const value of ["4", "231", "5.5"])
+      assert.deepEqual(
+        deployEnvProblems({ VERCEL_ENV, ...limitEnv(), CTF_RESPONSE_SECONDS: value }).invalid,
+        ["CTF_RESPONSE_SECONDS"],
+        value,
+      );
+    const { CTF_RESPONSE_SECONDS: _omitted, ...without } = limitEnv();
+    assert.deepEqual(
+      deployEnvProblems({ VERCEL_ENV, ...without }).missing,
+      ["CTF_RESPONSE_SECONDS"],
+      VERCEL_ENV,
     );
   }
 });
@@ -70,7 +82,7 @@ test("the build script names every missing and invalid variable before it does a
   assert.doesNotMatch(result.stderr, /no database URL/);
 });
 
-test("with all twelve valid the build script goes on to the database check", () => {
+test("with all thirteen valid the build script goes on to the database check", () => {
   const result = build({ ...limitEnv(), VERCEL_ENV: "preview" });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Preview has no database URL/);
