@@ -10,6 +10,7 @@ import {
   PLAYER_AGENT_EFFORT,
   SESSIONS_PER_RUN,
   AUTO_CONTINUE_TURNS,
+  RESPONSE_SECONDS,
 } from "./policy";
 import {
   AGENT_EFFORTS,
@@ -121,6 +122,16 @@ export const LIMITS = [
     default: AUTO_CONTINUE_TURNS,
     min: 0,
     max: 50,
+    kind: "count",
+  },
+  // The maximum leaves 40 seconds before the 270 second session lease in lib/sessions.ts and 70
+  // before the prompt route's maxDuration. Raise those first, never this alone.
+  {
+    key: "response_seconds",
+    field: "responseSeconds",
+    default: RESPONSE_SECONDS,
+    min: 5,
+    max: 230,
     kind: "count",
   },
   {

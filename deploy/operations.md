@@ -55,7 +55,7 @@ For a manual production rollback, identify the previous image with `flyctl relea
 
 Members with `isAdmin` can view usage, signups and spend at `/admin`, select the attacker model, configure game rules and change the budgets and limits in the capacity table below. Other users receive a 404. An admin bypasses the personal new-run limit. Shared capacity and spending checks still apply.
 
-The Budgets and limits card at `/admin` holds twelve values: the shared daily cap, the run budget, new runs per member, new runs for all players, the monitor allowance per run, the final review allowance per run, environments open at once, name checks per member per day, sessions per run, auto-continue turns, the attacker reasoning effort and the investigator reasoning effort. The values in the capacity table are the defaults. Each field accepts a range fixed in code, so a form typo cannot remove a spending limit. A change applies from the next request, and a run keeps the budget it started with. The monitor worker reads the same settings live once it runs this release, so a change needs no worker redeploy. A worker built before this release keeps the defaults. Lowering a monitor allowance below what a run under final review has already spent ends that run with no result.
+The Budgets and limits card at `/admin` holds thirteen values: the shared daily cap, the run budget, new runs per member, new runs for all players, the monitor allowance per run, the final review allowance per run, environments open at once, name checks per member per day, sessions per run, auto-continue turns, the response time limit, the attacker reasoning effort and the investigator reasoning effort. The values in the capacity table are the defaults. Each field accepts a range fixed in code, so a form typo cannot remove a spending limit. A change applies from the next request, and a run keeps the budget it started with. The monitor worker reads the same settings live once it runs this release, so a change needs no worker redeploy. A worker built before this release keeps the defaults. Lowering a monitor allowance below what a run under final review has already spent ends that run with no result.
 
 A run that already has more sessions than a lowered session limit keeps them and cannot add another. The attacker effort applies to every new run and to each session's next instruction. The investigator effort applies to each review that starts afterwards, and the review records the effort it ran with in `ctf.monitor_reviews.investigator_effort`. The leaderboard filters on the monitor version and the game rules only, so it ranks wins under different investigator efforts together. The evals in the repository describe the effort `high` only.
 
@@ -70,7 +70,7 @@ ORDER BY email;
 
 ## Setting fallbacks and the deploy check
 
-Each of the twelve settings reads a stored admin value first. Without one, it reads an environment variable named `CTF_` followed by the key in upper case. Without a valid variable, it uses the default in the code. A stored value or variable that is not valid for its field is skipped. Money is whole microdollars, a count is a whole number and an effort is one of `low`, `medium` and `high`.
+Each of the thirteen settings reads a stored admin value first. Without one, it reads an environment variable named `CTF_` followed by the key in upper case. Without a valid variable, it uses the default in the code. A stored value or variable that is not valid for its field is skipped. Money is whole microdollars, a count is a whole number and an effort is one of `low`, `medium` and `high`.
 
 | Variable                                  | Default    | Format                  |
 | ----------------------------------------- | ---------- | ----------------------- |
@@ -84,6 +84,7 @@ Each of the twelve settings reads a stored admin value first. Without one, it re
 | `CTF_NAME_CHECKS_PER_DAY`                 | `20`       | count                   |
 | `CTF_SESSIONS_PER_RUN`                    | `8`        | count                   |
 | `CTF_AUTO_CONTINUE_TURNS`                 | `8`        | count                   |
+| `CTF_RESPONSE_SECONDS`                    | `230`      | count                   |
 | `CTF_AGENT_EFFORT`                        | `low`      | `low`, `medium`, `high` |
 | `CTF_INVESTIGATOR_EFFORT`                 | `high`     | `low`, `medium`, `high` |
 
@@ -91,9 +92,9 @@ The web app reads the variables from Vercel and the worker reads them from Fly s
 
 When the settings cannot be read, the landing page and every page under the game layout still render, from the environment values and the defaults. In a real database outage they wait first for the connection pool's 10 second timeout. The play UI then uses the environment value for the session limit and has auto-continue off until the tab reloads. The fallback covers those pages only. No run can start and no spend can be reserved without the database, so the routes, the admin page and the worker do not fall back.
 
-The Vercel build fails before it migrates or builds when `VERCEL_ENV` is `production` or `preview` and any of the twelve variables is missing or invalid, and the error names each one. The worker workflows run `flyctl secrets list` for the Fly app and fail before the drain when a name is absent. Fly does not show secret values, so that check proves the names and not the values. A worker with an invalid value uses the default for that key. A manual `flyctl deploy` and a Vercel promote or rollback of an existing build pass through neither check. [Vercel build check](../scripts/vercel-build.ts) · [Worker check](../scripts/check-limit-env.ts)
+The Vercel build fails before it migrates or builds when `VERCEL_ENV` is `production` or `preview` and any of the thirteen variables is missing or invalid, and the error names each one. The worker workflows run `flyctl secrets list` for the Fly app and fail before the drain when a name is absent. Fly does not show secret values, so that check proves the names and not the values. A worker with an invalid value uses the default for that key. A manual `flyctl deploy` and a Vercel promote or rollback of an existing build pass through neither check. [Vercel build check](../scripts/vercel-build.ts) · [Worker check](../scripts/check-limit-env.ts)
 
-Once this release merges, a Vercel build and a worker deploy fail until the twelve variables exist in Vercel Production and Preview and on both Fly apps, so set them first. To set the variables, add each one to Vercel for Production and Preview and set all twelve on both Fly apps. The `--stage` flag stores the secrets without restarting the machines, so the next deploy picks them up.
+Once this release merges, a Vercel build and a worker deploy fail until the thirteen variables exist in Vercel Production and Preview and on both Fly apps, so set them first. To set the variables, add each one to Vercel for Production and Preview and set all thirteen on both Fly apps. The `--stage` flag stores the secrets without restarting the machines, so the next deploy picks them up.
 
 ```sh
 for target in production preview; do
@@ -107,7 +108,8 @@ flyctl secrets set --stage --app ctf-monitor-worker \
   CTF_RUNS_PER_DAY=3 CTF_TOTAL_RUNS_PER_DAY=100 \
   CTF_MONITOR_RUN_ALLOWANCE_MICRODOLLARS=1500000 CTF_FINAL_REVIEW_ALLOWANCE_MICRODOLLARS=1000000 \
   CTF_ENVIRONMENTS_OPEN=10 CTF_NAME_CHECKS_PER_DAY=20 CTF_SESSIONS_PER_RUN=8 \
-  CTF_AUTO_CONTINUE_TURNS=8 CTF_AGENT_EFFORT=low CTF_INVESTIGATOR_EFFORT=high
+  CTF_AUTO_CONTINUE_TURNS=8 CTF_RESPONSE_SECONDS=230 CTF_AGENT_EFFORT=low \
+  CTF_INVESTIGATOR_EFFORT=high
 ```
 
 Run the `flyctl` command a second time with `--app ctf-monitor-worker-preview`.
@@ -124,7 +126,7 @@ Run the `flyctl` command a second time with `--app ctf-monitor-worker-preview`.
 | Monitor         | New monitor requests stop once settled monitor spend reaches $1.50. Finalizing a run allows another $1.00 of monitor spend.               |
 | Daily inference | All roles share a $10 cap per UTC day. Admission reserves an upper bound before dispatch. Infrastructure and email are billed separately. |
 
-An admin can change every figure in this table. The bounds are $0 to $100 for the daily cap, $0.01 to $5 for the run budget, 1 to 50 for new runs per member, 0 to 10,000 for new runs for all players, $0.10 to $10 for the monitor allowance, $0 to $10 for the final review allowance, 1 to 50 environments, 1 to 200 name checks, 1 to 32 sessions and 0 to 50 auto-continue turns. A value of zero turns auto-continue off. An effort is one of `low`, `medium` and `high`. The Sprites account has its own limit, which stays the real ceiling for environments.
+An admin can change every figure in this table. The bounds are $0 to $100 for the daily cap, $0.01 to $5 for the run budget, 1 to 50 for new runs per member, 0 to 10,000 for new runs for all players, $0.10 to $10 for the monitor allowance, $0 to $10 for the final review allowance, 1 to 50 environments, 1 to 200 name checks, 1 to 32 sessions, 0 to 50 auto-continue turns and 5 to 230 seconds for the response time limit. A value of zero turns auto-continue off. Values far below 230 seconds are for tests. An effort is one of `low`, `medium` and `high`. The Sprites account has its own limit, which stays the real ceiling for environments.
 
 OpenRouter usage settles the actual charge and releases the unused reservation. Jev calls use reported input tokens at a fixed rate. Known unbilled rejections release the hold. For a pending call with a generation ID, cleanup queries OpenRouter for the final charge. A failed completion with no generation ID can settle at its ceiling immediately. Cleanup settles outstanding unverifiable holds at their ceiling after 24 hours and marks them estimated. [Budget policy](../lib/policy.ts) · [Settlement and cleanup](../lib/games.ts)
 

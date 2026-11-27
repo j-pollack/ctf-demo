@@ -31,10 +31,11 @@ test("the defaults are the existing constants and the literal total", () => {
     nameChecksPerDay: 20,
     sessionsPerRun: 8,
     autoContinueTurns: 8,
+    responseSeconds: 230,
     agentEffort: "low",
     investigatorEffort: "high",
   });
-  assert.equal(LIMITS.length, 12);
+  assert.equal(LIMITS.length, 13);
   for (const limit of LIMITS) {
     if (limit.kind === "choice") assert.ok(limit.options.includes(limit.default), limit.key);
     else assert.ok(limit.min <= limit.default && limit.default <= limit.max, limit.key);
@@ -121,6 +122,12 @@ test("the new counts have their bounds", () => {
     ["auto_continue_turns", "0", 0],
     ["auto_continue_turns", "50", 50],
     ["auto_continue_turns", "51", null],
+    ["response_seconds", "5", 5],
+    ["response_seconds", "230", 230],
+    ["response_seconds", "4", null],
+    ["response_seconds", "231", null],
+    ["response_seconds", "5.5", null],
+    ["response_seconds", "abc", null],
   ];
   for (const [key, value, expected] of bounds)
     assert.equal(parseLimitInput(key, value), expected, `${key} ${value}`);
@@ -168,6 +175,18 @@ test("a stored value wins, then the environment, then the default", () => {
   assert.equal(bothInvalid.runsPerDay, DEFAULT_LIMITS.runsPerDay);
 });
 
+test("the response time limit resolves from a stored value, then the environment, then 230", () => {
+  assert.equal(resolveLimits({}, {}).responseSeconds, 230);
+  for (const stored of ["5", "60", "230"])
+    assert.equal(resolveLimits({ response_seconds: stored }, {}).responseSeconds, Number(stored));
+  const env = { CTF_RESPONSE_SECONDS: "90" };
+  assert.equal(resolveLimits({ response_seconds: "60" }, env).responseSeconds, 60);
+  for (const bad of ["4", "231", "5.5", "abc"]) {
+    assert.equal(resolveLimits({ response_seconds: bad }, env).responseSeconds, 90, bad);
+    assert.equal(resolveLimits({ response_seconds: bad }, {}).responseSeconds, 230, bad);
+  }
+});
+
 test("fallbackLimits reads the environment passed to it at call time", () => {
   assert.deepEqual(fallbackLimits({}), DEFAULT_LIMITS);
   assert.equal(fallbackLimits({ CTF_NAME_CHECKS_PER_DAY: "30" }).nameChecksPerDay, 30);
@@ -187,7 +206,7 @@ test("environment problems list each missing and each invalid name", () => {
     missing: ["CTF_RUNS_PER_DAY", "CTF_SESSIONS_PER_RUN"],
     invalid: ["CTF_DAILY_CAP_MICRODOLLARS", "CTF_TOTAL_RUNS_PER_DAY", "CTF_AGENT_EFFORT"],
   });
-  assert.equal(limitEnvProblems({}).missing.length, 12);
+  assert.equal(limitEnvProblems({}).missing.length, 13);
 });
 
 test("the player limits are exactly the five values the browser uses", () => {
@@ -202,7 +221,7 @@ test("the player limits are exactly the five values the browser uses", () => {
   assert.equal(limits.sessionsPerRun, 8);
 });
 
-test(".env.example lists the twelve variables at their defaults and passes the check", () => {
+test(".env.example lists the thirteen variables at their defaults and passes the check", () => {
   const values = Object.fromEntries(
     readFileSync(new URL("../.env.example", import.meta.url), "utf8")
       .split("\n")
