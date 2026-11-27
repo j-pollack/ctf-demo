@@ -7316,6 +7316,37 @@ await test("Sprite orchestration with real Postgres and Pi", { timeout: 300_000 
     },
   );
   await t.test(
+    "L3: a response that reaches the stored response time limit ends marked to continue",
+    async () => {
+      await setLimit("response_seconds", 5);
+      const who = await member();
+      const game = await productionStartGame(who.id);
+      agentStreamMode = "endless";
+      const started = Date.now();
+      const sent = await withinSeconds(respond(who, game.id), 10);
+      const elapsed = (Date.now() - started) / 1000;
+      assert.ok(elapsed >= 5 && elapsed < 9, `ended after ${elapsed}s`);
+      assert.equal(sent.at(-1)?.type, "done");
+      const errors = (
+        await pool.query("SELECT data FROM ctf.events WHERE game_id=$1 ORDER BY id", [game.id])
+      ).rows
+        .map((entry) => entry.data as GameEvent)
+        .filter((event) => event.kind === "error");
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0].resumable, true);
+      assert.equal(errors[0].autoContinue, true);
+      const run = await readRun(who, game.id);
+      assert.equal(run.status, "active");
+      assert.equal(run.busy, false);
+      assert.deepEqual(await sessionLease(game.id), {
+        lease: null,
+        lease_until: null,
+        stop_requested_at: null,
+      });
+      assert.deepEqual(commands, []);
+    },
+  );
+  await t.test(
     "agents get room to think and answer; a turn cut off while thinking ends the response",
     async () => {
       const game = await productionStartGame("long-think");

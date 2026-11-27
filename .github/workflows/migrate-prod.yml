@@ -75,7 +75,7 @@ jobs:
           node-version: 24
       - name: Install locked dependencies
         run: npm ci
-      # Secret values cannot be read here, so this proves the twelve names are set. It runs
+      # Secret values cannot be read here, so this proves the limit variable names are set. It runs
       # before the drain so a missing one leaves the running worker untouched.
       - name: Check the worker's limit variables
         run: |

@@ -62,8 +62,8 @@ await test("admin-set limits are read with defaults, validated, authorised and s
   const refused = (status: number) => (error: unknown) =>
     error instanceof GameError && error.status === status;
 
-  await t.test("L1 with no rows and no environment the twelve defaults hold", async () => {
-    assert.equal(LIMIT_KEYS.length, 12);
+  await t.test("L1 with no rows and no environment the thirteen defaults hold", async () => {
+    assert.equal(LIMIT_KEYS.length, 13);
     assert.deepEqual(await currentLimits(), DEFAULT_LIMITS);
     assert.deepEqual(await limitSettings(), {});
   });
@@ -177,6 +177,24 @@ await test("admin-set limits are read with defaults, validated, authorised and s
     );
     assert.equal(settings.runs_per_day?.updatedBy, `${owner.id}@example.invalid`);
     assert.deepEqual(settings.runs_per_day?.updatedAt, stored.runs_per_day.updated_at);
+  });
+
+  await t.test("L4 the response time limit takes 5 and 230 and refuses 4 and 231", async () => {
+    await pool.query("DELETE FROM ctf.settings");
+    for (const bad of ["4", "231"]) {
+      await assert.rejects(changeLimit(owner.headers, "response_seconds", bad), refused(400), bad);
+      assert.deepEqual(await rows(), []);
+    }
+    for (const value of ["5", "230"]) {
+      await changeLimit(owner.headers, "response_seconds", value);
+      assert.equal((await currentLimits()).responseSeconds, Number(value));
+      const stored = (await rows()).filter((row) => row.key === "response_seconds");
+      assert.deepEqual(
+        stored.map((row) => [row.value, row.updated_by]),
+        [[value, owner.id]],
+      );
+    }
+    await pool.query("DELETE FROM ctf.settings");
   });
 
   await t.test(
