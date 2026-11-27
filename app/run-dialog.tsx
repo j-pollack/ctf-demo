@@ -75,8 +75,19 @@ export function RunSetupNotes({
       ) : (
         endsCurrent && <p>Starting a new run ends your current one.</p>
       )}
-      {left && <p>{left}</p>}
-      {unusedRun && <p>You already have an unused run. Send it an instruction first.</p>}
+      {left && (
+        <p
+          data-testid="run-setup-left"
+          data-state={runsLeft && runsLeft > 0 ? "available" : "none"}
+        >
+          {left}
+        </p>
+      )}
+      {unusedRun && (
+        <p data-testid="run-setup-unused">
+          You already have an unused run. Send it an instruction first.
+        </p>
+      )}
     </>
   );
 }

@@ -142,6 +142,7 @@ export function SessionChips({
                   event.preventDefault();
                   chips.current[next]?.focus();
                 }}
+                data-testid="session-chip"
               >
                 {running && <i aria-hidden="true" />}
                 {session.ordinal}
@@ -189,6 +190,8 @@ export function SessionChips({
           // Not natively disabled while busy or at the limit, so keyboard focus stays on it.
           aria-disabled={creating || !!limitReason || undefined}
           aria-busy={creating || undefined}
+          data-testid="session-add"
+          data-state={creating || limitReason ? "unavailable" : "available"}
         >
           +<span className="add-label"> Add session</span>
         </button>

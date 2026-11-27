@@ -1,7 +1,10 @@
 import { appendFileSync, writeSync } from "node:fs";
 import { isMainThread, threadId } from "node:worker_threads";
+import { Sprite, SpritesClient } from "@fly/sprites";
 import { createAccountFake } from "../integration/display-name-fake";
 import { createFastmailFake } from "../integration/fastmail-fake";
+import { createOpenRouterFake } from "./openrouter-fake";
+import { createSpriteFake, patchSprites } from "./sprite-fake";
 
 type Entry = Record<string, unknown>;
 // A fake external service: its answers, and every mail it has captured so far.
@@ -70,6 +73,18 @@ export const fastmailFake = (fake: ReturnType<typeof createFastmailFake>): Fake 
     })),
 });
 
+// The three OpenRouter URLs a run reaches, each answered by the scripted agent. The generation
+// endpoint has no fake: no story leaves a hold with a generation id to reconcile.
+export function openRouterFakes(displayName: Fake["fetch"]): Record<string, Fake> {
+  const fake = createOpenRouterFake({ displayName });
+  const answer = (fetch: Fake["fetch"]): Fake => ({ fetch, mail: () => [] });
+  return {
+    "https://openrouter.ai/api/v1/models": answer(fake.models),
+    "https://openrouter.ai/api/v1/chat/completions": answer(fake.completions),
+    "https://openrouter.ai/api/v1/systemone": answer(fake.systemone),
+  };
+}
+
 export const leakedNames = (names: string[], env: Record<string, string | undefined>) =>
   names.filter((name) => env[name]);
 
@@ -109,13 +124,26 @@ function install() {
     real: globalThis.fetch,
     fakes: {
       "https://api.resend.com/emails": accountFake,
-      "https://openrouter.ai/api/v1/systemone": accountFake,
+      ...openRouterFakes(account.fetch),
       "https://api.fastmail.com/jmap/session": fastmail,
       "https://api.fastmail.com/jmap/api/": fastmail,
     },
     violation: record,
     mail: append(mail),
   });
+  const spriteDir = process.env.E2E_SPRITE_DIR;
+  if (spriteDir) {
+    const host = process.env.VERCEL_URL;
+    if (!host) throw new Error("E2E_SPRITE_DIR needs VERCEL_URL, the host of the submission URL.");
+    patchSprites(
+      createSpriteFake({ dir: spriteDir, host }),
+      {
+        client: SpritesClient.prototype as unknown as Record<string, unknown>,
+        sprite: Sprite.prototype as unknown as Record<string, unknown>,
+      },
+      record,
+    );
+  }
   reportLeaks();
   globalThis.fetch = (input, init) => {
     reportLeaks();

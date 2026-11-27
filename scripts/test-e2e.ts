@@ -13,6 +13,7 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
+import { Client } from "pg";
 import { startPostgres, type TestPostgres } from "./test-postgres";
 
 export type Stage = "build" | "migrate" | "server" | "test";
@@ -42,10 +43,13 @@ const ALWAYS_EMPTY = [
 const UNREACHABLE_DATABASE = "postgresql://unavailable:unavailable@127.0.0.1:1/ctf";
 // The address contact mail goes to. A fixed value, so the tests can name it.
 const CONTACT_EMAIL = "contact@ctf.example.test";
+// The host a run's submission URL names. Its Sprite never reaches the network: the preload fakes it.
+const SUBMISSION_HOST = "ctf.e2e.test";
 const ARTIFACTS = resolve(".artifacts/e2e");
 export const VIOLATIONS_FILE = resolve(ARTIFACTS, "violations.jsonl");
 export const MAIL_FILE = resolve(ARTIFACTS, "mail.jsonl");
 export const VISITOR_FILE = resolve(ARTIFACTS, "visitors.txt");
+export const SPRITE_DIR = resolve(ARTIFACTS, "sprites");
 export const SERVER_LOG = resolve(ARTIFACTS, "server.log");
 export const LOG_CURSOR_FILE = resolve(ARTIFACTS, "server-log.cursor");
 const PRELOAD = resolve("tests/e2e/preload.ts");
@@ -80,13 +84,18 @@ function synthetic(stage: Stage, stack: Stack): Record<string, string> {
     RESEND_API_KEY: "e2e-resend-key",
     RESEND_FROM: "e2e@example.invalid",
   };
-  const files = { E2E_VIOLATIONS_FILE: VIOLATIONS_FILE, E2E_MAIL_FILE: MAIL_FILE };
+  const files = {
+    E2E_VIOLATIONS_FILE: VIOLATIONS_FILE,
+    E2E_MAIL_FILE: MAIL_FILE,
+    E2E_SPRITE_DIR: SPRITE_DIR,
+  };
   if (stage === "build") return { ...app, DATABASE_URL_UNPOOLED: UNREACHABLE_DATABASE };
   if (stage === "migrate") return { ...database, ...app };
   if (stage === "test")
     return {
       ...database,
       ...files,
+      CRON_SECRET: app.CRON_SECRET,
       CONTACT_EMAIL,
       E2E_VISITOR_FILE: VISITOR_FILE,
       E2E_SERVER_LOG: SERVER_LOG,
@@ -100,6 +109,7 @@ function synthetic(stage: Stage, stack: Stack): Record<string, string> {
     ...app,
     ...files,
     ...mail,
+    VERCEL_URL: SUBMISSION_HOST,
     NODE_OPTIONS: `--import tsx --import ${PRELOAD}`,
   };
 }
@@ -140,7 +150,8 @@ export function emptyNames(env: NodeJS.ProcessEnv, fileNames: string[]): string[
 // answered gracefully, so only the log shows them. The unawaited-task event is logged when
 // scheduling a task with `after()` throws outside a request scope, and the task then runs with
 // nothing awaiting it.
-const FAILURE_EVENTS = new Set(["auth.background_task_unawaited"]);
+// A screen that times out lets an instruction through unscreened, so it fails a story too.
+const FAILURE_EVENTS = new Set(["auth.background_task_unawaited", "text_screen.request_timed_out"]);
 export function failureEvents(lines: string[]): Record<string, unknown>[] {
   return lines.flatMap((line) => {
     try {
@@ -219,9 +230,10 @@ async function main() {
   let server: ChildProcess | undefined;
   let serverLog: number | undefined;
   let testCode: number | undefined;
+  let stack: Stack | undefined;
   try {
     rmSync(ARTIFACTS, { recursive: true, force: true });
-    mkdirSync(ARTIFACTS, { recursive: true });
+    mkdirSync(SPRITE_DIR, { recursive: true });
     writeFileSync(VIOLATIONS_FILE, "");
     writeFileSync(MAIL_FILE, "");
     writeFileSync(VISITOR_FILE, "");
@@ -230,7 +242,7 @@ async function main() {
     const noDatabase = { port, dbPort: "", database: "" };
     if (await run("build", noDatabase, next("build"))) throw new Error("The build failed.");
     postgres = await startPostgres("ctf-e2e", () => stopped);
-    const stack = { port, dbPort: postgres.port, database: postgres.database };
+    stack = { port, dbPort: postgres.port, database: postgres.database };
     if (await run("migrate", stack, ["--import", "tsx", "scripts/setup.ts"]))
       throw new Error("The migration failed.");
     if (stopped) return;
@@ -259,7 +271,10 @@ async function main() {
       // Read only once the server has stopped, so the log is complete. A run stopped by a signal
       // skips it. These lines explain a failed run as often as a passing one, so they are always shown.
       if (testCode !== undefined && !stopped) {
-        const problems = endOfRunProblems();
+        const problems = [
+          ...endOfRunProblems(),
+          ...runProblems(await readRuns(stack!), readdirSync(SPRITE_DIR), !process.argv[2]),
+        ];
         for (const problem of problems) console.error(problem);
         process.exitCode = testCode || (problems.length ? 1 : 0);
       }
@@ -305,6 +320,43 @@ async function waitForServer(server: ChildProcess, port: number) {
   throw new Error(
     `The server did not become ready. Its output:\n${readFileSync(SERVER_LOG, "utf8")}`,
   );
+}
+
+type RunRow = { id: string; sprite_name: string; status: string; sprite_deleted_at: Date | null };
+
+// The runs the stories left, read from the disposable database once the server has stopped.
+async function readRuns(stack: Stack): Promise<RunRow[]> {
+  const client = new Client({
+    host: "127.0.0.1",
+    port: Number(stack.dbPort),
+    user: "postgres",
+    database: stack.database,
+  });
+  await client.connect();
+  try {
+    return (
+      await client.query<RunRow>("SELECT id,sprite_name,status,sprite_deleted_at FROM ctf.games")
+    ).rows;
+  } finally {
+    await client.end();
+  }
+}
+
+// After the stories no run is open, and the Sprite directories are the Sprites of the runs whose
+// Sprite is not marked deleted. A full run must also have started a run, or the check proves nothing.
+export function runProblems(runs: RunRow[], directories: string[], requireRuns: boolean) {
+  const problems = runs
+    .filter((run) => run.status === "active" || run.status === "creating")
+    .map((run) => `Run ${run.id} is still ${run.status} after the tests.`);
+  const kept = [
+    ...new Set(runs.filter((run) => !run.sprite_deleted_at).map((run) => run.sprite_name)),
+  ];
+  const expected = kept.sort().join(",");
+  const actual = [...directories].sort().join(",");
+  if (expected !== actual)
+    problems.push(`Sprite directories [${actual}] differ from the undeleted runs' [${expected}].`);
+  if (requireRuns && !runs.length) problems.push("No story started a run.");
+  return problems;
 }
 
 function endOfRunProblems() {

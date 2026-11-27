@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup } from "./markup";
 import { SessionChips, type SessionChipsProps } from "../app/session-chips";
 import { createSessionUIState } from "../app/session-ui-state";
 import { session } from "./fixtures/console-runs";

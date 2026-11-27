@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup } from "./markup";
 import { RunBar, type RunBarProps } from "../app/run-bar";
 import { statusLabel } from "../app/run-format";
 import { run, session } from "./fixtures/console-runs";

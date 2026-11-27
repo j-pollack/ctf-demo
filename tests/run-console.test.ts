@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup } from "./markup";
 import { RunConsole, type RunConsoleProps } from "../app/run-console";
 import { createSessionUIState } from "../app/session-ui-state";
 import { PENDING_SESSION } from "../app/session-layout";
