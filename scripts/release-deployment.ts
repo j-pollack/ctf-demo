@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 
 // Reads Vercel's state for a release. The token comes from the environment only and is sent
 // only in the Authorization header. Nothing here prints a response body or the token.
@@ -18,6 +19,7 @@ const LIST_LIMIT = 20;
 const POLL_MS = 15_000;
 const READY_TIMEOUT_MS = 8 * 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+const ALIAS_RETRY_MS = 2_000;
 // The one path not yet observed against the live project: a single deployment by id.
 const DEPLOYMENT_PATH = (id: string) => `/v13/deployments/${encodeURIComponent(id)}`;
 const LIST_PATH = "/v6/deployments";
@@ -104,8 +106,19 @@ export async function findDeployment(sha: string, api: Api, clock: Clock): Promi
   }
 }
 
-export async function servingDeploymentId(host: string, api: Api): Promise<string> {
-  const alias = (await get(api, ALIAS_PATH(host), {})) as { deploymentId?: string };
+// One more try after a failure that may pass: a single bad answer here, read after a promotion,
+// would roll a good release back.
+export async function servingDeploymentId(
+  host: string,
+  api: Api,
+  retryMs = ALIAS_RETRY_MS,
+): Promise<string> {
+  const read = () => get(api, ALIAS_PATH(host), {});
+  const alias = (await read().catch(async (error: unknown) => {
+    if (!isTransient(error)) throw error;
+    await sleep(retryMs);
+    return read();
+  })) as { deploymentId?: string };
   const id = alias.deploymentId;
   if (typeof id !== "string" || !ID_PATTERN.test(id))
     throw new Error(`Alias ${host} has no valid deploymentId.`);

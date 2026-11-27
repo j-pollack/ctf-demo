@@ -95,13 +95,13 @@ jobs:
 
   # The new web build reaches production only here, after the migration and the worker, and
   # only once its own URL passes the checks. Vercel's automatic domain assignment must be off
-  # for this to hold, see deploy/operations.md. The step timeouts add up to 19 minutes, so 6 of the
-  # job's 25 are left for setup and the job's timeout never stops the rollback step.
+  # for this to hold, see deploy/operations.md. The step timeouts add up to 23 minutes, so 7 of the
+  # job's 30 are left for setup and the job's timeout never stops the rollback step.
   promote:
     name: promote web
     needs: deploy-worker
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       HUSKY: 0
@@ -140,7 +140,7 @@ jobs:
       # Fails on a serving deployment that is newer than this commit, or that cannot be read.
       - name: Find the new deployment and decide
         id: decide
-        timeout-minutes: 9
+        timeout-minutes: 11
         run: node --import tsx scripts/release-deployment.ts lookup
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -160,15 +160,22 @@ jobs:
       - name: Promote the new deployment
         id: promote
         if: steps.decide.outputs.decision == 'promote'
-        timeout-minutes: 3
-        run: npx --yes "$VERCEL_CLI" promote "$DEPLOYMENT_URL" --scope "$VERCEL_ORG_ID" --timeout 2m
+        timeout-minutes: 4
+        # While Vercel still assigns the domain itself it can move it between the decision and
+        # this step. A promote that fails is a failure only when the domain does not serve the
+        # new deployment, so the rollback below never undoes a release that is live and good.
+        run: |
+          if npx --yes "$VERCEL_CLI" promote "$DEPLOYMENT_URL" --scope "$VERCEL_ORG_ID" --timeout 2m; then exit 0; fi
+          echo "::warning::vercel promote did not succeed. Reading the production domain."
+          node --import tsx scripts/release-deployment.ts verify "$NEW_ID"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           DEPLOYMENT_URL: ${{ steps.decide.outputs.new_url }}
+          NEW_ID: ${{ steps.decide.outputs.new_id }}
       - name: Verify the production domain moved
         id: verify
         if: steps.decide.outputs.decision == 'promote'
-        timeout-minutes: 1
+        timeout-minutes: 2
         run: node --import tsx scripts/release-deployment.ts verify "$NEW_ID"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}

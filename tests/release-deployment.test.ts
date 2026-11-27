@@ -127,7 +127,7 @@ test("an ERROR or CANCELED newest deployment throws naming the state", async () 
   }
 });
 
-test("nothing ready within ten minutes throws", async () => {
+test("nothing ready within eight minutes throws", async () => {
   const { api } = stub({ "/v6/deployments": [listBody([item("d1", "BUILDING", 100)])] });
   const c = clock();
   const start = c.now();
@@ -163,6 +163,22 @@ test("a deployment with no commit reads as null, a missing alias target throws",
   await assert.rejects(servingDeploymentId("h", bad.api), /deploymentId/);
   const gone = stub({ "/v13/deployments/d": [404] });
   await assert.rejects(deploymentCommit("d", gone.api), /404/);
+});
+
+test("the alias read is tried once more after a 5xx, a 429 or no answer, and never after a 404", async () => {
+  for (const first of [503, 429, new Error("socket hang up")]) {
+    const { api, calls } = stub({
+      "/v4/aliases/h": [first, { alias: "h", deploymentId: "dpl_a" }],
+    });
+    assert.equal(await servingDeploymentId("h", api, 0), "dpl_a");
+    assert.equal(calls.length, 2);
+  }
+  const down = stub({ "/v4/aliases/h": [503] });
+  await assert.rejects(servingDeploymentId("h", down.api, 0), /503/);
+  assert.equal(down.calls.length, 2);
+  const gone = stub({ "/v4/aliases/h": [404] });
+  await assert.rejects(servingDeploymentId("h", gone.api, 0), /404/);
+  assert.equal(gone.calls.length, 1);
 });
 
 test("the decision follows the ids and the ancestry", () => {
