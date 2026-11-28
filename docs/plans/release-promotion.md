@@ -98,6 +98,7 @@ From the repository, Vercel's documentation and read-only requests the lead made
 - **Step 2, the drill.** See P9. Promoting the deployment that is already live exits 1 with a 409, so the race the second review found was real.
 - **Step 3.** Automatic assignment was turned off at 23:11 UTC on 2026-11-27 with the user's yes, and read back as `false`.
 - **Open after the drill.** A promote turned automatic assignment back on after a rollback. Whether every promote does so is read from the setting after step 4. If it does, the job has to turn the setting off again after it promotes, and step 5 waits for that.
+- **First promotion by the job, 2026-11-27.** Run `46084688527` for `1f95535` decided `promote` and passed the checks on the deployment's URL. `vercel promote` failed with "User not found. (404)", because the CLI reads the user first and the token is scoped to a team or project. The fallback read found the domain on the previous deployment, and the rollback step failed the same way. Production stayed on the previous release, and the lead promoted by hand at 23:53:49 UTC. After that promote the setting read `false`. The job now promotes and rolls back through the REST API and turns the setting off in a step of its own: [promote-by-api.md](promote-by-api.md).
 
 ## Tradeoffs considered
 
