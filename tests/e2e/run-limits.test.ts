@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { KEYWORDS, REPLIES } from "./agent-script";
 import { journey, waitForAttribute } from "./browser";
 import { baseUrl, pool } from "./stack";
-import { endRun, instruct, memberWithName, runStatus, startRun, waitIdle, waitStatus } from "./run";
+import {
+  endRun,
+  instruct,
+  memberWithName,
+  runStatus,
+  startRun,
+  waitForReviews,
+  waitIdle,
+  waitStatus,
+} from "./run";
 
 const CHAT = REPLIES[KEYWORDS.chat].text;
 const OVERSPEND = REPLIES[KEYWORDS.overspend].text;
@@ -20,10 +29,10 @@ journey("R5: the fourth run in a day is refused", async ({ page, expectFailure }
   expectFailure(429, "/api/games");
   const email = await memberWithName(page, "r5");
   const panes = page.getByTestId("session-pane");
-  let last = "";
+  const runs: string[] = [];
   try {
     for (let run = 0; run < DAILY_RUNS; run++) {
-      last = await startRun(page, run ? "run" : "play");
+      runs.push(await startRun(page, run ? "run" : "play"));
       await instruct(panes.first(), `${KEYWORDS.chat} please`);
       await panes.first().getByTestId("transcript-entry").filter({ hasText: CHAT }).waitFor();
       await waitIdle(panes.first());
@@ -40,8 +49,10 @@ journey("R5: the fourth run in a day is refused", async ({ page, expectFailure }
     });
     assert.equal(refused.status(), 429);
     assert.equal(await runCount(email), DAILY_RUNS);
+    // The next story sets the daily cap to zero, which a late review would then meet.
+    for (const run of runs) await waitForReviews(run);
   } finally {
-    if (last) await endRun(last);
+    if (runs.length) await endRun(runs[runs.length - 1]);
   }
 });
 
@@ -84,6 +95,7 @@ journey(
         data: { prompt: `${KEYWORDS.chat} again` },
       });
       assert.equal(refused.status(), 409);
+      await waitForReviews(runId);
     } finally {
       await endRun(runId);
     }

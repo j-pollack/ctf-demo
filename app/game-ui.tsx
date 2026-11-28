@@ -2214,9 +2214,9 @@ export function LeaderboardPanel({
             </thead>
             <tbody>
               {scores.map((score, index) => (
-                <tr key={score.name}>
+                <tr key={score.name} data-testid="rank-row">
                   <td>{index + 1}</td>
-                  <td>{score.name}</td>
+                  <td data-testid="rank-name">{score.name}</td>
                   <td>{money(score.spend)}</td>
                   <td>{score.turns}</td>
                   <td>{number(score.tokens)}</td>

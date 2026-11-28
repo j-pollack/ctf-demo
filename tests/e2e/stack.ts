@@ -22,6 +22,8 @@ const mailFile = required("E2E_MAIL_FILE");
 const visitorFile = required("E2E_VISITOR_FILE");
 const serverLog = required("E2E_SERVER_LOG");
 const logCursor = required("E2E_LOG_CURSOR");
+const workerLog = required("E2E_WORKER_LOG");
+const workerLogCursor = required("E2E_WORKER_LOG_CURSOR");
 
 let opened: Pool | undefined;
 // Opened on first use, after the same checks the runner makes: loopback and its own database.
@@ -98,14 +100,16 @@ export function takeViolations() {
 
 // The failure events the server has logged since the last take. The cursor is a byte offset in a
 // file, because every test file is a separate process, and it moves only past whole lines.
-export function takeServerFailures() {
-  const { lines, offset } = newLines(
-    readFileSync(serverLog),
-    Number(readFileSync(logCursor, "utf8")),
-  );
-  writeFileSync(logCursor, String(offset));
+function takeFailures(log: string, cursor: string) {
+  const { lines, offset } = newLines(readFileSync(log), Number(readFileSync(cursor, "utf8")));
+  writeFileSync(cursor, String(offset));
   return failureEvents(lines);
 }
+
+export const takeServerFailures = () => takeFailures(serverLog, logCursor);
+
+// The same for the monitor worker's log, with a cursor of its own.
+export const takeWorkerFailures = () => takeFailures(workerLog, workerLogCursor);
 
 // Extra headers for a new browser context. A deployment's proxy tells the app each visitor's
 // address, and Better Auth rate-limits magic-link requests per address. This stack has no proxy,

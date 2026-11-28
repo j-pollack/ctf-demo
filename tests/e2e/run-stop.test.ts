@@ -1,6 +1,15 @@
 import { KEYWORDS, REPLIES } from "./agent-script";
 import { journey, waitForAttribute } from "./browser";
-import { endRun, instruct, memberWithName, startRun, waitFor, waitIdle, waitStatus } from "./run";
+import {
+  endRun,
+  instruct,
+  memberWithName,
+  startRun,
+  waitFor,
+  waitForReviews,
+  waitIdle,
+  waitStatus,
+} from "./run";
 import { pool } from "./stack";
 
 const CHAT = REPLIES[KEYWORDS.chat].text;
@@ -34,6 +43,7 @@ journey(
       await instruct(pane, `${KEYWORDS.chat} please`);
       await pane.getByTestId("transcript-entry").filter({ hasText: CHAT }).waitFor();
       await waitIdle(pane);
+      await waitForReviews(runId);
     } finally {
       await endRun(runId);
     }

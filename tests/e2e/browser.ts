@@ -3,7 +3,14 @@ import { mkdirSync } from "node:fs";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
-import { baseUrl, signInLink, takeServerFailures, takeViolations, visitorHeaders } from "./stack";
+import {
+  baseUrl,
+  signInLink,
+  takeServerFailures,
+  takeViolations,
+  takeWorkerFailures,
+  visitorHeaders,
+} from "./stack";
 
 const EVIDENCE = ".artifacts/e2e";
 export const TIMEOUT = 15_000;
@@ -85,12 +92,15 @@ export function journey(name: string, body: (session: Session) => Promise<void>)
         expectedEvents,
         `the server logged failures: ${JSON.stringify(failures)}`,
       );
+      assert.deepEqual(takeWorkerFailures(), [], "the worker logged failures");
     } catch (error) {
       // Violations and failures this journey caused must not fail the next one.
       for (const violation of takeViolations())
         console.error(`${name}: server violation ${JSON.stringify(violation)}`);
       for (const failure of takeServerFailures())
         console.error(`${name}: server failure ${JSON.stringify(failure)}`);
+      for (const failure of takeWorkerFailures())
+        console.error(`${name}: worker failure ${JSON.stringify(failure)}`);
       mkdirSync(EVIDENCE, { recursive: true });
       await Promise.all(
         tracked.flatMap(({ context, page }, index) => [

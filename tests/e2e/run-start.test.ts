@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { AFTER_TOOL_TEXT, KEYWORDS, REPLIES } from "./agent-script";
 import type { Route } from "playwright";
 import { journey, waitForAttribute } from "./browser";
-import { endRun, entries, instruct, memberWithName, startRun, waitIdle } from "./run";
+import {
+  endRun,
+  entries,
+  instruct,
+  memberWithName,
+  startRun,
+  waitForReviews,
+  waitIdle,
+} from "./run";
 import { pool } from "./stack";
 
 const LIST = REPLIES[KEYWORDS.list];
@@ -57,6 +65,7 @@ journey(
           assert.ok(JSON.stringify(message).includes(part), `message ${index} holds ${part}`);
       });
       assert.ok((await entries(pane)).some((entry) => entry.state === "user"));
+      await waitForReviews(runId);
     } finally {
       release();
       await endRun(runId);
@@ -80,6 +89,7 @@ journey(
       await pane.getByTestId("transcript-entry").filter({ hasText: AFTER_TOOL_TEXT }).waitFor();
       await waitIdle(pane);
       assert.deepEqual(await entries(pane), before);
+      await waitForReviews(runId);
     } finally {
       await endRun(runId);
     }

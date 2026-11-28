@@ -53,6 +53,10 @@ journey(
     const form = page.getByTestId("admin-model-form");
     const select = form.getByTestId("admin-model-select");
     await select.waitFor();
+    // The worker's own registration is put back afterwards, so later reviews are still woken.
+    const { rows: saved } = await pool().query<{ value: string }>(
+      `SELECT value FROM ctf.settings WHERE key='worker_wake'`,
+    );
     const current = await select.inputValue();
     const other = MODELS.find((model) => model !== current);
     assert.ok(other, "the allowlist has a second model");
@@ -85,6 +89,10 @@ journey(
       await pool().query(`DELETE FROM ctf.settings WHERE key=ANY($1)`, [
         ["agent_model", "worker_wake"],
       ]);
+      if (saved.length)
+        await pool().query(`INSERT INTO ctf.settings(key,value) VALUES('worker_wake',$1)`, [
+          saved[0].value,
+        ]);
     }
   },
 );

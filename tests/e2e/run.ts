@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Locator, Page } from "playwright";
+import { AFTER_TOOL_TEXT, KEYWORDS, REPLIES } from "./agent-script";
 import { signIn, TIMEOUT, waitForAttribute } from "./browser";
-import { baseUrl, newEmail, pool, required } from "./stack";
+import { baseUrl, grantAdmin, newEmail, pool, required } from "./stack";
 
 const cronSecret = required("CRON_SECRET");
 const spriteDir = required("E2E_SPRITE_DIR");
@@ -40,6 +41,51 @@ export async function instruct(pane: Locator, text: string) {
   await pane.getByTestId("session-send").click();
 }
 
+// Sends a keyword instruction and waits until the agent's command has run and the session is idle.
+// The run must still be able to respond: not an upload, which ends it.
+export async function runScripted(pane: Locator, keyword: keyof typeof KEYWORDS) {
+  const finished = pane.getByTestId("transcript-entry").filter({ hasText: AFTER_TOOL_TEXT });
+  const before = await finished.count();
+  await instruct(pane, `${KEYWORDS[keyword]} please`);
+  await pane
+    .getByTestId("entry-command")
+    .filter({ hasText: REPLIES[KEYWORDS[keyword]].command })
+    .waitFor();
+  await waitFor("the command's reply", async () => (await finished.count()) > before);
+  await waitIdle(pane);
+}
+
+// Signs the page in as an admin and opens the admin page.
+export async function openAdmin(page: Page, label: string) {
+  const email = newEmail(label);
+  await signIn(page, email, "/account");
+  await grantAdmin(email);
+  await page.goto("/admin");
+  await page.getByTestId("page-admin").waitFor();
+}
+
+// Flips a game rule's switch on the admin page and waits for it to show the new setting.
+export async function setRule(toggle: Locator, on: boolean) {
+  if ((await toggle.getAttribute("aria-checked")) === String(on)) return;
+  await toggle.click();
+  await waitForAttribute(toggle, "aria-checked", String(on));
+}
+
+// The display name of the member who owns a run, which the leaderboard lists.
+export async function ownerName(runId: string) {
+  const { rows } = await pool().query(
+    `SELECT u."displayName" AS name FROM ctf.games g JOIN ctf."user" u ON u.id=g.owner_id WHERE g.id=$1`,
+    [runId],
+  );
+  return rows[0].name as string;
+}
+
+// Whether the leaderboard lists a player, read from the endpoint the page reads.
+export async function onLeaderboard(name: string) {
+  const { entries } = await (await fetch(`${baseUrl}/api/leaderboard`)).json();
+  return (entries as { name: string }[]).some((entry) => entry.name === name);
+}
+
 // Waits for a session to finish responding.
 export const waitIdle = (pane: Locator) =>
   waitForAttribute(pane.getByTestId("session-composer"), "data-state", "idle");
@@ -67,6 +113,31 @@ export async function cleanup() {
 export async function runStatus(runId: string) {
   const { rows } = await pool().query(`SELECT status FROM ctf.games WHERE id=$1`, [runId]);
   return rows[0]?.status as string | undefined;
+}
+
+// Waits until the worker has settled every monitor job of the run, so a review's failure lands in
+// the story that caused it. A run with no job is settled. An unresolved job or a review with an
+// operational error fails at once and names the error.
+export async function waitForReviews(runId: string) {
+  await waitFor("the run's reviews to settle", async () => {
+    const { rows: errors } = await pool().query<{ operational_error: string }>(
+      `SELECT operational_error FROM ctf.monitor_reviews
+       WHERE game_id=$1 AND operational_error IS NOT NULL`,
+      [runId],
+    );
+    assert.deepEqual(
+      errors.map((row) => row.operational_error),
+      [],
+      `a review of run ${runId} failed`,
+    );
+    const { rows: jobs } = await pool().query<{ status: string; reason: string | null }>(
+      `SELECT status,reason FROM ctf.monitor_jobs WHERE game_id=$1`,
+      [runId],
+    );
+    const unresolved = jobs.filter((job) => job.status === "unresolved");
+    assert.deepEqual(unresolved, [], `a monitor job of run ${runId} is unresolved`);
+    return jobs.every((job) => job.status === "caught-up" || job.status === "caught");
+  });
 }
 
 // The kinds and texts of a page's transcript entries, in order.
