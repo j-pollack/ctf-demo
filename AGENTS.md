@@ -36,3 +36,15 @@ All coding agents must follow [the verification strategy](docs/verification.md).
 - Use disposable test databases and synthetic credentials. Never use shared `.env.local` credentials, paid services or unscoped cleanup/reconciliation in unattended tests. Live smoke/e2e is opt-in and required before deployment promotion, not pre-commit.
 - Measure coverage across all owned runtime source, including unimported files. Coverage complements named security/accounting regressions; do not inflate it with mocks, broad exclusions or assertions of implementation trivia. Report unrun checks honestly.
 - Run `npm run check` for offline changes. Use `npm run test:coverage` when changing test coverage; add a targeted regression for changed behavior. Keep the existing Node test runner unless a concrete limitation requires another tool.
+
+# Browser tests and the release gate
+
+The browser stories under `tests/e2e/` run on every pull request as the required `e2e` check. One of them, `tests/e2e/run-gate.test.ts`, also runs on real services against the staging stack before a release. Merging into `main` deploys to production, so a stale story lets a broken change ship. [The verification strategy](docs/verification.md) describes the suite and [the operations guide](deploy/operations.md) describes the release.
+
+- Keep the stories current in the same pull request as the change. When a change alters what a visitor, a member or an admin can see or do in the browser, update every story that covers it. When it adds a journey no story covers, add the story.
+- When a change alters a request the app or the worker sends to OpenRouter, Resend, Fastmail or Sprites, update the fake under `tests/e2e/` to match the real service. A fake that still accepts the old request hides the break.
+- Give each element a story needs a literal `data-testid` under `app/`, and put a state that is shown in words in `data-state`. Stories select with `getByTestId` only and never by the page's wording, so a copy change breaks no story.
+- Run `npm run test:e2e` before opening a pull request that touches `app/`, `lib/`, the worker or `tests/e2e/`. It needs Docker and Chromium.
+- When a story fails, fix the code. Change the story only when the behaviour changed on purpose, and say so in the pull request.
+- Treat the gate story as part of the release. A change to sign-in, starting a run, sending an instruction, the flag upload endpoint, flag receipts or final reviews must keep it passing. A pull request cannot run it on real services, so name the risk in the pull request and watch the `staging` workflow after the merge.
+- Add to what runs on real services only when a release must not ship without that proof. Every real run costs money and minutes.

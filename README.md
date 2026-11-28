@@ -21,8 +21,21 @@ The leaderboard shows each member’s cheapest eligible capture by agent spend, 
 
 ## Development and checks
 
-Run `npm run check` for lint, formatting, TypeScript and offline tests. Run `npm run build` separately to check the production bundle.
+Run `npm run check` for lint, formatting, TypeScript and offline tests. Run `npm run build` separately to check the production bundle. Run `npm run test:e2e` for the browser tests, which need Docker and Chromium.
+
+A change to what someone sees or does in the browser comes with its browser story in the same pull request. [Verification](docs/verification.md) says how.
 
 - [Verification](docs/verification.md) covers Docker prerequisites, integration tests, coverage and opt-in live checks.
 - [Contributor instructions](AGENTS.md) cover feature worktrees, repository skills and testing policy.
 - [Deployment and operations](deploy/operations.md) covers migrations, Vercel promotion, Fly workers, rollback and admin access.
+
+## How a change ships
+
+Merging a pull request into `main` deploys it. There is no separate deploy step.
+
+1. Open a pull request. The checks `ci` and `e2e` must pass, and the branch must be up to date with `main`.
+2. Merge it. `ci` runs again on `main`.
+3. The `migrate prod` workflow then migrates the production database, deploys the monitor worker, checks the new web build and moves the production domain to it. If the live site fails its checks, the workflow moves the domain back.
+4. The site's footer shows the commit it runs. When it shows your merge commit, the change is live.
+
+A failed release leaves the previous version serving. The [operations guide](deploy/operations.md) describes each step, how to finish or undo a release, and the staging check that runs one real game before a release.
