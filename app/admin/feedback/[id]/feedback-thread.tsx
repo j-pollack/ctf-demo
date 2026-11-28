@@ -30,7 +30,7 @@ export function FeedbackThreadView({
   const answered = messages.length > 1 && messages.at(-1)!.ours;
   return (
     <>
-      <a className="back-link" href="/admin#inbox">
+      <a className="back-link" href="/admin#inbox" data-testid="feedback-thread-back">
         Back to inbox
       </a>
       <section className="card thread">

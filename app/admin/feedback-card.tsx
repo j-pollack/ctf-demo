@@ -75,9 +75,17 @@ export function FeedbackCard({
       )}
       {(page > 1 || more) && (
         <nav className="pager" aria-label="Inbox pages">
-          {page > 1 && <a href={pageHref(page - 1)}>Previous page</a>}
+          {page > 1 && (
+            <a href={pageHref(page - 1)} data-testid="admin-inbox-previous">
+              Previous page
+            </a>
+          )}
           <span>Page {page}</span>
-          {more && <a href={pageHref(page + 1)}>Next page</a>}
+          {more && (
+            <a href={pageHref(page + 1)} data-testid="admin-inbox-next">
+              Next page
+            </a>
+          )}
         </nav>
       )}
     </section>
