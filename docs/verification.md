@@ -45,7 +45,7 @@ A failing journey leaves a trace and a screenshot in `.artifacts/e2e/`. The serv
 
 The [staging workflow](../.github/workflows/staging.yml) runs this command against the staging stack, as described in [Staging stack and the staging check](../deploy/operations.md). It is dispatched by hand.
 
-The command is `E2E_BASE_URL=<https address> E2E_DATABASE_URL=<connection string> npm run test:e2e:real`. The address must be `https`. Sign-in submits the real form, which sends the real mail to Resend's test recipient, and then the test writes the sign-in row to `ctf.verification` itself and opens that link. The test records no trace and no screenshot, because the repository is public. It cannot read Vercel's or Fly's logs, so it checks no server or worker log. The journey may take 12 minutes and a single wait 10 minutes.
+The command is `E2E_BASE_URL=<https address> E2E_DATABASE_URL=<connection string> npm run test:e2e:real`. The address must be `https`. Sign-in submits the real form, which sends the real mail to Resend's test recipient, and then the test writes the sign-in row to `ctf.verification` itself and opens that link. The test records no trace and no screenshot, because the repository is public. It cannot read Vercel's or Fly's logs, so it checks no server or worker log. The journey may take 12 minutes and a single wait 10 minutes. The story fails at once, with the start of the agent's reply, when the agent's turn ends without an upload.
 
 Real mode does not check which verdict a real model gives, the transcript, the leaderboard or the Sprite's removal, and it supports no other story. The connection string is a credential: never print it.
 
