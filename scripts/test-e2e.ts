@@ -52,6 +52,8 @@ export const VISITOR_FILE = resolve(ARTIFACTS, "visitors.txt");
 export const SPRITE_DIR = resolve(ARTIFACTS, "sprites");
 export const SERVER_LOG = resolve(ARTIFACTS, "server.log");
 export const LOG_CURSOR_FILE = resolve(ARTIFACTS, "server-log.cursor");
+export const WORKER_LOG = resolve(ARTIFACTS, "worker.log");
+export const WORKER_LOG_CURSOR_FILE = resolve(ARTIFACTS, "worker-log.cursor");
 const PRELOAD = resolve("tests/e2e/preload.ts");
 
 // Each file is read whole and only the names are kept. The pattern is the key and separator part
@@ -100,6 +102,8 @@ function synthetic(stage: Stage, stack: Stack): Record<string, string> {
       E2E_VISITOR_FILE: VISITOR_FILE,
       E2E_SERVER_LOG: SERVER_LOG,
       E2E_LOG_CURSOR: LOG_CURSOR_FILE,
+      E2E_WORKER_LOG: WORKER_LOG,
+      E2E_WORKER_LOG_CURSOR: WORKER_LOG_CURSOR_FILE,
       E2E_BASE_URL: origin(stack.port),
     };
   // Mail is configured for the server alone: the build and the migration send none.
@@ -110,6 +114,8 @@ function synthetic(stage: Stage, stack: Stack): Record<string, string> {
     ...files,
     ...mail,
     VERCEL_URL: SUBMISSION_HOST,
+    // Where the Sprite fake posts an upload: the app's own loopback address.
+    E2E_APP_ORIGIN: origin(stack.port),
     NODE_OPTIONS: `--import tsx --import ${PRELOAD}`,
   };
 }
@@ -139,6 +145,32 @@ export function assertSafeEnv(stage: Stage, env: NodeJS.ProcessEnv) {
     throw new Error(`Refusing to start ${stage}: its database URLs are not the safe ones.`);
   if (stage !== "build" && env.PGHOST !== "127.0.0.1")
     throw new Error(`Refusing to start ${stage}: its database host is not loopback.`);
+}
+
+// The worker runs the server's environment, and its guard is the preload: without the preload or
+// the files it writes, the worker would reach real services unwatched.
+export function assertWorkerEnv(env: NodeJS.ProcessEnv) {
+  assertSafeEnv("server", env);
+  const missing = [
+    ...(env.NODE_OPTIONS?.includes(`--import ${PRELOAD}`) ? [] : ["the preload"]),
+    ...["E2E_VIOLATIONS_FILE", "E2E_MAIL_FILE", "E2E_SPRITE_DIR", "VERCEL_URL"].filter(
+      (name) => !env[name],
+    ),
+  ];
+  if (missing.length)
+    throw new Error(`Refusing to start the worker: it lacks ${missing.join(", ")}.`);
+}
+
+// What a worker's exit means for the run: it is expected only after the runner stopped it, and then
+// only with code 0.
+export function workerExitProblem(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stopping: boolean,
+) {
+  const how = `code ${code}, signal ${signal}`;
+  if (!stopping) return `The worker exited early (${how}).`;
+  if (code !== 0) return `The worker did not exit cleanly after SIGTERM (${how}).`;
 }
 
 // The names the server must see empty: the preload reports any that carries a value.
@@ -229,6 +261,10 @@ async function main() {
   const next = (...args: string[]) => ["node_modules/next/dist/bin/next", ...args];
   let server: ChildProcess | undefined;
   let serverLog: number | undefined;
+  let worker: ChildProcess | undefined;
+  let workerLog: number | undefined;
+  let workerStopping = false;
+  const workerProblems: string[] = [];
   let testCode: number | undefined;
   let stack: Stack | undefined;
   try {
@@ -238,6 +274,7 @@ async function main() {
     writeFileSync(MAIL_FILE, "");
     writeFileSync(VISITOR_FILE, "");
     writeFileSync(LOG_CURSOR_FILE, "0");
+    writeFileSync(WORKER_LOG_CURSOR_FILE, "0");
     const port = Number(process.env.PORT) || (await freePort());
     const noDatabase = { port, dbPort: "", database: "" };
     if (await run("build", noDatabase, next("build"))) throw new Error("The build failed.");
@@ -258,6 +295,20 @@ async function main() {
     );
     current = server;
     await waitForServer(server, port);
+    if (stopped) return;
+    // The worker has the server's environment, so its requests meet the same guard and fakes.
+    assertWorkerEnv(serverEnv);
+    workerLog = openSync(WORKER_LOG, "w");
+    worker = spawn(process.execPath, ["scripts/monitor-worker.ts"], {
+      stdio: ["ignore", workerLog, workerLog],
+      env: serverEnv,
+    });
+    worker.once("exit", (code, signal) => {
+      const problem = workerExitProblem(code, signal, workerStopping);
+      if (problem) workerProblems.push(problem);
+    });
+    await waitForWorker(worker, stack, () => stopped);
+    if (stopped) return;
     // `node --test` with no files would discover tests anywhere, so an empty selection stops here.
     testCode = files.length
       ? await run("test", stack, ["--import", "tsx", "--test", "--test-concurrency=1", ...files])
@@ -267,11 +318,16 @@ async function main() {
     process.exitCode ||= 1;
   } finally {
     try {
+      if (worker) {
+        workerStopping = true;
+        await stopServer(worker);
+      }
       if (server) await stopServer(server);
       // Read only once the server has stopped, so the log is complete. A run stopped by a signal
       // skips it. These lines explain a failed run as often as a passing one, so they are always shown.
       if (testCode !== undefined && !stopped) {
         const problems = [
+          ...workerProblems,
           ...endOfRunProblems(),
           ...runProblems(await readRuns(stack!), readdirSync(SPRITE_DIR), !process.argv[2]),
         ];
@@ -283,6 +339,7 @@ async function main() {
       process.exitCode ||= 1;
     } finally {
       if (serverLog !== undefined) closeSync(serverLog);
+      if (workerLog !== undefined) closeSync(workerLog);
       postgres?.remove();
     }
   }
@@ -322,10 +379,30 @@ async function waitForServer(server: ChildProcess, port: number) {
   );
 }
 
-type RunRow = { id: string; sprite_name: string; status: string; sprite_deleted_at: Date | null };
+const WAKE_KEY = "worker_wake";
 
-// The runs the stories left, read from the disposable database once the server has stopped.
-async function readRuns(stack: Stack): Promise<RunRow[]> {
+// The worker registers its wake address once it is polling, so the stories can rely on its wakes.
+async function waitForWorker(worker: ChildProcess, stack: Stack, isStopped: () => boolean) {
+  for (let i = 0; i < 120 && alive(worker) && !isStopped(); i++) {
+    const rows = await query(stack, "SELECT 1 FROM ctf.settings WHERE key=$1", [WAKE_KEY]);
+    if (rows.length) return;
+    await setTimeout(250);
+  }
+  if (isStopped()) return;
+  throw new Error(`The worker did not register. Its output:\n${readFileSync(WORKER_LOG, "utf8")}`);
+}
+
+type RunRow = {
+  id: string;
+  sprite_name: string;
+  status: string;
+  sprite_deleted_at: Date | null;
+  unfinished_finalizations: number;
+  unsettled_jobs: number;
+  review_errors: string[];
+};
+
+async function query<Row extends object>(stack: Stack, sql: string, params: unknown[] = []) {
   const client = new Client({
     host: "127.0.0.1",
     port: Number(stack.dbPort),
@@ -334,20 +411,44 @@ async function readRuns(stack: Stack): Promise<RunRow[]> {
   });
   await client.connect();
   try {
-    return (
-      await client.query<RunRow>("SELECT id,sprite_name,status,sprite_deleted_at FROM ctf.games")
-    ).rows;
+    return (await client.query<Row>(sql, params)).rows;
   } finally {
     await client.end();
   }
 }
 
-// After the stories no run is open, and the Sprite directories are the Sprites of the runs whose
-// Sprite is not marked deleted. A full run must also have started a run, or the check proves nothing.
+// The runs the stories left, read from the disposable database once the server has stopped, with
+// the worker's unfinished work on each.
+const readRuns = (stack: Stack) =>
+  query<RunRow>(
+    stack,
+    `SELECT g.id,g.sprite_name,g.status,g.sprite_deleted_at,
+       (SELECT count(*)::int FROM ctf.finalization_jobs f
+         WHERE f.game_id=g.id AND (f.status<>'done' OR f.reason IS NOT NULL)) AS unfinished_finalizations,
+       (SELECT count(*)::int FROM ctf.monitor_jobs j
+         WHERE j.game_id=g.id AND j.status NOT IN ('caught-up','caught')) AS unsettled_jobs,
+       COALESCE((SELECT array_agg(r.operational_error) FROM ctf.monitor_reviews r
+         WHERE r.game_id=g.id AND r.operational_error IS NOT NULL),'{}') AS review_errors
+     FROM ctf.games g`,
+  );
+
+// After the stories no run is open or finalizing, and the worker left nothing unfinished. The
+// Sprite directories are the Sprites of the runs whose Sprite is not marked deleted. A full run
+// must also have started a run, or the check proves nothing.
 export function runProblems(runs: RunRow[], directories: string[], requireRuns: boolean) {
   const problems = runs
     .filter((run) => run.status === "active" || run.status === "creating")
     .map((run) => `Run ${run.id} is still ${run.status} after the tests.`);
+  for (const run of runs) {
+    if (run.status === "finalizing")
+      problems.push(`Run ${run.id} is still finalizing after the tests.`);
+    if (run.unfinished_finalizations)
+      problems.push(`Run ${run.id} has a finalization that is not done or has an error.`);
+    if (run.unsettled_jobs)
+      problems.push(`Run ${run.id} has ${run.unsettled_jobs} monitor job(s) left unsettled.`);
+    for (const error of run.review_errors)
+      problems.push(`Run ${run.id} has a review with an operational error: ${error}`);
+  }
   const kept = [
     ...new Set(runs.filter((run) => !run.sprite_deleted_at).map((run) => run.sprite_name)),
   ];
@@ -369,9 +470,14 @@ function endOfRunProblems() {
     readFileSync(SERVER_LOG),
     Number(readFileSync(LOG_CURSOR_FILE, "utf8")),
   );
+  const worker = newLines(
+    readFileSync(WORKER_LOG),
+    Number(readFileSync(WORKER_LOG_CURSOR_FILE, "utf8")),
+  );
   return [
     ...violations.map((line) => `Unexpected violation left after the tests: ${line}`),
     ...failureEvents(lines).map((entry) => `Server log: ${JSON.stringify(entry)}`),
+    ...failureEvents(worker.lines).map((entry) => `Worker log: ${JSON.stringify(entry)}`),
   ];
 }
 

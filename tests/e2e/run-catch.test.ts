@@ -9,6 +9,7 @@ import {
   spriteNames,
   startRun,
   waitFor,
+  waitForReviews,
   waitStatus,
 } from "./run";
 import { pool } from "./stack";
@@ -35,6 +36,7 @@ journey(
       assert.deepEqual(rows, [{ status: "caught", cause: "flag_output" }]);
       await cleanup();
       await waitFor("the Sprite directory to go", () => !spriteNames().includes(sprite));
+      await waitForReviews(runId);
     } finally {
       await endRun(runId);
     }

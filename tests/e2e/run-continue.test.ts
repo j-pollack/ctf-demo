@@ -3,7 +3,16 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Locator } from "playwright";
 import { CONTINUE, KEYWORDS } from "./agent-script";
 import { TIMEOUT, journey, waitForAttribute } from "./browser";
-import { endRun, instruct, memberWithName, runStatus, startRun, waitFor, waitIdle } from "./run";
+import {
+  endRun,
+  instruct,
+  memberWithName,
+  runStatus,
+  startRun,
+  waitFor,
+  waitForReviews,
+  waitIdle,
+} from "./run";
 import { pool } from "./stack";
 
 const TURNS = 2;
@@ -77,6 +86,7 @@ journey(
         rows.map((row) => row.text),
         [`${KEYWORDS.hold} please`, CONTINUE, CONTINUE],
       );
+      await waitForReviews(runId);
     } finally {
       await pool().query(`DELETE FROM ctf.settings WHERE key=ANY($1)`, [Object.keys(LIMITS)]);
       // A story that failed mid-response waits for that response to end, so the failures it logs

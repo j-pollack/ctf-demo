@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { journey, signIn, waitForAttribute } from "./browser";
-import { endRun, memberWithName, startRun } from "./run";
+import { endRun, memberWithName, startRun, waitForReviews } from "./run";
 import { contactEmail, grantAdmin, mailTo, newEmail, pool, threadIdOf } from "./stack";
 
 journey(
@@ -53,6 +53,7 @@ journey(
         ids.includes(runId) && ids.includes(sessionId),
         "the row names the run and session",
       );
+      await waitForReviews(runId);
     } finally {
       await endRun(runId);
     }

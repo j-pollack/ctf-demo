@@ -8,6 +8,10 @@ import {
   failureEvents,
   newLines,
   runProblems,
+  assertWorkerEnv,
+  workerExitProblem,
+  WORKER_LOG,
+  WORKER_LOG_CURSOR_FILE,
   SPRITE_DIR,
   SERVER_LOG,
   LOG_CURSOR_FILE,
@@ -221,6 +225,9 @@ test("C6: after the stories no run is open and the Sprite directories are the un
     sprite_name: `ctf-${id}`,
     status,
     sprite_deleted_at: deleted ? new Date() : null,
+    unfinished_finalizations: 0,
+    unsettled_jobs: 0,
+    review_errors: [],
   });
   const clean = [run("a", "ended", true), run("b", "caught", false)];
   assert.deepEqual(runProblems(clean, ["ctf-b"], true), []);
@@ -233,4 +240,64 @@ test("C6: after the stories no run is open and the Sprite directories are the un
   assert.equal(runProblems(clean, ["ctf-a", "ctf-b"], true).length, 1, "a deleted Sprite is left");
   assert.equal(runProblems([], [], true).length, 1, "no run at all proves nothing");
   assert.deepEqual(runProblems([], [], false), []);
+});
+
+test("W1: the server and the worker share one environment, and the tests know the worker's log and the app's origin", () => {
+  assert.equal(env("server").E2E_APP_ORIGIN, "http://127.0.0.1:3123");
+  assert.equal(env("test").E2E_WORKER_LOG, WORKER_LOG);
+  assert.equal(env("test").E2E_WORKER_LOG_CURSOR, WORKER_LOG_CURSOR_FILE);
+  assert.notEqual(WORKER_LOG, WORKER_LOG_CURSOR_FILE);
+  assert.notEqual(WORKER_LOG, SERVER_LOG);
+});
+
+test("W1: the worker is refused an environment without the preload, its files or a safe database", () => {
+  const good = env("server");
+  assert.doesNotThrow(() => assertWorkerEnv(good));
+  for (const bad of [
+    { NODE_OPTIONS: "--import tsx" },
+    { NODE_OPTIONS: undefined },
+    { E2E_VIOLATIONS_FILE: "" },
+    { E2E_MAIL_FILE: undefined },
+    { E2E_SPRITE_DIR: "" },
+    { VERCEL_URL: "" },
+    { PGHOST: "db.example.com" },
+    { DATABASE_URL: "postgresql://real.example/db" },
+  ])
+    assert.throws(
+      () => assertWorkerEnv({ ...good, ...bad }),
+      /worker|database/i,
+      JSON.stringify(bad),
+    );
+});
+
+test("W1: a worker that exits before it is stopped, or with a non-zero code, is a problem", () => {
+  assert.equal(workerExitProblem(0, null, true), undefined);
+  assert.match(workerExitProblem(0, null, false) ?? "", /exited early/);
+  assert.match(workerExitProblem(null, "SIGKILL", false) ?? "", /SIGKILL/);
+  assert.match(workerExitProblem(1, null, true) ?? "", /code 1/);
+  assert.match(workerExitProblem(null, "SIGKILL", true) ?? "", /SIGKILL/);
+});
+
+test("W4: after the stories no run is finalizing, and no finalization, job or review is left open", () => {
+  const base = {
+    id: "a",
+    sprite_name: "ctf-a",
+    status: "captured",
+    sprite_deleted_at: null,
+    unfinished_finalizations: 0,
+    unsettled_jobs: 0,
+    review_errors: [] as string[],
+  };
+  assert.deepEqual(runProblems([base], ["ctf-a"], true), []);
+  const cases: [Partial<typeof base>, RegExp][] = [
+    [{ status: "finalizing" }, /finalizing/],
+    [{ unfinished_finalizations: 1 }, /finalization/],
+    [{ unsettled_jobs: 2 }, /monitor job/],
+    [{ review_errors: ["boom"] }, /boom/],
+  ];
+  for (const [over, pattern] of cases) {
+    const problems = runProblems([{ ...base, ...over }], ["ctf-a"], true);
+    assert.equal(problems.length, 1, JSON.stringify(over));
+    assert.match(problems[0], pattern);
+  }
 });

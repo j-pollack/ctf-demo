@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { completionEvents, type Completion } from "../integration/completion-stream";
 import { createScreenFake } from "../integration/screen-fake";
 import { AFTER_TOOL_TEXT, CONTINUE, KEYWORDS, REPLIES } from "./agent-script";
+import { createMonitorFake } from "./monitor-fake";
 
 type Handler = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -38,6 +39,10 @@ function held(signal: AbortSignal | null | undefined) {
 // script does not expect throws, and the preload records that as a violation.
 export function createOpenRouterFake({ displayName }: { displayName: Handler }) {
   const screens = createScreenFake();
+  const monitor = createMonitorFake(async () => {
+    const { CONTEXT_QUESTION_KEYS, questionsFor } = await import("../../lib/control");
+    return questionsFor(CONTEXT_QUESTION_KEYS);
+  });
   let generation = 0;
   // The text screens never see the player's wording as a verdict: only the jailbreak keyword scores.
   screens.controls.scores = (kind, text) =>
@@ -67,6 +72,7 @@ export function createOpenRouterFake({ displayName }: { displayName: Handler }) 
   const completions: Handler = async (_input, init) => {
     const { MODELS } = await import("../../lib/policy");
     const request = body(init);
+    if (monitor.isInvestigation(request.session_id)) return monitor.investigate(request);
     assert.equal(request.stream, true, "A provider request must stream");
     assert.ok(MODELS.includes(request.model), `model outside the catalogue: ${request.model}`);
     assert.match(String(request.session_id), SESSION_ID, "session_id");
@@ -136,7 +142,9 @@ export function createOpenRouterFake({ displayName }: { displayName: Handler }) 
     assert.equal(request.model, TYPESAFE_MODEL);
     if (isDeepStrictEqual(request.questions, DISPLAY_NAME_QUESTIONS))
       return displayName(input, init);
-    const answered = await screens.response(request, init?.signal ?? undefined);
+    const answered =
+      (await monitor.systemone(request)) ??
+      (await screens.response(request, init?.signal ?? undefined));
     assert.ok(answered, "Unexpected question set");
     return answered;
   };

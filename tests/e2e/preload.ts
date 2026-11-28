@@ -135,8 +135,11 @@ function install() {
   if (spriteDir) {
     const host = process.env.VERCEL_URL;
     if (!host) throw new Error("E2E_SPRITE_DIR needs VERCEL_URL, the host of the submission URL.");
+    const appOrigin = process.env.E2E_APP_ORIGIN;
+    if (!appOrigin)
+      throw new Error("E2E_SPRITE_DIR needs E2E_APP_ORIGIN, where uploads are posted.");
     patchSprites(
-      createSpriteFake({ dir: spriteDir, host }),
+      createSpriteFake({ dir: spriteDir, host, appOrigin }),
       {
         client: SpritesClient.prototype as unknown as Record<string, unknown>,
         sprite: Sprite.prototype as unknown as Record<string, unknown>,

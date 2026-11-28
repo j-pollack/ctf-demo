@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { KEYWORDS, REPLIES } from "./agent-script";
 import { journey, signIn, waitForAttribute } from "./browser";
-import { endRun, instruct, memberWithName, runStatus, startRun, waitIdle, waitStatus } from "./run";
+import {
+  endRun,
+  instruct,
+  memberWithName,
+  runStatus,
+  startRun,
+  waitForReviews,
+  waitIdle,
+  waitStatus,
+} from "./run";
 import { grantAdmin, newEmail, pool } from "./stack";
 
 const OBEYED = REPLIES[KEYWORDS.jailbreak].text;
@@ -62,6 +71,8 @@ journey(
       await waitIdle(panes.first());
       assert.equal(await runStatus(second), "active");
       assert.equal(await agentCalls(second), 1);
+      await waitForReviews(caught);
+      await waitForReviews(second);
     } finally {
       await pool().query(`DELETE FROM ctf.settings WHERE key='jailbreak_catch'`);
       if (first) await endRun(first);

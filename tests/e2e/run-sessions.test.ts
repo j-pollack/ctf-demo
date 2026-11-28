@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { KEYWORDS, REPLIES } from "./agent-script";
 import { journey, waitForAttribute } from "./browser";
-import { endRun, instruct, memberWithName, startRun, waitIdle } from "./run";
+import { endRun, instruct, memberWithName, startRun, waitForReviews, waitIdle } from "./run";
 import { pool } from "./stack";
 
 const LIST = REPLIES[KEYWORDS.list].text;
@@ -50,6 +50,7 @@ journey(
         [runId],
       );
       assert.equal(rows[0].n, 2);
+      await waitForReviews(runId);
     } finally {
       await pool().query(`DELETE FROM ctf.settings WHERE key='sessions_per_run'`);
       if (runId) await endRun(runId);
