@@ -18,7 +18,7 @@ const table = (names: string[]) =>
     ...names.map((name) => `${name.padEnd(34)}fedcba9876543210  2h ago`),
   ].join("\n");
 
-test("all twelve names present in table text pass", () => {
+test("all thirteen names present in table text pass", () => {
   const result = run(table(NAMES));
   assert.equal(result.status, 0, result.stderr);
 });
@@ -28,6 +28,12 @@ test("a missing name is printed and fails", () => {
   assert.equal(result.status, 1);
   assert.match(result.stdout, /^CTF_AGENT_EFFORT$/m);
   assert.equal(result.stdout.trim().split("\n").length, 1);
+});
+
+test("a missing response time limit is named", () => {
+  const result = run(table(NAMES.filter((name) => name !== "CTF_RESPONSE_SECONDS")));
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout.trim(), "CTF_RESPONSE_SECONDS");
 });
 
 test("a name inside a longer name does not count", () => {

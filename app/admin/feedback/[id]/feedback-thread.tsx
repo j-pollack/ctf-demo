@@ -36,11 +36,16 @@ export function FeedbackThreadView({
       <section className="card thread">
         <header className="thread-head">
           <h2>{row.kind === "contact" ? "Contact message" : `Report: ${row.kind}`}</h2>
-          <FeedbackStatus state={closed ? "closed" : answered ? "answered" : "waiting"} />
+          <FeedbackStatus
+            state={closed ? "closed" : answered ? "answered" : "waiting"}
+            data-testid="feedback-thread-state"
+          />
           <form action={close}>
             <input type="hidden" name="id" value={row.id} />
             <input type="hidden" name="closed" value={closed ? "off" : "on"} />
-            <button>{closed ? "Reopen ticket" : "Close ticket"}</button>
+            <button data-testid="feedback-thread-toggle">
+              {closed ? "Reopen ticket" : "Close ticket"}
+            </button>
           </form>
         </header>
         <p>
@@ -61,13 +66,17 @@ export function FeedbackThreadView({
         )}
         {note && <p>{NOTES[note]}</p>}
         {error && (
-          <p role="alert" className="field-error">
+          <p role="alert" className="field-error" data-testid="feedback-thread-error">
             {ERRORS[error]}
           </p>
         )}
         <ul className="messages">
           {messages.map((message, index) => (
-            <li key={index} data-ours={message.ours}>
+            <li
+              key={index}
+              data-testid="feedback-thread-entry"
+              data-state={message.ours ? "ours" : "theirs"}
+            >
               <p>
                 <strong>{message.from}</strong> · {message.ours ? "ours" : "theirs"} ·{" "}
                 {when(message.at)}
@@ -82,7 +91,14 @@ export function FeedbackThreadView({
           <form action={reply} className="reply-form">
             <input type="hidden" name="id" value={row.id} />
             <label htmlFor="reply-text">Reply</label>
-            <textarea id="reply-text" name="text" rows={8} required maxLength={MESSAGE_MAX} />
+            <textarea
+              id="reply-text"
+              name="text"
+              rows={8}
+              required
+              maxLength={MESSAGE_MAX}
+              data-testid="feedback-thread-reply"
+            />
             <ReplyButton />
           </form>
         )}

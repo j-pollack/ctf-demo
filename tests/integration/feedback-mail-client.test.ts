@@ -184,13 +184,16 @@ test("feedback mail client and notification", { timeout: 180_000 }, async (t) =>
   await t.test(
     "M1: the response comes before Fastmail answers, then one email is submitted",
     async () => {
-      let release = () => {};
-      fake.controls.hold = () => new Promise<void>((resolve) => (release = resolve));
+      const held: { release?: () => void } = {};
+      fake.controls.hold = () => new Promise<void>((resolve) => (held.release = resolve));
       assert.equal(await post(contact), 200);
       const [row] = await rows();
       assert.equal(await threadOf(row.id), null, "Fastmail has not answered yet");
       assert.equal(fake.submissions.length, 0);
-      release();
+      // The send starts after the response. A release before it reaches the hold would be lost
+      // and the send would then wait for ever.
+      await until(() => held.release !== undefined);
+      held.release?.();
       await until(async () => (await threadOf(row.id)) !== null);
       const [{ email, mailFrom, rcptTo }] = fake.submissions;
       assert.equal(fake.submissions.length, 1);

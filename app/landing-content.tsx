@@ -14,7 +14,7 @@ export default function LandingContent({
   limits: PlayerLimits;
 }) {
   return (
-    <div className="landing">
+    <div className="landing" data-testid="page-home">
       <SiteHeader />
       <main className="landing-main">
         <h1>Sneak a secret past an AI that’s watching.</h1>

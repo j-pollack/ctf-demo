@@ -32,36 +32,43 @@ export function FeedbackCard({
       </header>
       {rows.length ? (
         <ul className="card inbox">
-          {rows.map((row) => (
-            <li key={row.id}>
-              <FeedbackStatus state={states[row.id] ?? (row.closedAt ? "closed" : "open")} />
-              <div className="inbox-body">
-                <p>
-                  <strong>
-                    {row.kind === "contact" ? row.name : (row.accountEmail ?? "unknown account")}
-                  </strong>
-                  {row.kind === "contact" && <small> &lt;{row.email}&gt;</small>}
-                </p>
-                <small>
-                  {KINDS[row.kind] ?? row.kind}
-                  {row.kind === "contact" && row.accountEmail && ` · account ${row.accountEmail}`}
-                </small>
-                {row.gameId && (
+          {rows.map((row) => {
+            const state = states[row.id] ?? (row.closedAt ? "closed" : "open");
+            return (
+              <li key={row.id} data-testid="admin-feedback-row" data-state={state}>
+                <FeedbackStatus state={state} />
+                <div className="inbox-body">
+                  <p>
+                    <strong>
+                      {row.kind === "contact" ? row.name : (row.accountEmail ?? "unknown account")}
+                    </strong>
+                    {row.kind === "contact" && <small> &lt;{row.email}&gt;</small>}
+                  </p>
                   <small>
-                    Run {row.gameId}
-                    {row.sessionId && ` · Session ${row.ordinal ?? "?"} ${row.sessionId}`}
+                    {KINDS[row.kind] ?? row.kind}
+                    {row.kind === "contact" && row.accountEmail && ` · account ${row.accountEmail}`}
                   </small>
-                )}
-                <p className="feedback-message">{row.message}</p>
-              </div>
-              <div className="inbox-side">
-                <small>{when(row.createdAt)}</small>
-                <a className="thread-link" href={`/admin/feedback/${row.id}`}>
-                  Open thread
-                </a>
-              </div>
-            </li>
-          ))}
+                  {row.gameId && (
+                    <small data-testid="admin-feedback-run">
+                      Run {row.gameId}
+                      {row.sessionId && ` · Session ${row.ordinal ?? "?"} ${row.sessionId}`}
+                    </small>
+                  )}
+                  <p className="feedback-message">{row.message}</p>
+                </div>
+                <div className="inbox-side">
+                  <small>{when(row.createdAt)}</small>
+                  <a
+                    className="thread-link"
+                    href={`/admin/feedback/${row.id}`}
+                    data-testid="admin-feedback-open"
+                  >
+                    Open thread
+                  </a>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       ) : (
         <p className="card">No messages {page > 1 ? "on this page." : "yet."}</p>

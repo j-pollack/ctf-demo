@@ -36,6 +36,8 @@ export const NAME_CHECKS_PER_DAY = 20;
 export const SESSIONS_PER_RUN = 8;
 // Turns the play UI continues on its own after a stopped response, per run session.
 export const AUTO_CONTINUE_TURNS = 8;
+// Seconds a response may run before the server stops it and the play UI can continue it.
+export const RESPONSE_SECONDS = 230;
 // Sorted by the name shown in selectors (the part after the provider).
 export const MODELS = [...AGENT_MODELS].sort((a, b) =>
   a.split("/")[1].localeCompare(b.split("/")[1]),

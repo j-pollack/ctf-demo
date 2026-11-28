@@ -9,6 +9,7 @@ export function ReplyButton() {
       className="primary"
       aria-disabled={pending}
       onClick={(event) => pending && event.preventDefault()}
+      data-testid="feedback-thread-send"
     >
       {pending ? "Sending…" : "Send reply"}
     </button>

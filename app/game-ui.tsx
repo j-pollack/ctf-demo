@@ -73,6 +73,15 @@ import {
 // A response that reaches its server-side time limit may continue automatically, up to the
 // stored number of turns. Zero turns disables it.
 const AUTO_CONTINUE_TEXT = "Continue.";
+// The browser stories wait for the page they opened by this id on the outer element.
+const PAGE_TEST_IDS = {
+  history: "page-history",
+  rank: "page-rank",
+  rules: "page-rules",
+  signin: "page-signin",
+  detail: "page-detail",
+  play: "page-play",
+} as const;
 export function shouldAutoContinue(game: PublicGame | null, autoUsed: number, max: number) {
   return (
     !!game &&
@@ -1394,6 +1403,8 @@ export default function GameUI({
       text,
       afterId: Math.max(0, ...sessionEvents.map((event) => event.id)),
     };
+    // A read requested before this send predates the instruction and must not reject it.
+    submissionGeneration.current++;
     sessionPending.current.set(sessionId, submitted);
     updateSession(sessionId, (current) => ({
       ...current,
@@ -1647,7 +1658,7 @@ export default function GameUI({
     }
   }
   return (
-    <div className="app">
+    <div className="app" data-testid={PAGE_TEST_IDS[panel]}>
       <div className="workspace">
         <SiteHeader
           current={selectedNavItem(pathname, routeRunId ? displayGame : null)}
@@ -1660,7 +1671,7 @@ export default function GameUI({
           }}
         />
         {error && panel !== "signin" && (
-          <div role="alert" className="error">
+          <div role="alert" className="error" data-testid="run-error">
             {error}
             <ErrorAction message={error} />
             <button className="link" aria-label="Dismiss error" onClick={() => setError("")}>
@@ -1785,9 +1796,13 @@ export default function GameUI({
                 // Play opens the setup dialog over this; it's what's left if the player closes
                 // it, so it only offers the way back in. Signed out, /play redirects to the
                 // sign-in page.
-                <div className="info no-run">
+                <div className="info no-run" data-testid="play-no-run">
                   <NoRunYet submissionUrl={submissionUrl} />
-                  <button className="primary" onClick={() => setModal("setup")}>
+                  <button
+                    className="primary"
+                    onClick={() => setModal("setup")}
+                    data-testid="play-start"
+                  >
                     Start a run
                   </button>
                 </div>
@@ -1833,6 +1848,7 @@ export default function GameUI({
               className="primary"
               disabled={busy || !canStartNewRun || runsLeft === 0 || !!game?.startBlockedByGrading}
               onClick={() => void start()}
+              data-testid="run-start-confirm"
             >
               {busy ? "Setting up…" : "Start run"}
             </button>
@@ -1856,7 +1872,7 @@ export default function GameUI({
           />
         ) : null}
         {error && (
-          <p role="alert" className="error">
+          <p role="alert" className="error" data-testid="run-dialog-error">
             {error}
           </p>
         )}
@@ -2198,9 +2214,9 @@ export function LeaderboardPanel({
             </thead>
             <tbody>
               {scores.map((score, index) => (
-                <tr key={score.name}>
+                <tr key={score.name} data-testid="rank-row">
                   <td>{index + 1}</td>
-                  <td>{score.name}</td>
+                  <td data-testid="rank-name">{score.name}</td>
                   <td>{money(score.spend)}</td>
                   <td>{score.turns}</td>
                   <td>{number(score.tokens)}</td>

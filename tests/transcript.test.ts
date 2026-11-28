@@ -2,7 +2,7 @@ import { REFUSED_PLACEHOLDER_TEXT } from "../lib/text-screen";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup } from "./markup";
 import { refreshedGame } from "../app/game-ui";
 import {
   BLOCKED_NOTICE,

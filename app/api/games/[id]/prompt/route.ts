@@ -15,11 +15,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       data = await body(request);
     if (typeof data.prompt !== "string" || !data.prompt.trim() || data.prompt.length > 8192)
       throw new GameError("Enter an instruction of up to 8,192 characters.");
-    const agent = publicAgentSettings(
-      data,
-      await currentAgentModel(),
-      (await currentLimits()).agentEffort,
-    );
+    const limits = await currentLimits();
+    const agent = publicAgentSettings(data, await currentAgentModel(), limits.agentEffort);
     const gameId = (await params).id;
     if (
       data.sessionId !== undefined &&
@@ -41,7 +38,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       agent.agentEffort,
     );
     const cancel = new AbortController();
-    const responseDeadline = AbortSignal.timeout(230000);
+    const responseDeadline = AbortSignal.timeout(limits.responseSeconds * 1000);
     const signal = AbortSignal.any([cancel.signal, request.signal, responseDeadline]);
     const encoder = new TextEncoder();
     const stream = new ReadableStream({

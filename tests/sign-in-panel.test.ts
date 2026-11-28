@@ -25,9 +25,15 @@ test("the sign-in page has a heading, a labelled email field and a submit contro
     html,
     /<input id="email" type="email" autoComplete="email" required=""[^>]*value="me@example.com"/,
   );
-  assert.match(html, /<button class="primary">Email me a link<\/button>/);
+  assert.match(
+    html,
+    /<button class="primary" data-testid="signin-submit">Email me a link<\/button>/,
+  );
   assert.doesNotMatch(html, /eyebrow|EMAIL ADDRESS|ACCOUNT/);
-  assert.match(render({ busy: true }), /<button class="primary" disabled="">Sending…<\/button>/);
+  assert.match(
+    render({ busy: true }),
+    /<button class="primary" disabled="" data-testid="signin-submit">Sending…<\/button>/,
+  );
 });
 
 test("the page subtitle explains the link in two plain sentences, above the form", () => {
@@ -43,7 +49,7 @@ test("after a send the page says to check email and shows no form", () => {
   const html = render({ sent: true });
   assert.match(
     html,
-    /<p role="status">Check your email for a sign-in link\. It expires in five minutes\.<\/p>/,
+    /<p role="status" data-testid="signin-sent">Check your email for a sign-in link\. It expires in five minutes\.<\/p>/,
   );
   assert.doesNotMatch(html, /<form|<input/);
   assert.doesNotMatch(html, /class="lede"/, "the subtitle goes with the form");

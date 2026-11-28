@@ -64,10 +64,17 @@ test("F15: an empty list says so", () => {
 
 test("M16: each row links to its thread and shows the state when one is known", () => {
   const html = render([base, { ...base, id: "2" }], { "1": "answered" });
-  assert.match(html, /<a class="thread-link" href="\/admin\/feedback\/1">/);
-  assert.match(html, /<a class="thread-link" href="\/admin\/feedback\/2">/);
-  assert.match(html, /answered/);
-  assert.equal(html.match(/waiting|answered|closed/g)?.length, 1);
+  assert.match(
+    html,
+    /<a class="thread-link" href="\/admin\/feedback\/1" data-testid="admin-feedback-open">/,
+  );
+  assert.match(
+    html,
+    /<a class="thread-link" href="\/admin\/feedback\/2" data-testid="admin-feedback-open">/,
+  );
+  assert.match(html, /<li data-testid="admin-feedback-row" data-state="answered">/);
+  // A row Fastmail has not reported on yet is open, from the database alone.
+  assert.match(html, /<li data-testid="admin-feedback-row" data-state="open">/);
 });
 
 test("each row shows its status in words and links its thread", () => {
@@ -79,7 +86,7 @@ test("each row shows its status in words and links its thread", () => {
   // Before Fastmail answers, a row is open or closed from the database alone.
   assert.match(html, /data-state="open"[^>]*>Open</);
   assert.match(html, /data-state="closed"[^>]*>Closed</);
-  assert.match(html, /<a class="thread-link" href="\/admin\/feedback\/1">Open thread<\/a>/);
+  assert.match(html, /href="\/admin\/feedback\/1"[^>]*>Open thread<\/a>/);
 });
 
 test("the inbox names its order and pages through older messages", () => {

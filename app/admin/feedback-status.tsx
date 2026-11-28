@@ -10,9 +10,9 @@ const LABELS: Record<StatusName, string> = {
   open: "Open",
 };
 
-export function FeedbackStatus({ state }: { state: StatusName }) {
+export function FeedbackStatus({ state, ...rest }: { state: StatusName; "data-testid"?: string }) {
   return (
-    <span className="status" data-state={state}>
+    <span className="status" data-state={state} {...rest}>
       {LABELS[state]}
     </span>
   );

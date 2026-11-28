@@ -26,6 +26,8 @@
     "seed": "node --import tsx scripts/build-seed.ts",
     "test:integration": "node --import tsx scripts/test-integration.ts",
     "test:integration:timing": "node --import tsx scripts/test-integration.ts --real-timing",
+    "test:e2e": "node --import tsx scripts/test-e2e.ts",
+    "test:e2e:real": "E2E_STACK=real node --import tsx --test tests/e2e/run-gate.test.ts",
     "test:integration:coverage": "c8 --reports-dir coverage/integration npm run test:integration"
   },
   "dependencies": {
@@ -58,6 +60,7 @@
     "lint-staged": "^17.6.0",
     "oxfmt": "^0.71.0",
     "oxlint": "^1.86.0",
+    "playwright": "^1.65.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },

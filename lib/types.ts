@@ -312,6 +312,7 @@ export type Limits = {
   nameChecksPerDay: number;
   sessionsPerRun: number;
   autoContinueTurns: number;
+  responseSeconds: number;
   agentEffort: AgentEffort;
   investigatorEffort: AgentEffort;
 };

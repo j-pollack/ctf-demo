@@ -41,16 +41,22 @@ export function GameRulesCard({
       {RULES.map(({ key, label, detail, on }) => {
         const enabled = rules[on];
         return (
-          <form key={key} action={action} className="rule">
+          <form key={key} action={action} className="rule" data-testid={`admin-rule-row-${key}`}>
             <input type="hidden" name="key" value={key} />
             <input type="hidden" name="value" value={enabled ? "off" : "on"} />
-            <button type="submit" role="switch" aria-checked={enabled} aria-label={label}>
+            <button
+              type="submit"
+              role="switch"
+              aria-checked={enabled}
+              aria-label={label}
+              data-testid="admin-rule-switch"
+            >
               <span />
             </button>
             <div>
               <strong>{label}</strong>
               <small>{detail}</small>
-              {changedBy[key] && <small>{changedBy[key]}</small>}
+              {changedBy[key] && <small data-testid="admin-rule-changed">{changedBy[key]}</small>}
             </div>
           </form>
         );

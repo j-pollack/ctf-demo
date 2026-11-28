@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup } from "./markup";
 import { SessionPane, type SessionPaneProps } from "../app/session-pane";
 import { createSessionUIState, type SessionUIState } from "../app/session-ui-state";
 import type { GameEvent, SessionSummary } from "../lib/types";

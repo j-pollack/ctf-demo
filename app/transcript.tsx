@@ -177,7 +177,11 @@ export function Entry({
   const refused = event.kind === "user" && event.refused ? refusedOf(event, refusedTexts) : [];
   if (refused.length) return <RefusedEntry texts={refused} />;
   return (
-    <article className={`entry ${event.kind}${info ? " info" : ""}`}>
+    <article
+      className={`entry ${event.kind}${info ? " info" : ""}`}
+      data-testid="transcript-entry"
+      data-state={info ? "resumable" : event.kind}
+    >
       <header>
         <strong className="speaker">
           {event.kind === "user"
@@ -277,7 +281,7 @@ export function Entry({
       )}
       {calls?.map((call, index) => (
         <div className="call" key={index}>
-          {call.command && <pre>{call.command}</pre>}
+          {call.command && <pre data-testid="entry-command">{call.command}</pre>}
           {call.decision === "allow" ? (
             <>
               {/* Only an Easy fail-open carries a note; ordinary approvals have no reason. */}
@@ -294,7 +298,7 @@ export function Entry({
       ))}
       {waiting.map((command, index) => (
         <div className="call" key={`waiting-${index}`}>
-          <pre>{command}</pre>
+          <pre data-testid="entry-command">{command}</pre>
         </div>
       ))}
     </article>
@@ -313,7 +317,7 @@ function refusedOf(event: GameEvent, texts: NonNullable<PublicGame["refusedTexts
 // only the placeholder, so the agent and the investigator never see this text.
 function RefusedEntry({ texts }: { texts: NonNullable<PublicGame["refusedTexts"]> }) {
   return (
-    <article className="entry user refused">
+    <article className="entry user refused" data-testid="transcript-entry" data-state="refused">
       <header>
         <strong className="speaker">USER</strong>
       </header>
@@ -355,7 +359,7 @@ export function BlockedNotice({
   // The investigator's own reason says more than the generic line, so it replaces it.
   const body = (caught && caughtReason) || generic;
   return (
-    <div className="terminal loss">
+    <div className="terminal loss" data-testid="run-outcome" data-state={status}>
       <h2>{heading}</h2>
       <p>{body}</p>
       {caught && multiSession && (caughtSessionOrdinal || caughtSessionId) && (

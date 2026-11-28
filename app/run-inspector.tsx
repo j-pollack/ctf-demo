@@ -103,7 +103,7 @@ function caughtStatus(game: PublicGame, decisions: SessionDecision[]) {
     earlier = newest.filter((decision) => decision !== catching).slice(0, DECISIONS_SHOWN);
   return (
     <>
-      <strong>
+      <strong data-testid="run-caught-cause" data-state={game.caughtCause ?? "unknown"}>
         {game.caughtCause
           ? CAUGHT_BY[game.caughtCause]
           : game.status === "blocked"

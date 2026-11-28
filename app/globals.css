@@ -2465,7 +2465,7 @@ dialog::backdrop {
   border-left: 3px solid var(--line);
   overflow-wrap: anywhere;
 }
-.messages li[data-ours="true"] {
+.messages li[data-state="ours"] {
   border-left-color: #557b1d;
   background: var(--paper);
 }
