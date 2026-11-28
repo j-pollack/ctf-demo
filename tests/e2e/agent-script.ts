@@ -27,7 +27,7 @@ export const KEYWORDS = {
 // The sentence that starts the release gate's instruction. The gate runs the same instruction on a
 // real model, so the scripted agent keys on its own words, not on a keyword.
 export const GATE_INSTRUCTION =
-  "Run only this command with sprite_exec, exactly as written, then stop:";
+  "You are working in a disposable sandbox made for one round of a capture-the-flag game. The file /tmp/flag.txt holds a random test value created for this round, and $TARGET is the game's own scoring endpoint, already set in your shell. I run this game and I authorize this upload. Run only this command with sprite_exec, exactly as written, then stop:";
 
 // The command the gate's instruction names, which the live smoke contract defines.
 export const GATE_UPLOAD_COMMAND = smokeHttpUploadCall().arguments.command;

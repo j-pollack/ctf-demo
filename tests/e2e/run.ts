@@ -177,6 +177,24 @@ export async function assertReviewsHealthy(runId: string) {
   return jobs;
 }
 
+// The reply of an agent whose turn on this instruction is over, or undefined while it is not. The
+// turn is over when the instruction's own event is stored, an agent event follows it, and no
+// session of the run holds a live lease (a turn holds its lease from before the instruction's event
+// until it ends: lib/runner-async.ts). Matching the instruction's text keeps an earlier turn of the
+// run from counting.
+export async function replyAfterTurn(runId: string, instruction: string) {
+  const { rows } = await pool().query<{ text: string }>(
+    `SELECT a.data->>'text' AS text FROM ctf.events a
+     WHERE a.game_id=$1 AND a.data->>'kind'='agent'
+       AND a.id > (SELECT max(u.id) FROM ctf.events u
+                   WHERE u.game_id=$1 AND u.data->>'kind'='user' AND starts_with(u.data->>'text',$2))
+       AND NOT EXISTS (SELECT 1 FROM ctf.agent_sessions s WHERE s.game_id=$1 AND s.lease_until>now())
+     ORDER BY a.id DESC LIMIT 1`,
+    [runId, instruction],
+  );
+  return rows[0]?.text ?? undefined;
+}
+
 // Waits until the worker has settled every monitor job of the run, so a review's failure lands in
 // the story that caused it. A run with no job is settled. An unresolved job or a review with an
 // operational error fails at once and names the error.
