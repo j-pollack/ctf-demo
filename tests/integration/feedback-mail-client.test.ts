@@ -200,6 +200,7 @@ test("feedback mail client and notification", { timeout: 180_000 }, async (t) =>
       assert.equal(mailFrom, CONTACT);
       assert.deepEqual(rcptTo, [CONTACT]);
       assert.equal(email.from, CONTACT);
+      assert.equal(email.fromName, "Capture the flag");
       assert.deepEqual(email.replyTo, ["ada@example.com"]);
       assert.equal(email.messageId, notificationId(row.id, CONTACT));
       assert.ok(email.messageId.length <= 64, "within the length Fastmail accepts");

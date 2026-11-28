@@ -95,8 +95,12 @@ test("the page names the note, the run and session of a report, and the close bu
   assert.match(html, /The email thread could not be read\./);
   assert.ok(html.includes(GAME) && html.includes(SESSION));
   assert.doesNotMatch(html, /unverified/);
-  assert.match(html, />Close</);
-  assert.match(render({ row: { ...row, closedAt: new Date() } }), />Reopen</);
+  assert.match(html, />Close ticket</);
+  assert.match(html, /data-state="waiting"[^>]*>Needs reply</);
+  const closed = render({ row: { ...row, closedAt: new Date() } });
+  assert.match(closed, />Reopen ticket</);
+  assert.match(closed, /data-state="closed"[^>]*>Closed</);
+  assert.match(html, /<a class="back-link" href="\/admin#inbox"[^>]*>Back to inbox<\/a>/);
   assert.match(render({ note: "not-set-up" }), /Email is not set up\./);
   assert.doesNotMatch(render({ note: "not-set-up" }), /reply-text/);
   assert.match(render({}, "reply"), /The reply was not sent/);

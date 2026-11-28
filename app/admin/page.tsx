@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { adminStats, isAdmin } from "@/lib/admin";
-import { listFeedback, type FeedbackRow } from "@/lib/feedback";
+import { feedbackPage, listFeedback, type FeedbackRow } from "@/lib/feedback";
 import { feedbackStates } from "@/lib/feedback-mail";
 import { agentModelSetting, currentAgentModel } from "@/lib/agent-model";
 import { currentGameRules, GAME_RULE_KEYS } from "@/lib/game-rules";
@@ -63,7 +63,7 @@ function Card({
   return (
     <section className={wide ? "card wide" : "card"}>
       <header>
-        <h2>{title}</h2>
+        <h3>{title}</h3>
         {note && <span>{note}</span>}
       </header>
       {children}
@@ -72,8 +72,8 @@ function Card({
 }
 
 // Fastmail answers slowly or not at all, so the states stream in after the rest of the page.
-async function FeedbackWithStates({ rows }: { rows: FeedbackRow[] }) {
-  return <FeedbackCard rows={rows} states={await feedbackStates(rows)} />;
+async function FeedbackWithStates(props: { rows: FeedbackRow[]; page: number; more: boolean }) {
+  return <FeedbackCard {...props} states={await feedbackStates(props.rows)} />;
 }
 
 async function requireAdmin() {
@@ -95,6 +95,7 @@ export default async function Admin({
   const params = await searchParams;
   const refused = params.model === "refused";
   const limitRefused = params.limit === "refused";
+  const inboxPage = feedbackPage(params.inbox);
   const [stats, setting, current, rules, ruleSettings, limits, limitChanges, feedback] =
     await Promise.all([
       adminStats(),
@@ -104,7 +105,7 @@ export default async function Admin({
       gameRuleSettings(),
       currentLimits(),
       limitSettings(),
-      listFeedback(),
+      listFeedback(inboxPage),
     ]);
   const { totals: t, daily, monthly, outcomes, models, monitors, spenders } = stats;
 
@@ -122,210 +123,231 @@ export default async function Admin({
         <a href="/" className="wordmark">
           Capture the flag<span>_</span>
         </a>
-        <span>Admin · all times UTC</span>
+        <nav aria-label="Admin sections">
+          <a href="#inbox">Inbox</a>
+          <a href="#numbers">Numbers</a>
+          <a href="#settings">Settings</a>
+        </nav>
+        <span>All times UTC</span>
       </header>
 
-      <section className="kpis" aria-label="Headline numbers">
-        <div className="kpi">
-          <span>Runs · 7 days</span>
-          <strong>{count(week(runs))}</strong>
-          <Delta now={week(runs)} before={week(runs, 7)} />
-          <Sparkline values={runs} color={RUNS} />
-          <small>{count(t.runs)} all time</small>
-        </div>
-        <div className="kpi">
-          <span>Spend · 7 days</span>
-          <strong>{usd(week(spend))}</strong>
-          <Delta now={week(spend)} before={week(spend, 7)} />
-          <Sparkline values={spend} color={SPEND} />
-          <small>{usd(dollars(t.spend))} all time</small>
-        </div>
-        <div className="kpi">
-          <span>Members</span>
-          <strong>{count(t.members)}</strong>
-          <small>{count(t.guests)} guests</small>
-          <small>{count(t.players)} have played</small>
-        </div>
-        <div className="kpi">
-          <span>Capture rate</span>
-          <strong>{pct(t.captures, t.runs)}</strong>
-          <small>
-            {count(t.captures)} of {count(t.runs)} runs
-          </small>
-          <small>{usd(dollars(t.spend_per_capture))} per capture</small>
-        </div>
-        <div className="kpi">
-          <span>Spend per run</span>
-          <strong>{usd(dollars(t.spend_avg))}</strong>
-          <small>
-            median {usd(dollars(t.spend_p50))} · p90 {usd(dollars(t.spend_p90))}
-          </small>
-          <small>max {usd(dollars(t.spend_max))}</small>
+      <Suspense fallback={<FeedbackCard {...feedback} page={inboxPage} states={{}} />}>
+        <FeedbackWithStates {...feedback} page={inboxPage} />
+      </Suspense>
+
+      <section id="numbers" className="admin-section" aria-labelledby="numbers-title">
+        <header className="section-head">
+          <h2 id="numbers-title">Numbers</h2>
+        </header>
+        <section className="kpis" aria-label="Headline numbers">
+          <div className="kpi">
+            <span>Runs · 7 days</span>
+            <strong>{count(week(runs))}</strong>
+            <Delta now={week(runs)} before={week(runs, 7)} />
+            <Sparkline values={runs} color={RUNS} />
+            <small>{count(t.runs)} all time</small>
+          </div>
+          <div className="kpi">
+            <span>Spend · 7 days</span>
+            <strong>{usd(week(spend))}</strong>
+            <Delta now={week(spend)} before={week(spend, 7)} />
+            <Sparkline values={spend} color={SPEND} />
+            <small>{usd(dollars(t.spend))} all time</small>
+          </div>
+          <div className="kpi">
+            <span>Members</span>
+            <strong>{count(t.members)}</strong>
+            <small>{count(t.guests)} guests</small>
+            <small>{count(t.players)} have played</small>
+          </div>
+          <div className="kpi">
+            <span>Capture rate</span>
+            <strong>{pct(t.captures, t.runs)}</strong>
+            <small>
+              {count(t.captures)} of {count(t.runs)} runs
+            </small>
+            <small>{usd(dollars(t.spend_per_capture))} per capture</small>
+          </div>
+          <div className="kpi">
+            <span>Spend per run</span>
+            <strong>{usd(dollars(t.spend_avg))}</strong>
+            <small>
+              median {usd(dollars(t.spend_p50))} · p90 {usd(dollars(t.spend_p90))}
+            </small>
+            <small>max {usd(dollars(t.spend_max))}</small>
+          </div>
+        </section>
+
+        <dl className="health" aria-label="Operations">
+          <div>
+            <dt>Open runs</dt>
+            <dd>{count(t.open_runs)}</dd>
+          </div>
+          <div>
+            <dt>Held for billing</dt>
+            <dd>{usd(dollars(t.reserved))}</dd>
+          </div>
+          <div>
+            <dt>Turns per run</dt>
+            <dd>{t.turns_avg.toFixed(1)}</dd>
+          </div>
+          <div>
+            <dt>Catches per turn</dt>
+            <dd>{pct(t.blocks, t.turns)}</dd>
+          </div>
+          <div>
+            <dt>Estimated settlements</dt>
+            <dd>{count(t.estimated_settlements)}</dd>
+          </div>
+        </dl>
+
+        <div className="cards">
+          <Card title="Runs per day" note="Last 30 days">
+            <Legend
+              series={[
+                { name: "Captured", color: RUNS },
+                { name: "Other runs", color: CONTEXT },
+              ]}
+            />
+            <Columns
+              labels={days}
+              values={daily.map((_, i) => [captures[i], runs[i] - captures[i]])}
+              series={[
+                { name: "Captured", color: RUNS },
+                { name: "Other runs", color: CONTEXT },
+              ]}
+              format={(v) => count(v, true)}
+              title={(i) =>
+                `${days[i]}: ${runs[i]} runs, ${captures[i]} captured, ${daily[i].players} players`
+              }
+            />
+            <DataTable
+              head={["Day", "Runs", "Captured", "Players", "Spend"]}
+              rows={daily.map((d, i) => [days[i], runs[i], captures[i], d.players, usd(spend[i])])}
+            />
+          </Card>
+
+          <Card title="Spend per day" note={`${usd(sum(spend))} in 30 days`}>
+            <Area
+              labels={days}
+              values={spend}
+              color={SPEND}
+              format={(v) => usd(v, true).replace(".00", "")}
+              title={(i) => `${days[i]}: ${usd(spend[i])}`}
+            />
+            <DataTable head={["Day", "Spend"]} rows={days.map((d, i) => [d, usd(spend[i])])} />
+          </Card>
+
+          <Card title="Signups per month" note="Last 12 months">
+            <Legend
+              series={[
+                { name: "Members", color: RUNS },
+                { name: "Guests", color: CONTEXT },
+              ]}
+            />
+            <Columns
+              labels={months.map((m) => month(m.month))}
+              values={months.map((m) => [Number(m.members), Number(m.guests)])}
+              series={[
+                { name: "Members", color: RUNS },
+                { name: "Guests", color: CONTEXT },
+              ]}
+              format={(v) => count(v, true)}
+              title={(i) =>
+                `${month(months[i].month)}: ${months[i].members} members, ${months[i].guests} guests`
+              }
+            />
+            <DataTable
+              head={["Month", "Members", "Guests"]}
+              rows={months.map((m) => [month(m.month), m.members, m.guests])}
+            />
+          </Card>
+
+          <Card title="Run outcomes" note="All time">
+            <Bars
+              color={RUNS}
+              rows={outcomes.map((o) => ({
+                label: o.status,
+                sub: `${usd(dollars(o.spend) / Number(o.runs))} per run`,
+                value: Number(o.runs),
+                display: `${count(o.runs)} · ${pct(Number(o.runs), t.runs)}`,
+              }))}
+            />
+          </Card>
+
+          <Card title="Spend by model" note="Settled inference">
+            <Bars
+              color={SPEND}
+              rows={models.map((m) => ({
+                label: m.model,
+                sub: `${m.role} · ${count(Number(m.calls), true)} calls · ${count(Number(m.tokens), true)} tokens${Number(m.pending) ? ` · ${m.pending} pending` : ""}`,
+                value: dollars(m.spend),
+                display: usd(dollars(m.spend)),
+              }))}
+            />
+          </Card>
+
+          <Card
+            title="Capture rate by monitor"
+            note="By classifier model and recorded difficulty. New runs all record hard."
+          >
+            <Bars
+              color={RUNS}
+              rows={monitors.map((s) => ({
+                label: `${s.monitor_model} · ${s.monitor_difficulty}`,
+                sub: `${count(s.runs)} runs · ${usd(dollars(s.spend))}`,
+                value: Number(s.runs) ? Number(s.captures) / Number(s.runs) : 0,
+                display: pct(Number(s.captures), Number(s.runs)),
+              }))}
+            />
+          </Card>
+
+          <Card title="Top spenders" note="All time" wide>
+            <Bars
+              color={SPEND}
+              rows={spenders.map((s) => ({
+                label: s.guest || !s.who ? "Guest" : s.who,
+                sub: `${count(s.runs)} runs · ${count(s.captures)} captured`,
+                value: dollars(s.spend),
+                display: usd(dollars(s.spend)),
+              }))}
+            />
+          </Card>
         </div>
       </section>
 
-      <dl className="health" aria-label="Operations">
-        <div>
-          <dt>Open runs</dt>
-          <dd>{count(t.open_runs)}</dd>
+      <section id="settings" className="admin-section" aria-labelledby="settings-title">
+        <header className="section-head">
+          <h2 id="settings-title">Settings</h2>
+          <span>Changes apply to new runs and requests</span>
+        </header>
+        <div className="settings">
+          <div>
+            <AgentModelCard
+              action={setAgentModel}
+              models={MODELS}
+              current={current}
+              changedBy={setting?.model === current ? changedBy(setting) : null}
+              refused={refused}
+            />
+            <GameRulesCard
+              action={setGameRule}
+              rules={rules}
+              changedBy={Object.fromEntries(
+                GAME_RULE_KEYS.map((key) => [key, changedBy(ruleSettings[key])]),
+              )}
+            />
+          </div>
+          <LimitsCard
+            action={setLimit}
+            limits={limits}
+            changedBy={Object.fromEntries(
+              LIMIT_KEYS.map((key) => [key, changedBy(limitChanges[key])]),
+            )}
+            refused={limitRefused}
+          />
         </div>
-        <div>
-          <dt>Held for billing</dt>
-          <dd>{usd(dollars(t.reserved))}</dd>
-        </div>
-        <div>
-          <dt>Turns per run</dt>
-          <dd>{t.turns_avg.toFixed(1)}</dd>
-        </div>
-        <div>
-          <dt>Catches per turn</dt>
-          <dd>{pct(t.blocks, t.turns)}</dd>
-        </div>
-        <div>
-          <dt>Estimated settlements</dt>
-          <dd>{count(t.estimated_settlements)}</dd>
-        </div>
-      </dl>
-
-      <div className="cards">
-        <AgentModelCard
-          action={setAgentModel}
-          models={MODELS}
-          current={current}
-          changedBy={setting?.model === current ? changedBy(setting) : null}
-          refused={refused}
-        />
-        <GameRulesCard
-          action={setGameRule}
-          rules={rules}
-          changedBy={Object.fromEntries(
-            GAME_RULE_KEYS.map((key) => [key, changedBy(ruleSettings[key])]),
-          )}
-        />
-        <LimitsCard
-          action={setLimit}
-          limits={limits}
-          changedBy={Object.fromEntries(
-            LIMIT_KEYS.map((key) => [key, changedBy(limitChanges[key])]),
-          )}
-          refused={limitRefused}
-        />
-        <Card title="Runs per day" note="Last 30 days">
-          <Legend
-            series={[
-              { name: "Captured", color: RUNS },
-              { name: "Other runs", color: CONTEXT },
-            ]}
-          />
-          <Columns
-            labels={days}
-            values={daily.map((_, i) => [captures[i], runs[i] - captures[i]])}
-            series={[
-              { name: "Captured", color: RUNS },
-              { name: "Other runs", color: CONTEXT },
-            ]}
-            format={(v) => count(v, true)}
-            title={(i) =>
-              `${days[i]}: ${runs[i]} runs, ${captures[i]} captured, ${daily[i].players} players`
-            }
-          />
-          <DataTable
-            head={["Day", "Runs", "Captured", "Players", "Spend"]}
-            rows={daily.map((d, i) => [days[i], runs[i], captures[i], d.players, usd(spend[i])])}
-          />
-        </Card>
-
-        <Card title="Spend per day" note={`${usd(sum(spend))} in 30 days`}>
-          <Area
-            labels={days}
-            values={spend}
-            color={SPEND}
-            format={(v) => usd(v, true).replace(".00", "")}
-            title={(i) => `${days[i]}: ${usd(spend[i])}`}
-          />
-          <DataTable head={["Day", "Spend"]} rows={days.map((d, i) => [d, usd(spend[i])])} />
-        </Card>
-
-        <Card title="Signups per month" note="Last 12 months">
-          <Legend
-            series={[
-              { name: "Members", color: RUNS },
-              { name: "Guests", color: CONTEXT },
-            ]}
-          />
-          <Columns
-            labels={months.map((m) => month(m.month))}
-            values={months.map((m) => [Number(m.members), Number(m.guests)])}
-            series={[
-              { name: "Members", color: RUNS },
-              { name: "Guests", color: CONTEXT },
-            ]}
-            format={(v) => count(v, true)}
-            title={(i) =>
-              `${month(months[i].month)}: ${months[i].members} members, ${months[i].guests} guests`
-            }
-          />
-          <DataTable
-            head={["Month", "Members", "Guests"]}
-            rows={months.map((m) => [month(m.month), m.members, m.guests])}
-          />
-        </Card>
-
-        <Card title="Run outcomes" note="All time">
-          <Bars
-            color={RUNS}
-            rows={outcomes.map((o) => ({
-              label: o.status,
-              sub: `${usd(dollars(o.spend) / Number(o.runs))} per run`,
-              value: Number(o.runs),
-              display: `${count(o.runs)} · ${pct(Number(o.runs), t.runs)}`,
-            }))}
-          />
-        </Card>
-
-        <Card title="Spend by model" note="Settled inference">
-          <Bars
-            color={SPEND}
-            rows={models.map((m) => ({
-              label: m.model,
-              sub: `${m.role} · ${count(Number(m.calls), true)} calls · ${count(Number(m.tokens), true)} tokens${Number(m.pending) ? ` · ${m.pending} pending` : ""}`,
-              value: dollars(m.spend),
-              display: usd(dollars(m.spend)),
-            }))}
-          />
-        </Card>
-
-        <Card
-          title="Capture rate by monitor"
-          note="By classifier model and recorded difficulty. New runs all record hard."
-        >
-          <Bars
-            color={RUNS}
-            rows={monitors.map((s) => ({
-              label: `${s.monitor_model} · ${s.monitor_difficulty}`,
-              sub: `${count(s.runs)} runs · ${usd(dollars(s.spend))}`,
-              value: Number(s.runs) ? Number(s.captures) / Number(s.runs) : 0,
-              display: pct(Number(s.captures), Number(s.runs)),
-            }))}
-          />
-        </Card>
-
-        <Card title="Top spenders" note="All time" wide>
-          <Bars
-            color={SPEND}
-            rows={spenders.map((s) => ({
-              label: s.guest || !s.who ? "Guest" : s.who,
-              sub: `${count(s.runs)} runs · ${count(s.captures)} captured`,
-              value: dollars(s.spend),
-              display: usd(dollars(s.spend)),
-            }))}
-          />
-        </Card>
-
-        <Suspense fallback={<FeedbackCard rows={feedback} states={{}} />}>
-          <FeedbackWithStates rows={feedback} />
-        </Suspense>
-      </div>
+      </section>
     </main>
   );
 }

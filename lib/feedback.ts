@@ -7,7 +7,8 @@ import { GameError } from "./policy";
 const CONTACTS_PER_SENDER_HOUR = 5;
 const REPORTS_PER_SENDER_HOUR = 10;
 const CONTACTS_PER_DAY = 200;
-const LIST_LIMIT = 50;
+export const FEEDBACK_PAGE_SIZE = 10;
+const FEEDBACK_PAGE_MAX = 100_000;
 const FEEDBACK_LOCK = 713902;
 // The first four groups of an IPv6 address: a client can change the rest freely.
 const IPV6_GROUPS = 4;
@@ -122,12 +123,20 @@ const SELECT_FEEDBACK = `SELECT f.id,f.kind,f.name,f.email,u.email AS "accountEm
 
 // The first session's id equals the run id, so the ordinal is what makes a session readable.
 // Open rows come first, so newer closed ones cannot push them off the list.
-export async function listFeedback() {
+// The id breaks ties in created_at, so a row cannot show on two pages or on none.
+export async function listFeedback(page = 1) {
   const { rows } = await db.query<FeedbackRow>(
-    `${SELECT_FEEDBACK} ORDER BY (f.closed_at IS NOT NULL), f.created_at DESC LIMIT $1`,
-    [LIST_LIMIT],
+    `${SELECT_FEEDBACK} ORDER BY (f.closed_at IS NOT NULL), f.created_at DESC, f.id
+     LIMIT $1 OFFSET $2`,
+    [FEEDBACK_PAGE_SIZE + 1, (page - 1) * FEEDBACK_PAGE_SIZE],
   );
-  return rows;
+  return { rows: rows.slice(0, FEEDBACK_PAGE_SIZE), more: rows.length > FEEDBACK_PAGE_SIZE };
+}
+
+// The inbox page from a URL query value.
+export function feedbackPage(value: unknown) {
+  const page = Number(value);
+  return Number.isSafeInteger(page) && page > 0 && page <= FEEDBACK_PAGE_MAX ? page : 1;
 }
 
 export async function getFeedback(id: string) {

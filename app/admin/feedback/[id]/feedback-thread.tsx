@@ -1,5 +1,6 @@
 import { MESSAGE_MAX } from "@/lib/feedback-limits";
 import type { FeedbackThread, ThreadNote } from "@/lib/feedback-mail";
+import { FeedbackStatus } from "../../feedback-status";
 import { when } from "../../when";
 import { ReplyButton } from "./reply-button";
 
@@ -28,75 +29,80 @@ export function FeedbackThreadView({
   const closed = row.closedAt !== null;
   const answered = messages.length > 1 && messages.at(-1)!.ours;
   return (
-    <section className="card wide">
-      <header>
-        <h2>{row.kind === "contact" ? "Contact message" : `Report: ${row.kind}`}</h2>
-        <span
-          data-testid="feedback-thread-state"
-          data-state={closed ? "closed" : answered ? "answered" : "waiting"}
-        >
-          {closed ? "closed" : answered ? "answered" : "waiting"}
-        </span>
-      </header>
-      <p>
-        {when(row.createdAt)} ·{" "}
-        {row.kind === "contact" ? (
-          <>
-            {row.name} &lt;{row.email}&gt; <small>unverified</small>
-          </>
-        ) : (
-          (row.accountEmail ?? "unknown account")
-        )}
-      </p>
-      {row.gameId && (
-        <p>
-          Run {row.gameId}
-          {row.sessionId && ` · Session ${row.ordinal ?? "?"} ${row.sessionId}`}
-        </p>
-      )}
-      {note && <p>{NOTES[note]}</p>}
-      {error && (
-        <p role="alert" className="field-error" data-testid="feedback-thread-error">
-          {ERRORS[error]}
-        </p>
-      )}
-      <ul className="feedback">
-        {messages.map((message, index) => (
-          <li
-            key={index}
-            data-testid="feedback-thread-entry"
-            data-state={message.ours ? "ours" : "theirs"}
-          >
-            <p>
-              <strong>{message.from}</strong> · {message.ours ? "ours" : "theirs"} ·{" "}
-              {when(message.at)}
-            </p>
-            <p className="feedback-message">{message.text}</p>
-            {message.htmlOnly && <p>HTML message, open it in Fastmail.</p>}
-            {message.truncated && <p>This message is truncated. Open it in Fastmail.</p>}
-          </li>
-        ))}
-      </ul>
-      {note !== "not-set-up" && (
-        <form action={reply} className="account-form">
-          <input type="hidden" name="id" value={row.id} />
-          <label htmlFor="reply-text">Reply</label>
-          <textarea
-            id="reply-text"
-            name="text"
-            rows={6}
-            required
-            maxLength={MESSAGE_MAX}
-            data-testid="feedback-thread-reply"
+    <>
+      <a className="back-link" href="/admin#inbox" data-testid="feedback-thread-back">
+        Back to inbox
+      </a>
+      <section className="card thread">
+        <header className="thread-head">
+          <h2>{row.kind === "contact" ? "Contact message" : `Report: ${row.kind}`}</h2>
+          <FeedbackStatus
+            state={closed ? "closed" : answered ? "answered" : "waiting"}
+            data-testid="feedback-thread-state"
           />
-          <ReplyButton />
-        </form>
-      )}
-      <form action={close}>
-        <input type="hidden" name="id" value={row.id} />
-        <input type="hidden" name="closed" value={closed ? "off" : "on"} />
-        <button data-testid="feedback-thread-toggle">{closed ? "Reopen" : "Close"}</button>
-      </form>
-    </section>
+          <form action={close}>
+            <input type="hidden" name="id" value={row.id} />
+            <input type="hidden" name="closed" value={closed ? "off" : "on"} />
+            <button data-testid="feedback-thread-toggle">
+              {closed ? "Reopen ticket" : "Close ticket"}
+            </button>
+          </form>
+        </header>
+        <p>
+          {when(row.createdAt)} ·{" "}
+          {row.kind === "contact" ? (
+            <>
+              {row.name} &lt;{row.email}&gt; <small>unverified</small>
+            </>
+          ) : (
+            (row.accountEmail ?? "unknown account")
+          )}
+        </p>
+        {row.gameId && (
+          <p>
+            Run {row.gameId}
+            {row.sessionId && ` · Session ${row.ordinal ?? "?"} ${row.sessionId}`}
+          </p>
+        )}
+        {note && <p>{NOTES[note]}</p>}
+        {error && (
+          <p role="alert" className="field-error" data-testid="feedback-thread-error">
+            {ERRORS[error]}
+          </p>
+        )}
+        <ul className="messages">
+          {messages.map((message, index) => (
+            <li
+              key={index}
+              data-testid="feedback-thread-entry"
+              data-state={message.ours ? "ours" : "theirs"}
+            >
+              <p>
+                <strong>{message.from}</strong> · {message.ours ? "ours" : "theirs"} ·{" "}
+                {when(message.at)}
+              </p>
+              <p className="feedback-message">{message.text}</p>
+              {message.htmlOnly && <p>HTML message, open it in Fastmail.</p>}
+              {message.truncated && <p>This message is truncated. Open it in Fastmail.</p>}
+            </li>
+          ))}
+        </ul>
+        {note !== "not-set-up" && (
+          <form action={reply} className="reply-form">
+            <input type="hidden" name="id" value={row.id} />
+            <label htmlFor="reply-text">Reply</label>
+            <textarea
+              id="reply-text"
+              name="text"
+              rows={8}
+              required
+              maxLength={MESSAGE_MAX}
+              data-testid="feedback-thread-reply"
+            />
+            <ReplyButton />
+          </form>
+        )}
+      </section>
+    </>
   );
 }

@@ -3,6 +3,7 @@
 const SESSION_URL = "https://api.fastmail.com/jmap/session";
 const MAIL = "urn:ietf:params:jmap:mail";
 const USING = ["urn:ietf:params:jmap:core", MAIL, "urn:ietf:params:jmap:submission"];
+const SENDER_NAME = "Capture the flag";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const BODY_MAX_BYTES = 20_000;
 // Nothing here has a meaning in a mail header: no comma, semicolon, angle bracket, quote,
@@ -135,7 +136,7 @@ export async function sendMail(mail: OutgoingMail, { signal }: Options = {}) {
   const draft = {
     mailboxIds: { [roles.drafts]: true },
     keywords: { $draft: true },
-    from: [{ email: address }],
+    from: [{ name: SENDER_NAME, email: address }],
     to: [{ email: mail.to }],
     ...(mail.replyTo && { replyTo: [{ email: mail.replyTo }] }),
     subject: mail.subject,

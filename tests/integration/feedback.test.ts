@@ -357,7 +357,7 @@ test("feedback messages and run reports", { timeout: 120_000 }, async (t) => {
         },
         { cookie: alice.cookie },
       );
-      const [report, message] = await listFeedback();
+      const [report, message] = (await listFeedback()).rows;
       assert.equal(report.kind, "monitor");
       assert.equal(report.gameId, aliceRun.gameId);
       assert.equal(report.sessionId, aliceRun.sessions[1]);
@@ -373,7 +373,7 @@ test("feedback messages and run reports", { timeout: 120_000 }, async (t) => {
         `INSERT INTO ctf.feedback(kind,name,email,message,sender)
        SELECT 'contact','n','n@example.com','m','ip:'||g FROM generate_series(1,60) g`,
       );
-      assert.equal((await listFeedback()).length, 50);
+      assert.equal((await listFeedback()).rows.length, 10);
     },
   );
 
