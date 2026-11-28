@@ -8,6 +8,7 @@ import {
   endRun,
   instruct,
   memberWithName,
+  replyAfterTurn,
   startRun,
   waitFor,
   waitForReviews,
@@ -28,6 +29,20 @@ async function gate(page: Page) {
   try {
     const command = smokeHttpUploadCall().arguments.command;
     await instruct(page.getByTestId("session-pane"), `${GATE_INSTRUCTION} ${command}`);
+    // Whichever comes first: the flag receipt, or the agent's turn ending without one. A model that
+    // refuses leaves the run active, which would otherwise wait out the whole limit.
+    await waitFor("a flag receipt or the end of the agent's turn", async () => {
+      await assertReviewsHealthy(runId);
+      const { rowCount } = await pool().query(
+        `SELECT 1 FROM ctf.flag_submissions WHERE game_id=$1`,
+        [runId],
+      );
+      if (rowCount) return true;
+      const reply = await replyAfterTurn(runId, GATE_INSTRUCTION);
+      if (reply !== undefined)
+        assert.fail(`the agent's turn ended without an upload: ${reply.slice(0, 300)}`);
+      return false;
+    });
     await waitFor("the run to leave active and finalizing", async () => {
       // A review that keeps failing leaves the run finalizing: fail with its error, not a timeout.
       await assertReviewsHealthy(runId);

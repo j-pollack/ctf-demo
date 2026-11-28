@@ -47,21 +47,63 @@ test("the rules say how to report a wrong catch and ask for feedback", () => {
   );
 });
 
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+function footerWith(sha: string | undefined) {
+  const saved = process.env.BUILD_COMMIT_SHA;
+  if (sha === undefined) delete process.env.BUILD_COMMIT_SHA;
+  else process.env.BUILD_COMMIT_SHA = sha;
+  try {
+    return renderToStaticMarkup(pages["/contact"]()).match(/<footer[^>]*>([\s\S]*?)<\/footer>/)![1];
+  } finally {
+    if (saved === undefined) delete process.env.BUILD_COMMIT_SHA;
+    else process.env.BUILD_COMMIT_SHA = saved;
+  }
+}
+
 test("footer links that leave the site open a new tab and say so; the contact link does not", () => {
-  const footer = renderToStaticMarkup(pages["/contact"]()).match(
-    /<footer[^>]*>([\s\S]*?)<\/footer>/,
-  )![1];
-  const links = [...footer.matchAll(/<a [^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/g)];
-  assert.equal(links.length, 3);
-  for (const [html, href] of links) {
-    const external = href.startsWith("https://");
-    assert.equal(/target="_blank"/.test(html), external, href);
-    assert.equal(/rel="noopener noreferrer"/.test(html), external, href);
-    assert.equal(/<span aria-hidden="true"> ↗<\/span>/.test(html), external, href);
-    assert.equal(
-      /<span class="visually-hidden"> \(opens in a new tab\)<\/span>/.test(html),
-      external,
-      href,
-    );
+  for (const [sha, count] of [
+    [undefined, 3],
+    [SHA, 4],
+  ] as const) {
+    const links = [...footerWith(sha).matchAll(/<a [^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/g)];
+    assert.equal(links.length, count, String(sha));
+    for (const [html, href] of links) {
+      const external = href.startsWith("https://");
+      assert.equal(/target="_blank"/.test(html), external, href);
+      assert.equal(/rel="noopener noreferrer"/.test(html), external, href);
+      assert.equal(/<span aria-hidden="true"> ↗<\/span>/.test(html), external, href);
+      assert.equal(
+        /<span class="visually-hidden"> \(opens in a new tab\)<\/span>/.test(html),
+        external,
+        href,
+      );
+    }
+  }
+});
+
+test("the footer shows the first 7 characters of the build's commit id, linked to the commit", () => {
+  const footer = footerWith(SHA);
+  const link = footer.match(/<span data-testid="site-version">(<a [\s\S]*?<\/a>)<\/span>/)?.[1];
+  assert.ok(link, "version link present");
+  assert.match(link, new RegExp(`href="https://github.com/j-pollack/ctf-demo/commit/${SHA}"`));
+  assert.match(link, /target="_blank"/);
+  assert.match(
+    link,
+    /^<a [^>]*><span class="visually-hidden">Version <\/span>0123456<span aria-hidden="true"> ↗<\/span>/,
+  );
+});
+
+test("the footer has no version element without a well-formed commit id", () => {
+  const plain = footerWith(undefined);
+  assert.ok(!plain.includes("site-version"));
+  for (const bad of [
+    SHA.slice(1),
+    SHA.toUpperCase(),
+    `${SHA.slice(0, 30)}"/><b>x</b>`,
+    "",
+    `${SHA}0`,
+  ]) {
+    assert.equal(footerWith(bad), plain, JSON.stringify(bad));
   }
 });
