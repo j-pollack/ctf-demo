@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Locator, Page } from "playwright";
 import { AFTER_TOOL_TEXT, KEYWORDS, REPLIES } from "./agent-script";
 import { signIn, TIMEOUT, waitForAttribute } from "./browser";
+import { turnEnd, type StoredEvent } from "./turn-end";
 import { baseUrl, grantAdmin, newEmail, pool, required } from "./stack";
 
 // The Sprite directories the faked Sprites service holds.
@@ -177,22 +178,32 @@ export async function assertReviewsHealthy(runId: string) {
   return jobs;
 }
 
-// The reply of an agent whose turn on this instruction is over, or undefined while it is not. The
-// turn is over when the instruction's own event is stored, an agent event follows it, and no
-// session of the run holds a live lease (a turn holds its lease from before the instruction's event
-// until it ends: lib/runner-async.ts). Matching the instruction's text keeps an earlier turn of the
-// run from counting.
-export async function replyAfterTurn(runId: string, instruction: string) {
-  const { rows } = await pool().query<{ text: string }>(
-    `SELECT a.data->>'text' AS text FROM ctf.events a
-     WHERE a.game_id=$1 AND a.data->>'kind'='agent'
-       AND a.id > (SELECT max(u.id) FROM ctf.events u
-                   WHERE u.game_id=$1 AND u.data->>'kind'='user' AND starts_with(u.data->>'text',$2))
-       AND NOT EXISTS (SELECT 1 FROM ctf.agent_sessions s WHERE s.game_id=$1 AND s.lease_until>now())
-     ORDER BY a.id DESC LIMIT 1`,
+// What ended the agent's turn on this instruction, read from the database: see turn-end.ts for the
+// rule. A turn holds its lease from before the instruction's own event until it ends
+// (lib/runner-async.ts), and matching the instruction's text keeps an earlier turn of the run from
+// counting.
+export async function turnEndedOn(runId: string, instruction: string) {
+  const { rows: runs } = await pool().query<{ status: string }>(
+    `SELECT status FROM ctf.games WHERE id=$1`,
+    [runId],
+  );
+  const { rowCount: leases } = await pool().query(
+    `SELECT 1 FROM ctf.agent_sessions WHERE game_id=$1 AND lease_until>now()`,
+    [runId],
+  );
+  const { rows: events } = await pool().query<{ data: StoredEvent }>(
+    `SELECT data FROM ctf.events
+     WHERE game_id=$1 AND data->>'kind' IN ('agent','error','user')
+       AND id > (SELECT max(id) FROM ctf.events
+                 WHERE game_id=$1 AND data->>'kind'='user' AND starts_with(data->>'text',$2))
+     ORDER BY id`,
     [runId, instruction],
   );
-  return rows[0]?.text ?? undefined;
+  return turnEnd({
+    status: runs[0].status,
+    leased: !!leases,
+    events: events.map((row) => row.data),
+  });
 }
 
 // Waits until the worker has settled every monitor job of the run, so a review's failure lands in

@@ -8,13 +8,20 @@ import {
   endRun,
   instruct,
   memberWithName,
-  replyAfterTurn,
+  turnEndedOn,
   startRun,
   waitFor,
   waitForReviews,
   runScripted,
 } from "./run";
 import { pool, realStack } from "./stack";
+
+// What the story says for each way the turn ended without an upload.
+const ENDED = {
+  reply: "the agent's turn ended without an upload: ",
+  error: "the agent's turn ended in an error: ",
+  over: "the run is over with no flag receipt, its status is ",
+};
 
 const LEFT_OPEN = ["creating", "active", "finalizing"];
 
@@ -38,9 +45,8 @@ async function gate(page: Page) {
         [runId],
       );
       if (rowCount) return true;
-      const reply = await replyAfterTurn(runId, GATE_INSTRUCTION);
-      if (reply !== undefined)
-        assert.fail(`the agent's turn ended without an upload: ${reply.slice(0, 300)}`);
+      const ended = await turnEndedOn(runId, GATE_INSTRUCTION);
+      if (ended) assert.fail(`${ENDED[ended.kind]}${ended.text.slice(0, 300)}`);
       return false;
     });
     await waitFor("the run to leave active and finalizing", async () => {
