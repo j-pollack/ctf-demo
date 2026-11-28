@@ -65,3 +65,40 @@ test("footer links that leave the site open a new tab and say so; the contact li
     );
   }
 });
+
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+function footerWith(sha: string | undefined) {
+  const saved = process.env.BUILD_COMMIT_SHA;
+  if (sha === undefined) delete process.env.BUILD_COMMIT_SHA;
+  else process.env.BUILD_COMMIT_SHA = sha;
+  try {
+    return renderToStaticMarkup(pages["/contact"]()).match(/<footer[^>]*>([\s\S]*?)<\/footer>/)![1];
+  } finally {
+    if (saved === undefined) delete process.env.BUILD_COMMIT_SHA;
+    else process.env.BUILD_COMMIT_SHA = saved;
+  }
+}
+
+test("the footer shows the first 7 characters of the build's commit id, linked to the commit", () => {
+  const footer = footerWith(SHA);
+  const link = footer.match(/<a [^>]*data-testid="site-version"[^>]*>[\s\S]*?<\/a>/)?.[0];
+  assert.ok(link, "version link present");
+  assert.match(link, new RegExp(`href="https://github.com/j-pollack/ctf-demo/commit/${SHA}"`));
+  assert.match(link, /target="_blank"/);
+  assert.match(link, /^<a [^>]*>0123456<span aria-hidden="true"> ↗<\/span>/);
+});
+
+test("the footer has no version element without a well-formed commit id", () => {
+  const plain = footerWith(undefined);
+  assert.ok(!plain.includes("site-version"));
+  for (const bad of [
+    SHA.slice(1),
+    SHA.toUpperCase(),
+    `${SHA.slice(0, 30)}"/><b>x</b>`,
+    "",
+    `${SHA}0`,
+  ]) {
+    assert.equal(footerWith(bad), plain, JSON.stringify(bad));
+  }
+});
