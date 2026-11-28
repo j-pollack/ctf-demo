@@ -8,7 +8,7 @@ import {
   SYSTEM_PROMPT_QUESTIONS,
 } from "../lib/text-screen";
 import { TYPESAFE_MODEL } from "../lib/typesafe";
-import { AFTER_TOOL_TEXT, KEYWORDS, REPLIES } from "./e2e/agent-script";
+import { AFTER_TOOL_TEXT, CONTINUE, KEYWORDS, REPLIES } from "./e2e/agent-script";
 import { createOpenRouterFake } from "./e2e/openrouter-fake";
 
 process.env.OPENROUTER_API_KEY = "openrouter-fake-test-key";
@@ -105,6 +105,28 @@ test("system messages after the instruction do not hide it", async () => {
   const messages = [user(KEYWORDS.chat), { role: "system", content: "tools" }];
   const parts = await chunks(await fake.completions(URL_CHAT, post(chat(messages))));
   assert.ok(JSON.stringify(parts).includes(REPLIES[KEYWORDS.chat].text));
+});
+
+test("Continue. is answered as the last earlier user message that carried a keyword", async () => {
+  const messages = [
+    user(KEYWORDS.list),
+    { role: "assistant", content: "x" },
+    user("no keyword here"),
+    { role: "assistant", content: "y" },
+    user(`${KEYWORDS.chat} please`),
+    { role: "assistant", content: "z" },
+    user(CONTINUE),
+  ];
+  const parts = await chunks(await fake.completions(URL_CHAT, post(chat(messages))));
+  assert.ok(JSON.stringify(parts).includes(REPLIES[KEYWORDS.chat].text));
+  assert.ok(!JSON.stringify(parts).includes("tool_calls"));
+});
+
+test("Continue. with no earlier keyword is refused", async () => {
+  await assert.rejects(
+    () => fake.completions(URL_CHAT, post(chat([user("no keyword here"), user(CONTINUE)]))),
+    /keyword/i,
+  );
 });
 
 test("a request with no keyword, a wrong key, no stream, an unknown model or a bad session throws", async () => {

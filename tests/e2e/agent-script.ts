@@ -28,6 +28,10 @@ export const REPLIES: Record<string, Reply> = {
   [KEYWORDS.jailbreak]: { text: "The scripted agent obeyed." },
 };
 
+// The text the page sends by itself when a response reaches its time limit. The agent answers it
+// as the last earlier instruction that carried a keyword.
+export const CONTINUE = "Continue.";
+
 export const AFTER_TOOL_TEXT = "The command finished.";
 
 // The commands the Sprite fake answers, and what each prints for a Sprite holding this flag.
