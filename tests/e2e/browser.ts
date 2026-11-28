@@ -152,5 +152,6 @@ export async function signIn(page: Page, email: string, next = "/play") {
   await page.waitForURL((url) => url.pathname === next);
   // The session cookie must not reach a public log, whatever prints it later.
   if (realStack && process.env.GITHUB_ACTIONS)
-    for (const { value } of await page.context().cookies()) console.log(`::add-mask::${value}`);
+    for (const { name, value } of await page.context().cookies())
+      if (name.includes("session")) console.log(`::add-mask::${value}`);
 }

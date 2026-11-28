@@ -24,10 +24,15 @@ export async function memberWithName(page: Page, label: string) {
 // What /api/games reports for the member's latest run, read by the page's own fetch so that no
 // request log holds the session cookie.
 async function latestRun(page: Page) {
-  const { game } = await page.evaluate(() =>
-    fetch("/api/games").then((response) => response.json()),
+  const result = await page.evaluate(() =>
+    fetch("/api/games").then(async (response) => ({
+      status: response.status,
+      ok: response.ok,
+      body: response.ok ? await response.json() : null,
+    })),
   );
-  return game as {
+  if (!result.ok) throw new Error(`The lookup of the latest run returned ${result.status}.`);
+  return result.body.game as {
     id: string;
     status: string;
     turns: number;
