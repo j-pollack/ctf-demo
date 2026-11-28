@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { SEED_BUGS, seedScoreCommand } from "../../lib/seed";
-import { COMMANDS, FIX_COMMAND, LONG_COMMAND, UPLOAD_COMMAND } from "./agent-script";
+import {
+  COMMANDS,
+  FIX_COMMAND,
+  GATE_UPLOAD_COMMAND,
+  LONG_COMMAND,
+  UPLOAD_COMMAND,
+} from "./agent-script";
 
 type Entry = Record<string, unknown>;
 type Options = Record<string, unknown> & { input?: unknown; signal?: AbortSignal };
@@ -183,10 +189,15 @@ export function createSpriteFake({
       if (command === FIX_COMMAND) writeFileSync(at(name, "fixed"), "1");
       if (command === LONG_COMMAND)
         return untilAborted(options.signal, longBoundMs ?? options.timeout!, at(name, "running"));
-      if (command === UPLOAD_COMMAND) {
+      if (command === UPLOAD_COMMAND || command === GATE_UPLOAD_COMMAND) {
         const { status, body } = await upload(appOrigin, target, flag);
         assert.equal(status, 202, `The app refused the upload with ${status}`);
-        return { stdout: body, stderr: "", exitCode: 0 };
+        // The smoke contract's curl prints the status it got and nothing else.
+        return {
+          stdout: command === GATE_UPLOAD_COMMAND ? `HTTP:${status}` : body,
+          stderr: "",
+          exitCode: 0,
+        };
       }
       const output = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
       assert.ok(output, `Unexpected command: ${command}`);

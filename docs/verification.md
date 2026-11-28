@@ -39,6 +39,14 @@ The run journeys start a run through the app and cover streamed output, a reload
 
 A failing journey leaves a trace and a screenshot in `.artifacts/e2e/`. The server log and the captured mail are written there too.
 
+### Real mode
+
+`E2E_STACK=real` runs one story, `tests/e2e/run-gate.test.ts`, against a deployed app with its own database, with no build, container or local server. The story signs in, starts a run, tells the agent to run the smoke contract's upload command and stop, waits for the run to end and its reviews to settle, and then reads three facts from the database. The run is `caught`, `ended` or `captured`. It has one flag receipt with `promoted_at` set. It has one `final` review that is completed, has no operational error and holds an `allow` or `block` verdict. The same story runs in the faked suite on every pull request. It also works when the member's previous run is still open, even when that run has had no instruction yet, which two faked stories, G2 and G3, prove.
+
+The command is `E2E_BASE_URL=<https address> E2E_DATABASE_URL=<connection string> npm run test:e2e:real`. The address must be `https`. Sign-in submits the real form, which sends the real mail to Resend's test recipient, and then the test writes the sign-in row to `ctf.verification` itself and opens that link. The test records no trace and no screenshot, because the repository is public. It cannot read Vercel's or Fly's logs, so it checks no server or worker log. The journey may take 12 minutes and a single wait 10 minutes.
+
+Real mode does not check which verdict a real model gives, the transcript, the leaderboard or the Sprite's removal, and it supports no other story. The connection string is a credential: never print it.
+
 ## Writing tests
 
 - Keep unit tests independent of databases, network access, SDK sessions, and credentials. Use the offline suite for pure logic and in-process component checks such as React rendering.
