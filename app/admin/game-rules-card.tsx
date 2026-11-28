@@ -35,7 +35,7 @@ export function GameRulesCard({
   return (
     <section className="card">
       <header>
-        <h2>Game rules</h2>
+        <h3>Game rules</h3>
         <span>Applies to runs started afterwards</span>
       </header>
       {RULES.map(({ key, label, detail, on }) => {

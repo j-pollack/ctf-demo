@@ -19,7 +19,7 @@ test("feedback mail thread, reply and states", { timeout: 180_000 }, async (t) =
   const { readThreads } = await import("../../lib/fastmail");
   const { feedbackThread, replyToFeedback, setFeedbackClosed, feedbackStates } =
     await import("../../lib/feedback-mail");
-  const { listFeedback } = await import("../../lib/feedback");
+  const { FEEDBACK_PAGE_SIZE, listFeedback } = await import("../../lib/feedback");
   const { notificationId } = await import("../../lib/feedback-mail-text");
   const { GameError } = await import("../../lib/policy");
   const noteOf = (id: string) => notificationId(id, CONTACT);
@@ -216,7 +216,7 @@ test("feedback mail thread, reply and states", { timeout: 180_000 }, async (t) =
     }
     const unthreaded = await insertRow();
     const closed = await insertRow({ thread: threads.quiet, closed: true });
-    const listed = await listFeedback();
+    const { rows: listed } = await listFeedback();
     assert.deepEqual(await feedbackStates(listed), {
       [ids.quiet]: "waiting",
       [ids.answered]: "answered",
@@ -238,15 +238,38 @@ test("feedback mail thread, reply and states", { timeout: 180_000 }, async (t) =
     const oldOpen = await insertRow({ age: 120 });
     const newClosed = await insertRow({ closed: true, age: 1 });
     assert.deepEqual(
-      (await listFeedback()).map((row) => row.id),
+      (await listFeedback()).rows.map((row) => row.id),
       [oldOpen, newClosed],
     );
     await setFeedbackClosed(bossHeaders, oldOpen, true);
-    assert.notEqual((await listFeedback()).find((row) => row.id === oldOpen)!.closedAt, null);
+    assert.notEqual((await listFeedback()).rows.find((row) => row.id === oldOpen)!.closedAt, null);
     await setFeedbackClosed(bossHeaders, oldOpen, false);
-    assert.equal((await listFeedback()).find((row) => row.id === oldOpen)!.closedAt, null);
+    assert.equal((await listFeedback()).rows.find((row) => row.id === oldOpen)!.closedAt, null);
     await assert.rejects(setFeedbackClosed(bossHeaders, randomUUID(), true), GameError);
   });
+
+  await t.test(
+    "the inbox pages open rows first, then newest, with no row on two pages",
+    async () => {
+      await pool.query("DELETE FROM ctf.feedback");
+      const closed = await insertRow({ closed: true, age: 0 });
+      const open: string[] = [];
+      for (let age = 1; age <= FEEDBACK_PAGE_SIZE; age++) open.push(await insertRow({ age }));
+      const first = await listFeedback(1);
+      const second = await listFeedback(2);
+      assert.deepEqual(
+        first.rows.map((row) => row.id),
+        open,
+      );
+      assert.equal(first.more, true);
+      assert.deepEqual(
+        second.rows.map((row) => row.id),
+        [closed],
+      );
+      assert.equal(second.more, false);
+      assert.deepEqual(await listFeedback(3), { rows: [], more: false });
+    },
+  );
 
   await t.test(
     "P2c: moving CONTACT_EMAIL does not turn old notifications into replies",
@@ -259,7 +282,7 @@ test("feedback mail thread, reply and states", { timeout: 180_000 }, async (t) =
         ["Hello"],
         "the notification is still left out",
       );
-      const [listed] = await listFeedback();
+      const [listed] = (await listFeedback()).rows;
       assert.deepEqual(await feedbackStates([listed]), { [id]: "waiting" });
       await replyToFeedback(bossHeaders, id, "First answer");
       assert.equal(

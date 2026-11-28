@@ -16,7 +16,7 @@ export function AgentModelCard({
   return (
     <section className="card">
       <header>
-        <h2>Attacker model</h2>
+        <h3>Attacker model</h3>
         <span>Applies to every player&rsquo;s next instruction</span>
       </header>
       <form action={action}>

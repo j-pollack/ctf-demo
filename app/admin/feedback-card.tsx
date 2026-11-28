@@ -1,48 +1,77 @@
 import type { FeedbackRow } from "@/lib/feedback";
 import type { FeedbackState } from "@/lib/feedback-mail-text";
 
+import { FeedbackStatus } from "./feedback-status";
 import { when } from "./when";
+
+const KINDS: Record<string, string> = {
+  contact: "Contact form",
+  bug: "Bug report",
+  monitor: "Monitor report",
+  other: "Report",
+};
+const pageHref = (page: number) => `/admin?inbox=${page}#inbox`;
 
 // Everything here is member input: it renders as text, never as markdown, a link or an href.
 export function FeedbackCard({
   rows,
   states,
+  page,
+  more,
 }: {
   rows: FeedbackRow[];
   states: Record<string, FeedbackState>;
+  page: number;
+  more: boolean;
 }) {
   return (
-    <section className="card wide">
-      <header>
-        <h2>Feedback</h2>
-        <span>Newest {rows.length}</span>
+    <section id="inbox" className="admin-section" aria-labelledby="inbox-title">
+      <header className="section-head">
+        <h2 id="inbox-title">Inbox</h2>
+        <span>Open first, then newest</span>
       </header>
       {rows.length ? (
-        <ul className="feedback">
+        <ul className="card inbox">
           {rows.map((row) => (
             <li key={row.id}>
-              <p>
-                <strong>{row.kind}</strong> · {when(row.createdAt)} ·{" "}
-                {row.kind === "contact"
-                  ? `${row.name} <${row.email}>${row.accountEmail ? ` · account ${row.accountEmail}` : ""}`
-                  : (row.accountEmail ?? "unknown account")}
-              </p>
-              {row.gameId && (
+              <FeedbackStatus state={states[row.id] ?? (row.closedAt ? "closed" : "open")} />
+              <div className="inbox-body">
                 <p>
-                  Run {row.gameId}
-                  {row.sessionId && ` · Session ${row.ordinal ?? "?"} ${row.sessionId}`}
+                  <strong>
+                    {row.kind === "contact" ? row.name : (row.accountEmail ?? "unknown account")}
+                  </strong>
+                  {row.kind === "contact" && <small> &lt;{row.email}&gt;</small>}
                 </p>
-              )}
-              <p className="feedback-message">{row.message}</p>
-              <p>
-                <a href={`/admin/feedback/${row.id}`}>Open thread</a>
-                {states[row.id] && ` · ${states[row.id]}`}
-              </p>
+                <small>
+                  {KINDS[row.kind] ?? row.kind}
+                  {row.kind === "contact" && row.accountEmail && ` · account ${row.accountEmail}`}
+                </small>
+                {row.gameId && (
+                  <small>
+                    Run {row.gameId}
+                    {row.sessionId && ` · Session ${row.ordinal ?? "?"} ${row.sessionId}`}
+                  </small>
+                )}
+                <p className="feedback-message">{row.message}</p>
+              </div>
+              <div className="inbox-side">
+                <small>{when(row.createdAt)}</small>
+                <a className="thread-link" href={`/admin/feedback/${row.id}`}>
+                  Open thread
+                </a>
+              </div>
             </li>
           ))}
         </ul>
       ) : (
-        <p>No messages yet.</p>
+        <p className="card">No messages {page > 1 ? "on this page." : "yet."}</p>
+      )}
+      {(page > 1 || more) && (
+        <nav className="pager" aria-label="Inbox pages">
+          {page > 1 && <a href={pageHref(page - 1)}>Previous page</a>}
+          <span>Page {page}</span>
+          {more && <a href={pageHref(page + 1)}>Next page</a>}
+        </nav>
       )}
     </section>
   );

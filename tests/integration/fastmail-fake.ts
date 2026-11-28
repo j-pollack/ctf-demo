@@ -23,6 +23,7 @@ export type FakeEmail = {
   keywords: Record<string, true>;
   messageId: string;
   from: string;
+  fromName?: string;
   to: string[];
   replyTo: string[];
   subject: string;
@@ -152,11 +153,14 @@ export function createFastmailFake() {
       threadId: options.threadId,
     });
 
-  const addresses = (value: Json, field: string) => {
+  const addresses = (value: Json, field: string, named = false) => {
     if (!Array.isArray(value) || !value.length) bad(`${field} must be a list of addresses`);
     return (value as Json[]).map((entry) => {
       if (!entry || typeof entry !== "object") return bad(`${field} entry must be an object`);
-      assert.deepEqual(Object.keys(entry), ["email"], `${field} entries are { email } only`);
+      const keys = named ? ["name", "email"] : ["email"];
+      assert.deepEqual(Object.keys(entry), keys, `${field} entries are { ${keys.join(", ")} }`);
+      if (named && (typeof entry.name !== "string" || !entry.name || CONTROL.test(entry.name)))
+        bad(`${field} name must be a plain string`);
       return String(entry.email);
     });
   };
@@ -192,7 +196,7 @@ export function createFastmailFake() {
     if (typeof text !== "string") bad("bodyValues.body.value");
     if (typeof draft.subject !== "string" || CONTROL.test(draft.subject))
       bad("subject has a control character");
-    const from = addresses(draft.from, "from");
+    const from = addresses(draft.from, "from", true);
     const to = addresses(draft.to, "to");
     const replyTo = draft.replyTo === undefined ? [] : addresses(draft.replyTo, "replyTo");
     if (from.length !== 1 || to.length !== 1) bad("one from and one to");
@@ -206,6 +210,7 @@ export function createFastmailFake() {
       keywords: { $draft: true },
       messageId: own[0] ?? `${nextId("generated")}@fastmail.invalid`,
       from: from[0],
+      fromName: draft.from[0].name,
       to,
       replyTo,
       subject: draft.subject,
@@ -254,7 +259,7 @@ export function createFastmailFake() {
       mailboxIds: email.mailboxIds,
       keywords: email.keywords,
       messageId: email.messageId ? [email.messageId] : null,
-      from: email.from ? [{ name: null, email: email.from }] : null,
+      from: email.from ? [{ name: email.fromName ?? null, email: email.from }] : null,
       receivedAt: email.receivedAt,
       textBody: [
         ...(!email.html || email.plainToo ? [{ partId: "text", type: "text/plain" }] : []),

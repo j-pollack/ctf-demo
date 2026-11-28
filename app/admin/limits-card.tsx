@@ -73,7 +73,7 @@ export function LimitsCard({
   return (
     <section className="card">
       <header>
-        <h2>Budgets and limits</h2>
+        <h3>Budgets and limits</h3>
         <span>Applies from the next request. A run keeps the budget it started with.</span>
       </header>
       {LIMITS.map((limit) => {
