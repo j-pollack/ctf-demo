@@ -42,10 +42,10 @@ const MOVE_PATHS = {
 // What comes from the API is checked before it is used or written to a workflow output. A
 // value that fails is treated as that deployment being unreadable.
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const HOST_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
-const SHA_PATTERN = /^[0-9a-f]{40}$/;
+export const HOST_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+export const SHA_PATTERN = /^[0-9a-f]{40}$/;
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(
     method: string,
     readonly path: string,
@@ -66,7 +66,7 @@ export class MoveFailed extends Error {
 }
 
 // A 429, a 5xx or a failure to get any answer may pass by the next poll. Other statuses will not.
-const isTransient = (error: unknown) =>
+export const isTransient = (error: unknown) =>
   !(error instanceof ApiError) || error.status === 429 || error.status >= 500;
 
 type Listed = {
@@ -83,7 +83,7 @@ function assertIds(...ids: string[]) {
     throw new Error("A project, team or deployment id is malformed.");
 }
 
-async function call(
+export async function call(
   api: Api,
   method: "GET" | "POST" | "PATCH",
   path: string,
@@ -108,13 +108,17 @@ async function call(
   return response;
 }
 
-async function get(api: Api, path: string, params: Record<string, string>): Promise<unknown> {
+export async function get(
+  api: Api,
+  path: string,
+  params: Record<string, string>,
+): Promise<unknown> {
   return (await call(api, "GET", path, params)).json();
 }
 
 // Waits for the newest production deployment of the commit, by creation time. Older
 // deployments of the same commit and deployments of other commits are ignored.
-const isReadable = (deployment: Listed) =>
+export const isReadable = (deployment: Listed) =>
   typeof deployment.uid === "string" &&
   ID_PATTERN.test(deployment.uid) &&
   typeof deployment.url === "string" &&
@@ -161,7 +165,7 @@ function aliasDeploymentId(host: string, alias: { deploymentId?: string }): stri
   return id;
 }
 
-const readAlias = async (host: string, api: Api) =>
+export const readAlias = async (host: string, api: Api) =>
   aliasDeploymentId(host, (await get(api, ALIAS_PATH(host), {})) as object);
 
 // One more try after a failure that may pass: the lookup and the rollback's first read each
@@ -385,18 +389,18 @@ export function gitIsAncestor(ancestor: string, descendant: string, cwd = proces
   }
 }
 
-const realClock: Clock = {
+export const realClock: Clock = {
   now: Date.now,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-function readEnv(names: string[]) {
+export function readEnv(names: string[]) {
   const missing = names.filter((name) => !process.env[name]);
   if (missing.length) throw new Error(`Missing environment variables: ${missing.join(", ")}.`);
   return Object.fromEntries(names.map((name) => [name, process.env[name] as string]));
 }
 
-function apiFromEnv(env: Record<string, string>): Api {
+export function apiFromEnv(env: Record<string, string>): Api {
   return {
     token: env.VERCEL_TOKEN,
     teamId: env.VERCEL_ORG_ID,
@@ -419,7 +423,7 @@ async function orNull<T>(what: string, read: () => Promise<T> | T): Promise<T | 
   }
 }
 
-function append(file: string | undefined, text: string) {
+export function append(file: string | undefined, text: string) {
   if (file) appendFileSync(file, text);
 }
 

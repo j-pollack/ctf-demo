@@ -123,6 +123,22 @@ flyctl secrets set --stage --app ctf-monitor-worker \
 
 Run the `flyctl` command a second time with `--app ctf-monitor-worker-preview`.
 
+## Staging stack and the staging check
+
+Staging is a second copy of the app with its own data, used to run one real game before a release. Its address is `https://ctf-demo-git-staging-jonathans-projects-4c8e1b72.vercel.app`. It is the Vercel preview of the git branch `staging`, with the Neon branch `preview/staging` and one worker machine tagged `staging` on the Fly app `ctf-monitor-worker-preview`. The Neon branch is a copy of production that was scrubbed once and is never refreshed. Its two rows in `ctf.settings` set `daily_cap_microdollars` to 2000000 and `runs_per_day` to 50.
+
+The workflow [staging](../.github/workflows/staging.yml) moves `staging` to a commit, asks Vercel for the build, waits for the preview worker, and runs `npm run test:e2e:real` against the address. A failed attempt gets one retry after the member's latest run is free. The job summary lists both attempts with their duration, the `gate run` id and the run's cost from `ctf.inference`. Runs queue one at a time in the group `staging-stack`.
+
+To run it by hand, dispatch `staging` on `main`. A dispatch from another ref fails at its first step. The optional input is the commit, and the default is the head of `main`.
+
+To skip it for one urgent release, set the repository variable `STAGING_SKIP` to the full commit id, a space and a reason. The job then passes without moving the branch, and its summary shows the reason. A variable that names another commit skips nothing.
+
+The job moves `staging` with `GITHUB_TOKEN`. If GitHub refuses that, for example because the commit changes a workflow file, use a deploy key. Add its public half to the repository as a deploy key with write access, and store its private half as the Actions secret `STAGING_PUSH_KEY`. The job then pushes over SSH with that key. A workflow that calls `staging` must pass `STAGING_PUSH_KEY` by name, because a called workflow gets an empty value for a secret its caller does not pass and would silently fall back to `GITHUB_TOKEN`. Neither credential can push to `main`. The job moves `staging` forward only. If the move is refused as not a fast-forward, staging is already at a newer commit, for example after a dispatch for a later commit.
+
+If the worker wait fails after an earlier worker deploy for the same commit failed, no new deployment starts the deploy again. Re-run that `preview worker` run first, then re-run the `staging` job.
+
+Do not reset the owner role's password on `preview/staging` while a staging worker runs. The worker holds the old password until it is deployed again.
+
 ## Capacity, billing and investigation
 
 | Scope           | Admission rule, at the defaults                                                                                                           |

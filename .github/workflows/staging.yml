@@ -1,0 +1,272 @@
+name: staging
+
+# Moves the `staging` branch to a commit, has Vercel build it, waits for the staging worker, and
+# runs the release gate's story against the real staging stack. Called by the release workflow and
+# dispatched by hand on main. See "Staging stack" in deploy/operations.md.
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: The commit to put on staging
+        required: true
+        type: string
+    secrets:
+      NEON_API_KEY:
+        required: true
+      VERCEL_TOKEN:
+        required: true
+      # A write deploy key for this repository. Without it the job moves the branch with GITHUB_TOKEN.
+      STAGING_PUSH_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: The commit to put on staging (default the dispatched commit)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    name: staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    # Runs on staging wait their turn in order. A waiting run is never cancelled.
+    concurrency:
+      group: staging-stack
+      queue: max
+    permissions:
+      contents: write
+      actions: read
+    env:
+      HUSKY: 0
+      SHA: ${{ inputs.sha || github.sha }}
+    steps:
+      # A dispatch from another ref, or a commit that is not on main (a fork's pull request head is in
+      # the object store too), would run unmerged code with the tokens and move staging to it. Every
+      # later move would then be refused as not a fast-forward.
+      - name: Check the ref and the commit
+        timeout-minutes: 1
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$REF" != refs/heads/main ]; then
+            echo "::error::Dispatch this workflow on main only."
+            exit 1
+          fi
+          if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::The commit must be 40 hex characters."
+            exit 1
+          fi
+          # Comparing the commit with main: ahead or identical means main contains the commit.
+          if ! relation=$(gh api "repos/$GITHUB_REPOSITORY/compare/$SHA...main" --jq .status 2>&1); then
+            echo "::error::Could not compare $SHA with main, so it is not known to be on main: $relation"
+            exit 1
+          fi
+          if [ "$relation" != ahead ] && [ "$relation" != identical ]; then
+            echo "::error::Commit $SHA is not on main (compared as: $relation). Refusing."
+            exit 1
+          fi
+      - name: Check for a skip
+        id: skip
+        timeout-minutes: 1
+        env:
+          STAGING_SKIP: ${{ vars.STAGING_SKIP }}
+        run: |
+          case "$STAGING_SKIP" in
+            "$SHA "*)
+              printf 'Staging check skipped for %s: %s\n' "$SHA" "${STAGING_SKIP#"$SHA "}" >> "$GITHUB_STEP_SUMMARY"
+              echo "skipped=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "skipped=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Checkout the commit
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          # A push that is not forced proves the fast-forward on the client, which needs the history.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node 24
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 2
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Install locked dependencies
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 3
+        run: npm ci
+      # The string is masked before anything else can print it.
+      - name: Look up the staging database
+        id: neon
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 2
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          api="https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID"
+          name="preview/staging"
+          record=$(curl -fsS -H "Authorization: Bearer $NEON_API_KEY" -G "$api/branches" \
+              --data-urlencode "search=$name" |
+            jq -c --arg name "$name" '[.branches[] | select(.name == $name)][0] // empty')
+          if [ -z "$record" ]; then echo "::error::Neon branch $name not found."; exit 1; fi
+          if [ "$(jq -r '(.default == true or .primary == true)' <<< "$record")" = true ]; then
+            echo "::error::Neon branch $name is the project's default branch. Refusing."
+            exit 1
+          fi
+          branch_id=$(jq -r .id <<< "$record")
+          uri=$(curl -fsS -H "Authorization: Bearer $NEON_API_KEY" -G "$api/connection_uri" \
+              --data-urlencode "branch_id=$branch_id" --data-urlencode "database_name=neondb" \
+              --data-urlencode "role_name=neondb_owner" --data-urlencode "pooled=false" |
+            jq -r .uri)
+          if [ -z "$uri" ] || [ "$uri" = null ]; then
+            echo "::error::No connection string for Neon branch $name."
+            exit 1
+          fi
+          echo "::add-mask::$uri"
+          echo "database-url=$uri" >> "$GITHUB_OUTPUT"
+      # The worker's registration must be newer than this reading.
+      - name: Read the database clock
+        id: clock
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 1
+        env:
+          STAGING_DATABASE_URL: ${{ steps.neon.outputs.database-url }}
+        run: |
+          set -euo pipefail
+          now=$(node --import tsx scripts/staging-db.ts clock)
+          echo "now=$now" >> "$GITHUB_OUTPUT"
+      # Never forced: a commit that is not a fast-forward of staging is refused with GitHub's message.
+      - name: Move the staging branch
+        id: move
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSH_KEY: ${{ secrets.STAGING_PUSH_KEY }}
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" --jq .object.sha)
+          if [ "$current" = "$SHA" ]; then
+            echo "staging is already at $SHA."
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          move() {
+            if [ -n "$PUSH_KEY" ]; then
+              key="$RUNNER_TEMP/staging_push_key"
+              known_hosts="$RUNNER_TEMP/staging_known_hosts"
+              trap 'rm -f "$key" "$known_hosts"' RETURN
+              (umask 077; printf '%s\n' "$PUSH_KEY" > "$key")
+              chmod 600 "$key"
+              # GitHub's published ed25519 host key, so a different host is refused.
+              echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$known_hosts"
+              GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts" \
+                git push "git@github.com:$GITHUB_REPOSITORY.git" "$SHA:refs/heads/staging"
+            else
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/staging" \
+                -f "sha=$SHA" -F force=false > /dev/null
+            fi
+          }
+          if ! output=$(move 2>&1); then
+            printf '%s\n' "$output"
+            echo "::error::Could not move staging to $SHA. If the message above says it is not a fast-forward, staging is probably at a newer commit already, for example after a dispatch for a later commit. Staging only moves forward."
+            exit 1
+          fi
+          echo "moved=true" >> "$GITHUB_OUTPUT"
+      # Vercel builds nothing for a branch moved to a commit it has built, so this asks for the build.
+      - name: Build the web app
+        id: build
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 13
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          STAGING_ORIGIN: ${{ vars.STAGING_ORIGIN }}
+          STAGING_PROJECT_NAME: ctf-demo
+          REPOSITORY_ID: ${{ github.repository_id }}
+          HEAD_SHA: ${{ env.SHA }}
+        run: node --import tsx scripts/staging-deployment.ts
+      # The preview worker workflow runs after Vercel reports the build. Its run can succeed with the
+      # deploy job skipped, so the job itself is read. The old worker's drain can take 12 minutes.
+      - name: Wait for the staging worker
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 17
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_DATABASE_URL: ${{ steps.neon.outputs.database-url }}
+          DB_NOW: ${{ steps.clock.outputs.now }}
+          MOVED: ${{ steps.move.outputs.moved }}
+          CREATED: ${{ steps.build.outputs.created }}
+        run: |
+          set -euo pipefail
+          deployed() {
+            local runs id found
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/preview-worker.yml/runs?head_sha=$SHA&per_page=20" \
+              --jq '.workflow_runs[].id') || return 1
+            for id in $runs; do
+              found=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" \
+                --jq '.jobs[] | select(.name == "deploy preview worker" and .conclusion == "success") | .id') || continue
+              [ -n "$found" ] && return 0
+            done
+            return 1
+          }
+          deadline=$((SECONDS + 900))
+          until deployed; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::No successful 'deploy preview worker' job for $SHA within 15 minutes. If an earlier worker deploy for this commit failed, re-run that preview worker run first."
+              exit 1
+            fi
+            sleep 20
+          done
+          since="$DB_NOW"
+          if [ "$MOVED" = false ] && [ "$CREATED" = false ]; then since=none; fi
+          remaining=$((deadline - SECONDS))
+          if [ "$remaining" -lt 60 ]; then remaining=60; fi
+          env -u GH_TOKEN node --import tsx scripts/staging-db.ts wait-worker "$since" "$remaining" ||
+            { echo "::error::The staging worker did not register within 15 minutes."; exit 1; }
+      - name: Install Chromium
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 5
+        run: npx playwright install --with-deps chromium
+      # Neither NEON_API_KEY nor VERCEL_TOKEN reaches this step. A failed attempt is retried once,
+      # after the member's latest run is free to be replaced.
+      - name: Run the story
+        if: steps.skip.outputs.skipped != 'true'
+        timeout-minutes: 33
+        env:
+          E2E_BASE_URL: ${{ vars.STAGING_ORIGIN }}
+          E2E_DATABASE_URL: ${{ steps.neon.outputs.database-url }}
+          STAGING_DATABASE_URL: ${{ steps.neon.outputs.database-url }}
+        run: |
+          # No -e: a failed attempt must still write its row, and the second attempt's status is the
+          # step's. A step's shell starts with -e, which "set -uo pipefail" would leave on.
+          set +e -uo pipefail
+          summary() { printf '%s\n' "$@" >> "$GITHUB_STEP_SUMMARY"; }
+          attempt() {
+            local n=$1 start=$SECONDS code run cost=unknown result=failed
+            npm run test:e2e:real 2>&1 | tee "$RUNNER_TEMP/story-$n.log"
+            code=${PIPESTATUS[0]}
+            run=$(grep -oE 'gate run [0-9a-f-]{36}' "$RUNNER_TEMP/story-$n.log" | tail -1 | cut -d' ' -f3 || true)
+            if [ -n "$run" ]; then
+              cost=$(node --import tsx scripts/staging-db.ts cost "$run") || cost=unknown
+            fi
+            if [ "$code" -eq 0 ]; then result=passed; fi
+            summary "| $n | $result | $((SECONDS - start)) s | ${run:-none} | $cost |"
+            return "$code"
+          }
+          summary '### Story attempts' '' '| Attempt | Result | Duration | Run | Settled cost in USD |' '| --- | --- | --- | --- | --- |'
+          if attempt 1; then exit 0; fi
+          echo "The first attempt failed. Waiting for the member's latest run to settle."
+          node --import tsx scripts/staging-db.ts wait-quiet 300 ||
+            echo "::warning::The member's latest run was still busy after 5 minutes."
+          attempt 2
