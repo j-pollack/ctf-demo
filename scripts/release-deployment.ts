@@ -74,6 +74,8 @@ type Listed = {
   url: string;
   state: string;
   created: number;
+  // Production deployments say "production" and Previews are null.
+  target?: string | null;
   meta?: { githubCommitSha?: string };
 };
 
@@ -133,7 +135,14 @@ async function newestFor(sha: string, api: Api): Promise<Listed | undefined> {
     limit: String(LIST_LIMIT),
   })) as { deployments?: Listed[] };
   return (body.deployments ?? [])
-    .filter((deployment) => deployment.meta?.githubCommitSha === sha && isReadable(deployment))
+    .filter(
+      (deployment) =>
+        deployment.meta?.githubCommitSha === sha &&
+        // Whatever the server did with the `target` parameter, a Preview is never promoted. A listing
+        // that omits the field is accepted as it was before the field was read.
+        (deployment.target === undefined || deployment.target === "production") &&
+        isReadable(deployment),
+    )
     .sort((a, b) => b.created - a.created)[0];
 }
 
