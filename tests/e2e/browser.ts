@@ -5,6 +5,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import {
   baseUrl,
+  LIMITS,
+  realStack,
   signInLink,
   takeServerFailures,
   takeViolations,
@@ -13,7 +15,7 @@ import {
 } from "./stack";
 
 const EVIDENCE = ".artifacts/e2e";
-export const TIMEOUT = 15_000;
+export const TIMEOUT = LIMITS.waitMs;
 
 export type Session = {
   page: Page;
@@ -32,8 +34,9 @@ async function track(browser: Browser, expected: { status: number; path: string 
     baseURL: baseUrl,
     extraHTTPHeaders: visitorHeaders(),
   });
-  context.setDefaultTimeout(TIMEOUT);
-  await context.tracing.start({ screenshots: true, snapshots: true });
+  context.setDefaultTimeout(LIMITS.actionMs);
+  // A real run's trace would hold the sign-in link and the session cookie, and the repository is public.
+  if (!realStack) await context.tracing.start({ screenshots: true, snapshots: true });
   const page = await context.newPage();
   const problems: string[] = [];
   const isExpected = (url: string, status?: number) => {
@@ -64,7 +67,7 @@ const slug = (name: string) => name.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 // One journey: a fresh Chromium, every page collected for errors, and no violation left behind.
 // A failing journey keeps its traces and screenshots under .artifacts/e2e.
 export function journey(name: string, body: (session: Session) => Promise<void>) {
-  return test(name, { timeout: 90_000 }, async () => {
+  return test(name, { timeout: LIMITS.journeyMs }, async () => {
     const browser = await chromium.launch();
     const expected: { status: number; path: string }[] = [];
     const expectedEvents: string[] = [];
@@ -101,13 +104,15 @@ export function journey(name: string, body: (session: Session) => Promise<void>)
         console.error(`${name}: server failure ${JSON.stringify(failure)}`);
       for (const failure of takeWorkerFailures())
         console.error(`${name}: worker failure ${JSON.stringify(failure)}`);
-      mkdirSync(EVIDENCE, { recursive: true });
-      await Promise.all(
-        tracked.flatMap(({ context, page }, index) => [
-          context.tracing.stop({ path: `${EVIDENCE}/${slug(name)}-${index}.zip` }),
-          page.screenshot({ path: `${EVIDENCE}/${slug(name)}-${index}.png` }).catch(() => {}),
-        ]),
-      );
+      if (!realStack) {
+        mkdirSync(EVIDENCE, { recursive: true });
+        await Promise.all(
+          tracked.flatMap(({ context, page }, index) => [
+            context.tracing.stop({ path: `${EVIDENCE}/${slug(name)}-${index}.zip` }),
+            page.screenshot({ path: `${EVIDENCE}/${slug(name)}-${index}.png` }).catch(() => {}),
+          ]),
+        );
+      }
       throw error;
     } finally {
       await Promise.all(tracked.map(({ context }) => context.close()));
@@ -143,6 +148,9 @@ export async function signIn(page: Page, email: string, next = "/play") {
   await page.getByTestId("signin-email").fill(email);
   await page.getByTestId("signin-submit").click();
   await page.getByTestId("signin-sent").waitFor();
-  await page.goto(await signInLink(email));
+  await page.goto(await signInLink(email, next));
   await page.waitForURL((url) => url.pathname === next);
+  // The session cookie must not reach a public log, whatever prints it later.
+  if (realStack && process.env.GITHUB_ACTIONS)
+    for (const { value } of await page.context().cookies()) console.log(`::add-mask::${value}`);
 }

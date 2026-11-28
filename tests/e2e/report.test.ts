@@ -35,7 +35,7 @@ journey(
       assert.deepEqual(rows, [{ kind: "monitor", game_id: runId, session_id: sessionId }]);
 
       const notification = await mailTo(
-        contactEmail,
+        contactEmail(),
         `[CTF] Report (monitor) on run ${runId.slice(0, 8)}`,
       );
       assert.equal(notification.replyTo, email);

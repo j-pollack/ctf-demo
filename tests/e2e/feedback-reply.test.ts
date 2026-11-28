@@ -22,7 +22,7 @@ journey("A4 to A6: an admin answers a contact message by mail and closes it", as
   await waitForAttribute(page.getByTestId("contact-status"), "data-state", "sent");
 
   // A4: the notification goes to the contact address, and the visitor's address is the reply-to.
-  const notification = await mailTo(contactEmail, NOTIFICATION);
+  const notification = await mailTo(contactEmail(), NOTIFICATION);
   assert.equal(notification.replyTo, visitor);
   await threadIdOf(message);
 
@@ -45,7 +45,7 @@ journey("A4 to A6: an admin answers a contact message by mail and closes it", as
   await admin.getByTestId("feedback-thread-send").click();
 
   const answer = entries.filter({ hasText: reply });
-  await answer.filter({ hasText: contactEmail }).waitFor();
+  await answer.filter({ hasText: contactEmail() }).waitFor();
   await waitForAttribute(answer, "data-state", "ours");
   await waitForAttribute(state, "data-state", "answered");
   assert.ok(!admin.url().includes("error=reply"), admin.url());

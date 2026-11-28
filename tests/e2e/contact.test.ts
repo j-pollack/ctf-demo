@@ -19,7 +19,7 @@ journey("E6: a contact message is stored and listed for an admin", async ({ page
   );
   assert.deepEqual(rows, [{ kind: "contact", name: "E2E Visitor", email: sender }]);
 
-  const notification = await mailTo(contactEmail, "[CTF] Contact from E2E Visitor");
+  const notification = await mailTo(contactEmail(), "[CTF] Contact from E2E Visitor");
   assert.equal(notification.replyTo, sender);
   await threadIdOf(message);
 

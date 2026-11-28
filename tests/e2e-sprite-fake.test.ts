@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { smokeHttpUploadCall } from "../scripts/smoke-contract";
 import { SEED_BUGS, seedScoreCommand } from "../lib/seed";
 import { COMMANDS } from "./e2e/agent-script";
 import { createSpriteFake, patchSprites } from "./e2e/sprite-fake";
@@ -292,6 +293,26 @@ test("W3: an upload posts the Sprite's flag to the app at the TARGET path, as th
     assert.equal(app.seen[0].url, `/v1/end/${"b".repeat(43)}`);
     assert.equal(app.seen[0].headers.host, HOST);
     assert.equal(app.seen[0].headers["x-forwarded-proto"], "https");
+    assert.equal(app.seen[0].body, FLAG);
+  } finally {
+    app.close();
+    done();
+  }
+});
+
+test("W3: the smoke contract's upload command posts the flag and prints what curl would", async () => {
+  const app = await receiver(202);
+  const { fake, done } = setup({ appOrigin: app.origin });
+  try {
+    await ready(fake);
+    const output = await fake.execFile(
+      NAME,
+      "timeout",
+      wrap(smokeHttpUploadCall().arguments.command),
+      execOptions(),
+    );
+    assert.deepEqual(output, { stdout: "HTTP:202", stderr: "", exitCode: 0 });
+    assert.equal(app.seen.length, 1);
     assert.equal(app.seen[0].body, FLAG);
   } finally {
     app.close();

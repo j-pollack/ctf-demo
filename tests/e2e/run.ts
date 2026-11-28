@@ -6,30 +6,65 @@ import { AFTER_TOOL_TEXT, KEYWORDS, REPLIES } from "./agent-script";
 import { signIn, TIMEOUT, waitForAttribute } from "./browser";
 import { baseUrl, grantAdmin, newEmail, pool, required } from "./stack";
 
-const cronSecret = required("CRON_SECRET");
-const spriteDir = required("E2E_SPRITE_DIR");
-
 // The Sprite directories the faked Sprites service holds.
-export const spriteNames = () => readdirSync(spriteDir);
+export const spriteNames = () => readdirSync(required("E2E_SPRITE_DIR"));
 
 // A signed-in member with a display name, which a run needs. Returns the address.
 export async function memberWithName(page: Page, label: string) {
   const email = newEmail(label);
   await signIn(page, email, "/account");
-  await pool().query(`UPDATE ctf."user" SET "displayName"=$2 WHERE email=$1`, [
-    email,
-    email.split("@")[0].replaceAll("-", "_"),
-  ]);
+  // Only when the member has none: the real stack's one member keeps the name it has.
+  await pool().query(
+    `UPDATE ctf."user" SET "displayName"=$2 WHERE email=$1 AND "displayName" IS NULL`,
+    [email, email.split("@")[0].replaceAll("-", "_")],
+  );
   return email;
 }
 
+// What /api/games reports for the member's latest run, read by the page's own fetch so that no
+// request log holds the session cookie.
+async function latestRun(page: Page) {
+  const { game } = await page.evaluate(() =>
+    fetch("/api/games").then((response) => response.json()),
+  );
+  return game as {
+    id: string;
+    status: string;
+    turns: number;
+    events: { id: number; kind: string }[];
+    sessions: { turns: number; busy: boolean }[];
+  } | null;
+}
+
 // Starts a run through the setup dialog, opened from /play or, while a run is open, by its New run
-// button. Returns the run's id.
-export async function startRun(page: Page, from: "play" | "run" = "play") {
+// button. From "any", /play is opened first and the member's latest run decides, as the page does
+// (app/game-ui.tsx, hasActiveRun and the effect that opens the dialog):
+// - no run, or one that is not `active` (ended, captured, caught, finalizing, ...): the page opens
+//   the dialog itself, so only the confirm button is used. Looking for the New run button instead
+//   would race the dialog's opening.
+// - `active` with an instruction sent: the page opens no dialog, so New run is clicked.
+// - `active` with no instruction: New run stays disabled, so that run is used as it is.
+// - `creating`: the app refuses a start, so this fails instead of waiting on a button.
+// Returns the run's id.
+export async function startRun(page: Page, from: "play" | "run" | "any" = "play") {
   const previous = new URL(page.url()).pathname;
-  if (from === "play") await page.goto("/play");
-  else await page.getByTestId("run-new").click();
-  await page.getByTestId("run-start-confirm").click();
+  const confirm = page.getByTestId("run-start-confirm");
+  if (from === "run") await page.getByTestId("run-new").click();
+  else await page.goto("/play");
+  if (from === "any") {
+    const game = await latestRun(page);
+    if (game?.status === "creating")
+      throw new Error(`Run ${game.id} is still creating: the gate cannot start from it.`);
+    if (game?.status === "active") {
+      const started =
+        game.turns > 0 ||
+        game.events.some((event) => event.id > 0 && event.kind === "user") ||
+        game.sessions.some((session) => session.turns > 0 || session.busy);
+      if (!started) return game.id;
+      await page.getByTestId("run-new").click();
+    }
+  }
+  await confirm.click();
   // A new run's page is another path than the run it replaces.
   await page.waitForURL((url) => url.pathname.startsWith("/runs/") && url.pathname !== previous);
   return new URL(page.url()).pathname.split("/")[2];
@@ -105,7 +140,7 @@ export async function endRun(runId: string) {
 
 export async function cleanup() {
   const response = await fetch(`${baseUrl}/api/cleanup`, {
-    headers: { authorization: `Bearer ${cronSecret}` },
+    headers: { authorization: `Bearer ${required("CRON_SECRET")}` },
   });
   assert.equal(response.status, 200);
 }
@@ -115,29 +150,37 @@ export async function runStatus(runId: string) {
   return rows[0]?.status as string | undefined;
 }
 
+// Fails at once, naming the error, on a review of the run with an operational error or a monitor
+// job that is unresolved. Returns the run's monitor jobs.
+export async function assertReviewsHealthy(runId: string) {
+  const { rows: errors } = await pool().query<{ operational_error: string }>(
+    `SELECT operational_error FROM ctf.monitor_reviews
+     WHERE game_id=$1 AND operational_error IS NOT NULL`,
+    [runId],
+  );
+  assert.deepEqual(
+    errors.map((row) => row.operational_error),
+    [],
+    `a review of run ${runId} failed`,
+  );
+  const { rows: jobs } = await pool().query<{ status: string; reason: string | null }>(
+    `SELECT status,reason FROM ctf.monitor_jobs WHERE game_id=$1`,
+    [runId],
+  );
+  const unresolved = jobs.filter((job) => job.status === "unresolved");
+  assert.deepEqual(unresolved, [], `a monitor job of run ${runId} is unresolved`);
+  return jobs;
+}
+
 // Waits until the worker has settled every monitor job of the run, so a review's failure lands in
 // the story that caused it. A run with no job is settled. An unresolved job or a review with an
 // operational error fails at once and names the error.
 export async function waitForReviews(runId: string) {
-  await waitFor("the run's reviews to settle", async () => {
-    const { rows: errors } = await pool().query<{ operational_error: string }>(
-      `SELECT operational_error FROM ctf.monitor_reviews
-       WHERE game_id=$1 AND operational_error IS NOT NULL`,
-      [runId],
-    );
-    assert.deepEqual(
-      errors.map((row) => row.operational_error),
-      [],
-      `a review of run ${runId} failed`,
-    );
-    const { rows: jobs } = await pool().query<{ status: string; reason: string | null }>(
-      `SELECT status,reason FROM ctf.monitor_jobs WHERE game_id=$1`,
-      [runId],
-    );
-    const unresolved = jobs.filter((job) => job.status === "unresolved");
-    assert.deepEqual(unresolved, [], `a monitor job of run ${runId} is unresolved`);
-    return jobs.every((job) => job.status === "caught-up" || job.status === "caught");
-  });
+  await waitFor("the run's reviews to settle", async () =>
+    (await assertReviewsHealthy(runId)).every(
+      (job) => job.status === "caught-up" || job.status === "caught",
+    ),
+  );
 }
 
 // The kinds and texts of a page's transcript entries, in order.
