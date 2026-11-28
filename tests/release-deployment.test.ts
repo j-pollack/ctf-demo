@@ -803,3 +803,39 @@ test("lookup on already-serving fails when automatic assignment is on, passes wi
     assert.match(unreadable.stderr, /setting/);
   }
 });
+
+const withTarget = (it: Item, target: string | null, ref: string) => ({
+  uid: it.uid,
+  url: it.url,
+  state: it.state,
+  created: it.created,
+  target,
+  meta: { githubCommitSha: it.sha, githubCommitRef: ref },
+});
+
+test("the lookup ignores a newer Preview of the same commit", async () => {
+  const { api } = stub({
+    "/v6/deployments": [
+      {
+        deployments: [
+          withTarget(item("staging_preview", "READY", 500), null, "staging"),
+          withTarget(item("production", "READY", 300), "production", "main"),
+        ],
+      },
+    ],
+  });
+  const found = await findDeployment(SHA, api, clock());
+  assert.equal(found.id, "production");
+});
+
+test("a listing with only a Preview of the commit finds nothing", async () => {
+  const { api } = stub({
+    "/v6/deployments": [
+      { deployments: [withTarget(item("staging_preview", "READY", 500), null, "staging")] },
+    ],
+  });
+  await assert.rejects(
+    findDeployment(SHA, api, clock()),
+    /not ready within 8 minutes \(none found\)/,
+  );
+});
