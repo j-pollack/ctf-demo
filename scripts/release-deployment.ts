@@ -138,9 +138,9 @@ async function newestFor(sha: string, api: Api): Promise<Listed | undefined> {
     .filter(
       (deployment) =>
         deployment.meta?.githubCommitSha === sha &&
-        // Whatever the server did with the `target` parameter, a Preview is never promoted. A listing
-        // that omits the field is accepted as it was before the field was read.
-        (deployment.target === undefined || deployment.target === "production") &&
+        // Whatever the server did with the `target` parameter, a Preview is never promoted. The
+        // field is on every listed deployment, so a listing without it matches nothing.
+        deployment.target === "production" &&
         isReadable(deployment),
     )
     .sort((a, b) => b.created - a.created)[0];

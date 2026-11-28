@@ -38,7 +38,11 @@ const item = (uid: string, state: string, created: number, sha = SHA): Item => (
   sha,
 });
 const listBody = (items: Item[]) => ({
-  deployments: items.map(({ sha, ...rest }) => ({ ...rest, meta: { githubCommitSha: sha } })),
+  deployments: items.map(({ sha, ...rest }) => ({
+    ...rest,
+    target: "production",
+    meta: { githubCommitSha: sha },
+  })),
 });
 
 type Call = { method: string; url: URL; headers: Headers; body: string | undefined };
@@ -832,6 +836,28 @@ test("a listing with only a Preview of the commit finds nothing", async () => {
   const { api } = stub({
     "/v6/deployments": [
       { deployments: [withTarget(item("staging_preview", "READY", 500), null, "staging")] },
+    ],
+  });
+  await assert.rejects(
+    findDeployment(SHA, api, clock()),
+    /not ready within 8 minutes \(none found\)/,
+  );
+});
+
+test("a deployment of the commit with no target field is not found", async () => {
+  const { api } = stub({
+    "/v6/deployments": [
+      {
+        deployments: [
+          {
+            uid: "d1",
+            url: "ctf-d1.vercel.app",
+            state: "READY",
+            created: 100,
+            meta: { githubCommitSha: SHA },
+          },
+        ],
+      },
     ],
   });
   await assert.rejects(
