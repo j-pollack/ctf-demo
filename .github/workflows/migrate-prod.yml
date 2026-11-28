@@ -95,7 +95,7 @@ jobs:
 
   # The new web build reaches production only here, after the migration and the worker, and
   # only once its own URL passes the checks. Vercel's automatic domain assignment must be off
-  # for this to hold, see deploy/operations.md. The step timeouts add up to 23 minutes, so 7 of the
+  # for this to hold, see deploy/operations.md. The step timeouts add up to 25 minutes, so 5 of the
   # job's 30 are left for setup and the job's timeout never stops the rollback step.
   promote:
     name: promote web
@@ -105,7 +105,6 @@ jobs:
     env:
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       HUSKY: 0
-      VERCEL_CLI: vercel@67.0.0
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
       PRODUCTION_ORIGIN: ${{ vars.PRODUCTION_ORIGIN }}
@@ -157,26 +156,13 @@ jobs:
           DEPLOYMENT_URL: ${{ steps.decide.outputs.new_url }}
           DECISION: ${{ steps.decide.outputs.decision }}
           SERVING_ID: ${{ steps.decide.outputs.serving_id }}
+      # The script sends one request to Vercel's API and passes only when the domain serves the new
+      # deployment, so a failure leaves nothing for the rollback below to misjudge.
       - name: Promote the new deployment
         id: promote
         if: steps.decide.outputs.decision == 'promote'
         timeout-minutes: 4
-        # While Vercel still assigns the domain itself it can move it between the decision and
-        # this step. A promote that fails is a failure only when the domain does not serve the
-        # new deployment, so the rollback below never undoes a release that is live and good.
-        run: |
-          if npx --yes "$VERCEL_CLI" promote "$DEPLOYMENT_URL" --scope "$VERCEL_ORG_ID" --timeout 2m; then exit 0; fi
-          echo "::warning::vercel promote did not succeed. Reading the production domain."
-          node --import tsx scripts/release-deployment.ts verify "$NEW_ID"
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          DEPLOYMENT_URL: ${{ steps.decide.outputs.new_url }}
-          NEW_ID: ${{ steps.decide.outputs.new_id }}
-      - name: Verify the production domain moved
-        id: verify
-        if: steps.decide.outputs.decision == 'promote'
-        timeout-minutes: 2
-        run: node --import tsx scripts/release-deployment.ts verify "$NEW_ID"
+        run: node --import tsx scripts/release-deployment.ts promote "$NEW_ID"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           NEW_ID: ${{ steps.decide.outputs.new_id }}
@@ -192,21 +178,41 @@ jobs:
         env:
           DECISION: ${{ steps.decide.outputs.decision }}
           SERVING_ID: ${{ steps.decide.outputs.serving_id }}
-      # Runs after a failed or cancelled promote, verify or live check. Rolling back to the
-      # deployment that already served changes nothing. The job ends failed either way.
+      # Vercel turns automatic assignment back on after some promotions. This is not part of the
+      # rollback condition: a release that is live and passed its checks stays.
+      - name: Turn off automatic assignment
+        id: assignment
+        if: steps.decide.outputs.decision == 'promote'
+        timeout-minutes: 3
+        run: |
+          if ! node --import tsx scripts/release-deployment.ts assignment-off "$NEW_ID"; then
+            echo "::error::The domain moved to deployment $NEW_ID and the live checks passed, but the setting step did not finish cleanly. Read the automatic assignment setting and turn it off by hand now."
+            exit 1
+          fi
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          NEW_ID: ${{ steps.decide.outputs.new_id }}
+      # Runs after a failed or cancelled promote or live check. Rolling back to the deployment that
+      # already serves sends nothing. The job ends failed either way.
       - name: Roll back to the previous deployment
         if: >-
           always() && steps.promote.outcome != 'skipped' &&
-          !(steps.promote.outcome == 'success' && steps.verify.outcome == 'success' && steps.live.outcome == 'success')
-        timeout-minutes: 4
+          !(steps.promote.outcome == 'success' && steps.live.outcome == 'success')
+        timeout-minutes: 5
         run: |
-          npx --yes "$VERCEL_CLI" rollback "$PREVIOUS_ID" --scope "$VERCEL_ORG_ID" --timeout 2m \
-            || echo "::warning::The rollback command failed."
-          if out=$(node --import tsx scripts/release-deployment.ts verify "$PREVIOUS_ID"); then
-            echo "::error::Rolled back to $PREVIOUS_ID because the promotion did not finish or the live checks failed."
-          else
+          if ! out=$(node --import tsx scripts/release-deployment.ts rollback "$PREVIOUS_ID"); then
+            printf '%s\n' "$out"
             serving=$(printf '%s\n' "$out" | sed -n 's/^serving_id=//p')
             echo "::error::The rollback to $PREVIOUS_ID did not take effect. The site is on deployment ${serving:-unknown} and needs attention now."
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          moved=$(printf '%s\n' "$out" | sed -n 's/^moved=//p')
+          serving=$(printf '%s\n' "$out" | sed -n 's/^serving_id=//p')
+          if [ "$moved" = true ]; then
+            echo "::error::Rolled back to $PREVIOUS_ID because the promotion did not finish or the live checks failed."
+          else
+            echo "::error::The promotion did not finish or the live checks failed. Nothing had moved: the site still serves $serving."
           fi
           exit 1
         env:
