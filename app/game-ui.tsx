@@ -1403,6 +1403,8 @@ export default function GameUI({
       text,
       afterId: Math.max(0, ...sessionEvents.map((event) => event.id)),
     };
+    // A read requested before this send predates the instruction and must not reject it.
+    submissionGeneration.current++;
     sessionPending.current.set(sessionId, submitted);
     updateSession(sessionId, (current) => ({
       ...current,

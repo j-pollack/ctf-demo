@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 import { completionEvents, type Completion } from "../integration/completion-stream";
 import { createScreenFake } from "../integration/screen-fake";
-import { AFTER_TOOL_TEXT, KEYWORDS, REPLIES } from "./agent-script";
+import { AFTER_TOOL_TEXT, CONTINUE, KEYWORDS, REPLIES } from "./agent-script";
 
 type Handler = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -94,7 +94,16 @@ export function createOpenRouterFake({ displayName }: { displayName: Handler }) 
     if (last.role === "tool") return stream({ content: AFTER_TOOL_TEXT });
     assert.equal(last.role, "user", `last message role: ${last.role}`);
     assert.equal(typeof last.content, "string", "last message content");
-    const keyword = Object.keys(REPLIES).find((word) => last.content.includes(word));
+    const asked =
+      last.content === CONTINUE
+        ? request.messages.findLast(
+            (message: { role: string; content: unknown }) =>
+              message.role === "user" &&
+              typeof message.content === "string" &&
+              Object.keys(REPLIES).some((word) => (message.content as string).includes(word)),
+          )
+        : last;
+    const keyword = Object.keys(REPLIES).find((word) => asked?.content.includes(word));
     assert.ok(keyword, "the instruction carries no keyword");
     const reply = REPLIES[keyword];
     if (reply.hold) return held(init?.signal);
