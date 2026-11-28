@@ -16,6 +16,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One real run on the staging stack. Advisory for now: it runs beside the release and no job
+  # needs it, so a failure is recorded on the run and the release goes on. A called workflow holds
+  # no more than its caller grants, and only the secrets passed here.
+  staging:
+    name: staging
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/staging.yml
+    with:
+      sha: ${{ github.event.workflow_run.head_sha }}
+    secrets:
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      # Empty while unset. The move then uses GITHUB_TOKEN.
+      STAGING_PUSH_KEY: ${{ secrets.STAGING_PUSH_KEY }}
+
   migrate:
     name: migrate prod
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
